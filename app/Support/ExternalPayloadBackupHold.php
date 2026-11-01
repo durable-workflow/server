@@ -97,6 +97,21 @@ final class ExternalPayloadBackupHold
         });
     }
 
+    public function assertReclamationAllowed(): void
+    {
+        // This preflight preserves refusal while a hold is already active.
+        // It takes no hold lock before a batch's later object locks. The real
+        // provider effect is fenced again by deleting() after commit.
+        $row = DB::table(self::TABLE)->where('id', 1)->first();
+        if ($row === null) {
+            throw new RuntimeException('External payload backup coordination is not initialized.');
+        }
+        $clock = DB::getDriverName() === 'pgsql' ? 'clock_timestamp()' : 'CURRENT_TIMESTAMP';
+        if ($this->active($row, CarbonImmutable::parse(DB::scalar('SELECT '.$clock), 'UTC')->utc())) {
+            throw new ExternalPayloadBackupInProgress('External payload reclamation is paused for an online backup.');
+        }
+    }
+
     private function locked(Closure $callback): mixed
     {
         return DB::transaction(function () use ($callback): mixed {

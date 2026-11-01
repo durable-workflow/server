@@ -1,0 +1,517 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "search-attribute-datetimes",
+  "review_state": "reviewed",
+  "contract": "Datetime search attribute values and the per-run attribute limits (published Server 2.11.7 SearchAttributeValueValidator with Workflow 2.15.7 WorkflowSearchAttribute), over raw HTTP on worker protocol 1.20 in a fresh namespace that registers one datetime attribute. Each datetime value is written on a workflow start and by a first workflow task's upsert_search_attributes command. A value with a UTC offset is stored as the instant it names (workflow#898, fixed in Core 2.15.1); the offset may be written +HH:MM, +HHMM or +HH; a value without one is read as UTC; T may be a space or lowercase; fractional seconds are truncated to microseconds; an RFC 2822 date is accepted; an empty value stores nothing; an unparsable value is refused. A visibility query filters by the stored instant. An upsert reaching exactly 100 attributes, or exactly 65536 value bytes, is accepted; one more is rejected 422 invalid_workflow_stream_command with the limit message and records nothing. Embedded applications have no worker protocol or HTTP registry.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "continue transfers λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "continue transfers λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "search_attribute_datetimes": {
+    "workflow_type": "parity.v1.search_attribute_datetimes",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "attribute": "When",
+    "values": {
+      "offset_extended": "2026-10-08T12:34:56+02:00",
+      "offset_negative_micros": "2026-10-08T12:34:56.123456-05:30",
+      "offset_basic": "2026-10-08T12:34:56+0200",
+      "offset_hours": "2026-10-08T12:34:56+02",
+      "utc_nanoseconds": "2026-10-08T12:34:56.123456789Z",
+      "utc_truncated": "2026-10-08T12:34:56.9999995Z",
+      "space_offset": "2026-10-08 12:34:56+02:00",
+      "lowercase": "2026-10-08t10:34:56z",
+      "rfc2822": "Thu, 08 Oct 2026 12:34:56 +0200",
+      "naive": "2026-10-08 12:34:56",
+      "naive_minutes": "2026-10-08T12:34",
+      "date_only": "2026-10-08",
+      "empty": "",
+      "unparsable": "not a date"
+    },
+    "filter_instant": "2026-10-08T10:34:56Z",
+    "limits": {
+      "at_count_limit": {
+        "count": 100
+      },
+      "over_count_limit": {
+        "count": 101
+      },
+      "at_size_limit": {
+        "count": 32,
+        "value_bytes": 2048
+      },
+      "over_size_limit": {
+        "count": 33,
+        "value_bytes": 2048
+      }
+    },
+    "expected": {
+      "start": {
+        "offset_extended": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          }
+        },
+        "offset_negative_micros": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T18:04:56.123456Z"
+          }
+        },
+        "offset_basic": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          }
+        },
+        "offset_hours": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          }
+        },
+        "utc_nanoseconds": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T12:34:56.123456Z"
+          }
+        },
+        "utc_truncated": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T12:34:56.999999Z"
+          }
+        },
+        "space_offset": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          }
+        },
+        "lowercase": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          }
+        },
+        "rfc2822": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          }
+        },
+        "naive": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T12:34:56.000000Z"
+          }
+        },
+        "naive_minutes": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T12:34:00.000000Z"
+          }
+        },
+        "date_only": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T00:00:00.000000Z"
+          }
+        },
+        "empty": {
+          "started": {
+            "status": 201,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": []
+        },
+        "unparsable": {
+          "started": {
+            "status": 422,
+            "reason": "validation_failed",
+            "message": "Search attribute [When] is registered as datetime and must be an RFC3339 datetime string.",
+            "error": null,
+            "errors": {
+              "search_attributes": [
+                "Search attribute [When] is registered as datetime and must be an RFC3339 datetime string."
+              ]
+            }
+          }
+        }
+      },
+      "upsert": {
+        "offset_extended": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          },
+          "event": {
+            "When": "2026-10-08T12:34:56+02:00"
+          }
+        },
+        "offset_negative_micros": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T18:04:56.123456Z"
+          },
+          "event": {
+            "When": "2026-10-08T12:34:56.123456-05:30"
+          }
+        },
+        "offset_basic": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          },
+          "event": {
+            "When": "2026-10-08T12:34:56+0200"
+          }
+        },
+        "offset_hours": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          },
+          "event": {
+            "When": "2026-10-08T12:34:56+02"
+          }
+        },
+        "utc_nanoseconds": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T12:34:56.123456Z"
+          },
+          "event": {
+            "When": "2026-10-08T12:34:56.123456789Z"
+          }
+        },
+        "utc_truncated": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T12:34:56.999999Z"
+          },
+          "event": {
+            "When": "2026-10-08T12:34:56.9999995Z"
+          }
+        },
+        "space_offset": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          },
+          "event": {
+            "When": "2026-10-08 12:34:56+02:00"
+          }
+        },
+        "lowercase": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          },
+          "event": {
+            "When": "2026-10-08t10:34:56z"
+          }
+        },
+        "rfc2822": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T10:34:56.000000Z"
+          },
+          "event": {
+            "When": "Thu, 08 Oct 2026 12:34:56 +0200"
+          }
+        },
+        "naive": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T12:34:56.000000Z"
+          },
+          "event": {
+            "When": "2026-10-08 12:34:56"
+          }
+        },
+        "naive_minutes": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T12:34:00.000000Z"
+          },
+          "event": {
+            "When": "2026-10-08T12:34"
+          }
+        },
+        "date_only": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": {
+            "When": "2026-10-08T00:00:00.000000Z"
+          },
+          "event": {
+            "When": "2026-10-08"
+          }
+        },
+        "empty": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": [],
+          "event": {
+            "When": null
+          }
+        },
+        "unparsable": {
+          "completed": {
+            "status": 422,
+            "reason": "validation_failed",
+            "message": "Search attribute [When] is registered as datetime and must be an RFC3339 datetime string.",
+            "error": null,
+            "errors": {
+              "commands.0.attributes": [
+                "Search attribute [When] is registered as datetime and must be an RFC3339 datetime string."
+              ]
+            }
+          },
+          "described": [],
+          "event": "absent"
+        }
+      },
+      "filtered": {
+        "status": 200,
+        "workflow_ids": [
+          "-sad-start-lowercase",
+          "-sad-start-offset_basic",
+          "-sad-start-offset_extended",
+          "-sad-start-offset_hours",
+          "-sad-start-rfc2822",
+          "-sad-start-space_offset",
+          "-sad-upsert-lowercase",
+          "-sad-upsert-offset_basic",
+          "-sad-upsert-offset_extended",
+          "-sad-upsert-offset_hours",
+          "-sad-upsert-rfc2822",
+          "-sad-upsert-space_offset"
+        ]
+      },
+      "limits": {
+        "at_count_limit": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": 100,
+          "event": 100
+        },
+        "over_count_limit": {
+          "completed": {
+            "status": 422,
+            "reason": "invalid_workflow_stream_command",
+            "message": null,
+            "error": "Search attributes count exceeds maximum (101 > 100)",
+            "errors": null
+          },
+          "described": 0,
+          "event": "absent"
+        },
+        "at_size_limit": {
+          "completed": {
+            "status": 200,
+            "reason": null,
+            "message": null,
+            "error": null,
+            "errors": null
+          },
+          "described": 32,
+          "event": 32
+        },
+        "over_size_limit": {
+          "completed": {
+            "status": 422,
+            "reason": "invalid_workflow_stream_command",
+            "message": null,
+            "error": "Total search attributes size exceeds maximum (67584 > 65536 bytes)",
+            "errors": null
+          },
+          "described": 0,
+          "event": "absent"
+        }
+      }
+    }
+  }
+}

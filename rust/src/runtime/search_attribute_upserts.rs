@@ -6,7 +6,7 @@
 use std::{collections::BTreeMap, env};
 
 use axum::http::StatusCode;
-use chrono::{DateTime, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, SecondsFormat, TimeZone, Timelike, Utc};
 use serde_json::{Map, Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
@@ -122,21 +122,73 @@ fn infer_type(value: &Value) -> &'static str {
     }
 }
 
-/// `Carbon::parse` for the forms workers send: RFC 3339, or a date and time
-/// without an offset, read as UTC like the server's timezone.
+/// `Carbon::parse` for the deterministic forms it accepts: an ISO 8601
+/// date, or date and time (`T`, `t` or a space between them, minutes with
+/// optional seconds and fraction) with an offset written `Z`, `+HH:MM`,
+/// `+HHMM` or `+HH`, or none, read as UTC like the server's timezone; and an
+/// RFC 2822 date. Fractional seconds are truncated to microseconds, as PHP
+/// stores them. Forms that depend on the clock, a timezone database or
+/// PHP's date overflow (`tomorrow`, `@1700000000`, `Europe/Paris`,
+/// `2026-02-30`, `24:00`) are refused as an unparsable value.
 pub(super) fn parse_datetime(text: &str) -> Option<DateTime<Utc>> {
-    if let Ok(time) = DateTime::parse_from_rfc3339(text) {
-        return Some(time.with_timezone(&Utc));
+    let time = parse_iso_datetime(text.as_bytes())
+        .or_else(|| DateTime::parse_from_rfc2822(text).ok().map(|time| time.with_timezone(&Utc)))?;
+    time.with_nanosecond(time.nanosecond() / 1_000 * 1_000)
+}
+
+fn parse_iso_datetime(text: &[u8]) -> Option<DateTime<Utc>> {
+    let digits = |from: usize, count: usize| -> Option<u32> {
+        let part = text.get(from..from + count)?;
+        part.iter().all(u8::is_ascii_digit).then(|| part.iter().fold(0, |sum, digit| sum * 10 + u32::from(digit - b'0')))
+    };
+    if text.get(4) != Some(&b'-') || text.get(7) != Some(&b'-') {
+        return None;
     }
-    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"] {
-        if let Ok(time) = NaiveDateTime::parse_from_str(text, format) {
-            return Some(time.and_utc());
+    let date = NaiveDate::from_ymd_opt(i32::try_from(digits(0, 4)?).ok()?, digits(5, 2)?, digits(8, 2)?)?;
+    if text.len() == 10 {
+        return date.and_hms_opt(0, 0, 0).map(|time| time.and_utc());
+    }
+    if !matches!(text.get(10), Some(b'T' | b't' | b' ')) || text.get(13) != Some(&b':') {
+        return None;
+    }
+    let (hour, minute) = (digits(11, 2)?, digits(14, 2)?);
+    let mut at = 16;
+    let mut second = 0;
+    let mut nanos = 0;
+    if text.get(at) == Some(&b':') {
+        second = digits(at + 1, 2)?;
+        at += 3;
+        if text.get(at) == Some(&b'.') {
+            let start = at + 1;
+            let end = start + text[start..].iter().take_while(|byte| byte.is_ascii_digit()).count();
+            if end == start {
+                return None;
+            }
+            nanos = text[start..end.min(start + 9)].iter().enumerate()
+                .fold(0, |sum, (index, digit)| sum + u32::from(digit - b'0') * 10u32.pow(8 - index as u32));
+            at = end;
         }
     }
-    NaiveDate::parse_from_str(text, "%Y-%m-%d")
-        .ok()
-        .and_then(|date| date.and_hms_opt(0, 0, 0))
-        .map(|time| time.and_utc())
+    let local = date.and_time(NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)?);
+    let offset_seconds = match &text[at..] {
+        [] => 0,
+        [b'Z' | b'z'] => 0,
+        [sign @ (b'+' | b'-'), rest @ ..] => {
+            let (hours, minutes) = match rest {
+                [_, _] => (digits(at + 1, 2)?, 0),
+                [_, _, _, _] => (digits(at + 1, 2)?, digits(at + 3, 2)?),
+                [_, _, b':', _, _] => (digits(at + 1, 2)?, digits(at + 4, 2)?),
+                _ => return None,
+            };
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let seconds = i32::try_from(hours * 3600 + minutes * 60).ok()?;
+            if *sign == b'-' { -seconds } else { seconds }
+        }
+        _ => return None,
+    };
+    FixedOffset::east_opt(offset_seconds)?.from_local_datetime(&local).single().map(|time| time.with_timezone(&Utc))
 }
 
 /// `SearchAttributeValueValidator::validateForNamespace`: the storage type of
@@ -504,15 +556,35 @@ pub(super) fn prepare(
     })
 }
 
-/// `validateAttributeSet` over the merged rows. PHP raises an uncaught
-/// `InvalidArgumentException` here; native refuses the completion instead.
-pub(super) fn check_attribute_set<'a>(rows: impl Iterator<Item = &'a Typed>) -> Result<()> {
+/// `validateAttributeSet` over the merged rows. Its
+/// `InvalidArgumentException` reaches the worker completion's catch
+/// (`WorkerController::completeWorkflowTask`), which rejects the completion
+/// with `invalid_workflow_stream_command` and the exception's message.
+fn check_attribute_set<'a>(rows: impl Iterator<Item = &'a Typed>, task_id: &Value, attempt: &Value) -> Result<()> {
     match attribute_set_refusal(rows) {
         None => Ok(()),
         Some(message) => Err(super::RuntimeError::Protocol {
             status: StatusCode::UNPROCESSABLE_ENTITY,
-            response: json!({"reason":"search_attribute_limit_exceeded","message":message,"recorded":false}),
+            response: json!({"task_id":task_id,"workflow_task_attempt":attempt,"outcome":"rejected","recorded":false,
+                "reason":INVALID_COMMAND,"error":message}),
         }),
+    }
+}
+
+const INVALID_COMMAND: &str = "invalid_workflow_stream_command";
+
+/// The same catch answers `workflow_memo_validation_failed` instead when the
+/// completion also carries an `upsert_memo` command
+/// (`commandsUseWorkflowMemoUpdates`).
+pub(super) fn with_memo_commands(commands: &[Value], error: super::RuntimeError) -> super::RuntimeError {
+    match error {
+        super::RuntimeError::Protocol { status, mut response }
+            if response["reason"] == INVALID_COMMAND && commands.iter().any(|command| command["type"] == "upsert_memo") =>
+        {
+            response["reason"] = json!("workflow_memo_validation_failed");
+            super::RuntimeError::Protocol { status, response }
+        }
+        other => other,
     }
 }
 
@@ -770,7 +842,7 @@ where
                 merged.insert(key.clone(), value.clone());
             }
         }
-        check_attribute_set(stored.values())?;
+        check_attribute_set(stored.values(), &json!(task_id), &json!(DB::number(task, "attempt_count")?))?;
         let workflow_id = DB::string(run, "workflow_instance_id")?;
         Self::write_typed_rows(tx, &run_id, &workflow_id, &prepared, sequence).await?;
         // PHP serializes an empty map as a JSON list.
@@ -911,7 +983,34 @@ mod tests {
         let long_key = "k".repeat(65);
         assert!(prepare(&map(json!({long_key: 1})), &BTreeMap::new(), "commands.0.attributes").is_err());
         let many: Vec<Typed> = (0..101).map(Typed::Int).collect();
-        assert!(check_attribute_set(many.iter()).is_err());
-        assert!(check_attribute_set(many[..100].iter()).is_ok());
+        assert!(check_attribute_set(many.iter(), &json!("task"), &json!(1)).is_err());
+        assert!(check_attribute_set(many[..100].iter(), &json!("task"), &json!(1)).is_ok());
+    }
+
+    #[test]
+    fn datetimes_parse_as_carbon_reads_their_deterministic_forms() {
+        let at = |text: &str| parse_datetime(text).map(|time| time.to_rfc3339_opts(SecondsFormat::Micros, true));
+        for (text, stored) in [
+            ("2026-10-08T12:34:56+02:00", "2026-10-08T10:34:56.000000Z"),
+            ("2026-10-08T12:34:56.123456-05:30", "2026-10-08T18:04:56.123456Z"),
+            ("2026-10-08T12:34:56+0200", "2026-10-08T10:34:56.000000Z"),
+            ("2026-10-08T12:34:56+02", "2026-10-08T10:34:56.000000Z"),
+            ("2026-10-08T12:34:56.123456789Z", "2026-10-08T12:34:56.123456Z"),
+            ("2026-10-08T12:34:56.9999995Z", "2026-10-08T12:34:56.999999Z"),
+            ("2026-10-08 12:34:56+02:00", "2026-10-08T10:34:56.000000Z"),
+            ("2026-10-08t10:34:56z", "2026-10-08T10:34:56.000000Z"),
+            ("Thu, 08 Oct 2026 12:34:56 +0200", "2026-10-08T10:34:56.000000Z"),
+            ("2026-10-08 12:34:56", "2026-10-08T12:34:56.000000Z"),
+            ("2026-10-08T12:34", "2026-10-08T12:34:00.000000Z"),
+            ("2026-10-08T12:34+02:00", "2026-10-08T10:34:00.000000Z"),
+            ("2026-10-08", "2026-10-08T00:00:00.000000Z"),
+        ] {
+            assert_eq!(at(text).as_deref(), Some(stored), "{text}");
+        }
+        for text in ["not a date", "", "tomorrow", "@1700000000", "2026-02-30", "2026-10-08T24:00:00Z",
+            "2026-10-08T12:34:56 Europe/Paris", "20261008T123456Z", "2026-10-08T12:34:56.", "2026-10-08T12:34:56+2",
+            "2026-10-08T12:34:56+24:00", "2026-10-8", "2026-10-08T12:34:56Zx"] {
+            assert_eq!(at(text), None, "{text}");
+        }
     }
 }

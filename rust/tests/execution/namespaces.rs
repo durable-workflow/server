@@ -815,11 +815,11 @@ async fn namespace_delete_removes_only_what_the_namespace_owns() {
     database.remove().await;
 }
 
-// Native does not delete external payload objects yet, so a namespace that
-// still references one refuses, as PHP does when its storage is unavailable,
-// and nothing is deleted.
+// A namespace holding a reference native cannot settle (here PHP's stored
+// format) refuses, with PHP's answer for unavailable storage, and nothing is
+// deleted. Native references are settled (`external_payloads::namespace_delete`).
 #[tokio::test]
-async fn namespace_delete_refuses_while_external_payloads_remain() {
+async fn namespace_delete_refuses_while_unsettled_external_payloads_remain() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());

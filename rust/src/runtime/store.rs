@@ -3198,7 +3198,9 @@ where
                     created.push(self.continue_run(&mut tx, &run, &task, command, sequence).await?);
                 }
             } else if command["type"] != "complete_workflow" {
-                self.apply_non_terminal(&mut tx, &apply, index, command, &mut sequence, &mut created).await?;
+                self.apply_non_terminal(&mut tx, &apply, index, command, &mut sequence, &mut created)
+                    .await
+                    .map_err(|error| super::search_attribute_upserts::with_memo_commands(commands, error))?;
                 // The completion leaves the run waiting on what it scheduled
                 // or opened. A prefix checkpoint changes no run status:
                 // Core's markRunWaiting runs only at completion.

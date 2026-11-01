@@ -599,6 +599,123 @@
     ],
     [
         "column",
+        "dw_external_payload_deletions.1",
+        {
+            "name": "id",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_external_payload_deletions.2",
+        {
+            "name": "namespace",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_external_payload_deletions.3",
+        {
+            "name": "storage_uri",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_external_payload_deletions.4",
+        {
+            "name": "storage_uri_sha256",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_external_payload_deletions.5",
+        {
+            "name": "storage_policy",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_external_payload_deletions.6",
+        {
+            "name": "attempts",
+            "type": "bigint",
+            "default": "0",
+            "identity": "",
+            "not_null": true,
+            "collation": null,
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_external_payload_deletions.7",
+        {
+            "name": "failure_code",
+            "type": "text",
+            "default": null,
+            "identity": "",
+            "not_null": false,
+            "collation": "default",
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_external_payload_deletions.8",
+        {
+            "name": "created_at",
+            "type": "timestamp(6) without time zone",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": null,
+            "generated": ""
+        }
+    ],
+    [
+        "column",
+        "dw_external_payload_deletions.9",
+        {
+            "name": "updated_at",
+            "type": "timestamp(6) without time zone",
+            "default": null,
+            "identity": "",
+            "not_null": true,
+            "collation": null,
+            "generated": ""
+        }
+    ],
+    [
+        "column",
         "dw_poll_receipts.1",
         {
             "name": "namespace",
@@ -12089,6 +12206,16 @@
     ],
     [
         "constraint",
+        "dw_external_payload_deletions.dw_external_payload_deletions_pkey",
+        {
+            "deferred": false,
+            "validated": true,
+            "deferrable": false,
+            "definition": "PRIMARY KEY (id)"
+        }
+    ],
+    [
+        "constraint",
         "dw_poll_receipts.dw_poll_receipts_pkey",
         {
             "deferred": false,
@@ -13218,6 +13345,39 @@
             "unique": false,
             "primary": false,
             "definition": "CREATE INDEX child_calls_parent_status ON public.workflow_child_calls USING btree (parent_workflow_run_id, status)"
+        }
+    ],
+    [
+        "index",
+        "dw_external_payload_deletions_due",
+        {
+            "ready": true,
+            "valid": true,
+            "unique": false,
+            "primary": false,
+            "definition": "CREATE INDEX dw_external_payload_deletions_due ON public.dw_external_payload_deletions USING btree (namespace, updated_at, id)"
+        }
+    ],
+    [
+        "index",
+        "dw_external_payload_deletions_pkey",
+        {
+            "ready": true,
+            "valid": true,
+            "unique": true,
+            "primary": true,
+            "definition": "CREATE UNIQUE INDEX dw_external_payload_deletions_pkey ON public.dw_external_payload_deletions USING btree (id)"
+        }
+    ],
+    [
+        "index",
+        "dw_external_payload_deletions_uri",
+        {
+            "ready": true,
+            "valid": true,
+            "unique": true,
+            "primary": false,
+            "definition": "CREATE UNIQUE INDEX dw_external_payload_deletions_uri ON public.dw_external_payload_deletions USING btree (namespace, storage_uri_sha256)"
         }
     ],
     [
@@ -17477,6 +17637,21 @@
     [
         "relation",
         "activity_executions",
+        {
+            "kind": "r",
+            "view": null,
+            "options": null,
+            "partition": false,
+            "persistence": "p",
+            "row_security": false,
+            "access_method": "heap",
+            "partition_key": null,
+            "force_row_security": false
+        }
+    ],
+    [
+        "relation",
+        "dw_external_payload_deletions",
         {
             "kind": "r",
             "view": null,

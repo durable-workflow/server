@@ -1256,6 +1256,9 @@ where
         let failed = report["failed"].as_i64().is_some_and(|failed| failed > 0);
         let mut fields = policy.fields(self.namespace.as_ref());
         fields.extend(report);
+        if let Some(cleanup) = self.reported_payload_deletions(self.namespace.as_ref()).await? {
+            fields.insert("external_payload_cleanup".into(), cleanup);
+        }
         Ok((Value::Object(fields), failed))
     }
 
@@ -1324,6 +1327,8 @@ where
         limit: i64,
         run_ids: Vec<String>,
     ) -> Result<serde_json::Map<String, Value>> {
+        // `runPass` first retries committed deletions left pending.
+        self.retry_payload_deletions(self.namespace.as_ref(), limit).await?;
         let run_ids = if run_ids.is_empty() { self.expired_run_ids(policy, limit).await? } else { run_ids };
         let mut outcomes = Vec::with_capacity(run_ids.len());
         for run_id in run_ids {
@@ -1343,7 +1348,7 @@ where
         if policy.forever {
             return Ok(Skipped("namespace_retention_forever"));
         }
-        let Some(summary) = Self::query("SELECT status,archived_at FROM workflow_run_summaries WHERE id=$1 AND namespace=$2")
+        let Some(summary) = Self::query("SELECT status,archived_at,workflow_instance_id FROM workflow_run_summaries WHERE id=$1 AND namespace=$2")
             .bind(run_id)
             .bind(self.namespace.as_ref())
             .fetch_optional(&self.pool)
@@ -1357,6 +1362,33 @@ where
         if DB::optional_instant(&summary, "archived_at")?.is_some() {
             return Ok(Skipped("run_archived"));
         }
+        // `DetachedActivityRetentionHold` keeps the run before its streams
+        // are planned, so it marks nothing.
+        if self.abandoned_activity_open(run_id).await? {
+            return Ok(Skipped("detached_activity_still_open"));
+        }
+        // Any other skip or failure marks the instance's inbound streams
+        // blocked, as PHP's `MessageStreamRetentionCleanup::markBlocked` does;
+        // a later prune of the run clears the mark.
+        let instance_id = DB::string(&summary, "workflow_instance_id")?;
+        let outcome = match self.prune_unheld_run(run_id).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.mark_streams_blocked(&instance_id, run_id, "external_payload_cleanup_failed").await?;
+                return Err(error);
+            }
+        };
+        match &outcome {
+            Skipped(reason) => self.mark_streams_blocked(&instance_id, run_id, reason).await?,
+            Error(_) => self.mark_streams_blocked(&instance_id, run_id, "external_payload_cleanup_failed").await?,
+            Pruned(..) => {}
+        }
+        Ok(outcome)
+    }
+
+    /// `pruneRun`'s transaction for a run no detached activity holds.
+    async fn prune_unheld_run(&self, run_id: &str) -> Result<retention::Outcome> {
+        use retention::Outcome::{Error, Pruned, Skipped};
         if let Some(reason) = self.retention_hold(run_id).await? {
             return Ok(Skipped(reason));
         }
@@ -1398,7 +1430,7 @@ where
         for (key, value) in retention::STREAM_COUNTS.into_iter().zip([streams_deleted, items_deleted, items_compacted]) {
             deleted.insert(key.into(), json!(value));
         }
-        let Ok(external_payloads) = self.delete_retention_payloads(&mut tx, run_id, payloads).await else {
+        let Ok((external_payloads, staged)) = self.delete_retention_payloads(&mut tx, run_id, payloads).await else {
             return Ok(Error(retention::PAYLOAD_CLEANUP_FAILED.into()));
         };
         // The run's history is gone; no cached read of it may survive.
@@ -1409,6 +1441,8 @@ where
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // The prune has committed; only now may provider objects go.
+        self.settle_payload_deletions(&staged).await;
         Ok(Pruned(deleted, external_payloads))
     }
 
@@ -1522,14 +1556,28 @@ where
         Ok(counts)
     }
 
-    /// What keeps a closed run's details before its transaction: an activity
-    /// it abandoned that is still open, or an external payload reference on
-    /// an inbound or durable stream, which native does not settle. The run's
-    /// other references are settled in its transaction (`retention_payloads`).
+    /// `MessageStreamRetentionCleanup::markBlocked`: every inbound stream of
+    /// the run's instance records why the run's prune did not complete.
+    async fn mark_streams_blocked(&self, instance_id: &str, run_id: &str, reason: &str) -> Result<()> {
+        let at = now();
+        let reason: String = reason.chars().take(64).collect();
+        Self::query("UPDATE workflow_inbound_streams SET cleanup_blocked_at=$1,cleanup_blocked_reason=$2,cleanup_blocked_run_id=$3,updated_at=$4 WHERE namespace=$5 AND workflow_instance_id=$6")
+            .bind(DB::bind_time(at))
+            .bind(reason)
+            .bind(run_id)
+            .bind(DB::bind_time(at))
+            .bind(self.namespace.as_ref())
+            .bind(instance_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// What keeps a closed run's details before its transaction: an external
+    /// payload reference on an inbound or durable stream, which native does
+    /// not settle. The run's other references are settled in its transaction
+    /// (`retention_payloads`).
     async fn retention_hold(&self, run_id: &str) -> Result<Option<&'static str>> {
-        if self.abandoned_activity_open(run_id).await? {
-            return Ok(Some("detached_activity_still_open"));
-        }
         for (sql, binds, reason) in retention::HOLDS {
             let mut query = Self::scalar(sql);
             for _ in 0..*binds {

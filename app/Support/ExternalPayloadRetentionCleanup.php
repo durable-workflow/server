@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowInboundStreamItem;
 use Illuminate\Database\Eloquent\Builder;
@@ -10,30 +9,19 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
-use Workflow\V2\Models\ActivityExecution;
-use Workflow\V2\Models\WorkflowChildCall;
-use Workflow\V2\Models\WorkflowCommand;
-use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowMemo;
-use Workflow\V2\Models\WorkflowMessage;
-use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowRunLineageEntry;
-use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Models\WorkflowRunTimerEntry;
-use Workflow\V2\Models\WorkflowRunWait;
-use Workflow\V2\Models\WorkflowSchedule;
-use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
-use Workflow\V2\Models\WorkflowSearchAttribute;
-use Workflow\V2\Models\WorkflowServiceCall;
-use Workflow\V2\Models\WorkflowSignal;
-use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Models\WorkflowTimelineEntry;
-use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 
 class ExternalPayloadRetentionCleanup
 {
+    /** @param list<string> $uris
+     * @return array<string, bool>
+     */
+    public function retainedReferences(array $uris): array
+    {
+        return $this->scanRetainedReferences($uris, fn (array $source) => $this->retainedQueryForRunCleanup($source['table']));
+    }
+
     /**
      * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
      */
@@ -103,7 +91,7 @@ class ExternalPayloadRetentionCleanup
                 ->where('namespace', $namespace)
                 ->whereIn('id', $itemIds);
             $this->collectPayloadColumn(clone $items, 'payload', $references);
-            $this->collectReferenceColumn(clone $items, 'payload_reference', $references);
+            $this->collectReferenceTableColumn(clone $items, 'workflow_durable_stream_items', 'payload_reference', $references);
         }
 
         return $this->deleteReferences(
@@ -202,8 +190,11 @@ class ExternalPayloadRetentionCleanup
                 $driver = $drivers[$reference['namespace']];
                 $uri = $reference['uri'];
                 if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
-                    $driver->delete($uri);
-                    $deleted++;
+                    if (app(RuntimeExternalPayloadRegistry::class)->deleteUriUnlessReferenced(
+                        $reference['namespace'], $uri, $driver, static fn (): bool => $isRetained($uri),
+                    )) {
+                        $deleted++;
+                    }
                 } elseif ($driver->deleteUnlessReferenced($uri, static fn (): bool => $isRetained($uri))) {
                     $deleted++;
                 }
@@ -276,8 +267,11 @@ class ExternalPayloadRetentionCleanup
         foreach (RuntimeExternalPayloadObjectLock::inLockOrder($deletable) as $uri) {
             try {
                 if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
-                    $driver->delete($uri);
-                    $deleted++;
+                    if (app(RuntimeExternalPayloadRegistry::class)->deleteUriUnlessReferenced(
+                        $namespace, $uri, $driver, static fn (): bool => $isRetained($uri),
+                    )) {
+                        $deleted++;
+                    }
                 } elseif ($driver->deleteUnlessReferenced($uri, static fn (): bool => $isRetained($uri))) {
                     $deleted++;
                 }
@@ -325,33 +319,34 @@ class ExternalPayloadRetentionCleanup
     {
         $references = [];
 
-        foreach ($this->namespaceCleanupReferenceSources($namespace, $runIds, $instanceIds) as $source) {
+        foreach ($this->referenceSources($namespace, $runIds, $instanceIds) as $source) {
             $query = $this->queryForScope($source['table'], $source['scope']);
 
             if ($query === null) {
                 continue;
             }
 
-            foreach ($source['payload_columns'] as $column) {
-                $this->collectPayloadTableColumnReferences(
-                    clone $query,
-                    $source['table'],
-                    $column,
-                    $references,
-                    $namespace,
-                    $source['owner_namespace_column'],
-                );
-            }
-
-            foreach ($source['reference_columns'] as $column) {
-                $this->collectReferenceTableColumnReferences(
-                    clone $query,
-                    $source['table'],
-                    $column,
-                    $references,
-                    $namespace,
-                    $source['owner_namespace_column'],
-                );
+            $columns = array_fill_keys(Schema::getColumnListing($source['table']), true);
+            $payloadColumns = array_values(array_filter($source['payload_columns'], static fn (string $column): bool => isset($columns[$column])));
+            $referenceColumns = array_values(array_filter($source['reference_columns'], static fn (string $column): bool => isset($columns[$column])));
+            $ownerColumn = $this->ownerNamespaceColumn($source['table'], $source['owner_namespace_column']);
+            $select = array_unique(array_filter(array_merge($payloadColumns, $referenceColumns, [$ownerColumn])));
+            foreach ($query->select($select)->cursor() as $row) {
+                $uris = [];
+                foreach ($payloadColumns as $column) {
+                    $this->collectReferences($row->{$column}, $uris);
+                }
+                foreach ($referenceColumns as $column) {
+                    if ($this->isDirectPayloadReference($row->{$column})) {
+                        $uris[] = $row->{$column};
+                    }
+                }
+                foreach ($uris as $uri) {
+                    $references[] = [
+                        'namespace' => $this->ownerNamespaceForRow($row, $namespace, $ownerColumn),
+                        'uri' => $uri,
+                    ];
+                }
             }
         }
 
@@ -374,46 +369,14 @@ class ExternalPayloadRetentionCleanup
             return [];
         }
 
-        $retainedUris = [];
-
-        foreach ($this->namespaceCleanupReferenceSources($namespace, $runIds, $instanceIds) as $source) {
+        return $this->scanRetainedReferences(array_keys($candidateUris), function (array $source) {
             $query = $this->retainedQueryForScope($source['table'], $source['scope']);
-
-            if ($query === null) {
-                continue;
+            if ($source['table'] === 'workflow_runs') {
+                $query->whereNull('details_pruned_at');
             }
 
-            foreach ($source['payload_columns'] as $column) {
-                if (! $this->hasTableColumn($source['table'], $column)) {
-                    continue;
-                }
-
-                foreach ((clone $query)->select([$column])->cursor() as $row) {
-                    $uris = [];
-                    $this->collectReferences($row->{$column}, $uris);
-
-                    foreach ($uris as $uri) {
-                        if (isset($candidateUris[$uri])) {
-                            $retainedUris[$uri] = true;
-                        }
-                    }
-                }
-            }
-
-            foreach ($source['reference_columns'] as $column) {
-                if (! $this->hasTableColumn($source['table'], $column)) {
-                    continue;
-                }
-
-                foreach (array_chunk(array_keys($candidateUris), 500) as $uriChunk) {
-                    foreach ((clone $query)->whereIn($column, $uriChunk)->pluck($column) as $uri) {
-                        $retainedUris[$uri] = true;
-                    }
-                }
-            }
-        }
-
-        return $retainedUris;
+            return $query;
+        }, $this->referenceSources($namespace, $runIds, $instanceIds));
     }
 
     /**
@@ -421,11 +384,14 @@ class ExternalPayloadRetentionCleanup
      * @param  list<string>  $instanceIds
      * @return list<array{table: string, scope: array<string, list<string>>, payload_columns: list<string>, reference_columns: list<string>, owner_namespace_column: string|null}>
      */
-    private function namespaceCleanupReferenceSources(string $namespace, array $runIds, array $instanceIds): array
+    private function referenceSources(string $namespace, array $runIds, array $instanceIds): array
     {
         $runOrInstanceScope = $this->runOrInstanceScope($runIds, $instanceIds);
 
         return [
+            $this->namespaceSource('workflow_instances', ['memo', 'visibility_labels'], [], [
+                'namespace' => [$namespace],
+            ]),
             $this->namespaceSource('workflow_runs', ['arguments', 'output', 'memo', 'search_attributes', 'visibility_labels'], [], [
                 'namespace' => [$namespace],
             ]),
@@ -433,8 +399,8 @@ class ExternalPayloadRetentionCleanup
                 'id' => $runIds,
                 'workflow_instance_id' => $instanceIds,
             ]),
-            $this->namespaceSource('activity_executions', ['arguments', 'result', 'exception'], [], $runOrInstanceScope),
-            $this->namespaceSource('workflow_commands', ['payload'], [], $runOrInstanceScope),
+            $this->namespaceSource('activity_executions', ['arguments', 'result', 'exception', 'activity_options', 'retry_policy'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_commands', ['payload', 'context'], [], $runOrInstanceScope),
             $this->namespaceSource('workflow_history_events', ['payload'], [], $runOrInstanceScope),
             $this->namespaceSource('workflow_memos', ['value'], [], $runOrInstanceScope),
             $this->namespaceSource('workflow_tasks', ['payload'], [], $runOrInstanceScope),
@@ -442,7 +408,7 @@ class ExternalPayloadRetentionCleanup
                 'workflow_instance_id' => $instanceIds,
                 'workflow_run_id' => $runIds,
             ]),
-            $this->namespaceSource('workflow_child_calls', ['arguments', 'metadata'], [
+            $this->namespaceSource('workflow_child_calls', ['arguments', 'metadata', 'retry_policy', 'timeout_policy'], [
                 'result_payload_reference',
             ], [
                 'parent_workflow_instance_id' => $instanceIds,
@@ -452,18 +418,22 @@ class ExternalPayloadRetentionCleanup
                 'namespace' => [$namespace],
                 'target_namespace' => [$namespace],
             ]),
+            $this->namespaceSource('workflow_service_call_dispatches', ['dispatch_options'], [], [
+                'namespace' => [$namespace],
+            ]),
+            $this->namespaceSource('workflow_service_operations', [
+                'handler_binding', 'deadline_policy', 'idempotency_policy', 'cancellation_policy',
+                'retry_policy', 'boundary_policy', 'metadata',
+            ], [], ['namespace' => [$namespace]]),
+            $this->namespaceSource('workflow_services', ['boundary_policy', 'metadata'], [], ['namespace' => [$namespace]]),
+            $this->namespaceSource('workflow_service_endpoints', ['boundary_policy', 'metadata'], [], ['namespace' => [$namespace]]),
+            $this->namespaceSource('workflow_update_validation_tasks', ['arguments', 'command_context', 'validation_errors'], [], [
+                'namespace' => [$namespace],
+            ]),
             $this->namespaceSource('workflow_schedule_history_events', ['payload'], [], [
                 'namespace' => [$namespace],
             ]),
-            $this->namespaceSource('workflow_schedules', [
-                'spec',
-                'action',
-                'memo',
-                'search_attributes',
-                'visibility_labels',
-                'recent_actions',
-                'buffered_actions',
-            ], [], [
+            $this->namespaceSource('workflow_schedules', $this->schedulePayloadColumns(), [], [
                 'namespace' => [$namespace],
             ]),
             $this->namespaceSource('workflow_durable_streams', ['metadata'], [], [
@@ -478,13 +448,13 @@ class ExternalPayloadRetentionCleanup
             $this->namespaceSource('workflow_run_timer_entries', ['payload'], [], $runOrInstanceScope),
             $this->namespaceSource('workflow_run_waits', ['payload'], [], $runOrInstanceScope),
             $this->namespaceSource('workflow_run_lineage_entries', ['payload'], [], $runOrInstanceScope),
-            $this->namespaceSource('workflow_signal_records', ['arguments'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_signal_records', ['arguments', 'validation_errors'], [], $runOrInstanceScope),
             $this->namespaceSource('workflow_run_timeline_entries', ['payload'], [], $runOrInstanceScope),
-            $this->namespaceSource('workflow_updates', ['arguments', 'result'], [], [
+            $this->namespaceSource('workflow_updates', ['arguments', 'result', 'validation_errors'], [], [
                 'workflow_instance_id' => $instanceIds,
                 'workflow_run_id' => $runIds,
             ]),
-            $this->namespaceSource('workflow_search_attributes', ['value_string', 'value_keyword'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_search_attributes', ['value_string', 'value_keyword', 'value_keyword_list'], [], $runOrInstanceScope),
         ];
     }
 
@@ -529,64 +499,18 @@ class ExternalPayloadRetentionCleanup
     private function referencesForRun(string $namespace, string $runId): array
     {
         $uris = [];
-        $namespace = strtolower($namespace);
-
-        $run = WorkflowRun::query()->find($runId);
-        if ($run instanceof WorkflowRun) {
-            $this->collectReferences($run->arguments, $uris);
-            $this->collectReferences($run->output, $uris);
-            $this->collectReferences($run->memo, $uris);
-            $this->collectReferences($run->search_attributes, $uris);
-            $this->collectReferences($run->visibility_labels, $uris);
-        }
-
-        $this->collectPayloadColumn(WorkflowRunSummary::query()->where('id', $runId), 'visibility_labels', $uris);
-        $this->collectPayloadColumn(ActivityExecution::query()->where('workflow_run_id', $runId), 'arguments', $uris);
-        $this->collectPayloadColumn(ActivityExecution::query()->where('workflow_run_id', $runId), 'result', $uris);
-        $this->collectPayloadColumn(ActivityExecution::query()->where('workflow_run_id', $runId), 'exception', $uris);
-        $this->collectPayloadColumn($this->anyRunReference(WorkflowCommand::query(), $runId), 'payload', $uris);
-        $this->collectPayloadColumn(WorkflowHistoryEvent::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $this->collectPayloadColumn(WorkflowMemo::query()->where('workflow_run_id', $runId), 'value', $uris);
-        $this->collectPayloadColumn(WorkflowTask::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $messages = $this->anyColumnReference(WorkflowMessage::query(), [
-            'workflow_run_id',
-            'source_workflow_run_id',
-            'target_workflow_run_id',
-        ], $runId);
-        $this->collectPayloadColumn(clone $messages, 'metadata', $uris);
-        $this->collectReferenceColumn(clone $messages, 'payload_reference', $uris);
-        $childCalls = $this->anyColumnReference(WorkflowChildCall::query(), [
-            'parent_workflow_run_id',
-            'resolved_child_run_id',
-        ], $runId);
-        $this->collectPayloadColumn(clone $childCalls, 'arguments', $uris);
-        $this->collectPayloadColumn(clone $childCalls, 'metadata', $uris);
-        $this->collectReferenceColumn(clone $childCalls, 'result_payload_reference', $uris);
-        $serviceCalls = $this->serviceCallsForRunRetention($namespace, $runId);
-        foreach ($this->serviceCallPayloadColumns() as $column) {
-            $this->collectPayloadColumn(clone $serviceCalls, $column, $uris);
-        }
-        foreach ($this->serviceCallReferenceColumns() as $column) {
-            $this->collectReferenceColumn(clone $serviceCalls, $column, $uris);
-        }
-        $this->collectPayloadColumn(WorkflowScheduleHistoryEvent::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $this->collectPayloadColumn(WorkflowDurableStream::query()->where('workflow_run_id', $runId), 'metadata', $uris);
-        $this->collectPayloadColumn(WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $this->collectReferenceColumn(
-            WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId),
-            'payload_reference',
-            $uris,
-        );
-        $this->collectPayloadColumn(WorkflowRunTimerEntry::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $this->collectPayloadColumn(WorkflowRunWait::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $this->collectPayloadColumn(WorkflowRunLineageEntry::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $this->collectPayloadColumn($this->anyRunReference(WorkflowSignal::query(), $runId), 'arguments', $uris);
-        $this->collectPayloadColumn(WorkflowTimelineEntry::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $this->collectPayloadColumn($this->anyRunReference(WorkflowUpdate::query(), $runId), 'arguments', $uris);
-        $this->collectPayloadColumn($this->anyRunReference(WorkflowUpdate::query(), $runId), 'result', $uris);
-
-        foreach (['value_string', 'value_keyword'] as $column) {
-            $this->collectPayloadColumn(WorkflowSearchAttribute::query()->where('workflow_run_id', $runId), $column, $uris);
+        foreach ($this->referenceSources('', [], []) as $source) {
+            $scope = array_fill_keys($this->runCleanupColumns($source['table']), [$runId]);
+            $query = $this->queryForScope($source['table'], $scope);
+            if ($query === null) {
+                continue;
+            }
+            foreach ($source['payload_columns'] as $column) {
+                $this->collectPayloadTableColumn(clone $query, $source['table'], $column, $uris);
+            }
+            foreach ($source['reference_columns'] as $column) {
+                $this->collectReferenceTableColumn(clone $query, $source['table'], $column, $uris);
+            }
         }
 
         return array_values(array_unique($uris));
@@ -601,306 +525,124 @@ class ExternalPayloadRetentionCleanup
         array $releasedInboundStreamItemIds,
         array $releasedDurableStreamItemIds = [],
     ): bool {
-        $runColumns = [
-            'arguments',
-            'output',
-            'memo',
-            'search_attributes',
-            'visibility_labels',
-        ];
-        $runColumns = array_values(array_filter(
-            $runColumns,
-            static fn (string $column): bool => Schema::hasTable('workflow_runs') && Schema::hasColumn('workflow_runs', $column),
-        ));
+        return isset($this->scanRetainedReferences([$uri], fn (array $source) => $this->retainedQueryForRunCleanup(
+            $source['table'], $deletedRunIds, $releasedInboundStreamItemIds, $releasedDurableStreamItemIds,
+        ))[$uri]);
+    }
 
-        if ($runColumns !== []) {
-            foreach (WorkflowRun::query()
-                ->whereIn('id', $this->retainedRunIdsQuery($deletedRunIds))
-                ->select($runColumns)
-                ->cursor() as $run) {
-                foreach ($runColumns as $column) {
-                    if ($this->valueReferencesUri($run->{$column}, $uri)) {
-                        return true;
+    /**
+     * Use the same inventory for pre-prune fencing, post-commit retry and namespace
+     * cleanup. Rows without a run (catalog, instance, schedule and dispatch state)
+     * own their references too. A missing summary cannot revoke that ownership.
+     *
+     * @param  list<string>  $uris
+     * @return array<string, bool>
+     */
+    private function scanRetainedReferences(array $uris, callable $queryForSource, ?array $sources = null): array
+    {
+        $candidates = array_fill_keys($uris, true);
+        $retained = [];
+        if ($candidates === []) {
+            return [];
+        }
+        foreach ($sources ?? $this->referenceSources('', [], []) as $source) {
+            $table = $source['table'];
+            if (! Schema::hasTable($table)) {
+                continue;
+            }
+            $columns = array_fill_keys(Schema::getColumnListing($table), true);
+            $payloadColumns = array_values(array_filter($source['payload_columns'], static fn (string $column): bool => isset($columns[$column])));
+            $referenceColumns = array_values(array_filter($source['reference_columns'], static fn (string $column): bool => isset($columns[$column])));
+            $select = array_unique(array_merge($payloadColumns, $referenceColumns));
+            if ($select === []) {
+                continue;
+            }
+            foreach ($queryForSource($source)->select($select)->cursor() as $row) {
+                $found = [];
+                foreach ($payloadColumns as $column) {
+                    $this->collectReferences($row->{$column}, $found);
+                }
+                foreach ($referenceColumns as $column) {
+                    if ($this->isDirectPayloadReference($row->{$column})) {
+                        $found[] = $row->{$column};
                     }
+                }
+                foreach ($found as $uri) {
+                    if (isset($candidates[$uri])) {
+                        $retained[$uri] = true;
+                    }
+                }
+                if (count($retained) === count($candidates)) {
+                    return $retained;
                 }
             }
         }
 
-        foreach ($this->retainedPayloadColumns(
-            $deletedRunIds,
-            $releasedInboundStreamItemIds,
-            $releasedDurableStreamItemIds,
-        ) as [$query, $column]) {
-            if ($this->payloadColumnReferencesUri($query, $column, $uri)) {
-                return true;
-            }
-        }
-
-        foreach ($this->retainedReferenceColumns($deletedRunIds, $releasedDurableStreamItemIds) as [$query, $column]) {
-            if ($this->referenceColumnReferencesUri($query, $column, $uri)) {
-                return true;
-            }
-        }
-
-        return false;
+        return $retained;
     }
 
-    /**
-     * @param  list<string>  $deletedRunIds
-     * @param  list<int>  $releasedItemIds
-     * @return Builder<WorkflowDurableStreamItem>
-     */
-    private function retainedDurableStreamItems(array $deletedRunIds, array $releasedItemIds): Builder
-    {
-        $items = WorkflowDurableStreamItem::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds));
-
-        if ($releasedItemIds !== []) {
-            $items->whereNotIn('id', $releasedItemIds);
-        }
-
-        return $items;
-    }
-
-    /**
-     * @param  list<string>  $deletedRunIds
-     * @return Builder<WorkflowRun>
-     */
-    private function retainedRunIdsQuery(array $deletedRunIds): Builder
-    {
-        // A start commits its run before dispatch publishes the summary. Its
-        // durable references already protect their objects during that gap.
-        // Pruned primary rows retain metadata but no longer own payloads.
-        return WorkflowRun::query()
-            ->select('id')
-            ->whereNull('details_pruned_at')
-            ->whereNotIn('id', $deletedRunIds);
-    }
-
-    /**
-     * @param  list<string>  $deletedRunIds
-     * @return list<array{0: Builder<Model>, 1: string}>
-     */
-    private function retainedPayloadColumns(
-        array $deletedRunIds,
-        array $releasedInboundStreamItemIds,
+    private function retainedQueryForRunCleanup(
+        string $table,
+        array $deletedRunIds = [],
+        array $releasedInboundStreamItemIds = [],
         array $releasedDurableStreamItemIds = [],
-    ): array {
-        $retainedInboundStreamItems = WorkflowInboundStreamItem::query();
-        if ($releasedInboundStreamItemIds !== []) {
-            $retainedInboundStreamItems->whereNotIn('id', $releasedInboundStreamItemIds);
+    ): mixed {
+        $query = $this->referenceTableQuery($table);
+        if ($table === 'workflow_runs') {
+            return $query->whereNull('details_pruned_at')->whereNotIn('id', $deletedRunIds);
         }
-
-        return [
-            [WorkflowSchedule::query(), 'action'],
-            [WorkflowRunSummary::query()->whereIn('id', $this->retainedRunIdsQuery($deletedRunIds)), 'visibility_labels'],
-            [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'arguments'],
-            [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'result'],
-            [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'exception'],
-            [$this->anyRetainedRunReference(WorkflowCommand::query(), $deletedRunIds), 'payload'],
-            [WorkflowHistoryEvent::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [WorkflowMemo::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'value'],
-            [WorkflowTask::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [$this->anyRetainedColumnReference(WorkflowMessage::query(), [
-                'workflow_run_id',
-                'source_workflow_run_id',
-                'target_workflow_run_id',
-            ], $deletedRunIds), 'metadata'],
-            [$this->anyRetainedColumnReference(WorkflowChildCall::query(), [
-                'parent_workflow_run_id',
-                'resolved_child_run_id',
-            ], $deletedRunIds), 'arguments'],
-            [$this->anyRetainedColumnReference(WorkflowChildCall::query(), [
-                'parent_workflow_run_id',
-                'resolved_child_run_id',
-            ], $deletedRunIds), 'metadata'],
-            [WorkflowServiceCall::query(), 'deadline_policy'],
-            [WorkflowServiceCall::query(), 'idempotency_policy'],
-            [WorkflowServiceCall::query(), 'cancellation_policy'],
-            [WorkflowServiceCall::query(), 'retry_policy'],
-            [WorkflowServiceCall::query(), 'boundary_policy'],
-            [WorkflowServiceCall::query(), 'metadata'],
-            [WorkflowServiceCall::query(), 'outcome_metadata'],
-            [WorkflowServiceCall::query(), 'caller_principal_claims'],
-            [WorkflowScheduleHistoryEvent::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [WorkflowDurableStream::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'metadata'],
-            [$this->retainedDurableStreamItems($deletedRunIds, $releasedDurableStreamItemIds), 'payload'],
-            [$retainedInboundStreamItems, 'payload_blob'],
-            [WorkflowRunTimerEntry::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [WorkflowRunWait::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [WorkflowRunLineageEntry::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [$this->anyRetainedRunReference(WorkflowSignal::query(), $deletedRunIds), 'arguments'],
-            [WorkflowTimelineEntry::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [$this->anyRetainedRunReference(WorkflowUpdate::query(), $deletedRunIds), 'arguments'],
-            [$this->anyRetainedRunReference(WorkflowUpdate::query(), $deletedRunIds), 'result'],
-            [WorkflowSearchAttribute::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'value_string'],
-            [WorkflowSearchAttribute::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'value_keyword'],
-        ];
-    }
-
-    /**
-     * @param  list<string>  $deletedRunIds
-     * @return list<array{0: Builder<Model>, 1: string}>
-     */
-    private function retainedReferenceColumns(array $deletedRunIds, array $releasedDurableStreamItemIds = []): array
-    {
-        $columns = [
-            [
-                $this->retainedDurableStreamItems($deletedRunIds, $releasedDurableStreamItemIds),
-                'payload_reference',
-            ],
-            [
-                $this->anyRetainedColumnReference(WorkflowMessage::query(), [
-                    'workflow_run_id',
-                    'source_workflow_run_id',
-                    'target_workflow_run_id',
-                ], $deletedRunIds),
-                'payload_reference',
-            ],
-            [
-                $this->anyRetainedColumnReference(WorkflowChildCall::query(), [
-                    'parent_workflow_run_id',
-                    'resolved_child_run_id',
-                ], $deletedRunIds),
-                'result_payload_reference',
-            ],
-        ];
-
-        foreach ($this->serviceCallReferenceColumns() as $column) {
-            $columns[] = [
-                WorkflowServiceCall::query(),
-                $column,
-            ];
-        }
-
-        return $columns;
-    }
-
-    /**
-     * @param  Builder<Model>  $query
-     * @param  list<string>  $deletedRunIds
-     * @return Builder<Model>
-     */
-    private function anyRetainedRunReference($query, array $deletedRunIds)
-    {
-        return $this->anyRetainedColumnReference($query, [
-            'workflow_run_id',
-            'requested_workflow_run_id',
-            'resolved_workflow_run_id',
-        ], $deletedRunIds);
-    }
-
-    /**
-     * @param  Builder<Model>  $query
-     * @param  list<string>  $columns
-     * @return Builder<Model>
-     */
-    private function anyColumnReference($query, array $columns, string $runId)
-    {
-        $columns = $this->existingColumns($query, $columns);
-
-        if ($columns === []) {
-            return $query->whereRaw('1 = 0');
-        }
-
-        return $query->where(static function (Builder $query) use ($columns, $runId): void {
-            foreach ($columns as $index => $column) {
-                if ($index === 0) {
-                    $query->where($column, $runId);
-
-                    continue;
+        if ($deletedRunIds !== []) {
+            foreach ($this->runCleanupColumns($table) as $column) {
+                if ($this->hasTableColumn($table, $column)) {
+                    $query->where(fn ($query) => $query->whereNotIn($column, $deletedRunIds)->orWhereNull($column));
                 }
-
-                $query->orWhere($column, $runId);
             }
-        });
-    }
-
-    /**
-     * @param  Builder<Model>  $query
-     * @param  list<string>  $columns
-     * @param  list<string>  $deletedRunIds
-     * @return Builder<Model>
-     */
-    private function anyRetainedColumnReference($query, array $columns, array $deletedRunIds)
-    {
-        $columns = $this->existingColumns($query, $columns);
-
-        if ($columns === []) {
-            return $query->whereRaw('1 = 0');
+        }
+        $releasedIds = match ($table) {
+            'workflow_inbound_stream_items' => $releasedInboundStreamItemIds,
+            'workflow_durable_stream_items' => $releasedDurableStreamItemIds,
+            default => [],
+        };
+        if ($releasedIds !== []) {
+            $query->whereNotIn('id', $releasedIds);
         }
 
-        return $query->where(static function (Builder $query) use ($columns, $deletedRunIds): void {
-            foreach ($columns as $index => $column) {
-                $retainedRunIds = WorkflowRunSummary::query()
-                    ->select('id')
-                    ->whereNotIn('id', $deletedRunIds);
-
-                if ($index === 0) {
-                    $query->whereIn($column, $retainedRunIds);
-
-                    continue;
-                }
-
-                $query->orWhereIn($column, $retainedRunIds);
-            }
-        });
+        return $query;
     }
 
-    /**
-     * @return Builder<Model>
-     */
-    private function serviceCallsForRunRetention(string $namespace, string $runId)
+    /** @return list<string> */
+    private function runCleanupColumns(string $table): array
     {
-        $query = WorkflowServiceCall::query();
-        $runColumns = $this->existingColumns($query, [
-            'caller_workflow_run_id',
-            'linked_workflow_run_id',
-        ]);
-        $namespaceColumns = $this->existingColumns($query, [
-            'namespace',
-            'target_namespace',
-        ]);
+        return match ($table) {
+            'workflow_runs', 'workflow_run_summaries' => ['id'],
+            'workflow_commands', 'workflow_signal_records', 'workflow_updates' => ['workflow_run_id', 'requested_workflow_run_id', 'resolved_workflow_run_id'],
+            'workflow_child_calls' => ['parent_workflow_run_id'],
+            'activity_executions', 'workflow_history_events', 'workflow_memos', 'workflow_tasks',
+            'workflow_messages', 'workflow_durable_streams', 'workflow_durable_stream_items',
+            'workflow_run_timer_entries', 'workflow_run_waits', 'workflow_run_lineage_entries',
+            'workflow_run_timeline_entries', 'workflow_search_attributes' => ['workflow_run_id'],
+            default => [],
+        };
+    }
 
-        if ($runColumns === [] || $namespaceColumns === []) {
-            return $query->whereRaw('1 = 0');
+    private function referenceTableQuery(string $table): mixed
+    {
+        if ($table === 'workflow_service_call_dispatches') {
+            // Dispatch snapshots are target-owned through their service call,
+            // including cross-namespace calls. Orphans remain fenced until the
+            // scheduler's ordinary repair removes them.
+            return DB::query()->fromSub(DB::table($table.' as dispatch')
+                ->leftJoin('workflow_service_calls as call', 'call.id', '=', 'dispatch.service_call_id')
+                ->select('dispatch.*', 'call.namespace'), 'payload_source');
         }
 
-        return $query
-            ->where(static function (Builder $query) use ($runColumns, $runId): void {
-                foreach ($runColumns as $index => $column) {
-                    if ($index === 0) {
-                        $query->where($column, $runId);
-
-                        continue;
-                    }
-
-                    $query->orWhere($column, $runId);
-                }
-            })
-            ->where(static function (Builder $query) use ($namespaceColumns, $namespace): void {
-                foreach ($namespaceColumns as $index => $column) {
-                    if ($index === 0) {
-                        $query->where($column, $namespace);
-
-                        continue;
-                    }
-
-                    $query->orWhere($column, $namespace);
-                }
-            });
+        return DB::table($table);
     }
 
-    /**
-     * @param  Builder<Model>  $query
-     * @return Builder<Model>
-     */
-    private function anyRunReference($query, string $runId)
+    /** @return list<string> */
+    private function schedulePayloadColumns(): array
     {
-        return $this->anyColumnReference($query, [
-            'workflow_run_id',
-            'requested_workflow_run_id',
-            'resolved_workflow_run_id',
-        ], $runId);
+        return ['spec', 'action', 'memo', 'search_attributes', 'visibility_labels', 'recent_actions', 'buffered_actions'];
     }
 
     /**
@@ -914,7 +656,7 @@ class ExternalPayloadRetentionCleanup
             return null;
         }
 
-        return DB::table($table)
+        return $this->referenceTableQuery($table)
             ->where(function ($query) use ($scope): void {
                 foreach ($scope as $column => $values) {
                     $query->orWhereIn($column, $values);
@@ -934,10 +676,10 @@ class ExternalPayloadRetentionCleanup
         $scope = $this->existingScope($table, $scope);
 
         if ($scope === []) {
-            return DB::table($table);
+            return $this->referenceTableQuery($table);
         }
 
-        return DB::table($table)
+        return $this->referenceTableQuery($table)
             ->where(function ($query) use ($scope): void {
                 foreach ($scope as $column => $values) {
                     $query->where(function ($query) use ($column, $values): void {
@@ -963,7 +705,7 @@ class ExternalPayloadRetentionCleanup
         foreach ($scope as $column => $values) {
             $values = $this->normalizedStrings($values);
 
-            if ($values !== [] && Schema::hasColumn($table, $column)) {
+            if ($values !== [] && $this->hasTableColumn($table, $column)) {
                 $existing[$column] = $values;
             }
         }
@@ -971,96 +713,24 @@ class ExternalPayloadRetentionCleanup
         return $existing;
     }
 
-    /**
-     * @param  array<int, string>  $uris
-     */
     private function collectPayloadTableColumn($query, string $table, string $column, array &$uris): void
     {
         if (! $this->hasTableColumn($table, $column)) {
             return;
         }
-
         foreach ($query->select([$column])->cursor() as $row) {
             $this->collectReferences($row->{$column}, $uris);
         }
     }
 
-    /**
-     * @param  array<int, string>  $uris
-     */
     private function collectReferenceTableColumn($query, string $table, string $column, array &$uris): void
     {
         if (! $this->hasTableColumn($table, $column)) {
             return;
         }
-
         foreach ($query->select([$column])->cursor() as $row) {
-            $uri = $row->{$column};
-
-            if ($this->isDirectPayloadReference($uri)) {
-                $uris[] = $uri;
-            }
-        }
-    }
-
-    /**
-     * @param  array<int, array{namespace: string, uri: string}>  $references
-     */
-    private function collectPayloadTableColumnReferences(
-        $query,
-        string $table,
-        string $column,
-        array &$references,
-        string $defaultNamespace,
-        ?string $ownerNamespaceColumn,
-    ): void {
-        if (! $this->hasTableColumn($table, $column)) {
-            return;
-        }
-
-        $ownerNamespaceColumn = $this->ownerNamespaceColumn($table, $ownerNamespaceColumn);
-        $select = array_values(array_unique(array_filter([$column, $ownerNamespaceColumn])));
-
-        foreach ($query->select($select)->cursor() as $row) {
-            $namespace = $this->ownerNamespaceForRow($row, $defaultNamespace, $ownerNamespaceColumn);
-            $uris = [];
-            $this->collectReferences($row->{$column}, $uris);
-
-            foreach ($uris as $uri) {
-                $references[] = [
-                    'namespace' => $namespace,
-                    'uri' => $uri,
-                ];
-            }
-        }
-    }
-
-    /**
-     * @param  array<int, array{namespace: string, uri: string}>  $references
-     */
-    private function collectReferenceTableColumnReferences(
-        $query,
-        string $table,
-        string $column,
-        array &$references,
-        string $defaultNamespace,
-        ?string $ownerNamespaceColumn,
-    ): void {
-        if (! $this->hasTableColumn($table, $column)) {
-            return;
-        }
-
-        $ownerNamespaceColumn = $this->ownerNamespaceColumn($table, $ownerNamespaceColumn);
-        $select = array_values(array_unique(array_filter([$column, $ownerNamespaceColumn])));
-
-        foreach ($query->select($select)->cursor() as $row) {
-            $uri = $row->{$column};
-
-            if ($this->isDirectPayloadReference($uri)) {
-                $references[] = [
-                    'namespace' => $this->ownerNamespaceForRow($row, $defaultNamespace, $ownerNamespaceColumn),
-                    'uri' => $uri,
-                ];
+            if ($this->isDirectPayloadReference($row->{$column})) {
+                $uris[] = $row->{$column};
             }
         }
     }
@@ -1166,91 +836,19 @@ class ExternalPayloadRetentionCleanup
         }
     }
 
-    /**
-     * @param  Builder<Model>  $query
-     * @param  array<int, string>  $uris
-     */
-    private function collectReferenceColumn($query, string $column, array &$uris): void
-    {
-        if (! $this->hasColumn($query, $column)) {
-            return;
-        }
-
-        foreach ($query->select([$column])->cursor() as $row) {
-            $uri = $row->{$column};
-
-            if ($this->isDirectPayloadReference($uri)) {
-                $uris[] = $uri;
-            }
-        }
-    }
-
-    /**
-     * @param  Builder<Model>  $query
-     */
-    private function payloadColumnReferencesUri($query, string $column, string $uri): bool
-    {
-        if (! $this->hasColumn($query, $column)) {
-            return false;
-        }
-
-        foreach ($query->select([$column])->cursor() as $row) {
-            if ($this->valueReferencesUri($row->{$column}, $uri)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * @param  Builder<Model>  $query
-     */
-    private function referenceColumnReferencesUri($query, string $column, string $uri): bool
-    {
-        if (! $this->hasColumn($query, $column)) {
-            return false;
-        }
-
-        return $query->where($column, $uri)->exists();
-    }
-
-    /**
-     * @param  Builder<Model>  $query
-     * @param  list<string>  $columns
-     * @return list<string>
-     */
-    private function existingColumns($query, array $columns): array
-    {
-        $table = $query->getModel()->getTable();
-
-        return array_values(array_filter(
-            $columns,
-            static fn (string $column): bool => Schema::hasTable($table) && Schema::hasColumn($table, $column),
-        ));
-    }
-
-    /**
-     * @param  Builder<Model>  $query
-     */
+    /** @param Builder<Model> $query */
     private function hasColumn($query, string $column): bool
     {
-        $table = $query->getModel()->getTable();
-
-        return Schema::hasTable($table) && Schema::hasColumn($table, $column);
+        return $this->hasTableColumn($query->getModel()->getTable(), $column);
     }
 
     private function hasTableColumn(string $table, string $column): bool
     {
+        if ($table === 'workflow_service_call_dispatches' && $column === 'namespace') {
+            return Schema::hasTable($table) && Schema::hasColumn('workflow_service_calls', 'namespace');
+        }
+
         return Schema::hasTable($table) && Schema::hasColumn($table, $column);
-    }
-
-    private function valueReferencesUri(mixed $value, string $uri): bool
-    {
-        $uris = [];
-        $this->collectReferences($value, $uris);
-
-        return in_array($uri, $uris, true);
     }
 
     /**

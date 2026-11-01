@@ -1374,7 +1374,7 @@ class HistoryRetentionTest extends TestCase
         $this->assertSame(1, WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId)->count());
     }
 
-    public function test_retention_pass_keeps_durable_streams_when_payload_deletion_fails_and_retries(): void
+    public function test_retention_pass_commits_pruning_and_retries_payload_cleanup(): void
     {
         Queue::fake();
         $this->createNamespace('default');
@@ -1384,22 +1384,24 @@ class HistoryRetentionTest extends TestCase
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/system/retention/pass')
-            ->assertStatus(207)
-            ->assertJsonPath('pruned', 0)
-            ->assertJsonPath('failed', 1)
-            ->assertJsonPath('results.0.outcome', 'error');
+            ->assertOk()
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('failed', 0)
+            ->assertJsonPath('results.0.outcome', 'pruned')
+            ->assertJsonPath('results.0.deleted.durable_streams_deleted', 1)
+            ->assertJsonPath('external_payload_cleanup.pending', 1);
 
-        $this->assertNotNull(WorkflowRunSummary::find($runId));
-        $this->assertNotNull($stream->fresh());
-        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId)->count());
+        $this->assertNull(WorkflowRunSummary::find($runId));
+        $this->assertNull($stream->fresh());
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId)->count());
 
-        // The next pass, with storage back, settles the reference and prunes.
+        // Pruning is committed. A later ordinary pass retries only the bytes.
         $failing->fail = false;
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/system/retention/pass')
             ->assertOk()
-            ->assertJsonPath('pruned', 1)
-            ->assertJsonPath('results.0.deleted.durable_streams_deleted', 1);
+            ->assertJsonPath('pruned', 0)
+            ->assertJsonPath('external_payload_cleanup.pending', 0);
 
         $this->assertSame(['file:///unreachable/stream-item.bin'], $failing->deleted);
         $this->assertNull($stream->fresh());
@@ -1474,7 +1476,7 @@ class HistoryRetentionTest extends TestCase
         $this->assertNotNull($stream->fresh()->reclaim_at);
     }
 
-    public function test_stream_retention_keeps_items_when_payload_deletion_fails_and_retries(): void
+    public function test_stream_retention_commits_reclamation_and_retries_payload_cleanup(): void
     {
         Queue::fake();
         $this->createNamespace('default');
@@ -1482,22 +1484,18 @@ class HistoryRetentionTest extends TestCase
         $stream = $this->addDurableStream($runId, 'tokens', ['file:///unreachable/expired-stream-item.bin'], due: true);
         $failing = $this->failingExternalPayloadStorage();
 
-        try {
-            WorkflowStreamRetention::pruneExpired('default', 10, 1000);
-            $this->fail('Expected the payload deletion failure to stop the pass.');
-        } catch (\RuntimeException $exception) {
-            $this->assertStringContainsString('external payload', strtolower($exception->getMessage()));
-        }
-
-        $this->assertSame(1, WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->count());
-        $this->assertNotNull($stream->fresh()->reclaim_at);
-
-        // The next pass, with storage back, settles the reference and reclaims.
-        $failing->fail = false;
         $this->assertSame(
             ['streams_reclaimed' => 1, 'items_removed' => 1, 'budget_exhausted' => false, 'blocked_reason' => null],
             WorkflowStreamRetention::pruneExpired('default', 10, 1000),
         );
+
+        $this->assertSame(0, WorkflowDurableStreamItem::query()->where('stream_id', $stream->id)->count());
+        $this->assertNull($stream->fresh()->reclaim_at);
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 1);
+
+        $failing->fail = false;
+        $this->postJson('/api/system/retention/pass', [], $this->apiHeaders())
+            ->assertOk()->assertJsonPath('external_payload_cleanup.pending', 0);
         $this->assertSame(['file:///unreachable/expired-stream-item.bin'], $failing->deleted);
     }
 
@@ -1539,6 +1537,7 @@ class HistoryRetentionTest extends TestCase
         };
         $this->partialMock(NamespaceExternalPayloadStorage::class, function ($mock) use ($failing): void {
             $mock->shouldReceive('driverFor')->andReturn(new RuntimeTrackedExternalPayloadStorage('default', $failing));
+            $mock->shouldReceive('untrackedDriverForPolicy')->andReturn($failing);
         });
 
         return $failing;

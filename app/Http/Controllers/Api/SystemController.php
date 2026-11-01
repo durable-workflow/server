@@ -13,6 +13,7 @@ use App\Support\NamespaceRequestAdmission;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\RuntimeExternalPayloadCleanup;
 use App\Support\RuntimeExternalPayloadCleanupMetrics;
+use App\Support\RuntimeExternalPayloadDeletions;
 use App\Support\RuntimeExternalPayloadQuota;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerSessionRegistry;
@@ -291,6 +292,7 @@ class SystemController
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
             'cleanup' => RuntimeExternalPayloadCleanupMetrics::snapshot($namespace),
+            'retention_cleanup' => app(RuntimeExternalPayloadDeletions::class)->status($namespace),
         ]);
     }
 
@@ -314,7 +316,7 @@ class SystemController
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
             'cleanup' => $report,
-        ], $report['blocked'] > 0 ? 207 : 200);
+        ], $report['blocked'] > 0 || $report['retention_cleanup']['pending'] > 0 ? 207 : 200);
     }
 
     public function activityTimeoutEnforcePass(Request $request): JsonResponse

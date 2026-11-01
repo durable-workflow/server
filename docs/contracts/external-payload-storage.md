@@ -183,6 +183,54 @@ logging provider locations, object-store credentials, bearer tokens, or the
 reusable opaque reference identity. Audit correlation uses a one-way reference
 identity digest.
 
+### Committed pruning and provider cleanup
+
+Run, stream and namespace pruning records durable deletion intentions in the
+same transaction that releases its payload references. Provider deletion starts
+only after that transaction commits. A later database failure therefore leaves
+the references and their provider bytes intact.
+
+Once pruning commits, a provider failure leaves pending cleanup rather than
+restoring workflow references to partially deleted objects. The existing
+`external_payloads_deleted` result counts released payload references, including
+namespace registrations whose shared backing object is preserved. It does not
+promise that every provider deletion has completed. A retention-pass response
+also includes `external_payload_cleanup` with `pending`, `failed` and `blocked`
+counts for that namespace. A committed prune remains `pruned` when cleanup is
+pending.
+
+The ordinary cleanup command retries at most `limit` pending retention deletions
+in addition to its existing batch of at most `limit` expired uploads. Pending
+intentions survive a process restart and retain the namespace storage policy
+needed after namespace deletion. A new registration or retained reference keeps
+the object alive when the older intention is retried. Provider configuration
+that is unavailable leaves the intention pending for a later pass.
+
+`GET /api/system/external-payload-cleanup` includes these counts as
+`retention_cleanup`. The cleanup-pass report includes them under
+`cleanup.retention_cleanup`. That pass returns HTTP 207, and the Artisan command
+returns a nonzero status, while cleanup remains pending. Neither response
+reverses an already committed prune. Database and backup recovery must include
+the deletion-intention table along with the other runtime tables.
+
+Namespace deletion also includes `external_payload_cleanup` and returns HTTP
+207 while provider deletion is pending. Its `status: deleted` means the namespace
+catalog and workflow state were deleted. The cleanup counts distinguish that
+committed result from completion of provider-data removal.
+
+Custom storage adapters used by Server must implement replay-safe `delete()`:
+deleting an already-absent object succeeds. This requirement applies to every
+driver returned by the Server storage policy, including an adapter implementing
+the general Workflow storage-driver interface. The Server-specific
+`RuntimeExternalPayloadStorageDriver` contract states it explicitly. An adapter
+may report confirmed absence with `ExternalPayloadObjectMissing`, which the
+runtime treats as success. An arbitrary exception is not proof of absence and
+leaves the deletion pending. Existing custom adapters must preserve this rule
+when upgrading, because a provider effect can succeed before its acknowledgement
+is lost. Built-in local and filesystem adapters already support absent-object
+deletion. Custom policy factories must also reconstruct their driver from the
+saved policy when `untrackedDriverForPolicy()` is called during recovery.
+
 ## Coordinating online backups
 
 A database snapshot does not freeze external objects. Before taking an online

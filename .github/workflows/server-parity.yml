@@ -74,6 +74,7 @@ on:
       - tests/Unit/ServerParityDeepJsonBodiesContractTest.mjs
       - tests/Unit/ServerParityKeyOrderContractTest.mjs
       - tests/Unit/ServerParityVisibilityCollationContractTest.mjs
+      - tests/Unit/ServerParitySearchAttributeDatetimesContractTest.mjs
       - tests/Unit/ServerParityRetriedChildCancellationContractTest.mjs
       - tests/Unit/ServerParityParallelCancellationContractTest.mjs
       - tests/Unit/ServerParityActivityResultRepeatsContractTest.mjs
@@ -100,6 +101,7 @@ on:
       - tests/Unit/ServerParityRepairPassContractTest.mjs
       - tests/Unit/ServerParityClusterInfoContractTest.mjs
       - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
+      - tests/Unit/ServerParityNamespaceDeletePayloadsContractTest.mjs
       - tests/Unit/ServerParityWorkerSessionsContractTest.mjs
       - tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs
       - tests/Unit/ServerParityUpdateValidationContractTest.mjs
@@ -2228,6 +2230,7 @@ jobs:
               tests/Unit/ServerParityDeepJsonBodiesContractTest.mjs \
               tests/Unit/ServerParityKeyOrderContractTest.mjs \
               tests/Unit/ServerParityVisibilityCollationContractTest.mjs \
+              tests/Unit/ServerParitySearchAttributeDatetimesContractTest.mjs \
               tests/Unit/ServerParityRetriedChildCancellationContractTest.mjs \
               tests/Unit/ServerParityParallelCancellationContractTest.mjs \
               tests/Unit/ServerParityActivityResultRepeatsContractTest.mjs \
@@ -2253,6 +2256,7 @@ jobs:
               tests/Unit/ServerParityRepairPassContractTest.mjs \
               tests/Unit/ServerParityClusterInfoContractTest.mjs \
               tests/Unit/ServerParityNamespaceDeleteContractTest.mjs \
+              tests/Unit/ServerParityNamespaceDeletePayloadsContractTest.mjs \
               tests/Unit/ServerParityMessageStreamsContractTest.mjs \
               tests/Unit/ServerParityCancellationScopesContractTest.mjs \
               tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs \

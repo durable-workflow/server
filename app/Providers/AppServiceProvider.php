@@ -24,6 +24,7 @@ use App\Support\DispatchObservability;
 use App\Support\ExternalWorkflowUpdateAdmission;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RemoteScheduleStarter;
+use App\Support\RuntimeExternalPayloadDeletions;
 use App\Support\RuntimeExternalPayloadWriteClaims;
 use App\Support\ServerPollingCache;
 use App\Support\ServerWorkflowControlPlane;
@@ -71,6 +72,7 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->scoped(RuntimeExternalPayloadDeletions::class);
         $this->app->scoped(RuntimeExternalPayloadWriteClaims::class);
         $this->app->make('events')->listen(TransactionCommitting::class, static function (TransactionCommitting $event): void {
             app(RuntimeExternalPayloadWriteClaims::class)->beforeCommit($event->connection);

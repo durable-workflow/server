@@ -79,6 +79,8 @@ class HistoryRetentionEnforcer
      */
     public static function runPass(string $namespace, int $limit = 100, array $runIds = []): array
     {
+        $deletions = app(RuntimeExternalPayloadDeletions::class);
+        $deletions->retryPending($namespace, $limit);
         $runIds = $runIds === []
             ? self::expiredRunIds($namespace, $limit)
             : array_values($runIds);
@@ -126,6 +128,7 @@ class HistoryRetentionEnforcer
             'skipped' => $skipped,
             'failed' => $failed,
             'results' => $results,
+            'external_payload_cleanup' => $deletions->status($namespace),
         ];
     }
 

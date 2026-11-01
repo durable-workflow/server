@@ -67,6 +67,12 @@ class NamespaceLifecycleCleanup
                 'parent_workflow_instance_id' => $instanceIds,
                 'parent_workflow_run_id' => $runIds,
             ]);
+            if (Schema::hasTable('workflow_service_call_dispatches') && Schema::hasTable('workflow_service_calls')) {
+                $deleted['workflow_service_call_dispatches'] = DB::table('workflow_service_call_dispatches')
+                    ->whereIn('service_call_id', DB::table('workflow_service_calls')->select('id')
+                        ->where(fn ($query) => $query->where('namespace', $namespace)->orWhere('target_namespace', $namespace)))
+                    ->delete();
+            }
             $deleted['workflow_service_calls'] = $this->deleteByAnyIn('workflow_service_calls', [
                 'namespace' => [$namespace],
                 'target_namespace' => [$namespace],
@@ -95,6 +101,7 @@ class NamespaceLifecycleCleanup
             }
 
             $deleted['workflow_schedule_history_events'] = $this->deleteByNamespace('workflow_schedule_history_events', $namespace);
+            $deleted['workflow_update_validation_tasks'] = $this->deleteByNamespace('workflow_update_validation_tasks', $namespace);
             $deleted['workflow_schedules'] = $this->deleteByNamespace('workflow_schedules', $namespace);
             $deleted['workflow_service_operations'] = $this->deleteByNamespace('workflow_service_operations', $namespace);
             $deleted['workflow_services'] = $this->deleteByNamespace('workflow_services', $namespace);
@@ -134,7 +141,7 @@ class NamespaceLifecycleCleanup
     }
 
     /**
-     * @param list<string> $whereValues
+     * @param  list<string>  $whereValues
      * @return list<string>
      */
     private function valuesWhereIn(string $table, string $select, string $whereColumn, array $whereValues): array
@@ -162,8 +169,8 @@ class NamespaceLifecycleCleanup
     }
 
     /**
-     * @param list<string> $runIds
-     * @param list<string> $instanceIds
+     * @param  list<string>  $runIds
+     * @param  list<string>  $instanceIds
      */
     private function deleteByRunOrInstance(string $table, array $runIds, array $instanceIds): int
     {
@@ -174,7 +181,7 @@ class NamespaceLifecycleCleanup
     }
 
     /**
-     * @param array<string, list<string>> $columns
+     * @param  array<string, list<string>>  $columns
      */
     private function deleteByAnyIn(string $table, array $columns): int
     {
@@ -206,8 +213,8 @@ class NamespaceLifecycleCleanup
      * calls may remain visible to their target namespace, but a deleted caller
      * namespace must not inherit those rows when the same name is recreated.
      *
-     * @param list<string> $runIds
-     * @param list<string> $instanceIds
+     * @param  list<string>  $runIds
+     * @param  list<string>  $instanceIds
      */
     private function scrubServiceCallCallerContexts(string $namespace, array $runIds, array $instanceIds): int
     {
@@ -248,8 +255,8 @@ class NamespaceLifecycleCleanup
     }
 
     /**
-     * @param list<string> $runIds
-     * @param list<string> $instanceIds
+     * @param  list<string>  $runIds
+     * @param  list<string>  $instanceIds
      * @return array<string, list<string>>
      */
     private function serviceCallCallerContextConditions(string $namespace, array $runIds, array $instanceIds): array
@@ -273,7 +280,7 @@ class NamespaceLifecycleCleanup
     }
 
     /**
-     * @param list<string> $columns
+     * @param  list<string>  $columns
      */
     private function hasColumns(string $table, array $columns): bool
     {
