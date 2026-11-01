@@ -491,8 +491,14 @@ contract fixture before its correction.
   `retention-external-payloads` fixture records it against published 2.11.7.
   A run holding a reference native cannot settle (PHP's stored format from a
   workflow import, an envelope, or one on an inbound or durable stream) is
-  still skipped with `external_payload_cleanup_unavailable`, and native does
-  not mark the instance's inbound streams blocked on a skip as PHP does.
+  still skipped with `external_payload_cleanup_unavailable`. Since November 1,
+  a skip or failure of the payload cleanup marks the instance's inbound
+  streams blocked with its reason (`cleanup_blocked_at`, `_reason`,
+  `_run_id`), as PHP's `MessageStreamRetentionCleanup::markBlocked` does; an
+  open abandoned activity's hold marks nothing, and a later completed prune
+  of the run clears the mark. PHP reads the mark only in its capacity
+  evidence, which native does not serve, so native tests cover the stored
+  columns rather than a fixture.
   A run whose instance has inbound message streams is pruned as PHP's
   `MessageStreamRetentionCleanup` prunes it (October 27): the messages it
   consumed lose their payloads once a retained later run's cursor checkpoint
