@@ -1,0 +1,261 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature;
+
+use App\Models\WorkflowDurableStream;
+use App\Models\WorkflowDurableStreamItem;
+use App\Models\WorkflowNamespace;
+use App\Support\NamespaceExternalPayloadStorage;
+use App\Support\RuntimeExternalPayloadCleanup;
+use App\Support\RuntimeExternalPayloadDeletions;
+use App\Support\RuntimeExternalPayloadRegistry;
+use App\Support\RuntimeExternalPayloadStorageDriver;
+use App\Support\RuntimeLocalExternalPayloadStorage;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\TestCase;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
+
+final class ExternalPayloadRetentionRollbackTest extends TestCase
+{
+    use DatabaseMigrations;
+    use ServerTestHelpers;
+
+    private string $directory;
+
+    private object $provider;
+
+    /** @var array<string, string> */
+    private array $objects;
+
+    private WorkflowRun $run;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->directory = sys_get_temp_dir().'/retention-rollback-'.Str::uuid();
+        $this->createNamespace('default');
+        WorkflowNamespace::query()->where('name', 'default')->update(['external_payload_storage' => [
+            'driver' => 'local', 'enabled' => true, 'config' => ['uri' => 'file://'.$this->directory],
+        ]]);
+        $this->provider = new class(new RuntimeLocalExternalPayloadStorage($this->directory)) implements RuntimeExternalPayloadStorageDriver
+        {
+            public int $attempts = 0;
+
+            public int $failAt = 0;
+
+            public bool $unavailable = false;
+
+            public function __construct(private RuntimeLocalExternalPayloadStorage $inner) {}
+
+            public function put(string $data, string $sha256, string $codec): string
+            {
+                return $this->inner->put($data, $sha256, $codec);
+            }
+
+            public function uriFor(string $sha256, string $codec): string
+            {
+                return $this->inner->uriFor($sha256, $codec);
+            }
+
+            public function get(string $uri): string
+            {
+                return $this->inner->get($uri);
+            }
+
+            public function delete(string $uri): void
+            {
+                $this->attempts++;
+                if ($this->unavailable || $this->attempts === $this->failAt) {
+                    throw new \RuntimeException('Synthetic provider failure');
+                }
+                $this->inner->delete($uri);
+            }
+        };
+        app()->instance(NamespaceExternalPayloadStorage::class, new class($this->provider) extends NamespaceExternalPayloadStorage
+        {
+            public function __construct(private RuntimeExternalPayloadStorageDriver $provider) {}
+
+            public function untrackedDriverFor(?string $namespace): ?RuntimeExternalPayloadStorageDriver
+            {
+                return $this->provider;
+            }
+        });
+        $this->createClosedRun();
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->directory);
+        parent::tearDown();
+    }
+
+    public function test_successful_pruning_reclaims_both_objects(): void
+    {
+        $this->prune()->assertOk()->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 2)
+            ->assertJsonPath('external_payload_cleanup.pending', 0);
+        $this->assertTrue($this->run->fresh()->details_pruned_at !== null);
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 0);
+        $this->assertSame(0, $this->readableObjects());
+    }
+
+    public static function failingDeletions(): array
+    {
+        return ['first' => [1], 'second' => [2]];
+    }
+
+    #[DataProvider('failingDeletions')]
+    public function test_provider_failure_keeps_committed_pruning_and_durable_retry(int $failAt): void
+    {
+        $this->provider->failAt = $failAt;
+        $this->prune()->assertOk()->assertJsonPath('pruned', 1)->assertJsonPath('failed', 0)
+            ->assertJsonPath('external_payload_cleanup.pending', 1)
+            ->assertJsonPath('external_payload_cleanup.failed', 1);
+        $this->assertNotNull($this->run->fresh()->details_pruned_at);
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 0);
+        $this->assertSame(1, $this->readableObjects());
+
+        $this->provider->failAt = 0;
+        $this->prune()->assertOk()->assertJsonPath('external_payload_cleanup.pending', 0);
+        $this->assertSame(0, $this->readableObjects());
+    }
+
+    public function test_later_database_failure_rolls_back_without_deleting_provider_bytes(): void
+    {
+        $armed = true;
+        DB::listen(static function (QueryExecuted $event) use (&$armed): void {
+            $sql = strtolower(ltrim($event->sql));
+            if ($armed && str_starts_with($sql, 'update')
+                && str_contains($sql, 'workflow_runs') && str_contains($sql, 'details_pruned_at')) {
+                $armed = false;
+                throw new \RuntimeException('Synthetic failure after the prune database update');
+            }
+        });
+
+        $this->prune()->assertStatus(207)->assertJsonPath('pruned', 0)->assertJsonPath('failed', 1);
+        $this->assertNull($this->run->fresh()->details_pruned_at);
+        $this->assertDatabaseCount('runtime_external_payloads', 2);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 2);
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+        $this->assertSame(0, $this->provider->attempts);
+        $this->assertSame(2, $this->readableObjects());
+    }
+
+    public function test_saved_policy_recovers_pending_deletion_after_namespace_and_process_state_are_gone(): void
+    {
+        $this->provider->unavailable = true;
+        $this->prune()->assertOk()->assertJsonPath('external_payload_cleanup.pending', 2);
+        WorkflowNamespace::query()->where('name', 'default')->delete();
+        app()->forgetInstance(NamespaceExternalPayloadStorage::class);
+
+        $report = app(RuntimeExternalPayloadCleanup::class)->runPass();
+        $this->assertSame(0, $report['retention_cleanup']['pending']);
+        $this->assertSame(0, $this->readableObjects());
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+    }
+
+    public function test_a_new_registration_in_another_namespace_cancels_the_old_deletion(): void
+    {
+        $this->provider->unavailable = true;
+        $this->prune()->assertOk()->assertJsonPath('external_payload_cleanup.pending', 2);
+        $this->createNamespace('other');
+        $uri = array_key_first($this->objects);
+        $bytes = $this->objects[$uri];
+        app(RuntimeExternalPayloadRegistry::class)->storeRetained('other', $this->provider, $bytes, 'avro', hash('sha256', $bytes));
+        $this->provider->unavailable = false;
+
+        app(RuntimeExternalPayloadDeletions::class)->retryPending('default', 10);
+        $this->assertSame($bytes, $this->provider->get($uri));
+        $this->assertSame(1, $this->readableObjects());
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+        $this->assertDatabaseHas('runtime_external_payloads', ['namespace' => 'other', 'storage_uri' => $uri]);
+    }
+
+    public function test_lost_cleanup_acknowledgement_is_retried_without_restoring_pruned_references(): void
+    {
+        $armed = true;
+        DB::listen(static function (QueryExecuted $event) use (&$armed): void {
+            if ($armed && str_starts_with(strtolower(ltrim($event->sql)), 'delete')
+                && str_contains($event->sql, 'runtime_external_payload_deletions')) {
+                $armed = false;
+                throw new \RuntimeException('Synthetic cleanup acknowledgement failure');
+            }
+        });
+
+        $this->prune()->assertOk()->assertJsonPath('pruned', 1)
+            ->assertJsonPath('external_payload_cleanup.pending', 1);
+        $this->assertNotNull($this->run->fresh()->details_pruned_at);
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->assertSame(0, $this->readableObjects());
+        app(RuntimeExternalPayloadDeletions::class)->retryPending('default', 10);
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+    }
+
+    private function prune(): TestResponse
+    {
+        return $this->postJson('/api/system/retention/pass', ['run_ids' => [$this->run->id]], $this->apiHeaders());
+    }
+
+    private function readableObjects(): int
+    {
+        $count = 0;
+        foreach ($this->objects as $uri => $bytes) {
+            try {
+                $count += (int) ($this->provider->get($uri) === $bytes);
+            } catch (\Throwable) {
+            }
+        }
+
+        return $count;
+    }
+
+    private function createClosedRun(): void
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => (string) Str::ulid(), 'namespace' => 'default',
+            'workflow_class' => 'SyntheticRetentionWorkflow', 'workflow_type' => 'synthetic.retention',
+        ]);
+        $this->run = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(), 'workflow_instance_id' => $instance->id,
+            'run_number' => 1, 'namespace' => 'default', 'status' => 'completed',
+            'workflow_class' => 'SyntheticRetentionWorkflow', 'workflow_type' => 'synthetic.retention',
+            'started_at' => now()->subDays(61), 'closed_at' => now()->subDays(60),
+        ]);
+        $instance->forceFill(['current_run_id' => $this->run->id, 'run_count' => 1])->save();
+        WorkflowRunSummary::query()->create([
+            'id' => $this->run->id, 'workflow_instance_id' => $instance->id, 'run_number' => 1,
+            'namespace' => 'default', 'class' => 'SyntheticRetentionWorkflow',
+            'workflow_type' => 'synthetic.retention', 'status' => 'completed', 'status_bucket' => 'completed',
+            'closed_at' => now()->subDays(60),
+        ]);
+        $stream = WorkflowDurableStream::query()->create([
+            'namespace' => 'default', 'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $this->run->id, 'stream_name' => 'synthetic', 'status' => 'closed',
+            'last_offset' => 1, 'total_items' => 2, 'opened_at' => now()->subDays(61),
+            'closed_at' => now()->subDays(60), 'retention_seconds' => 3600,
+        ]);
+        $this->objects = [];
+        foreach (['synthetic payload A', 'synthetic payload B'] as $offset => $bytes) {
+            $uri = app(RuntimeExternalPayloadRegistry::class)->storeRetained('default', $this->provider, $bytes, 'avro', hash('sha256', $bytes));
+            $this->objects[$uri] = $bytes;
+            WorkflowDurableStreamItem::query()->create([
+                'stream_id' => $stream->id, 'namespace' => 'default', 'workflow_run_id' => $this->run->id,
+                'stream_name' => 'synthetic', 'offset' => $offset, 'payload_reference' => $uri,
+                'payload_codec' => 'avro', 'emitted_at' => now()->subDays(61),
+            ]);
+        }
+    }
+}

@@ -286,7 +286,7 @@ Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired execut
 })->purpose('Enforce activity timeout deadlines on expired executions');
 
 Artisan::command('external-payloads:cleanup
-    {--limit=100 : Maximum expired external payload references to process per pass}
+    {--limit=100 : Maximum expired references and retention deletion intents per phase}
     {--namespace= : Clean only this namespace}
     {--json : Emit a machine-readable cleanup report}', function (RuntimeExternalPayloadCleanup $cleanup): int {
     if (! app(StoragePressure::class)->acceptsNewWork()) {
@@ -308,18 +308,19 @@ Artisan::command('external-payloads:cleanup
         ] + $report, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
     } else {
         $this->components->info(sprintf(
-            'Done: %d processed, %d references deleted, %d backing objects deleted, %d blocked, %d storage failures, %d remaining.',
+            'Done: %d processed, %d references deleted, %d backing objects deleted, %d blocked, %d storage failures, %d remaining, %d retention deletions pending.',
             $report['processed'],
             $report['deleted_references'],
             $report['deleted_backing_objects'],
             $report['blocked'],
             $report['storage_driver_failures'],
             $report['backlog'],
+            $report['retention_cleanup']['pending'],
         ));
     }
 
-    return $report['blocked'] > 0 ? 1 : 0;
-})->purpose('Reclaim expired and incomplete runtime external payload uploads');
+    return $report['blocked'] > 0 || $report['retention_cleanup']['pending'] > 0 ? 1 : 0;
+})->purpose('Reclaim expired uploads and committed retention deletions');
 
 Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per pass} {--namespace= : Prune only this namespace}', function (): int {
     if (! app(StoragePressure::class)->acceptsNewWork()) {

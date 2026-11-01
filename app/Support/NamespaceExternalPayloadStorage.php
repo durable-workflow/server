@@ -23,6 +23,13 @@ class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
         $namespace = $namespace ?: (string) config('server.default_namespace', 'default');
         $policy = $this->policyFor($namespace);
 
+        return $this->untrackedDriverForPolicy($policy, $namespace);
+    }
+
+    /** @param array<string, mixed> $policy */
+    public function untrackedDriverForPolicy(array $policy, string $namespace): ?RuntimeExternalPayloadStorageDriver
+    {
+
         if ($policy === [] || ($policy['enabled'] ?? true) === false) {
             return null;
         }
@@ -111,7 +118,7 @@ class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
     /**
      * @return array<string, mixed>
      */
-    private function policyFor(string $namespace): array
+    public function policyFor(string $namespace): array
     {
         $ns = WorkflowNamespace::query()->where('name', $namespace)->first();
         $policy = $ns?->external_payload_storage;

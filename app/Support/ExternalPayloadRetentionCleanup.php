@@ -34,6 +34,59 @@ use Workflow\V2\Support\ExternalPayloads;
 
 class ExternalPayloadRetentionCleanup
 {
+    /** @param list<string> $uris
+     * @return array<string, bool>
+     */
+    public function retainedReferences(array $uris): array
+    {
+        $candidates = array_fill_keys($uris, true);
+        $retained = [];
+        $columns = [];
+        $hasColumn = static function (Builder $query, string $column) use (&$columns): bool {
+            $model = $query->getModel();
+            $connection = $model->getConnection();
+            $table = $model->getTable();
+            $key = $connection->getName().':'.$table;
+            if (! array_key_exists($key, $columns)) {
+                $schema = $connection->getSchemaBuilder();
+                $columns[$key] = $schema->hasTable($table)
+                    ? array_fill_keys($schema->getColumnListing($table), true) : [];
+            }
+
+            return isset($columns[$key][$column]);
+        };
+        $payloadColumns = $this->retainedPayloadColumns([], [], []);
+        foreach (['arguments', 'output', 'memo', 'search_attributes', 'visibility_labels'] as $column) {
+            $payloadColumns[] = [WorkflowRun::query()->whereNull('details_pruned_at'), $column];
+        }
+        foreach ($payloadColumns as [$query, $column]) {
+            if (! $hasColumn($query, $column)) {
+                continue;
+            }
+            foreach ($query->select([$column])->cursor() as $row) {
+                $references = [];
+                $this->collectReferences($row->{$column}, $references);
+                foreach ($references as $uri) {
+                    if (isset($candidates[$uri])) {
+                        $retained[$uri] = true;
+                    }
+                }
+            }
+        }
+        foreach ($this->retainedReferenceColumns([]) as [$query, $column]) {
+            if (! $hasColumn($query, $column)) {
+                continue;
+            }
+            foreach (array_chunk($uris, 500) as $chunk) {
+                foreach ((clone $query)->whereIn($column, $chunk)->pluck($column) as $uri) {
+                    $retained[$uri] = true;
+                }
+            }
+        }
+
+        return $retained;
+    }
+
     /**
      * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
      */
@@ -202,8 +255,11 @@ class ExternalPayloadRetentionCleanup
                 $driver = $drivers[$reference['namespace']];
                 $uri = $reference['uri'];
                 if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
-                    $driver->delete($uri);
-                    $deleted++;
+                    if (app(RuntimeExternalPayloadRegistry::class)->deleteUriUnlessReferenced(
+                        $reference['namespace'], $uri, $driver, static fn (): bool => $isRetained($uri),
+                    )) {
+                        $deleted++;
+                    }
                 } elseif ($driver->deleteUnlessReferenced($uri, static fn (): bool => $isRetained($uri))) {
                     $deleted++;
                 }
@@ -276,8 +332,11 @@ class ExternalPayloadRetentionCleanup
         foreach (RuntimeExternalPayloadObjectLock::inLockOrder($deletable) as $uri) {
             try {
                 if (! $driver instanceof RuntimeTrackedExternalPayloadStorage) {
-                    $driver->delete($uri);
-                    $deleted++;
+                    if (app(RuntimeExternalPayloadRegistry::class)->deleteUriUnlessReferenced(
+                        $namespace, $uri, $driver, static fn (): bool => $isRetained($uri),
+                    )) {
+                        $deleted++;
+                    }
                 } elseif ($driver->deleteUnlessReferenced($uri, static fn (): bool => $isRetained($uri))) {
                     $deleted++;
                 }

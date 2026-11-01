@@ -44,6 +44,8 @@ final class RuntimeExternalPayloadCleanup
         $limit = min(self::MAX_BATCH_SIZE, max(1, $limit));
         $cutoff ??= now();
 
+        app(RuntimeExternalPayloadDeletions::class)->retryPending($namespace, $limit);
+
         app(RuntimePayloadCompletionUploads::class)->cleanup($namespace, $limit, $cutoff);
 
         $candidates = $this->expiredQuery($namespace, $cutoff)
@@ -97,6 +99,7 @@ final class RuntimeExternalPayloadCleanup
 
         $report['backlog'] = $this->expiredQuery($namespace, $cutoff)->count();
         $report['scan_pressure'] = $report['backlog'] > 0 && $candidates->count() >= $limit;
+        $report['retention_cleanup'] = app(RuntimeExternalPayloadDeletions::class)->status($namespace);
 
         return $report;
     }
