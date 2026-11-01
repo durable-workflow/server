@@ -8,7 +8,7 @@
 //! block and union, and the public schema still validates and frames.
 use super::{CodecError, CompleteInput, VALUE_FINGERPRINT, VALUE_SCHEMA, ValueCodec, php_base64};
 use apache_avro::{
-    Schema, reader::datum::GenericDatumReader, types::Value as Datum, writer::datum::GenericDatumWriter,
+    Schema, reader::datum::GenericDatumReader, types::Value as Datum,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{collections::HashMap, sync::LazyLock};
@@ -62,45 +62,86 @@ impl ValueCodec {
     /// Encodes a value with its map entries in the order given, under the
     /// public single-object header.
     pub fn encode_ordered_value(&self, value: &OrderedValue) -> Result<String, CodecError> {
-        let datum = GenericDatumWriter::builder(&BINDING).build()?.write_value_to_vec(to_binding(value)?)?;
-        let mut bytes = Vec::with_capacity(MARKER.len() + VALUE_FINGERPRINT.len() + datum.len());
+        // Written directly in the protocol Value's Avro binary layout: a deep
+        // value costs one small frame per level, where Apache's datum writer
+        // over the binding schema needs far more stack than a 511-level
+        // request leaves.
+        let mut bytes = Vec::with_capacity(64);
         bytes.extend_from_slice(&MARKER);
         bytes.extend_from_slice(&VALUE_FINGERPRINT);
-        bytes.extend_from_slice(&datum);
-        let blob = STANDARD.encode(bytes);
-        // The public reader must accept what the binding wrote.
-        self.decode(&blob)?;
-        Ok(blob)
+        write_value(value, &mut bytes)?;
+        // The layout is checked against Apache's writer and PHP's published
+        // bytes in tests; reading it back here would cost a deep value more
+        // stack than writing it.
+        Ok(STANDARD.encode(bytes))
     }
 }
 
-fn record(field: &str, value: Datum) -> Datum {
-    Datum::Record(vec![(field.into(), value)])
+/// Avro's zig-zag variable-length long.
+fn write_long(number: i64, out: &mut Vec<u8>) {
+    let mut zigzag = ((number << 1) ^ (number >> 63)) as u64;
+    while zigzag >= 0x80 {
+        out.push((zigzag as u8 & 0x7f) | 0x80);
+        zigzag >>= 7;
+    }
+    out.push(zigzag as u8);
 }
 
-fn to_binding(value: &OrderedValue) -> Result<Datum, CodecError> {
-    let (index, branch) = match value {
-        OrderedValue::Null => (0, Datum::Null),
-        OrderedValue::Boolean(flag) => (1, record("boolean", Datum::Boolean(*flag))),
-        OrderedValue::Long(number) => (2, record("long", Datum::Long(*number))),
+fn write_bytes(bytes: &[u8], out: &mut Vec<u8>) {
+    write_long(bytes.len() as i64, out);
+    out.extend_from_slice(bytes);
+}
+
+/// One protocol Value datum: the union branch index, then the branch
+/// record's one field. An array or map is one block of all its items (none
+/// when empty) and the end marker, as Apache's and PHP's writers emit.
+fn write_value(value: &OrderedValue, out: &mut Vec<u8>) -> Result<(), CodecError> {
+    match value {
+        OrderedValue::Null => write_long(0, out),
+        OrderedValue::Boolean(flag) => {
+            write_long(1, out);
+            out.push(u8::from(*flag));
+        }
+        OrderedValue::Long(number) => {
+            write_long(2, out);
+            write_long(*number, out);
+        }
         OrderedValue::Double(number) if !number.is_finite() => return Err(CodecError::NonFiniteDouble),
-        OrderedValue::Double(number) => (3, record("double", Datum::Double(*number))),
-        OrderedValue::Bytes(bytes) => (4, record("bytes", Datum::Bytes(bytes.clone()))),
-        OrderedValue::String(text) => (5, record("string", Datum::String(text.clone()))),
+        OrderedValue::Double(number) => {
+            write_long(3, out);
+            out.extend_from_slice(&number.to_le_bytes());
+        }
+        OrderedValue::Bytes(bytes) => {
+            write_long(4, out);
+            write_bytes(bytes, out);
+        }
+        OrderedValue::String(text) => {
+            write_long(5, out);
+            write_bytes(text.as_bytes(), out);
+        }
         OrderedValue::Array(items) => {
-            (6, record("items", Datum::Array(items.iter().map(to_binding).collect::<Result<_, _>>()?)))
+            write_long(6, out);
+            if !items.is_empty() {
+                write_long(items.len() as i64, out);
+                for item in items {
+                    write_value(item, out)?;
+                }
+            }
+            write_long(0, out);
         }
         OrderedValue::Map(entries) => {
-            let entries = entries
-                .iter()
-                .map(|(key, value)| {
-                    Ok(Datum::Record(vec![("key".into(), Datum::String(key.clone())), ("value".into(), to_binding(value)?)]))
-                })
-                .collect::<Result<_, CodecError>>()?;
-            (7, record("entries", Datum::Array(entries)))
+            write_long(7, out);
+            if !entries.is_empty() {
+                write_long(entries.len() as i64, out);
+                for (key, item) in entries {
+                    write_bytes(key.as_bytes(), out);
+                    write_value(item, out)?;
+                }
+            }
+            write_long(0, out);
         }
-    };
-    Ok(record("value", Datum::Union(index, Box::new(branch))))
+    }
+    Ok(())
 }
 
 /// The one field of a record the binding schema read.
@@ -203,6 +244,59 @@ mod tests {
             assert_eq!(codec.encode_ordered_value(&value).unwrap(), blob, "{blob}");
         }
         assert!(codec.decode_ordered("AAAA").is_err());
+    }
+
+    /// Apache's datum writer over the binding schema, the reference the
+    /// direct writer replaced.
+    fn apache_reference(value: &OrderedValue) -> String {
+        use apache_avro::writer::datum::GenericDatumWriter;
+        fn record(field: &str, value: Datum) -> Datum {
+            Datum::Record(vec![(field.into(), value)])
+        }
+        fn binding(value: &OrderedValue) -> Datum {
+            let (index, branch) = match value {
+                OrderedValue::Null => (0, Datum::Null),
+                OrderedValue::Boolean(flag) => (1, record("boolean", Datum::Boolean(*flag))),
+                OrderedValue::Long(number) => (2, record("long", Datum::Long(*number))),
+                OrderedValue::Double(number) => (3, record("double", Datum::Double(*number))),
+                OrderedValue::Bytes(bytes) => (4, record("bytes", Datum::Bytes(bytes.clone()))),
+                OrderedValue::String(text) => (5, record("string", Datum::String(text.clone()))),
+                OrderedValue::Array(items) => (6, record("items", Datum::Array(items.iter().map(binding).collect()))),
+                OrderedValue::Map(entries) => (7, record("entries", Datum::Array(entries.iter()
+                    .map(|(key, value)| Datum::Record(vec![("key".into(), Datum::String(key.clone())), ("value".into(), binding(value))]))
+                    .collect()))),
+            };
+            record("value", Datum::Union(index, Box::new(branch)))
+        }
+        let datum = GenericDatumWriter::builder(&BINDING).build().unwrap().write_value_to_vec(binding(value)).unwrap();
+        STANDARD.encode([MARKER.as_slice(), VALUE_FINGERPRINT.as_slice(), datum.as_slice()].concat())
+    }
+
+    #[test]
+    fn the_direct_writer_matches_apache_s_binding_writer() {
+        let codec = ValueCodec::new().unwrap();
+        let many: Vec<OrderedValue> = (0..200).map(|index| OrderedValue::Long(index * 1_000_003 - 7)).collect();
+        let entries: Vec<(String, OrderedValue)> = (0..70).map(|index| (format!("k{}", 70 - index), OrderedValue::Bytes(vec![index as u8; index]))).collect();
+        for value in [
+            OrderedValue::Null,
+            OrderedValue::Boolean(true),
+            OrderedValue::Long(i64::MIN),
+            OrderedValue::Long(i64::MAX),
+            OrderedValue::Long(-1),
+            OrderedValue::Double(-0.0),
+            OrderedValue::Double(1.5e300),
+            OrderedValue::String("λ ключ 🙂".into()),
+            OrderedValue::Bytes(vec![]),
+            OrderedValue::Array(vec![]),
+            OrderedValue::Map(vec![]),
+            OrderedValue::Array(many),
+            OrderedValue::Map(entries),
+            OrderedValue::Array(vec![OrderedValue::Map(vec![("z".into(), OrderedValue::Array(vec![OrderedValue::Null])),
+                ("a".into(), OrderedValue::Map(vec![("".into(), OrderedValue::Boolean(false))]))])]),
+        ] {
+            assert_eq!(codec.encode_ordered_value(&value).unwrap(), apache_reference(&value), "{value:?}");
+        }
+        assert!(matches!(codec.encode_ordered_value(&OrderedValue::Double(f64::NAN)), Err(CodecError::NonFiniteDouble)));
     }
 
     #[test]

@@ -81,6 +81,25 @@ pub(super) async fn empty_arguments(semaphore: Arc<Semaphore>) -> Result<String>
 }
 
 /// One Avro Value blob with the official codec, off the async workers.
+/// Encodes arguments with their map entries in the order given, as PHP's
+/// serializer writes a decoded request.
+pub(super) async fn encode_ordered_arguments(semaphore: Arc<Semaphore>, arguments: crate::codec::OrderedValue) -> Result<String> {
+    let permit = semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let codec = crate::codec::ValueCodec::new()
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?;
+        codec
+            .encode_ordered_value(&arguments)
+            .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "query_codec_unavailable"))?
+}
+
 pub(super) async fn encode_arguments(semaphore: Arc<Semaphore>, arguments: crate::codec::Value) -> Result<String> {
     let permit = semaphore
         .acquire_owned()

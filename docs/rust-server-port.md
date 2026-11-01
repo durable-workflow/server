@@ -430,9 +430,21 @@ contract fixture before its correction.
   and PostgreSQL. Native refuses such a name, and a name of only spaces,
   with `invalid_signal_name` or `invalid_update_name` on every database
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-poll-waits.md)).
-- **Key order inside plain JSON input.** For input that is not an envelope,
-  PHP encodes nested objects as Avro maps in request order; native encodes
-  them with sorted keys. The decoded values are equal, but the blobs differ.
+- **Key order inside plain JSON input** (November 1, closed). For input
+  that is not an envelope, published PHP takes an object input's values in
+  document order (`array_values`) and encodes each nested object as an Avro
+  map in document order (`Avro::toDatum`). A nested object whose integer
+  keys are not 0 to n-1 in document order, such as `{"1": "a", "0": "b"}`,
+  is not a list, and its encoder fails with `invalid_map_key`. Native
+  encoded nested maps with sorted keys and read such an object as the list
+  `["b", "a"]`. It now encodes plain input in document order through the
+  ordered Avro writer, so its blobs are PHP's byte for byte, and refuses an
+  integer-keyed object that is not a list: on a start with PHP's 422 under
+  `workflow_type`. On a signal, update, query, message or bridge start it
+  keeps native's `422 invalid_workflow_arguments`, where PHP's signal answers
+  `500 control_plane_internal_error`. The `key-order` fixture records starts
+  and a signal against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-key-order.md)).
 - **Child completion while the parent has an open workflow task**
   (November 1; ready task closed, leased task decided;
   [checkpoint](rust-server-port-checkpoints/2026-11-01-child-open-parent-task.md)).
@@ -786,9 +798,14 @@ contract fixture before its correction.
   without trailing spaces). The `visibility-collation` fixture records both
   collations against published 2.11.7
   ([checkpoint](rust-server-port-checkpoints/2026-10-30-visibility-collation.md)).
-- **Visibility query key order.** When one command or query has several
-  errors, native reports them in sorted key order rather than request order.
-  The same holds for several invalid search attributes on one start.
+- **Search attribute validation order** (November 1, closed). Published
+  PHP reports several invalid search attributes in request order, on a
+  start and on one `upsert_search_attributes` command, as
+  `SearchAttributeValueValidator` loops over them. Native reported them in
+  sorted key order. Since `serde_json`'s `preserve_order` (#906) its
+  validator visits the request's keys in document order, and the `key-order`
+  fixture records both orders against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-key-order.md)).
 - **Inherited memos and search attributes on child runs** (October 29,
   closed). Published PHP copies the parent's memos and search attributes to
   a child run, and the failed run's to a retried child
