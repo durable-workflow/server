@@ -101,7 +101,7 @@ const PROJECT_DIR = path.join(
   IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'sdk-php'),
 );
 const COMPOSE_OVERRIDE = path.join(RUN_ROOT, 'docker-compose.heartbeat.yml');
-const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.published.yml');
+const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.php.yml');
 const DISTRIBUTION_IDENTITY_HELPER = path.join(REPO_ROOT, 'scripts/conformance/distribution_identities.py');
 const DISTRIBUTION_IDENTITY_FILE = path.join(RESULT_DIR, 'executed-distribution-identities.json');
 const SDK_ARTIFACT = IS_PYTHON_CELL ? 'sdk-python' : (IS_RUST_CELL ? 'sdk-rust' : 'sdk-php');

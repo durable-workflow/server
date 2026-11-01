@@ -113,7 +113,7 @@ export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-true}"
 export DW_PERF_STANDARD_WORKFLOWS="${DW_PERF_STANDARD_WORKFLOWS:-true}"
 
 OVERRIDE_FILE="$ARTIFACT_DIR/docker-compose.perf.yml"
-PUBLISHED_OVERRIDE_FILE="$ARTIFACT_DIR/docker-compose.published.yml"
+PUBLISHED_OVERRIDE_FILE="$ARTIFACT_DIR/docker-compose.php.yml"
 published_image_id=""
 server_php_version=""
 cat > "$OVERRIDE_FILE" <<YAML

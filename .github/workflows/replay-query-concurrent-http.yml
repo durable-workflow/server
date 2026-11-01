@@ -14,7 +14,7 @@ on:
       - 'composer.lock'
       - 'config/dw-bounded-growth.php'
       - 'docker/**'
-      - 'docker-compose.published.yml'
+      - 'docker-compose.php.yml'
       - 'Dockerfile'
       - 'scripts/regression/apache-module-preflight.sh'
       - 'scripts/regression/replay-query-concurrent-http.sh'
@@ -30,7 +30,7 @@ on:
       - 'composer.lock'
       - 'config/dw-bounded-growth.php'
       - 'docker/**'
-      - 'docker-compose.published.yml'
+      - 'docker-compose.php.yml'
       - 'Dockerfile'
       - 'scripts/regression/apache-module-preflight.sh'
       - 'scripts/regression/replay-query-concurrent-http.sh'
@@ -93,5 +93,5 @@ jobs:
         run: |
           docker rm -f "${DW_REPLAY_QUERY_COMPOSE_PROJECT}-nonroot-http" >/dev/null 2>&1 || true
           docker compose -p "$DW_REPLAY_QUERY_COMPOSE_PROJECT" \
-            -f docker-compose.published.yml down -v --remove-orphans \
+            -f docker-compose.php.yml down -v --remove-orphans \
             >/dev/null 2>&1 || true

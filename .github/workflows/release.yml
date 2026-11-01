@@ -313,6 +313,7 @@ jobs:
           DW_SERVER_IMAGE: ${{ env.DOCKERHUB_IMAGE }}@${{ steps.exact.outputs.image_digest }}
           DW_SERVER_PLATFORM: linux/amd64
           DW_PUBLISHED_COMPOSE_PROFILE: local
+          DW_PUBLISHED_COMPOSE_FILE: docker-compose.php.yml
           DW_PUBLISHED_COMPOSE_PROJECT: release-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           SERVER_PORT: "0"
           DW_AUTH_TOKEN: published-compose-token
@@ -364,7 +365,7 @@ jobs:
           DW_PUBLISHED_COMPOSE_PROJECT: release-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: >-
           docker compose -p "$DW_PUBLISHED_COMPOSE_PROJECT"
-          -f release-source/docker-compose.published.yml down -v --remove-orphans
+          -f release-source/docker-compose.php.yml down -v --remove-orphans
           >/dev/null 2>&1 || true
 
       - name: Verify published protocol catalog convergence

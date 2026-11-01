@@ -1,5 +1,8 @@
 # Back up and restore a self-hosted Server
 
+This procedure applies to the PHP 2.x Compose stack, `docker-compose.php.yml`.
+The published Compose file runs the native server from 3.0.0.
+
 This procedure applies to the published single-node Compose stack with MySQL,
 Redis, and a shared S3-compatible external-payload store. A backup is a recovery
 point, not a live migration. It contains operations committed before the MySQL
@@ -36,7 +39,7 @@ external payloads.
    mkdir "$BACKUP_DIR"
    printf '%s\n' "$BACKUP_ID" > "$BACKUP_DIR/hold-owner"
    docker compose --env-file durable-workflow.prod.env \
-     -f docker-compose.published.yml exec -T server \
+     -f docker-compose.php.yml exec -T server \
      php artisan external-payloads:backup-hold acquire \
        --owner="$BACKUP_ID" --ttl=1800
    ```
@@ -45,7 +48,7 @@ external payloads.
 
    ```bash
    docker compose --env-file durable-workflow.prod.env \
-     -f docker-compose.published.yml exec -T mysql \
+     -f docker-compose.php.yml exec -T mysql \
      sh -lc 'mysqldump --single-transaction --quick --no-tablespaces -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' \
      > "$BACKUP_DIR/database.sql" 2> "$BACKUP_DIR/database.stderr"
    ```
@@ -68,10 +71,10 @@ external payloads.
 
    ```bash
    docker compose --env-file durable-workflow.prod.env \
-     -f docker-compose.published.yml exec -T server \
+     -f docker-compose.php.yml exec -T server \
      php artisan external-payloads:backup-hold status --owner="$BACKUP_ID"
    docker compose --env-file durable-workflow.prod.env \
-     -f docker-compose.published.yml exec -T server \
+     -f docker-compose.php.yml exec -T server \
      php artisan external-payloads:backup-hold release --owner="$BACKUP_ID"
    ```
 
@@ -93,9 +96,9 @@ restoring it into an isolated stack.
 
    ```bash
    docker compose --env-file restored.env \
-     -f docker-compose.published.yml up -d mysql redis
+     -f docker-compose.php.yml up -d mysql redis
    docker compose --env-file restored.env \
-     -f docker-compose.published.yml exec -T mysql \
+     -f docker-compose.php.yml exec -T mysql \
      sh -lc 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' \
      < "$BACKUP_DIR/database.sql"
    ```
@@ -111,9 +114,9 @@ restoring it into an isolated stack.
 
    ```bash
    docker compose --env-file restored.env \
-     -f docker-compose.published.yml up -d --wait
+     -f docker-compose.php.yml up -d --wait
    docker compose --env-file restored.env \
-     -f docker-compose.published.yml exec -T server \
+     -f docker-compose.php.yml exec -T server \
      php artisan external-payloads:backup-hold release --owner="$BACKUP_ID"
    ```
 
@@ -132,7 +135,7 @@ restoring it into an isolated stack.
 
    ```bash
    docker compose --env-file restored.env \
-     -f docker-compose.published.yml exec -T server \
+     -f docker-compose.php.yml exec -T server \
      php artisan workflow:v2:repair-pass --json
    ```
 
