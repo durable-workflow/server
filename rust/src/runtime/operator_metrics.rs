@@ -279,6 +279,14 @@ where
         }))
     }
 
+    /// `StructuralLimits::snapshot` as `/api/cluster/info` reports it: the
+    /// configured ceilings operator metrics reports. Native reads no
+    /// `DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES`, so that member is
+    /// left out and named as unqualified.
+    pub(super) async fn cluster_structural_limits(&self, config: &MetricsConfig) -> Result<Value> {
+        Ok(structural_limits(DB::PHP_CONNECTION, &config.structural, self.memo_size_limit)["configured"].clone())
+    }
+
     /// `GET /api/system/operator-metrics`: the snapshot with the sections the
     /// server adds.
     pub(super) async fn operator_metrics(&self, config: &MetricsConfig) -> Result<Value> {

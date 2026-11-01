@@ -14,7 +14,11 @@
 # the index, server#803 comment 6434047541).
 FROM mirror.gcr.io/library/rust@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS build
 ARG CARGO_BUILD_JOBS=2
-ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
+# The release version cluster info reports (the native- tag without its
+# prefix); empty outside a release build.
+ARG DW_SERVER_VERSION=
+ENV DW_SERVER_VERSION=${DW_SERVER_VERSION} \
+    CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
     CARGO_INCREMENTAL=0 \
     CARGO_PROFILE_RELEASE_DEBUG=0
 WORKDIR /source/rust

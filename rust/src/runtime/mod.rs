@@ -46,6 +46,7 @@ mod child_retries;
 mod child_summary;
 mod child_cancellation;
 mod children;
+mod cluster_info;
 mod command_context;
 mod command_requests;
 mod continuations;

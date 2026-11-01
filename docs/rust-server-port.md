@@ -269,16 +269,18 @@ contract fixture before its correction.
   PHP fills them from `workflow_run_waits` and
   `workflow_run_timeline_entries`. No SDK replayer or bundle verifier reads
   either section.
-- **Cluster info, remaining fields.** Native now answers runtime external
-  payload discovery as PHP does: the namespace storage policy, the transport
-  manifest and the request limits
-  ([checkpoint](rust-server-port-checkpoints/2026-10-23-runtime-payload-discovery.md)).
-  Still absent: `capabilities`, `structural_limits`,
-  `supported_sdk_versions`, `client_compatibility`, `discovery`,
-  `topology` and the conformance manifests. No SDK changes behavior on them.
-  Waterline's activity-result view waits on
-  `capabilities.workflow_activity_result_inspection`, which stays held until
-  that read is qualified. `version` is `0.0.0`.
+- **Cluster info, remaining fields** (November 1, narrowed). Native now
+  answers `version` (the release version, built in from the `native-` tag),
+  `capabilities`, `structural_limits` and `discovery`
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-cluster-capabilities.md)).
+  Capabilities are true only where native serves the feature.
+  `workflow_activity_result_inspection` is now advertised: the
+  `cluster-capabilities` fixture qualifies the activity result read against
+  published 2.11.7. Native advertises no manifest it does not publish and no
+  response compression. `native_unqualified` names each member it still
+  leaves out: `supported_sdk_versions`, `client_compatibility`, `topology`,
+  the diagnostics view, the external payload transaction limit and the
+  conformance manifests.
 - **Fairness within a priority tier.** Native claims tasks by priority, then
   availability, as PHP's candidate query orders them. PHP then rebalances
   each priority tier across fairness keys by their weights
@@ -675,9 +677,16 @@ contract fixture before its correction.
   evaluates candidate runs in list order, 500 at a time, until it has the
   requested page. A query that matches few runs in a large namespace reads
   every run of that namespace.
-- **Visibility query text comparisons.** PHP compares keyword and text
-  values with the database collation, which is case-insensitive in the
-  published MySQL schema. Native compares them exactly on every backend.
+- **Visibility query text comparisons** (October 30, closed). PHP compares
+  text in a structured list query with the database collation: exactly on
+  SQLite and PostgreSQL, and under the published MySQL schema's
+  `utf8mb4_unicode_ci`, which ignores case, accents and trailing spaces, for
+  attributes and run columns alike. Text fields accept only `=`, `!=` and
+  `IN`. Native compared exactly on every backend; on MySQL and MariaDB it
+  now compares each text by its collation key (`WEIGHT_STRING` of the value
+  without trailing spaces). The `visibility-collation` fixture records both
+  collations against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-visibility-collation.md)).
 - **Visibility query key order.** When one command or query has several
   errors, native reports them in sorted key order rather than request order.
   The same holds for several invalid search attributes on one start.
