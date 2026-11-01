@@ -458,10 +458,21 @@ contract fixture before its correction.
   the cancellation-scope routes use the same freshness check with
   `DW_WORKER_STALE_AFTER_SECONDS`; delivery used a fixed 60 seconds until
   October 28 (`cooperative_delivery_uses_the_configured_stale_window`).
-- **Retention of runs with external payloads.** Published PHP deletes a
-  pruned run's external payload objects. Native does not delete them yet: it
-  skips such a run with `external_payload_cleanup_unavailable` and keeps its
-  details. A run whose instance has inbound message streams is pruned as PHP's
+- **Retention of runs with external payloads** (November 1,
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-retention-external-payloads.md)).
+  A pruned run's external payloads now go with it, as published PHP's
+  `ExternalPayloadRetentionCleanup::deleteForRun` deletes them: a payload no
+  retained run holds loses its registration, and its object too when no
+  other namespace registers it, counted in `external_payloads_deleted`.
+  Without enabled local storage such a run is skipped with
+  `external_payload_storage_driver_unavailable`; a failed delete fails the
+  prune with PHP's message and keeps the run, registration and object. The
+  `retention-external-payloads` fixture records it against published 2.11.7.
+  A run holding a reference native cannot settle (PHP's stored format from a
+  workflow import, an envelope, or one on an inbound or durable stream) is
+  still skipped with `external_payload_cleanup_unavailable`, and native does
+  not mark the instance's inbound streams blocked on a skip as PHP does.
+  A run whose instance has inbound message streams is pruned as PHP's
   `MessageStreamRetentionCleanup` prunes it (October 27): the messages it
   consumed lose their payloads once a retained later run's cursor checkpoint
   covers them, and the instance's last retained run, once terminal, takes the

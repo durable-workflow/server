@@ -2,10 +2,14 @@
 //! loses its details, as published PHP prunes it. The run row stays, marked
 //! with `details_pruned_at`.
 //!
-//! Native never deletes stored external payload objects. A run that holds a
-//! reference to one, or an open abandoned activity, is skipped with its
-//! reason, so a prune never strands or loses data PHP would have handled.
-//! Inbound message streams are released as PHP's
+//! A pruned run's external payloads go with it, as PHP's
+//! `ExternalPayloadRetentionCleanup::deleteForRun` deletes them: each native
+//! reference no retained run still holds loses its registration, and its
+//! object too when no other namespace registers it (`retention_payloads`).
+//! A run holding a reference native cannot settle (PHP's stored format, an
+//! envelope, or one on a stream), or an open abandoned activity, is skipped
+//! with its reason, so a prune never strands or loses data PHP would have
+//! handled. Inbound message streams are released as PHP's
 //! `MessageStreamRetentionCleanup` releases them.
 use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use chrono::{DateTime, Duration, Utc};
@@ -64,20 +68,52 @@ macro_rules! reference {
 
 pub(super) use reference;
 
-/// The run's payload columns that can hold an external reference. History
-/// events repeat these payloads, so they are not scanned again. Inbound
-/// message stream items on the run's instance count too: retention blanks or
-/// deletes them, and native never deletes the stored object behind one.
-/// Nothing writes such an item today (append and takeover refuse external
-/// references), so this only keeps a later change from stranding objects.
-const REFERENCES_SQL: &str = concat!(
-    "SELECT (SELECT COUNT(*) FROM workflow_runs WHERE id=$1 AND (", reference!("arguments"), " OR ", reference!("output"), "))",
-    "+(SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$2 AND ", reference!("payload"), ")",
-    "+(SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$3 AND ", reference!("arguments"), ")",
-    "+(SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$4 AND (", reference!("arguments"), " OR ", reference!("result"), "))",
-    "+(SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$5 AND (", reference!("arguments"), " OR ", reference!("result"), "))",
-    "+(SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE stream_id IN (SELECT id FROM workflow_inbound_streams WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM workflow_runs WHERE id=$6)) AND ", reference!("payload_blob"), ")",
+/// The run's payload columns that can hold an external reference, each
+/// value that may hold one. History events repeat these payloads, so they
+/// are not scanned again. Native writes its own stored reference as a whole
+/// column value (`retention_payloads::native_reference`); any other value
+/// holding a reference marker keeps the run.
+pub(super) const REFERENCE_VALUES: &str = concat!(
+    "SELECT arguments AS value FROM workflow_runs WHERE id=$1 AND ", reference!("arguments"),
+    " UNION ALL SELECT output FROM workflow_runs WHERE id=$2 AND ", reference!("output"),
+    " UNION ALL SELECT payload FROM workflow_commands WHERE workflow_run_id=$3 AND ", reference!("payload"),
+    " UNION ALL SELECT arguments FROM workflow_signal_records WHERE workflow_run_id=$4 AND ", reference!("arguments"),
+    " UNION ALL SELECT arguments FROM workflow_updates WHERE workflow_run_id=$5 AND ", reference!("arguments"),
+    " UNION ALL SELECT result FROM workflow_updates WHERE workflow_run_id=$6 AND ", reference!("result"),
+    " UNION ALL SELECT arguments FROM activity_executions WHERE workflow_run_id=$7 AND ", reference!("arguments"),
+    " UNION ALL SELECT result FROM activity_executions WHERE workflow_run_id=$8 AND ", reference!("result"),
 );
+pub(super) const REFERENCE_VALUE_BINDS: usize = 8;
+
+/// Whether a run other than `$1` that keeps its details still holds a
+/// reference whose id matches the `LIKE` pattern, in the columns of
+/// `REFERENCE_VALUES`: `isReferencedByRetainedRun` for native references.
+/// Binds alternate the pruned run and the pattern, one per position.
+pub(super) const RETAINED_SQL: &str = concat!(
+    "SELECT (SELECT COUNT(*) FROM workflow_runs WHERE id<>$1 AND details_pruned_at IS NULL AND (arguments LIKE $2 OR output LIKE $3))",
+    "+(SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE id<>$4 AND details_pruned_at IS NULL) AND payload LIKE $5)",
+    "+(SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE id<>$6 AND details_pruned_at IS NULL) AND arguments LIKE $7)",
+    "+(SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE id<>$8 AND details_pruned_at IS NULL) AND (arguments LIKE $9 OR result LIKE $10))",
+    "+(SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE id<>$11 AND details_pruned_at IS NULL) AND (arguments LIKE $12 OR result LIKE $13))",
+);
+/// `RETAINED_SQL`'s binds: true for the run id, false for the pattern.
+pub(super) const RETAINED_BINDS: [bool; 13] =
+    [true, false, false, true, false, true, false, true, false, false, true, false, false];
+
+/// Inbound message stream items on the run's instance holding a reference:
+/// retention blanks or deletes them, and native does not settle the stored
+/// object behind one. Nothing writes such an item today (append and takeover
+/// refuse external references), so this only keeps a later change from
+/// stranding objects.
+const INBOUND_REFERENCES_SQL: &str = concat!(
+    "SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE stream_id IN (SELECT id FROM workflow_inbound_streams WHERE workflow_instance_id IN (SELECT workflow_instance_id FROM workflow_runs WHERE id=$1)) AND ", reference!("payload_blob"),
+);
+
+/// PHP's error outcome when deleting a run's external payload fails: an
+/// unavailable driver, an active online-backup hold, or a storage or
+/// registry failure. The prune rolls back and keeps the run, its object and
+/// its registration for a later pass.
+pub(super) const PAYLOAD_CLEANUP_FAILED: &str = "Unable to delete external payload reference during retention cleanup.";
 
 /// The run's durable workflow streams, deleted with it as PHP's
 /// `HistoryRetentionEnforcer::pruneRun` deletes them (Server #774): report
@@ -96,7 +132,7 @@ pub(super) const STREAM_COUNTS: [&str; 3] =
 /// skip reason. An abandoned activity's hold is read from history. Durable
 /// workflow streams go with the run (`DURABLE_STREAMS`) unless they hold an
 /// external reference (`Backend::RUN_STREAM_REFERENCES`).
-pub(super) const HOLDS: &[(&str, usize, &str)] = &[(REFERENCES_SQL, 6, "external_payload_cleanup_unavailable")];
+pub(super) const HOLDS: &[(&str, usize, &str)] = &[(INBOUND_REFERENCES_SQL, 1, "external_payload_cleanup_unavailable")];
 
 /// `MessageStreamRetentionCleanup::planForRun`'s plan for one run: the
 /// instance's inbound streams, whether they all go with the instance's last
@@ -200,7 +236,8 @@ pub(super) fn pass_request(body: &Value, field: &'static str) -> super::Result<(
 
 /// What a prune attempt did to one run.
 pub(super) enum Outcome {
-    Pruned(Map<String, Value>),
+    /// The deletes and the external payloads deleted.
+    Pruned(Map<String, Value>, i64),
     Skipped(&'static str),
     Error(String),
 }
@@ -212,10 +249,10 @@ pub(super) fn report(outcomes: Vec<(String, Outcome)>) -> Map<String, Value> {
     let results: Vec<Value> = outcomes
         .into_iter()
         .map(|(run_id, outcome)| match outcome {
-            Outcome::Pruned(deleted) => {
+            Outcome::Pruned(deleted, external_payloads) => {
                 pruned += 1;
                 json!({"run_id": run_id, "outcome": "pruned", "history_events_deleted": deleted["history_events_deleted"],
-                    "tasks_deleted": deleted["tasks_deleted"], "external_payloads_deleted": 0, "deleted": deleted})
+                    "tasks_deleted": deleted["tasks_deleted"], "external_payloads_deleted": external_payloads, "deleted": deleted})
             }
             Outcome::Skipped(reason) => {
                 skipped += 1;
@@ -283,10 +320,18 @@ mod tests {
             assert_eq!(sql.matches('$').count(), *binds, "{sql}");
         }
         assert_eq!(PRUNED.last().unwrap().0, "run_summary_deleted");
+        // One placeholder per position, in order, as MySQL binds them.
+        let placeholders = |sql: &str, binds: usize| {
+            let found: Vec<usize> = sql.split('$').skip(1)
+                .map(|rest| rest.chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap())
+                .collect();
+            assert_eq!(found, (1..=binds).collect::<Vec<_>>(), "{sql}");
+        };
         for (sql, binds, _) in HOLDS {
-            assert_eq!((1..=*binds).filter(|index| sql.contains(&format!("${index}"))).count(), *binds, "{sql}");
-            assert!(!sql.contains(&format!("${}", binds + 1)), "{sql}");
+            placeholders(sql, *binds);
         }
+        placeholders(REFERENCE_VALUES, REFERENCE_VALUE_BINDS);
+        placeholders(RETAINED_SQL, RETAINED_BINDS.len());
     }
 
     #[test]
@@ -307,13 +352,15 @@ mod tests {
         deleted.insert("history_events_deleted".into(), json!(3));
         deleted.insert("tasks_deleted".into(), json!(1));
         let report = report(vec![
-            ("a".into(), Outcome::Pruned(deleted)),
+            ("a".into(), Outcome::Pruned(deleted, 2)),
             ("b".into(), Outcome::Skipped("run_not_terminal")),
             ("c".into(), Outcome::Error("boom".into())),
         ]);
         assert_eq!((report["processed"].clone(), report["pruned"].clone(), report["skipped"].clone(), report["failed"].clone()),
             (json!(3), json!(1), json!(1), json!(1)));
         assert_eq!(report["results"][0]["history_events_deleted"], 3);
+        assert_eq!(report["results"][0]["external_payloads_deleted"], 2);
+        assert!(report["results"][1].get("external_payloads_deleted").is_none());
         assert_eq!(inline_report(true, None), json!({"throttled":true,"processed":0,"pruned":0,"skipped":0,"failed":0}));
     }
 }

@@ -1372,6 +1372,11 @@ where
         if DB::optional_instant(&run, "closed_at")?.is_none() {
             return Ok(Error(format!("Workflow run [{run_id}] has not been closed.")));
         }
+        // The run's external payloads, settled after its rows are deleted.
+        let payloads = match self.retention_payload_plan(&mut tx, run_id).await? {
+            Ok(plan) => plan,
+            Err(outcome) => return Ok(outcome),
+        };
         let mut deleted = serde_json::Map::new();
         deleted.insert("run_deleted".into(), json!(0));
         // Planned before the run's own summary goes, as PHP plans it.
@@ -1393,6 +1398,9 @@ where
         for (key, value) in retention::STREAM_COUNTS.into_iter().zip([streams_deleted, items_deleted, items_compacted]) {
             deleted.insert(key.into(), json!(value));
         }
+        let Ok(external_payloads) = self.delete_retention_payloads(&mut tx, run_id, payloads).await else {
+            return Ok(Error(retention::PAYLOAD_CLEANUP_FAILED.into()));
+        };
         // The run's history is gone; no cached read of it may survive.
         tx.scope_history = None;
         Self::query("UPDATE workflow_runs SET details_pruned_at=$1 WHERE id=$2 AND details_pruned_at IS NULL")
@@ -1401,7 +1409,7 @@ where
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(Pruned(deleted))
+        Ok(Pruned(deleted, external_payloads))
     }
 
     /// `MessageStreamRetentionCleanup::planForRun`: what pruning `run_id`
@@ -1514,9 +1522,10 @@ where
         Ok(counts)
     }
 
-    /// What keeps a closed run's details: an activity it abandoned that is
-    /// still open, or a stored external payload reference, whose cleanup
-    /// native does not perform yet.
+    /// What keeps a closed run's details before its transaction: an activity
+    /// it abandoned that is still open, or an external payload reference on
+    /// an inbound or durable stream, which native does not settle. The run's
+    /// other references are settled in its transaction (`retention_payloads`).
     async fn retention_hold(&self, run_id: &str) -> Result<Option<&'static str>> {
         if self.abandoned_activity_open(run_id).await? {
             return Ok(Some("detached_activity_still_open"));

@@ -106,6 +106,7 @@ mod query_contract;
 mod repair_candidates;
 mod repair_pass;
 mod retention;
+mod retention_payloads;
 mod runtime_credentials;
 mod run_observation;
 mod run_observation_store;

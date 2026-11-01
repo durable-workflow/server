@@ -94,6 +94,7 @@ on:
       - tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs
       - tests/Unit/ServerParityPrometheusMetricsContractTest.mjs
       - tests/Unit/ServerParityPayloadCleanupContractTest.mjs
+      - tests/Unit/ServerParityRetentionPayloadsContractTest.mjs
       - tests/Unit/ServerParityRepairPassContractTest.mjs
       - tests/Unit/ServerParityClusterInfoContractTest.mjs
       - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
@@ -2244,6 +2245,7 @@ jobs:
               tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs \
               tests/Unit/ServerParityPrometheusMetricsContractTest.mjs \
               tests/Unit/ServerParityPayloadCleanupContractTest.mjs \
+              tests/Unit/ServerParityRetentionPayloadsContractTest.mjs \
               tests/Unit/ServerParityRepairPassContractTest.mjs \
               tests/Unit/ServerParityClusterInfoContractTest.mjs \
               tests/Unit/ServerParityNamespaceDeleteContractTest.mjs \
