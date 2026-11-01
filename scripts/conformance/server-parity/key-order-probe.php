@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use DurableWorkflow\Client;
 use GuzzleHttp\Client as KeyOrderHttp;
+use GuzzleHttp\HandlerStack;
 
 // Key order in plain JSON input and in search attribute validation, over raw
 // HTTP in a fresh namespace without registered search attributes (published
@@ -20,8 +21,12 @@ function finishHttpKeyOrder(Client $admin, array $fixture, string $workflowId, s
     $namespace = strtolower($workflowId.'-ko');
     $admin->createNamespace($namespace, 'key order λ', 30);
     $token = getenv('DW_PARITY_TOKEN') ?: null;
+    // The upsert case polls the published PHP SQLite reference while its
+    // maintenance loop runs; its documented lock-pressure refusal is retried.
+    $stack = HandlerStack::create();
+    $stack->push(LockPressurePollRetries::middleware(), 'lock_pressure_poll_retry');
     $http = new KeyOrderHttp(['base_uri' => rtrim($url, '/').'/api/', 'http_errors' => false,
-        'connect_timeout' => 1, 'timeout' => 15]);
+        'connect_timeout' => 1, 'timeout' => 15, 'handler' => $stack]);
     $headers = array_filter([
         'Authorization' => $token === null ? null : 'Bearer '.$token,
         'Accept' => 'application/json', 'X-Namespace' => $namespace,
