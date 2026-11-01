@@ -1091,6 +1091,22 @@ jobs:
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:be7c2288ff935396262d743590530b204fac11b76582e56a525cc81a8da840d3
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh mysql
+      - name: Back up, take over and resume a published PHP 2.11.8 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
+        timeout-minutes: 8
+        env:
+          DW_PARITY_UPGRADE_LABEL: php2118
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.8
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd
+        run: bash scripts/conformance/server-parity/upgrade-source-profile.sh mysql
+      - name: Retire PHP 2.11.8 upgrade source cohort
+        if: ${{ always() && matrix.part == 'cohorts' }}
+        timeout-minutes: 3
+        env:
+          DW_PARITY_UPGRADE_LABEL: php2118
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.8
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd
+        run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh mysql
       - name: Start the native node the corrected marker cohort uses
         id: prepare_corrected
         if: ${{ matrix.part == 'corrected-markers' }}
@@ -1821,6 +1837,22 @@ jobs:
           DW_PARITY_UPGRADE_LABEL: php2117
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:be7c2288ff935396262d743590530b204fac11b76582e56a525cc81a8da840d3
+        run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh pgsql
+      - name: Back up, take over and resume a published PHP 2.11.8 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
+        timeout-minutes: 8
+        env:
+          DW_PARITY_UPGRADE_LABEL: php2118
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.8
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd
+        run: bash scripts/conformance/server-parity/upgrade-source-profile.sh pgsql
+      - name: Retire PHP 2.11.8 upgrade source cohort
+        if: ${{ always() && matrix.part == 'cohorts' }}
+        timeout-minutes: 3
+        env:
+          DW_PARITY_UPGRADE_LABEL: php2118
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.8
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh pgsql
       - name: Start the native node the corrected marker cohort uses
         id: prepare_corrected
@@ -2648,6 +2680,24 @@ jobs:
           DW_PARITY_UPGRADE_LABEL: php2117
           DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.3
           DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:be7c2288ff935396262d743590530b204fac11b76582e56a525cc81a8da840d3
+        run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh sqlite
+      - name: Back up, take over and resume a published PHP 2.11.8 upgrade source
+        if: ${{ matrix.part == 'cohorts' }}
+        timeout-minutes: 8
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          DW_PARITY_UPGRADE_LABEL: php2118
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.8
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd
+        run: bash scripts/conformance/server-parity/upgrade-source-profile.sh sqlite
+      - name: Retire PHP 2.11.8 upgrade source cohort
+        if: ${{ always() && matrix.part == 'cohorts' }}
+        timeout-minutes: 3
+        env:
+          RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          DW_PARITY_UPGRADE_LABEL: php2118
+          DW_PARITY_UPGRADE_EXPECTED_LAYOUT: php-2.11.8
+          DW_PARITY_UPGRADE_PHP_IMAGE: ghcr.io/durable-workflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd
         run: bash scripts/conformance/server-parity/upgrade-source-cleanup.sh sqlite
       - name: Start the native node the corrected marker cohort uses
         id: prepare_corrected

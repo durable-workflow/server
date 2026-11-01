@@ -3,6 +3,7 @@ pub mod external_reference;
 pub mod fingerprint;
 pub mod takeover;
 mod dispatch_scan;
+mod deletion_scan;
 mod stream_scan;
 mod payload_scan;
 mod schedule_scan;
@@ -33,13 +34,15 @@ const BUDGET: Duration = Duration::from_secs(30);
 /// A release can have several layouts: core migrations run in file order, so
 /// a database an older release created can order columns differently from a
 /// fresh one. Each such variant descends from the matching older variant.
-pub(super) const SOURCE_LAYOUTS: [(&str, &str); 6] = [
+pub(super) const SOURCE_LAYOUTS: [(&str, &str); 8] = [
     ("php-2.8.0", "frozen"),
     ("php-2.9.7", "php-2.8.0"),
     ("php-2.11.1", "php-2.9.7"),
     ("php-2.11.1-from-2.9.7", "php-2.11.1"),
     ("php-2.11.3", "php-2.11.1"),
     ("php-2.11.3-from-2.9.7", "php-2.11.1-from-2.9.7"),
+    ("php-2.11.8", "php-2.11.3"),
+    ("php-2.11.8-from-2.9.7", "php-2.11.3-from-2.9.7"),
 ];
 
 /// The number of recorded layouts after the frozen one.
@@ -261,6 +264,7 @@ fn report(
     storage_inspection: Value,
     dispatch_inspection: Value,
     stream_inspection: Value,
+    deletion_inspection: Value,
 ) -> Result<Value> {
     let digest = Sha256::digest(serde_json::to_vec(catalog)?)
         .iter()
@@ -301,6 +305,10 @@ fn report(
         report["status"] = json!("unqualified");
     }
     report["stream_reference_inspection"] = stream_inspection;
+    if deletion_inspection["unsupported"] != 0 {
+        report["status"] = json!("unqualified");
+    }
+    report["external_payload_deletion_inspection"] = deletion_inspection;
     Ok(report)
 }
 
@@ -476,6 +484,7 @@ pub(super) async fn sqlite_inventory(
     let schedule_inspection = schedule_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     let dispatch_inspection = dispatch_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?;
+    let deletion_inspection = deletion_scan::inspect::<sqlx::Sqlite>(&mut *tx, &counts).await?;
     let stream_inspection = stream_scan::inspect::<sqlx::Sqlite>(&mut *tx).await?;
     report(
         "sqlite",
@@ -488,6 +497,7 @@ pub(super) async fn sqlite_inventory(
         storage_inspection,
         dispatch_inspection,
         stream_inspection,
+        deletion_inspection,
     )
 }
 
@@ -753,6 +763,7 @@ pub(super) async fn mysql_inventory(
     let schedule_inspection = schedule_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     let dispatch_inspection = dispatch_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?;
+    let deletion_inspection = deletion_scan::inspect::<sqlx::MySql>(&mut *tx, &counts).await?;
     let stream_inspection = stream_scan::inspect::<sqlx::MySql>(&mut *tx).await?;
     // MySQL's metadata is not an MVCC snapshot. Refuse a changed visible
     // catalog rather than joining counts to a different schema.
@@ -773,6 +784,7 @@ pub(super) async fn mysql_inventory(
         storage_inspection,
         dispatch_inspection,
         stream_inspection,
+        deletion_inspection,
     )
 }
 
@@ -842,6 +854,7 @@ pub(super) async fn postgres_inventory(
     let schedule_inspection = schedule_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     let storage_inspection = storage_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     let dispatch_inspection = dispatch_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?;
+    let deletion_inspection = deletion_scan::inspect::<sqlx::Postgres>(&mut *tx, &counts).await?;
     let stream_inspection = stream_scan::inspect::<sqlx::Postgres>(&mut *tx).await?;
     report(
         "pgsql",
@@ -854,6 +867,7 @@ pub(super) async fn postgres_inventory(
         storage_inspection,
         dispatch_inspection,
         stream_inspection,
+        deletion_inspection,
     )
 }
 

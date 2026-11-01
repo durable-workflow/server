@@ -262,6 +262,14 @@ fn qualified(inventory: &Value) -> Result<&str> {
             "upgrade_source_service_calls_workflow_bound_open",
         ));
     }
+    // A pending deletion of PHP 2.11.8's that native could never finish
+    // would leave its object forever.
+    if inventory["external_payload_deletion_inspection"]["unsupported"] != 0 {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "upgrade_source_external_payload_deletions_unsupported",
+        ));
+    }
     // A schedule native cannot run would stop firing after takeover.
     if inventory["schedule_inspection"]["unsupported"] != 0 {
         return Err(refuse(
@@ -362,6 +370,8 @@ where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> String: Encode<'q, DB> + Type<DB>,
+    for<'q> Option<String>: Encode<'q, DB> + Type<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB>,
 {
     let php_incarnations = php_incarnations(layout)?;
     let (copied, created) = adopt_incarnations::<DB>(tx, php_incarnations).await?;
@@ -417,6 +427,15 @@ where
     } else {
         json!({})
     };
+    let release_2118 = if super::has_release(layout, "php-2.11.8") {
+        let deletions = adopt_payload_deletions::<DB>(tx, PAYLOAD_DELETIONS).await?;
+        sqlx::raw_sql("DROP TABLE runtime_external_payload_deletions")
+            .execute(&mut *tx)
+            .await?;
+        json!({"external_payload_deletions_copied": deletions})
+    } else {
+        json!({})
+    };
     let mut converted = json!({
         "incarnations_copied":copied, "incarnations_created":created,
         "session_holders_recorded":holders,
@@ -425,8 +444,10 @@ where
         "observability_contexts_removed":observability_contexts,
         "stream_reclaims_recorded":reclaims
     });
-    if let (Value::Object(converted), Value::Object(release)) = (&mut converted, release_2113) {
-        converted.extend(release);
+    for release in [release_2113, release_2118] {
+        if let (Value::Object(converted), Value::Object(release)) = (&mut converted, release) {
+            converted.extend(release);
+        }
     }
     Ok(converted)
 }
@@ -463,6 +484,49 @@ where
             .bind(DB::string(row, "namespace")?)
             .bind(DB::string(row, "workflow_run_id")?)
             .bind(DB::bind_time(reclaim_at))
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(rows.len())
+}
+
+/// PHP 2.11.8's pending deletions not copied yet, oldest first.
+pub(super) const PAYLOAD_DELETIONS: &str = "SELECT id,namespace,storage_uri,storage_uri_sha256,storage_policy,attempts,failure_code,created_at,updated_at FROM runtime_external_payload_deletions WHERE id NOT IN (SELECT id FROM dw_external_payload_deletions) ORDER BY id";
+/// The same rows on MySQL and MariaDB, where `attempts` is `INT UNSIGNED`.
+pub(super) const MYSQL_PAYLOAD_DELETIONS: &str = "SELECT id,namespace,storage_uri,storage_uri_sha256,storage_policy,CAST(attempts AS SIGNED) AS attempts,failure_code,created_at,updated_at FROM runtime_external_payload_deletions WHERE id NOT IN (SELECT id FROM dw_external_payload_deletions) ORDER BY id";
+
+/// Carries PHP 2.11.8's pending external payload deletions over to native's
+/// `dw_external_payload_deletions`, which native's cleanup and retention
+/// passes retry exactly as PHP's do: the same id, object, saved storage
+/// policy, attempt count and recorded failure. Inspection already refused a
+/// deletion native could never finish. No object is deleted here. A repeated
+/// call copies only rows not copied yet; returns how many it copied.
+pub(super) async fn adopt_payload_deletions<DB: Backend>(
+    tx: &mut DB::Connection,
+    select: &'static str,
+) -> Result<usize>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+    for<'q> Option<String>: Encode<'q, DB> + Type<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB>,
+{
+    let rows = query::<DB>(select).fetch_all(&mut *tx).await?;
+    let now = chrono::Utc::now();
+    for row in &rows {
+        let updated_at = DB::optional_instant(row, "updated_at")?;
+        let created_at = DB::optional_instant(row, "created_at")?.or(updated_at).unwrap_or(now);
+        query::<DB>("INSERT INTO dw_external_payload_deletions(id,namespace,storage_uri,storage_uri_sha256,storage_policy,attempts,failure_code,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+            .bind(DB::string(row, "id")?)
+            .bind(DB::string(row, "namespace")?)
+            .bind(DB::string(row, "storage_uri")?)
+            .bind(DB::string(row, "storage_uri_sha256")?)
+            .bind(DB::document_row(row, "storage_policy")?.to_string())
+            .bind(DB::number(row, "attempts")?)
+            .bind(DB::optional_string(row, "failure_code")?)
+            .bind(DB::bind_time(created_at))
+            .bind(DB::bind_time(updated_at.unwrap_or(created_at)))
             .execute(&mut *tx)
             .await?;
     }

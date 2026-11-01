@@ -125,6 +125,8 @@ pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<
             include_str!("../../upgrade/php-2.11.1-from-2.9.7/postgres.json"),
             include_str!("../../upgrade/php-2.11.3/postgres.json"),
             include_str!("../../upgrade/php-2.11.3-from-2.9.7/postgres.json"),
+            include_str!("../../upgrade/php-2.11.8/postgres.json"),
+            include_str!("../../upgrade/php-2.11.8-from-2.9.7/postgres.json"),
         ],
         |row| (row.0.clone(), row.1.clone()),
     )?;
@@ -864,6 +866,12 @@ mod tests {
          ALTER TABLE workflow_durable_streams ADD COLUMN reclaim_at timestamp(6) without time zone;
          CREATE INDEX wf_durable_streams_ns_reclaim_idx ON workflow_durable_streams (namespace, reclaim_at, id);";
 
+    /// PHP 2.11.8's pending external payload deletions, as a published 2.11.8
+    /// bootstrap creates them on PostgreSQL.
+    const RELEASE_2118: &str = "CREATE TABLE runtime_external_payload_deletions (id varchar(26) NOT NULL, namespace varchar(191) NOT NULL, storage_uri text NOT NULL, storage_uri_sha256 varchar(64) NOT NULL, storage_policy json NOT NULL, attempts integer NOT NULL DEFAULT '0', failure_code varchar(255), created_at timestamp(0) without time zone, updated_at timestamp(0) without time zone, PRIMARY KEY (id));
+         ALTER TABLE runtime_external_payload_deletions ADD CONSTRAINT runtime_payload_deletions_namespace_uri_unique UNIQUE (namespace, storage_uri_sha256);
+         CREATE INDEX runtime_payload_deletions_namespace_created_index ON runtime_external_payload_deletions (namespace, created_at);";
+
     /// The frozen PHP layout with a release's changes applied in order.
     async fn php_release(db: &Database, changes: &[&'static str]) -> PgConnection {
         let frozen = include_str!("../../migrations/postgres/0003_full_schema.sql");
@@ -975,6 +983,47 @@ mod tests {
             connection.close().await.unwrap();
             let storage = PostgresStorage::open(db.options.clone()).await.unwrap();
             storage.close().await;
+            PostgresStorage::check(db.options.clone()).await.unwrap();
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_carries_php_2118_pending_deletions_over() {
+        for (release, changes) in [
+            ("php-2.11.8", [PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113, RELEASE_2118]),
+            ("php-2.11.8-from-2.9.7", [PHP_280_CHANGES, QUEUE_DELIVERY, TRACE_CARRIERS, RELEASE_2113, RELEASE_2118]),
+        ] {
+            let db = Database::new().await;
+            let mut connection = php_release(&db, &changes).await;
+            for statement in [
+                "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,created_at,updated_at) VALUES ('current','default','q','php','0123456789abcdef0123456789abcdef','2026-10-20 09:00:00','2026-10-20 09:00:00')",
+                "INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','current','active',0,NULL,'2026-10-20 09:00:00','2026-10-20 09:00:00')",
+                r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel1','default','file:///payloads/default/a','aaaa','{"driver":"local","enabled":true}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#,
+                r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel2','gone','file:///payloads/gone/b','bbbb','[]',3,'backup_hold','2026-11-01 09:00:00','2026-11-01 09:30:00')"#,
+            ] {
+                sqlx::raw_sql(statement).execute(&mut connection).await.unwrap();
+            }
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+                .await
+                .unwrap();
+            assert_eq!(report["status"], "taken_over", "{report}");
+            assert_eq!(report["source_layout"], release);
+            assert_eq!(report["converted"]["external_payload_deletions_copied"], 2, "{report}");
+            let mut connection = db.connection().await;
+            let copied: Vec<(String, i64, Option<String>, String, String)> = sqlx::query_as("SELECT id,attempts,failure_code,storage_policy,to_char(updated_at,'YYYY-MM-DD HH24:MI:SS') FROM dw_external_payload_deletions ORDER BY id")
+                .fetch_all(&mut connection).await.unwrap();
+            assert_eq!(copied.len(), 2, "{release}");
+            assert_eq!((copied[0].1, copied[0].2.as_deref()), (0, None));
+            assert_eq!(serde_json::from_str::<Value>(&copied[0].3).unwrap(), serde_json::json!({"driver":"local","enabled":true}));
+            assert_eq!((copied[1].1, copied[1].2.as_deref(), copied[1].4.as_str()), (3, Some("backup_hold"), "2026-11-01 09:30:00"));
+            let left: bool = sqlx::query_scalar("SELECT to_regclass('public.runtime_external_payload_deletions') IS NOT NULL")
+                .fetch_one(&mut connection).await.unwrap();
+            assert!(!left, "{release}: PHP's table is gone");
+            connection.close().await.unwrap();
             PostgresStorage::check(db.options.clone()).await.unwrap();
             db.remove().await;
         }
