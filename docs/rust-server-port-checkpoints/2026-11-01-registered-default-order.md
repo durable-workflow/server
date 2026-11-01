@@ -72,9 +72,13 @@
     order, and descending integer keys are unencodable.
   - `query_contract_arguments.rs` execution test: the worker receives
     `{z, a}` in registered order, and `{"1": "y", "0": "x"}` answers
-    `query_default_unencodable`. This fails on the previous source.
+    `query_default_unencodable`.
   - `json_order.rs` unit test.
-  - Updated expectations in `search_attribute_upserts.rs` and
-    `task_queue_build_ids.rs` give PHP's order for their inputs.
+  - Updated expectations give PHP's order for their inputs: the
+    `search_attribute_upserts.rs` unit and execution tests (PHP's
+    validator reports in request order), and `task_queue_build_ids.rs`.
+  - The history export execution test sorts the bundle's keys itself
+    before checking its checksum, as PHP's canonical JSON does. It had
+    relied on sorted maps.
   - `ServerParityQueryContractArgumentsContractTest.mjs` covers both
     backend outcomes and rejects sorted maps and mismatched pairs.
