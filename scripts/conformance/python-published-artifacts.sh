@@ -298,7 +298,8 @@ def resolve_server() -> tuple[str, str]:
         payload = read_json(url)
         tags.extend(str(item.get("name", "")) for item in payload.get("results", []))
         url = payload.get("next")
-    exact = [tag for tag in tags if exact_server_tag(tag)]
+    # Auto-selection follows the PHP 2.x line; native releases are 3.x (Server #325).
+    exact = [tag for tag in tags if exact_server_tag(tag) and tag.startswith("2.")]
     if not exact:
         raise RuntimeError("no exact durableworkflow/server SemVer tag found")
     version = sorted(exact, key=semver_key, reverse=True)[0]
