@@ -67,7 +67,9 @@ function finishHttpRetentionPayloads(Client $admin, array $fixture, string $work
         $result = $report['results'][0] ?? [];
         $state['steps'][$step] = ['status' => $status, 'processed' => $report['processed'] ?? null,
             'run' => ($result['run_id'] ?? null) === $runId ? $label : ($result['run_id'] ?? null),
-            'result' => array_intersect_key($result, array_flip(['outcome', 'reason', 'external_payloads_deleted']))];
+            'result' => array_intersect_key($result, array_flip(['outcome', 'reason', 'external_payloads_deleted'])),
+            // 2.11.8's post-commit provider deletions still pending (#911).
+            'cleanup' => $report['external_payload_cleanup'] ?? null];
     };
     $fetch = static function (string $step, string $in, array $reference) use ($http, $headers, &$state): void {
         $response = $http->get('external-payloads/v1/'.rawurlencode((string) ($reference['reference_id'] ?? '')), [

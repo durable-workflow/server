@@ -8,7 +8,7 @@ test -n "$RESOURCE_SCOPE"
 scope_identity="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"
 case "$RESOURCE_SCOPE" in *"$scope_identity"*) ;; *) exit 2 ;; esac
 backend="$1"
-image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.7.json)
+image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.8.json)
 rust_image=mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0
 fixture=tests/Fixtures/ServerParityProfiles/role-tokens/admission-role-tokens.json
 credentials=(-e DW_AUTH_TOKEN=parity-role-legacy -e DW_WORKER_TOKEN=parity-role-worker

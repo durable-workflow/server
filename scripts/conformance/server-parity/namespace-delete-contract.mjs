@@ -24,7 +24,9 @@ export function checkNamespaceDelete(fixture, observation, workflowId) {
 
   equal(state.deleted.status, 200, 'namespace deleted');
   const {deleted, ...response} = state.deleted.response;
-  equal(response, {name: namespace, status: 'deleted'}, 'delete response');
+  // 2.11.8 always reports its post-commit payload deletions (#911).
+  equal(response, {name: namespace, status: 'deleted', external_payload_cleanup: definition.external_payload_cleanup},
+    'delete response');
   const exact = Object.fromEntries(Object.entries(deleted).filter(([key]) => !definition.asynchronous_projections.includes(key)));
   equal(exact, definition.deleted, 'each owned table deleted with its count');
   for (const key of definition.asynchronous_projections) {

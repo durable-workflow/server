@@ -203,6 +203,16 @@ where
         {
             return Ok(true);
         }
+        // A resolved child beside an open timer, while a workflow task that
+        // will apply it carries the run (a lease that completed without the
+        // child's result, workflow#962): published 2.11.8 describes the
+        // timer and reports no problem (`child-open-parent-task`, leased).
+        if summary.wait.as_ref().is_some_and(|wait| wait.kind == "timer")
+            && summary.task_type.as_deref() == Some("workflow")
+            && rows.iter().all(|row| DB::string(row, "status").is_ok_and(|status| status != "open"))
+        {
+            return Ok(true);
+        }
         if summary
             .wait
             .as_ref()

@@ -319,6 +319,9 @@ function patchEmbeddedPhase(array $fixture, array $options): array
     $definition = ($fixture['patch_deployment']['original_patch'] ?? false) ? 'replacement' : $options['patch-phase'];
     require __DIR__.'/patch-deployment-'.$definition.'.php';
     config(['queue.default' => 'database', 'workflows.v2.task_dispatch_mode' => 'queue',
+        // Core 2.15.12 (Server 2.11.8) resolves a run through its instance's
+        // namespace, and reserves a caller-named instance without model events.
+        'workflows.v2.namespace' => 'default',
         'workflows.v2.types.workflows' => [$fixture['workflow_type'] => \ServerParityPatch\DeploymentWorkflow::class],
         'workflows.v2.types.activities' => ['parity.v1.echo_activity' => \ServerParity\EchoActivity::class]]);
     foreach ([WorkflowInstance::class, WorkflowRun::class, WorkflowTask::class] as $model) {

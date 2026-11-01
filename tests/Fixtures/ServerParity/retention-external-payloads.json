@@ -86,6 +86,11 @@
         "result": {
           "outcome": "pruned",
           "external_payloads_deleted": 1
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "sole fetched": {
@@ -99,6 +104,11 @@
         "result": {
           "outcome": "pruned",
           "external_payloads_deleted": 0
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "shared fetched while held": {
@@ -112,6 +122,11 @@
         "result": {
           "outcome": "pruned",
           "external_payloads_deleted": 1
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "shared fetched": {
@@ -125,6 +140,11 @@
         "result": {
           "outcome": "pruned",
           "external_payloads_deleted": 0
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "peer pruned": {
@@ -134,6 +154,11 @@
         "result": {
           "outcome": "pruned",
           "external_payloads_deleted": 1
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "peer-held fetched": {
@@ -147,6 +172,11 @@
         "result": {
           "outcome": "pruned",
           "external_payloads_deleted": 0
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "storage off: sole skipped": {
@@ -156,6 +186,11 @@
         "result": {
           "outcome": "skipped",
           "reason": "external_payload_storage_driver_unavailable"
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "storage on: sole pruned": {
@@ -165,6 +200,11 @@
         "result": {
           "outcome": "pruned",
           "external_payloads_deleted": 1
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "storage on: sole fetched": {

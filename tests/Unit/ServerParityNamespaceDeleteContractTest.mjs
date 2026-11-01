@@ -6,11 +6,13 @@ import {checkNamespaceDelete} from '../../scripts/conformance/server-parity/name
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/namespace-delete.json', import.meta.url)));
 const namespace = 'test-delete';
 const gone = {status: 404, response: {message: `Namespace [${namespace}] not found.`, reason: 'namespace_not_found', namespace}};
-// What published PHP 2.5.14 answered for this fixture.
+// What published PHP answers for this fixture: 2.5.14's deletion, with the
+// post-commit payload deletion counts 2.11.8 adds (#911).
 const model = () => structuredClone({mode: 'http', namespace_delete: {applicable: true, namespace,
   created: {name: namespace, description: 'delete me λ', retention_mode: 'bounded', retention_days: 30, status: 'active'},
   search_attribute: 201, started: 'pending',
-  deleted: {status: 200, response: {name: namespace, status: 'deleted', deleted: {workflow_commands: 1,
+  deleted: {status: 200, response: {name: namespace, status: 'deleted',
+    external_payload_cleanup: {pending: 0, failed: 0, blocked: 0}, deleted: {workflow_commands: 1,
     workflow_history_events: 2, workflow_tasks: 1, search_attribute_definitions: 1, workflow_run_summaries: 1,
     workflow_runs: 1, workflow_instances: 1}}},
   described_after: gone, deleted_again: gone,
@@ -32,6 +34,8 @@ for (const [label, mutate] of [
   ['another namespace', s => s.namespace = 'default'],
   ['a refused delete', s => s.deleted = {status: 503, response: {reason: 'external_payload_storage_driver_unavailable'}}],
   ['another status word', s => s.deleted.response.status = 'removed'],
+  ['the cleanup counts missing', s => delete s.deleted.response.external_payload_cleanup],
+  ['a pending provider deletion', s => s.deleted.response.external_payload_cleanup.pending = 1],
   ['an owned table left behind', s => delete s.deleted.response.deleted.workflow_tasks],
   ['a count off by one', s => s.deleted.response.deleted.workflow_history_events = 3],
   ['a zero count reported', s => s.deleted.response.deleted.workflow_memos = 0],

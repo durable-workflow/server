@@ -1773,6 +1773,7 @@ impl Runtime {
     delegate!(show_service_call(names: [&str; 3], id: &str) -> Result<Value>);
     delegate!(cancel_service_call(names: [&str; 3], id: &str, reason: Option<String>) -> Result<(StatusCode, Value)>);
     delegate!(import_existing_run(run_id: &str) -> Result<Option<super::workflow_import::ExistingRun>>);
+    delegate!(import_instance_namespace(instance_id: &str) -> Result<Option<String>>);
     delegate!(import_write(plan: &super::workflow_import::Plan) -> std::result::Result<super::workflow_import::Rows, String>);
     delegate!(waterline_existing(workflow_id: &str, run_id: &str) -> Result<super::waterline_import::Existing>);
     delegate!(projected_current_run(workflow_id: &str) -> Result<Option<String>>);

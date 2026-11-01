@@ -184,6 +184,9 @@ function embeddedCooperativeObservation(array $fixture, string $workflowId, stri
     }
     require __DIR__.'/embedded-types.php';
     config(['queue.default' => 'database', 'workflows.v2.task_dispatch_mode' => 'queue',
+        // Core 2.15.12 (Server 2.11.8) resolves a run through its instance's
+        // namespace, and reserves a caller-named instance without model events.
+        'workflows.v2.namespace' => $namespace,
         'workflows.v2.types.workflows' => ['parity.v1.cooperative_cleanup' => \ServerParity\CooperativeCleanupWorkflow::class],
         'workflows.v2.types.activities' => ['parity.v1.cooperative_cleanup_activity' => \ServerParity\CooperativeCleanupActivity::class]]);
     foreach ([WorkflowInstance::class, WorkflowRun::class, WorkflowTask::class] as $model) {
