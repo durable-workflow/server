@@ -88,6 +88,7 @@ use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\Support\StickyExecution;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 
@@ -3966,6 +3967,16 @@ class WorkerController
                 ])->save();
 
                 return ['recorded' => false, 'reason' => 'run_already_closed', 'next_task_id' => null];
+            }
+
+            $now = now();
+            $deadlineExpired = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
+                || ($run->run_deadline_at !== null && $now->gte($run->run_deadline_at));
+
+            // A deadline probe may have no new history. Close the expired run
+            // through Core before acknowledging the worker's wait.
+            if ($deadlineExpired && app(WorkflowExecutor::class)->timeoutIfDeadlineExpired($run, $task)) {
+                return ['recorded' => false, 'reason' => 'run_timed_out', 'next_task_id' => null];
             }
 
             if ($this->workflowTaskResumesSignal($task)) {
