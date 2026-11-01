@@ -3766,16 +3766,7 @@ class WorkerController
             }
 
             if ($outcome['reason'] === 'run_timed_out') {
-                return WorkerProtocol::json([
-                    'task_id' => $taskId,
-                    'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
-                    'outcome' => 'completed',
-                    'recorded' => false,
-                    'run_id' => $outcome['run_id'],
-                    'run_status' => $outcome['run_status'],
-                    'created_task_ids' => [],
-                    'reason' => 'run_timed_out',
-                ], 409);
+                return $this->workflowTaskTimeoutResponse($taskId, (int) $validated['workflow_task_attempt'], $outcome);
             }
 
             return WorkerProtocol::json([
@@ -3805,12 +3796,21 @@ class WorkerController
                     $taskId,
                     $validated,
                 ): array|JsonResponse {
-                    if (! NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId) instanceof WorkflowTask) {
+                    $task = NamespaceWorkflowScope::lockTaskForMutation($namespace, $taskId);
+                    if (! $task instanceof WorkflowTask) {
                         return $this->workflowTaskNotFound($taskId, (int) $validated['workflow_task_attempt']);
                     }
                     if ($response = $this->guardWorkflowTaskOwnership($request, $namespace, $taskId,
                         (int) $validated['workflow_task_attempt'], $validated['lease_owner'])) {
                         return $response;
+                    }
+
+                    $run = WorkflowRun::query()->lockForUpdate()->find($task->workflow_run_id);
+                    if ($run instanceof WorkflowRun) {
+                        $timeout = $this->workflowTaskDeadlineOutcome($run, $task);
+                        if ($timeout !== null) {
+                            return $timeout;
+                        }
                     }
 
                     $outcome = $bridge->fail($taskId, $validated['failure']);
@@ -3859,6 +3859,10 @@ class WorkerController
             ? $outcome['next_task_id']
             : null;
 
+        if ($outcome['reason'] === 'run_timed_out') {
+            return $this->workflowTaskTimeoutResponse($taskId, (int) $validated['workflow_task_attempt'], $outcome);
+        }
+
         return WorkerProtocol::json([
             'task_id' => $taskId,
             'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
@@ -3867,6 +3871,41 @@ class WorkerController
             'reason' => $outcome['reason'],
             'next_task_id' => $nextTaskId,
         ], $this->workflowOutcomeStatus($outcome['reason']));
+    }
+
+    /** @param array<string, mixed> $outcome */
+    private function workflowTaskTimeoutResponse(string $taskId, int $attempt, array $outcome): JsonResponse
+    {
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $attempt,
+            'outcome' => 'completed',
+            'recorded' => false,
+            'run_id' => $outcome['run_id'],
+            'run_status' => $outcome['run_status'],
+            'created_task_ids' => [],
+            'reason' => 'run_timed_out',
+        ], 409);
+    }
+
+    /** @return array<string, mixed>|null */
+    private function workflowTaskDeadlineOutcome(WorkflowRun $run, WorkflowTask $task): ?array
+    {
+        if ($task->task_type !== TaskType::Workflow || $run->status->isTerminal()) {
+            return null;
+        }
+        $now = now();
+        $expired = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
+            || ($run->run_deadline_at !== null && $now->gte($run->run_deadline_at));
+
+        // Both callers hold the task/run locks after revalidating ownership.
+        // Avoid loading the full run history for ordinary, unexpired waits.
+        if ($expired && app(WorkflowExecutor::class)->timeoutIfDeadlineExpired($run, $task)) {
+            return ['recorded' => false, 'reason' => 'run_timed_out', 'next_task_id' => null,
+                'run_id' => $run->id, 'run_status' => $run->status->value];
+        }
+
+        return null;
     }
 
     /**
@@ -3982,15 +4021,9 @@ class WorkerController
                 return ['recorded' => false, 'reason' => 'run_already_closed', 'next_task_id' => null];
             }
 
-            $now = now();
-            $deadlineExpired = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
-                || ($run->run_deadline_at !== null && $now->gte($run->run_deadline_at));
-
-            // A deadline probe may have no new history. Close the expired run
-            // through Core before acknowledging the worker's wait.
-            if ($deadlineExpired && app(WorkflowExecutor::class)->timeoutIfDeadlineExpired($run, $task)) {
-                return ['recorded' => false, 'reason' => 'run_timed_out', 'next_task_id' => null,
-                    'run_id' => $run->id, 'run_status' => $run->status->value];
+            $timeout = $this->workflowTaskDeadlineOutcome($run, $task);
+            if ($timeout !== null) {
+                return $timeout;
             }
 
             if ($this->workflowTaskResumesSignal($task)) {

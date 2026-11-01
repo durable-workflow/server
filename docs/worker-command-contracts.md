@@ -30,8 +30,8 @@ handlers deterministic and use durable workflow operations for external
 effects. A callback entry count alone does not prove duplicate admission or
 exactly-once external execution.
 
-When a history-wait acknowledgment closes an expired run, Server returns the
-normal timeout completion receipt: HTTP 409 `run_timed_out`, `outcome=completed`
+When a failure or history-wait acknowledgment closes an expired run, Server
+returns the normal timeout completion receipt: HTTP 409 `run_timed_out`, `outcome=completed`
 and `recorded=false`, with the original task, run and attempt identities and
 `run_status=failed`. Workers can recognize that matching terminal receipt and
 continue processing other workflows.

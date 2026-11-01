@@ -3689,8 +3689,8 @@ class WorkflowWorkerProtocolTest extends TestCase
         );
     }
 
-    #[DataProvider('waitingHistoryDeadlineCases')]
-    public function test_waiting_for_history_ack_enforces_the_original_deadline(string $kind, bool $expired): void
+    #[DataProvider('workflowFailureDeadlineCases')]
+    public function test_workflow_failure_ack_enforces_the_original_deadline(string $kind, bool $expired, bool $waiting): void
     {
         Queue::fake();
         $this->configureWorkflowTypes();
@@ -3715,7 +3715,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             Carbon::setTestNow($clock->copy()->addSeconds($expired ? 3 : 1));
             $body = [
                 'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
-                'failure' => ['type' => 'WorkflowTaskWaitingForHistory', 'message' => 'history is not ready yet'],
+                'failure' => ['type' => $waiting ? 'WorkflowTaskWaitingForHistory' : 'FixtureFailure',
+                    'message' => $waiting ? 'history is not ready yet' : 'fixture callback failed'],
             ];
             $path = '/api/worker/workflow-tasks/'.$task['task_id'].'/fail';
             $runBefore = WorkflowRun::query()->findOrFail($runId)->getRawOriginal();
@@ -3731,9 +3732,14 @@ class WorkflowWorkerProtocolTest extends TestCase
             $closed = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
                 ->where('event_type', HistoryEventType::WorkflowTimedOut->value)->count();
             if (! $expired) {
-                $response->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('outcome', 'waiting_for_history')
+                $response->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('outcome', $waiting ? 'waiting_for_history' : 'failed')
                     ->assertJsonMissingPath('run_id')->assertJsonMissingPath('run_status');
-                $this->assertSame('waiting', $run->status->value);
+                $this->assertFalse($run->status->isTerminal());
+                if ($waiting) {
+                    $this->assertSame('waiting', $run->status->value);
+                } else {
+                    $this->assertIsString($response->json('next_task_id'));
+                }
                 $this->assertSame(0, $closed);
 
                 return;
@@ -3758,12 +3764,14 @@ class WorkflowWorkerProtocolTest extends TestCase
         }
     }
 
-    public static function waitingHistoryDeadlineCases(): iterable
+    public static function workflowFailureDeadlineCases(): iterable
     {
-        yield 'elapsed run deadline' => ['run', true];
-        yield 'elapsed execution deadline' => ['execution', true];
-        yield 'unelapsed run deadline' => ['run', false];
-        yield 'unelapsed execution deadline' => ['execution', false];
+        foreach (['waiting' => true, 'ordinary failure' => false] as $surface => $waiting) {
+            yield $surface.' elapsed run deadline' => ['run', true, $waiting];
+            yield $surface.' elapsed execution deadline' => ['execution', true, $waiting];
+            yield $surface.' unelapsed run deadline' => ['run', false, $waiting];
+            yield $surface.' unelapsed execution deadline' => ['execution', false, $waiting];
+        }
     }
 
     public function test_waiting_for_history_failure_type_acknowledges_the_wait_without_message_phrase(): void
