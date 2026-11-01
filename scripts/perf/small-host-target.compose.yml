@@ -1,0 +1,161 @@
+# Small-host target (Server #325): only the server and its database, on the
+# plan-sized host being measured. No container CPU or memory limits: the
+# plan is the limit. Exactly one mode per project:
+#   native-mysql   published native image with MySQL
+#   native-sqlite  published native image with its default SQLite file
+#   php-mysql      published PHP Server with MySQL and Redis
+# The server publishes 8080 only on DW_SMALL_TARGET_BIND, the host's private
+# (VPC) address; the driver host reaches it there.
+services:
+  mysql:
+    profiles: [native-mysql, php-mysql]
+    image: mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
+    platform: linux/amd64
+    environment:
+      MYSQL_DATABASE: durable_workflow
+      MYSQL_USER: workflow
+      MYSQL_PASSWORD: port-mysql
+      MYSQL_ROOT_PASSWORD: port-root
+    command: ["--innodb-flush-log-at-trx-commit=1", "--sync-binlog=1"]
+    volumes: [mysql-data:/var/lib/mysql]
+    restart: "no"
+    healthcheck:
+      test: [CMD-SHELL, "MYSQL_PWD=port-mysql mysqladmin ping --silent -h 127.0.0.1 -u workflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  native-mysql:
+    profiles: [native-mysql]
+    stop_signal: SIGTERM
+    image: &native_image "${DW_SMALL_NATIVE_IMAGE:-unset-native-image}"
+    platform: linux/amd64
+    environment:
+      DW_RUST_EXPERIMENTAL: "1"
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: port-test-token
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: port-mysql
+    ports: ["${DW_SMALL_TARGET_BIND:?Set the private address of the target host}:8080:8080"]
+    restart: "no"
+    depends_on:
+      mysql: {condition: service_healthy}
+    healthcheck: &native_health
+      test: [CMD, bash, -c, "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/ready HTTP/1.0\r\n\r\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # The image's own default: SQLite at /app/database/database.sqlite.
+  native-sqlite:
+    profiles: [native-sqlite]
+    stop_signal: SIGTERM
+    image: *native_image
+    platform: linux/amd64
+    environment:
+      DW_RUST_EXPERIMENTAL: "1"
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: port-test-token
+    volumes: [native-sqlite-data:/app/database]
+    ports: ["${DW_SMALL_TARGET_BIND:?Set the private address of the target host}:8080:8080"]
+    restart: "no"
+    healthcheck: *native_health
+
+  redis:
+    profiles: [php-mysql]
+    image: redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c
+    platform: linux/amd64
+    command: [redis-server, --appendonly, "yes", --appendfsync, everysec, --save, "", --requirepass, port-redis]
+    volumes: [redis-data:/data]
+    restart: "no"
+    healthcheck:
+      test: [CMD, redis-cli, -a, port-redis, --no-auth-warning, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Published PHP Server roles as docker-compose.published.yml runs them, with
+  # the matched profile's queue worker that has no hourly exit.
+  php-bootstrap:
+    profiles: [php-mysql]
+    image: &php_image "${DW_SMALL_PHP_IMAGE:-unset-php-image}"
+    platform: linux/amd64
+    user: "1000:1000"
+    command: [server-bootstrap]
+    environment: &php_environment
+      APP_ENV: local
+      APP_DEBUG: "false"
+      LOG_LEVEL: warning
+      DW_SERVER_KEY: "base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      DW_MODE: service
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: port-test-token
+      DW_TASK_DISPATCH_MODE: poll
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: port-mysql
+      CACHE_STORE: redis
+      QUEUE_CONNECTION: redis
+      REDIS_HOST: redis
+      REDIS_PASSWORD: port-redis
+    restart: "no"
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  php-server:
+    profiles: [php-mysql]
+    image: *php_image
+    platform: linux/amd64
+    user: "1000:1000"
+    environment: *php_environment
+    ports: ["${DW_SMALL_TARGET_BIND:?Set the private address of the target host}:8080:8080"]
+    restart: "no"
+    depends_on:
+      php-bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8080/api/ready]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  php-worker:
+    profiles: [php-mysql]
+    stop_signal: SIGTERM
+    image: *php_image
+    platform: linux/amd64
+    user: "1000:1000"
+    command: [php, artisan, "queue:work", --sleep=1, --tries=3, --max-time=0]
+    environment:
+      <<: *php_environment
+      DW_SERVER_PROCESS_CLASS: worker_node
+    restart: "no"
+    depends_on:
+      php-server: {condition: service_healthy}
+
+  php-scheduler:
+    profiles: [php-mysql]
+    stop_signal: SIGTERM
+    init: true
+    image: *php_image
+    platform: linux/amd64
+    user: "1000:1000"
+    command: [sh, -c, "trap 'exit 0' TERM INT; while true; do php artisan schedule:evaluate --limit=100 --json; php artisan workflow:v2:repair-pass --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done"]
+    environment:
+      <<: *php_environment
+      DW_SERVER_PROCESS_CLASS: scheduler_node
+    restart: "no"
+    depends_on:
+      php-server: {condition: service_healthy}
+
+volumes:
+  mysql-data:
+  native-sqlite-data:
+  redis-data:
