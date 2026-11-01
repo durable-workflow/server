@@ -55,7 +55,12 @@ for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['post
   ['execution-and-codec', 'Execute and compare Rust']]) {
   test(`${name} runs every check in exactly one of six parts`, () => {
     const block = job(name);
-    assert.match(block, /^ {8}part: \[native-tests, corpus, restarts, cohorts, sdk-directions, corrected-markers\]$/m);
+    // A push to main the merge queue already qualified keeps only native-tests
+    // in execution-and-codec, so it can save main's native dependency cache.
+    const fullParts = name === 'execution-and-codec'
+      ? `        part: \${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '${JSON.stringify(PARTS)}') }}`
+      : `        part: [${PARTS.join(', ')}]`;
+    assert.ok(block.split('\n').includes(fullParts), `${name}: ${fullParts}`);
     assert.match(block, /^ {6}DW_PARITY_PART: \$\{\{ matrix\.part \}\}$/m);
     assert.match(block, /^ {4}timeout-minutes: 60$/m);
     const all = steps(block);

@@ -246,12 +246,21 @@ pub(super) fn local_policy(body: Value) -> Result<Value> {
 
 pub(super) async fn local(runtime: &Runtime) -> Result<LocalStorage> {
     let metadata = runtime.describe_namespace(runtime.namespace()).await?;
-    let policy = &metadata["external_payload_storage"];
+    local_for(&metadata["external_payload_storage"], runtime.namespace())
+        .await?
+        .ok_or_else(|| {
+            refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "external_payload_unavailable",
+            )
+        })
+}
+
+/// The local storage a namespace's policy names, or none when the policy is
+/// missing, disabled or names another driver.
+pub(super) async fn local_for(policy: &Value, namespace: &str) -> Result<Option<LocalStorage>> {
     if policy.is_null() || policy["enabled"] == false || policy["driver"] != "local" {
-        return Err(refuse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "external_payload_unavailable",
-        ));
+        return Ok(None);
     }
     let root = match policy["config"]["uri"]
         .as_str()
@@ -260,9 +269,9 @@ pub(super) async fn local(runtime: &Runtime) -> Result<LocalStorage> {
         Some(root) => PathBuf::from(root.trim_end_matches('/')),
         None => std::env::current_dir()?
             .join("storage/app/external-payloads")
-            .join(runtime.namespace()),
+            .join(namespace),
     };
-    LocalStorage::open(root).await.map_err(snapshot_error)
+    LocalStorage::open(root).await.map(Some).map_err(snapshot_error)
 }
 
 pub(super) async fn set_policy(

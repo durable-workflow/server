@@ -66,7 +66,9 @@ in that complete Composer lock. The earlier 2.5.14 manifest, locks and failed
 policy recording remain unchanged apart from Server #820's bounded security
 refresh, which moved only `symfony/http-foundation` and `symfony/yaml` to
 7.4.21 in all three role locks (GHSA-r925-mgvr-h9cc, GHSA-2v3c-qxhr-7vpv) and
-kept every Workflow package and loaded-source hash; the published Server
+kept every Workflow package and loaded-source hash. A later Server #325
+refresh moved only `symfony/mime` to 7.4.22 in the same locks
+(CVE-2026-45070), on the same terms. The published Server
 reference still carries its own declared 2.5.14 package. Set `DW_PARITY_CORRECTED_ARTIFACTS` to the new
 manifest for this explicit embedded cohort, with separate
 `DW_PARITY_CORRECTED_STATE`, `DW_PARITY_CORRECTED_EVIDENCE` and

@@ -1,0 +1,177 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "retention-external-payloads",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "retention payloads λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "retention payloads λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "retention_payloads": {
+    "setup": {
+      "policies": [
+        200,
+        200
+      ],
+      "uploads": [
+        201,
+        201,
+        201,
+        201,
+        201
+      ],
+      "runs": {
+        "sole": [
+          201,
+          200
+        ],
+        "shared-1": [
+          201,
+          200
+        ],
+        "shared-2": [
+          201,
+          200
+        ],
+        "mine": [
+          201,
+          200
+        ],
+        "theirs": [
+          201,
+          200
+        ],
+        "off-1": [
+          201,
+          200
+        ],
+        "off-2": [
+          201,
+          200
+        ]
+      },
+      "peer_references_differ": true,
+      "storage_off": 200,
+      "storage_on": 200
+    },
+    "steps": {
+      "sole pruned": {
+        "status": 200,
+        "processed": 1,
+        "run": "sole",
+        "result": {
+          "outcome": "pruned",
+          "external_payloads_deleted": 1
+        }
+      },
+      "sole fetched": {
+        "status": 404,
+        "reason": "external_payload_not_found"
+      },
+      "shared first pruned": {
+        "status": 200,
+        "processed": 1,
+        "run": "shared-1",
+        "result": {
+          "outcome": "pruned",
+          "external_payloads_deleted": 0
+        }
+      },
+      "shared fetched while held": {
+        "status": 200,
+        "bytes_match": true
+      },
+      "shared last pruned": {
+        "status": 200,
+        "processed": 1,
+        "run": "shared-2",
+        "result": {
+          "outcome": "pruned",
+          "external_payloads_deleted": 1
+        }
+      },
+      "shared fetched": {
+        "status": 404,
+        "reason": "external_payload_not_found"
+      },
+      "peer-held pruned": {
+        "status": 200,
+        "processed": 1,
+        "run": "mine",
+        "result": {
+          "outcome": "pruned",
+          "external_payloads_deleted": 0
+        }
+      },
+      "peer pruned": {
+        "status": 200,
+        "processed": 1,
+        "run": "theirs",
+        "result": {
+          "outcome": "pruned",
+          "external_payloads_deleted": 1
+        }
+      },
+      "peer-held fetched": {
+        "status": 200,
+        "bytes_match": true
+      },
+      "storage off: held pruned": {
+        "status": 200,
+        "processed": 1,
+        "run": "off-1",
+        "result": {
+          "outcome": "pruned",
+          "external_payloads_deleted": 0
+        }
+      },
+      "storage off: sole skipped": {
+        "status": 200,
+        "processed": 1,
+        "run": "off-2",
+        "result": {
+          "outcome": "skipped",
+          "reason": "external_payload_storage_driver_unavailable"
+        }
+      },
+      "storage on: sole pruned": {
+        "status": 200,
+        "processed": 1,
+        "run": "off-2",
+        "result": {
+          "outcome": "pruned",
+          "external_payloads_deleted": 1
+        }
+      },
+      "storage on: sole fetched": {
+        "status": 404,
+        "reason": "external_payload_not_found"
+      }
+    }
+  },
+  "contract": "POST /api/system/retention/pass with run_ids (published Server 2.11.7) deletes a pruned run's external payloads in the prune's transaction. A payload only the pruned run holds loses its object and registration, and the result counts it in external_payloads_deleted; a later fetch is 404. A payload another retained run holds stays, counted 0, until the last holder goes. Two namespaces over one local root register equal bytes as one object: while the peer's run is retained this namespace's run is pruned with 0, and when the peer's run goes its registration goes but the object stays for this namespace. Without enabled storage a run whose payloads are all held is still pruned with 0, and a run with a payload to delete is skipped with external_payload_storage_driver_unavailable until storage returns. Embedded applications have no HTTP system routes."
+}

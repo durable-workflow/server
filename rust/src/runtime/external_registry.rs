@@ -26,6 +26,16 @@ fn hash(value: &str) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
+
+/// `storage_uri_sha256`.
+pub(super) fn uri_hash(uri: &str) -> String {
+    hash(uri)
+}
+
+/// The object lock bucket of a URI, PHP's fixed 256.
+pub(super) fn object_bucket(uri: &str) -> i64 {
+    i64::from(u16::from_str_radix(&hash(uri)[..4], 16).expect("digest hex")) % 256
+}
 fn mismatch() -> super::RuntimeError {
     refuse(
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -78,7 +88,7 @@ where
     /// serializes initialization; an initialized bucket is locked by UPDATE
     /// before registry reads, including SQLite's writer admission.
     pub(super) async fn payload_object_lock(tx: &mut Transaction<'_, DB>, uri: &str) -> Result<()> {
-        let bucket = i64::from(u16::from_str_radix(&hash(uri)[..4], 16).expect("digest hex")) % 256;
+        let bucket = object_bucket(uri);
         let exists = Self::scalar(
             "SELECT COUNT(*) FROM runtime_external_payload_object_locks WHERE bucket=$1",
         )

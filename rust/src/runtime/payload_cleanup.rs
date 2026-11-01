@@ -233,7 +233,7 @@ store_methods! {
 
     /// `ExternalPayloadBackupHold::deleting`: an owner whose hold has not
     /// expired pauses reclamation.
-    async fn backup_hold_active(tx: &mut super::transaction::Transaction<'_, DB>) -> Result<bool> {
+    pub(super) async fn backup_hold_active(tx: &mut super::transaction::Transaction<'_, DB>) -> Result<bool> {
         // PostgreSQL keeps the owner as a uuid; only its presence matters.
         let Some(hold) = Self::query("SELECT CASE WHEN owner IS NULL THEN 0 ELSE 1 END AS held,expires_at FROM runtime_external_payload_backup_hold WHERE id=1")
             .fetch_optional(&mut **tx)

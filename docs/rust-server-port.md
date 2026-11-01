@@ -281,11 +281,21 @@ contract fixture before its correction.
   leaves out: `supported_sdk_versions`, `client_compatibility`, `topology`,
   the diagnostics view, the external payload transaction limit and the
   conformance manifests.
-- **Fairness within a priority tier.** Native claims tasks by priority, then
-  availability, as PHP's candidate query orders them. PHP then rebalances
-  each priority tier across fairness keys by their weights
-  (`TaskFairnessScheduler`); native stores the keys and weights but does not
-  rebalance yet.
+- **Fairness within a priority tier** (October 31, closed). Published PHP
+  tries each batch of a poll's candidates (10 at the default
+  `max_tasks_per_poll`) in `TaskFairnessScheduler` order: fairness classes
+  take turns by weight. Its fairness state is `InMemoryTaskFairnessState`,
+  which starts empty on every request of its Apache server, so the order
+  never moves a poll's first candidate. It decides which candidate a poll
+  tries next when an earlier one cannot be claimed. Native now tries its
+  candidates in the same batches and order
+  ([checkpoint](rust-server-port-checkpoints/2026-10-31-task-fairness.md)).
+  Two differences remain:
+  - PHP's activity poll stops after one batch, while native keeps looking.
+  - Published PHP's resume workflow tasks and timer tasks carry the default
+    priority and no fairness key, against its own inheritance contract
+    ([workflow#971](https://github.com/durable-workflow/workflow/issues/971)).
+    Native gives every task its run's priority and fairness.
 - **When an external payload reference is claimed.** Published PHP retains
   a referenced object once it fetches the bytes, before the command is
   recorded, so a refused command still retains it. Native claims it in the
@@ -448,10 +458,21 @@ contract fixture before its correction.
   the cancellation-scope routes use the same freshness check with
   `DW_WORKER_STALE_AFTER_SECONDS`; delivery used a fixed 60 seconds until
   October 28 (`cooperative_delivery_uses_the_configured_stale_window`).
-- **Retention of runs with external payloads.** Published PHP deletes a
-  pruned run's external payload objects. Native does not delete them yet: it
-  skips such a run with `external_payload_cleanup_unavailable` and keeps its
-  details. A run whose instance has inbound message streams is pruned as PHP's
+- **Retention of runs with external payloads** (November 1,
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-retention-external-payloads.md)).
+  A pruned run's external payloads now go with it, as published PHP's
+  `ExternalPayloadRetentionCleanup::deleteForRun` deletes them: a payload no
+  retained run holds loses its registration, and its object too when no
+  other namespace registers it, counted in `external_payloads_deleted`.
+  Without enabled local storage such a run is skipped with
+  `external_payload_storage_driver_unavailable`; a failed delete fails the
+  prune with PHP's message and keeps the run, registration and object. The
+  `retention-external-payloads` fixture records it against published 2.11.7.
+  A run holding a reference native cannot settle (PHP's stored format from a
+  workflow import, an envelope, or one on an inbound or durable stream) is
+  still skipped with `external_payload_cleanup_unavailable`, and native does
+  not mark the instance's inbound streams blocked on a skip as PHP does.
+  A run whose instance has inbound message streams is pruned as PHP's
   `MessageStreamRetentionCleanup` prunes it (October 27): the messages it
   consumed lose their payloads once a retained later run's cursor checkpoint
   covers them, and the instance's last retained run, once terminal, takes the
@@ -672,11 +693,22 @@ contract fixture before its correction.
   published image with the native binary as its entrypoint waits out its
   timeout and kills the process. A native image must declare
   `STOPSIGNAL SIGTERM`.
-- **Visibility query evaluation.** Published PHP filters a structured list
-  `query` in SQL. Native reads the queried attribute keys once, then
-  evaluates candidate runs in list order, 500 at a time, until it has the
-  requested page. A query that matches few runs in a large namespace reads
-  every run of that namespace.
+- **Visibility query evaluation** (November 1, narrowed). Published PHP
+  filters a structured list `query` in SQL. Native now adds a narrowing to
+  its list statement that every matching run satisfies:
+  - status and status bucket;
+  - run type, workflow ID, run ID and queue equality or `IN`;
+  - a present attribute row for each queried key;
+  - keyword equality or `IN`;
+  - integer comparisons and `IN`.
+
+  Its matcher then decides each candidate as before, with only that page's
+  attribute rows. So a selective query in a large namespace reads about as
+  many runs as it selects. Each run is still decided by the matcher, so the
+  answers are unchanged. A group of comparisons that cannot narrow, for
+  example on start or close time alone, still reads candidates in list
+  order, 500 at a time
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-visibility-narrowing.md)).
 - **Visibility query text comparisons** (October 30, closed). PHP compares
   text in a structured list query with the database collation: exactly on
   SQLite and PostgreSQL, and under the published MySQL schema's

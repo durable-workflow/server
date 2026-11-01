@@ -620,6 +620,102 @@ impl Compiled {
             matches!(check, Check::Attribute { key, kind, .. } if key == attribute && matches!(*kind, "keyword" | "text"))
         })
     }
+
+    /// Conditions every matching run satisfies, for the database to apply
+    /// before the run is read: each group's narrowings, joined by `OR`. Each
+    /// narrowing holds whenever its check matches, so the database can only
+    /// leave out runs the query does not select, and `matches` still decides
+    /// every run it reads. `None` when a group has no narrowing, as then any
+    /// run can match.
+    pub(super) fn narrowing(&self) -> Option<Vec<Vec<Narrowing>>> {
+        let mut groups = Vec::new();
+        for group in &self.0 {
+            let narrowings: Vec<Narrowing> = group.iter().filter_map(Check::narrowing).collect();
+            if narrowings.is_empty() {
+                return None;
+            }
+            groups.push(narrowings);
+        }
+        Some(groups)
+    }
+}
+
+/// A condition the database applies to candidate runs (`Compiled::narrowing`).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Narrowing {
+    /// The run's exact status, or its status bucket, compared for equality.
+    Status { bucket: bool, value: String, equal: bool },
+    /// A run text column holding one of the values: `id`,
+    /// `workflow_instance_id`, `workflow_type` or `queue`.
+    Column { column: &'static str, values: Vec<String> },
+    /// The run has a row for the attribute key, and that row's value passes
+    /// the test.
+    Attribute { key: String, test: AttributeTest },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum AttributeTest {
+    /// Any row for the key.
+    Present,
+    /// A keyword row holding one of the values.
+    Keyword(Vec<String>),
+    /// An integer row compared with the operator, or `IN` the values.
+    Int { operator: &'static str, values: Vec<i64> },
+}
+
+fn texts(values: &[Coerced]) -> Option<Vec<String>> {
+    values
+        .iter()
+        .map(|value| match value {
+            Coerced::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+impl Check {
+    /// A database condition implied by this check, or `None`. Text compares
+    /// under the column's own collation in the database, the same collation
+    /// `matches` reads through its comparison keys, so an equal pair in
+    /// `matches` is equal there too. Comparisons whose database form could
+    /// differ (times, floats, booleans, keyword lists, long text,
+    /// inequality of text) narrow only to the attribute being present, or
+    /// not at all for a run column.
+    fn narrowing(&self) -> Option<Narrowing> {
+        match self {
+            Self::Status { bucket, value, equal } => {
+                Some(Narrowing::Status { bucket: *bucket, value: value.clone(), equal: *equal })
+            }
+            Self::Column { column, operator, values } => {
+                let column = match column {
+                    Column::WorkflowType => "workflow_type",
+                    Column::WorkflowId => "workflow_instance_id",
+                    Column::RunId => "id",
+                    Column::TaskQueue => "queue",
+                    _ => return None,
+                };
+                matches!(*operator, "=" | "IN")
+                    .then(|| texts(values))
+                    .flatten()
+                    .map(|values| Narrowing::Column { column, values })
+            }
+            Self::Attribute { key, kind, operator, values } => {
+                let test = match (*kind, *operator) {
+                    ("keyword", "=" | "IN") => texts(values).map(AttributeTest::Keyword),
+                    ("int", "=" | "!=" | ">" | ">=" | "<" | "<=" | "IN") => values
+                        .iter()
+                        .map(|value| match value {
+                            Coerced::Int(number) => Some(*number),
+                            _ => None,
+                        })
+                        .collect::<Option<Vec<i64>>>()
+                        .map(|values| AttributeTest::Int { operator, values }),
+                    _ => None,
+                };
+                Some(Narrowing::Attribute { key: key.clone(), test: test.unwrap_or(AttributeTest::Present) })
+            }
+        }
+    }
 }
 
 /// The run columns PHP's summary query compares.
@@ -845,6 +941,28 @@ mod tests {
         assert_eq!(compiled.run_texts(&run()), vec![run().workflow_type]);
         assert!(compiled.compares_text("SearchKeyword"));
         assert!(!compiled.compares_text("SearchCount"));
+    }
+
+    #[test]
+    fn narrowing_holds_for_every_match_and_stays_open_when_a_group_cannot_narrow() {
+        let narrowing = |query: &str| compiled(query).unwrap().narrowing();
+        assert_eq!(narrowing("SearchKeyword = \"a\" AND SearchCount > 3"), Some(vec![vec![
+            Narrowing::Attribute { key: "SearchKeyword".into(), test: AttributeTest::Keyword(vec!["a".into()]) },
+            Narrowing::Attribute { key: "SearchCount".into(), test: AttributeTest::Int { operator: ">", values: vec![3] } },
+        ]]));
+        assert_eq!(narrowing("WorkflowType = sample OR Status = completed"), Some(vec![
+            vec![Narrowing::Column { column: "workflow_type", values: vec!["sample".into()] }],
+            vec![Narrowing::Status { bucket: true, value: "completed".into(), equal: true }],
+        ]));
+        // Times, floats, booleans, lists and text only narrow to presence.
+        for query in ["SearchTime > \"2026-10-08\"", "SearchRatio > 1.0", "SearchFlag = true", "SearchTags = a",
+            "SearchText = 'two words'", "SearchKeyword != a", "NOT SearchCount IN (1)"] {
+            let groups = narrowing(query).unwrap();
+            assert!(matches!(&groups[0][0], Narrowing::Attribute { test: AttributeTest::Present, .. }), "{query}");
+        }
+        // A group of run times alone cannot narrow, so nothing is narrowed.
+        assert_eq!(narrowing("StartTime < \"2026-10-09\" OR SearchKeyword = a"), None);
+        assert_eq!(narrowing("WorkflowType != sample"), None);
     }
 
     #[test]

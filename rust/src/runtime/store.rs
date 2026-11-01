@@ -2061,6 +2061,40 @@ where
             .is_some())
     }
 
+    /// Published PHP's poll order (`claimReadyTask`): its bridge returns the
+    /// candidates of supported workflow types a batch at a time, and the
+    /// poll tries each batch in `TaskFairnessScheduler` order. Native keeps
+    /// the same batches and order. An activity's type is read with its
+    /// execution, so its batches keep every candidate.
+    fn fairness_batches(candidates: Vec<DB::Row>, kind: &str, types: &Value) -> Result<Vec<DB::Row>> {
+        let mut eligible = Vec::with_capacity(candidates.len());
+        for task in candidates {
+            if kind == "workflow" {
+                let workflow_type = DB::string(&task, "workflow_type")?;
+                if !types.as_array().is_some_and(|list| list.iter().any(|v| v.as_str() == Some(workflow_type.as_str()))) {
+                    continue;
+                }
+            }
+            eligible.push(task);
+        }
+        let mut ordered = Vec::with_capacity(eligible.len());
+        let mut remaining = eligible.into_iter();
+        loop {
+            let batch: Vec<DB::Row> = remaining.by_ref().take(super::priority_fairness::FAIRNESS_BATCH).collect();
+            if batch.is_empty() {
+                break;
+            }
+            let keys = batch.iter()
+                .map(|task| Ok((DB::optional_number(task, "priority")?, DB::optional_string(task, "fairness_key")?, DB::optional_number(task, "fairness_weight")?)))
+                .collect::<Result<Vec<_>>>()?;
+            let mut slots: Vec<Option<DB::Row>> = batch.into_iter().map(Some).collect();
+            for index in super::priority_fairness::fairness_order(&keys) {
+                ordered.extend(slots[index].take());
+            }
+        }
+        Ok(ordered)
+    }
+
     async fn claim(
         &self,
         body: &Value,
@@ -2158,6 +2192,7 @@ where
             .bind(build.as_deref())
             .fetch_all(&mut **tx)
             .await?;
+        let candidates = Self::fairness_batches(candidates, kind, &types)?;
         for task in candidates {
             // Unsupported stored timestamp shapes fail before leasing work.
             // Takeover preflight must validate all records, including rows

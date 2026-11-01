@@ -94,6 +94,7 @@ on:
       - tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs
       - tests/Unit/ServerParityPrometheusMetricsContractTest.mjs
       - tests/Unit/ServerParityPayloadCleanupContractTest.mjs
+      - tests/Unit/ServerParityRetentionPayloadsContractTest.mjs
       - tests/Unit/ServerParityRepairPassContractTest.mjs
       - tests/Unit/ServerParityClusterInfoContractTest.mjs
       - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
@@ -148,8 +149,14 @@ jobs:
     name: Shared Server fixture inputs
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Reading this workflow's own runs lets a push to main that the merge queue
+    # already qualified skip repeating that qualification.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       run: ${{ steps.classify.outputs.run }}
+      full: ${{ steps.classify.outputs.full }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -163,13 +170,14 @@ jobs:
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          RUNS_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}
         run: bash scripts/conformance/server-parity/changes.sh >> "$GITHUB_OUTPUT"
 
   # Only the server executable is shared. Native test parts retain their
   # Cargo builds, full test commands and the trusted-main dependency writer.
   native-debug-build:
     needs: changes
-    if: ${{ needs.changes.outputs.run == 'true' }}
+    if: ${{ needs.changes.outputs.run == 'true' && needs.changes.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -349,7 +357,7 @@ jobs:
   # adapters, no longer wait for it.
   codec-native-build:
     needs: changes
-    if: ${{ needs.changes.outputs.run == 'true' }}
+    if: ${{ needs.changes.outputs.run == 'true' && needs.changes.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -449,8 +457,8 @@ jobs:
     # Named explicitly so the added native-tests-b combinations read like the
     # others instead of listing every matrix value.
     name: mysql-execution (${{ matrix.label }}, ${{ matrix.part }})
-    needs: [published-sdk-adapters, native-debug-build]
-    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' }}
+    needs: [changes, published-sdk-adapters, native-debug-build]
+    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' && needs.changes.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
     # later profile before failing, and scenario budgets stay fixed.
@@ -1229,8 +1237,8 @@ jobs:
           retention-days: 1
 
   postgres-storage:
-    needs: [published-sdk-adapters, native-debug-build]
-    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' }}
+    needs: [changes, published-sdk-adapters, native-debug-build]
+    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' && needs.changes.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
     # later profile before failing, and scenario budgets stay fixed.
@@ -2002,7 +2010,7 @@ jobs:
           retention-days: 1
 
   execution-and-codec:
-    needs: [published-sdk-adapters, native-debug-build]
+    needs: [changes, published-sdk-adapters, native-debug-build]
     if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
@@ -2014,9 +2022,11 @@ jobs:
       # shared corpus, its profiles and restart cases, the published-SDK
       # direction profiles, the corrected marker cohort, and the other
       # cohorts. Non-test parts use this run's verified debug server artifact;
-      # native-tests still builds and tests from source.
+      # native-tests still builds and tests from source. A push to main the
+      # merge queue already qualified keeps only native-tests, which saves
+      # main's native dependency cache.
       matrix:
-        part: [native-tests, corpus, restarts, cohorts, sdk-directions, corrected-markers]
+        part: ${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '["native-tests","corpus","restarts","cohorts","sdk-directions","corrected-markers"]') }}
     env:
       DW_PARITY_PART: ${{ matrix.part }}
     steps:
@@ -2235,6 +2245,7 @@ jobs:
               tests/Unit/ServerParityOperatorDashboardTypesContractTest.mjs \
               tests/Unit/ServerParityPrometheusMetricsContractTest.mjs \
               tests/Unit/ServerParityPayloadCleanupContractTest.mjs \
+              tests/Unit/ServerParityRetentionPayloadsContractTest.mjs \
               tests/Unit/ServerParityRepairPassContractTest.mjs \
               tests/Unit/ServerParityClusterInfoContractTest.mjs \
               tests/Unit/ServerParityNamespaceDeleteContractTest.mjs \

@@ -7,7 +7,13 @@
 // only against current main, so an unmerged predecessor cannot hide inputs.
 // Other events and any unclassifiable range run every fixture job.
 //
-// Writes `run=true` or `run=false` to stdout, for $GITHUB_OUTPUT.
+// A push to main whose exact commit already passed this workflow in the merge
+// queue does not repeat that qualification. Main fast-forwards to the tested
+// merge-group commit, so the tree and this workflow are identical. The push
+// then runs only the jobs that save main's dependency caches. Any other push,
+// or a lookup that fails, runs every fixture job.
+//
+// Writes `run=true|false` and `full=true|false` to stdout, for $GITHUB_OUTPUT.
 import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
@@ -115,6 +121,36 @@ function classify({event, headSha, mergeBaseRef, mergeBaseSha, mergeHeadSha, wor
     : {run: false, reason: `no fixture input among ${files.length} changed files`};
 }
 
+// Whether this workflow already passed in the merge queue on exactly `sha`.
+// Reads only this repository's own workflow runs; every doubt answers false.
+export async function queueQualified({sha, repository, token, apiUrl = 'https://api.github.com', fetchImpl = fetch}) {
+  if (!/^[a-f0-9]{40}$/.test(sha ?? '') || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? '') || !token) return false;
+  if (!/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[A-Za-z0-9._\/-]*)?$/.test(apiUrl)) return false;
+  const query = new URLSearchParams({event: 'merge_group', status: 'success', head_sha: sha, per_page: '20'});
+  const response = await fetchImpl(`${apiUrl}/repos/${repository}/actions/workflows/server-parity.yml/runs?${query}`, {
+    headers: {authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28'},
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) return false;
+  const body = await response.json();
+  return Array.isArray(body?.workflow_runs) && body.workflow_runs.some(run => run?.head_sha === sha
+    && run?.event === 'merge_group' && run?.conclusion === 'success'
+    && run?.path === '.github/workflows/server-parity.yml');
+}
+
+async function scope(decision, {event, ref, sha, repository, token, apiUrl}) {
+  if (!decision.run || event !== 'push' || ref !== 'refs/heads/main') return {full: true};
+  try {
+    if (await queueQualified({sha, repository, token, apiUrl})) {
+      return {full: false, reason: `the merge queue already qualified ${sha}; refreshing main's dependency caches only`};
+    }
+    return {full: true, reason: `no successful merge-queue run of ${sha}; running every fixture job`};
+  } catch {
+    // Network errors may echo request details; the decision needs none.
+    return {full: true, reason: 'the merge-queue qualification could not be read; running every fixture job'};
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const decision = classify({
     event: process.env.EVENT_NAME ?? '',
@@ -125,5 +161,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     workflowPath: '.github/workflows/server-parity.yml',
   });
   console.error(decision.reason);
+  const {full, reason} = await scope(decision, {
+    event: process.env.EVENT_NAME ?? '',
+    ref: process.env.GITHUB_REF ?? '',
+    sha: process.env.GITHUB_SHA ?? '',
+    repository: process.env.GITHUB_REPOSITORY ?? '',
+    token: process.env.RUNS_TOKEN ?? '',
+    apiUrl: process.env.GITHUB_API_URL ?? 'https://api.github.com',
+  });
+  if (reason) console.error(reason);
   console.log(`run=${decision.run}`);
+  console.log(`full=${full}`);
 }

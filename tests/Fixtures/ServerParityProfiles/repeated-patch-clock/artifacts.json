@@ -12,7 +12,7 @@
   },
   "workflow": "2.5.7",
   "workflow_source_commit": "e9a767b08c426234c25d2969adcb09473e7af56e",
-  "embedded_composer_lock_sha256": "a9e668b54fdbfb71abc19228da05c3ca4d091cdbdb3856e0394093db81c030a0",
+  "embedded_composer_lock_sha256": "7bafdb8ea2ba56870db6979bd858c3b1e52eecdd6f58ddc5d81a1064e6277f15",
   "workflow_loaded_sources": {
     "src/V2/Support/VersionDecisions.php": "7b57ad40b2514738ccdc377b576d731a16f12d9b55aa628bb5dbb79eac00cdd1",
     "src/V2/Support/WorkflowExecutor.php": "ece1207630be200271925f5770792f03e6bd55224a2abf7a6be86793fdfddaea",
