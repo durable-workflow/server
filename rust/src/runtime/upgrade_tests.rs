@@ -31,12 +31,15 @@ async fn php_layout() -> (tempfile::TempDir, String) {
         "\n",
         include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
         "\n",
-        include_str!("../../migrations/sqlite/0007_service_calls.sql")
+        include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+        "\n",
+        include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")
     ))
     .execute(&mut connection)
     .await
     .unwrap();
     for table in [
+        "dw_external_payload_deletions",
         "dw_service_admission_counters",
         "dw_service_call_deadlines",
         "dw_stream_reclaims",

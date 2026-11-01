@@ -7,6 +7,8 @@ mod commands;
 mod completion_uploads;
 #[path = "external_payloads/retention.rs"]
 mod retention;
+#[path = "external_payloads/namespace_delete.rs"]
+mod namespace_delete;
 use axum::{body::Bytes, http::HeaderMap};
 use durable_workflow_server::runtime::ExternalPayloadConfig;
 use sha2::{Digest, Sha256};

@@ -56,6 +56,7 @@ import {checkRetentionPayloads} from './retention-payloads-contract.mjs';
 import {checkClusterInfo} from './cluster-info-contract.mjs';
 import {checkRepairPass} from './repair-pass-contract.mjs';
 import {checkNamespaceDelete} from './namespace-delete-contract.mjs';
+import {checkNamespaceDeletePayloads} from './namespace-delete-payloads-contract.mjs';
 import {checkUpdateValidation} from './update-validation-contract.mjs';
 import {checkMessageStreams} from './message-streams-contract.mjs';
 import {checkWorkflowStreamWrites} from './workflow-stream-writes-contract.mjs';
@@ -233,6 +234,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const clusterInfo = fixture.cluster_info ? checkClusterInfo(fixture, observation, workflowId) : null;
   const repairPass = fixture.repair_pass ? checkRepairPass(fixture, observation, workflowId) : null;
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
+  const namespaceDeletePayloads = fixture.namespace_delete_payloads ? checkNamespaceDeletePayloads(fixture, observation, workflowId) : null;
   const updateValidation = fixture.update_validation ? checkUpdateValidation(fixture, observation, workflowId) : null;
   const messageStreams = fixture.message_streams ? checkMessageStreams(fixture, observation, workflowId) : null;
   const workflowStreamWrites = fixture.workflow_stream_writes ? checkWorkflowStreamWrites(fixture, observation, workflowId) : null;
@@ -826,6 +828,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(clusterInfo ? {cluster_info: clusterInfo} : {}),
     ...(repairPass ? {repair_pass: repairPass} : {}),
     ...(namespaceDelete ? {namespace_delete: namespaceDelete} : {}),
+    ...(namespaceDeletePayloads ? {namespace_delete_payloads: namespaceDeletePayloads} : {}),
     ...(updateValidation ? {update_validation: updateValidation} : {}),
     ...(messageStreams ? {message_streams: messageStreams} : {}),
     ...(workflowStreamWrites ? {workflow_stream_writes: workflowStreamWrites} : {}),

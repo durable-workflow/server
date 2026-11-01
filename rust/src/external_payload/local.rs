@@ -162,6 +162,52 @@ impl LocalStorage {
         .map_err(unavailable)?
     }
 
+    /// Removes the object a `uri_for` URI names, as a committed deletion
+    /// retries it from the URI alone. Only this root's content address is
+    /// accepted; an already absent object is deleted.
+    pub async fn delete_uri(&self, uri: &str) -> Result<(), SnapshotError> {
+        let path = self.path_for_uri(uri)?;
+        tokio::task::spawn_blocking(move || match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(unavailable(error)),
+        })
+        .await
+        .map_err(unavailable)?
+    }
+
+    /// The content address a `uri_for` URI names under this root.
+    fn path_for_uri(&self, uri: &str) -> Result<PathBuf, SnapshotError> {
+        let encoded = uri.strip_prefix("file://").ok_or(SnapshotError::Unavailable)?.as_bytes();
+        let mut bytes = Vec::with_capacity(encoded.len());
+        let mut index = 0;
+        while index < encoded.len() {
+            let byte = encoded[index];
+            if byte == b'%' {
+                let hex = encoded.get(index + 1..index + 3).ok_or(SnapshotError::Unavailable)?;
+                let hex = std::str::from_utf8(hex).map_err(unavailable)?;
+                bytes.push(u8::from_str_radix(hex, 16).map_err(unavailable)?);
+                index += 3;
+            } else if byte.is_ascii_alphanumeric() || b"/-_.~".contains(&byte) {
+                bytes.push(byte);
+                index += 1;
+            } else {
+                return Err(SnapshotError::Unavailable);
+            }
+        }
+        let path = PathBuf::from(String::from_utf8(bytes).map_err(unavailable)?);
+        let relative = path.strip_prefix(&*self.root).map_err(unavailable)?;
+        let parts: Vec<&str> = relative.iter().map(|part| part.to_str().unwrap_or("")).collect();
+        let [kind, prefix, sha256] = parts.as_slice() else {
+            return Err(SnapshotError::Unavailable);
+        };
+        let content = sha256.len() == 64 && sha256.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+        if *kind != "avro" || !content || !sha256.starts_with(prefix) || prefix.len() != 2 {
+            return Err(SnapshotError::Unavailable);
+        }
+        Ok(self.root.join("avro").join(prefix).join(sha256))
+    }
+
     pub async fn fetch(
         &self,
         reference: Reference,
@@ -267,6 +313,32 @@ mod tests {
         .unwrap();
         storage.put(expected.clone(), snapshot).await.unwrap();
         expected
+    }
+
+    #[tokio::test]
+    async fn delete_uri_accepts_only_this_roots_content_address_and_replays() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::open(temp.path().join("space λ")).await.unwrap();
+        let expected = upload(&storage, temp.path(), b"bytes to reclaim").await;
+        let uri = storage.uri_for(&expected).unwrap();
+        let path = storage.path(&expected).unwrap();
+        let other = LocalStorage::open(temp.path().join("other")).await.unwrap();
+        assert!(other.delete_uri(&uri).await.is_err());
+        for refused in [
+            uri.replace("file://", "s3://"),
+            uri.replace("/avro/", "/other/"),
+            format!("{uri}/extra"),
+            uri.replace(&expected.sha256[..2], "zz"),
+            uri.replace("%20", " "),
+            format!("{}%2", &uri[..uri.len() - 1]),
+        ] {
+            assert!(storage.delete_uri(&refused).await.is_err(), "{refused}");
+        }
+        assert!(path.exists());
+        storage.delete_uri(&uri).await.unwrap();
+        assert!(!path.exists());
+        // A lost acknowledgement retries against an absent object.
+        storage.delete_uri(&uri).await.unwrap();
     }
 
     #[tokio::test]

@@ -100,6 +100,7 @@ on:
       - tests/Unit/ServerParityRepairPassContractTest.mjs
       - tests/Unit/ServerParityClusterInfoContractTest.mjs
       - tests/Unit/ServerParityNamespaceDeleteContractTest.mjs
+      - tests/Unit/ServerParityNamespaceDeletePayloadsContractTest.mjs
       - tests/Unit/ServerParityWorkerSessionsContractTest.mjs
       - tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs
       - tests/Unit/ServerParityUpdateValidationContractTest.mjs
@@ -2253,6 +2254,7 @@ jobs:
               tests/Unit/ServerParityRepairPassContractTest.mjs \
               tests/Unit/ServerParityClusterInfoContractTest.mjs \
               tests/Unit/ServerParityNamespaceDeleteContractTest.mjs \
+              tests/Unit/ServerParityNamespaceDeletePayloadsContractTest.mjs \
               tests/Unit/ServerParityMessageStreamsContractTest.mjs \
               tests/Unit/ServerParityCancellationScopesContractTest.mjs \
               tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs \

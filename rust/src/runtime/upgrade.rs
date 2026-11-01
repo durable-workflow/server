@@ -153,6 +153,7 @@ pub(super) fn native_relation(name: &str) -> bool {
             | "dw_stream_reclaims"
             | "dw_service_call_deadlines"
             | "dw_service_admission_counters"
+            | "dw_external_payload_deletions"
     )
 }
 
@@ -175,6 +176,9 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_service_call_deadlines_due"
                 | "dw_service_admission_counters_pkey"
                 | "dw_service_admission_counters_expiry"
+                | "dw_external_payload_deletions_pkey"
+                | "dw_external_payload_deletions_uri"
+                | "dw_external_payload_deletions_due"
         )
 }
 

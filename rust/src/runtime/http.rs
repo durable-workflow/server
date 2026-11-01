@@ -900,11 +900,15 @@ async fn update_namespace(
 ) -> Result<Json<Value>> {
     Ok(Json(runtime.update_namespace(&namespace, body).await?))
 }
+/// PHP answers 207 while a committed provider deletion is still pending.
 async fn delete_namespace(
     Extension(runtime): Extension<Runtime>,
     Path(namespace): Path<String>,
-) -> Result<Json<Value>> {
-    Ok(Json(runtime.delete_namespace(&namespace).await?))
+) -> Result<Response> {
+    let body = runtime.delete_namespace(&namespace).await?;
+    let pending = body["external_payload_cleanup"]["pending"].as_i64().is_some_and(|pending| pending > 0);
+    let status = if pending { StatusCode::MULTI_STATUS } else { StatusCode::OK };
+    Ok((status, Json(body)).into_response())
 }
 async fn create_namespace(
     Extension(runtime): Extension<Runtime>,
@@ -1936,11 +1940,13 @@ async fn payload_cleanup_status(Extension(runtime): Extension<Runtime>) -> Resul
     Ok(Json(runtime.payload_cleanup_status(&metrics_config(&runtime)).await?))
 }
 
-/// PHP answers 207 when the pass blocked any reference.
+/// PHP answers 207 when the pass blocked any reference, or while a committed
+/// retention deletion is still pending.
 async fn payload_cleanup_pass(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Response> {
     let limit = super::payload_cleanup::pass_limit(&request_json(&body)?)?;
     let report = runtime.payload_cleanup_pass(limit).await?;
-    let blocked = report["blocked"].as_i64().is_some_and(|blocked| blocked > 0);
+    let blocked = report["blocked"].as_i64().is_some_and(|blocked| blocked > 0)
+        || report["retention_cleanup"]["pending"].as_i64().is_some_and(|pending| pending > 0);
     Ok(pass_response((json!({"namespace": runtime.namespace(), "cleanup": report}), blocked)))
 }
 

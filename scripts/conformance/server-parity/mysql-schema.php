@@ -106,7 +106,7 @@ if ($argc !== 4) {
 }
 $pdo->exec('ROLLBACK');
 $pdo = connection($argv[3]);
-$native = array_values(array_filter(catalog($pdo), static fn (array $row): bool => ! in_array($row[0], ['dw_server_schema', '_sqlx_migrations', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_session_holders', 'dw_stream_reclaims', 'dw_service_call_deadlines', 'dw_service_admission_counters'], true)));
+$native = array_values(array_filter(catalog($pdo), static fn (array $row): bool => ! in_array($row[0], ['dw_server_schema', '_sqlx_migrations', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_session_holders', 'dw_stream_reclaims', 'dw_service_call_deadlines', 'dw_service_admission_counters', 'dw_external_payload_deletions'], true)));
 $pdo->exec('ROLLBACK');
 // Native polling uses an additional index on an existing table. Retain all
 // original column, index and constraint definitions in the comparison.
