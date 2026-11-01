@@ -15,9 +15,95 @@ const source = match[1].split('\nmain().catch(')[0];
 const context = vm.createContext({ require: createRequire(import.meta.url),
     Buffer, console, process: { argv: ['node', 'probe', '/unused', '/unused', '',
         path.join(root, 'scripts/conformance/nexus-replay-transport.cjs')], env: {} } });
-vm.runInContext(`${source}\nglobalThis.probe = { crossLanguageScenarioResult, callerWorkflowInvocationEvidence };`,
+vm.runInContext(`${source}\nglobalThis.probe = { crossLanguageScenarioResult, callerWorkflowInvocationEvidence, authoredCallerWorkflowEvidence };`,
     context, { timeout: 1000 });
-const { crossLanguageScenarioResult, callerWorkflowInvocationEvidence } = context.probe;
+const { crossLanguageScenarioResult, callerWorkflowInvocationEvidence, authoredCallerWorkflowEvidence } = context.probe;
+
+function authoredFixture(caller = 'php', service = 'python') {
+    const probes = {};
+    for (const status of ['completed', 'failed', 'cancelled']) {
+        probes[status] = {ok: true, body: {scope: `${caller}_caller_${service}_workflow_service`, outcome: 'pass',
+            observations: ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b'].map((namespace, index) => {
+                const identity = `${caller}-${status}-${namespace}`;
+                const callId = `call-${identity}`, workflowId = `workflow-${identity}`, runId = `run-${identity}`;
+                const linkedRun = `linked-${identity}`;
+                const value = {greeting: 'hello, world', language: service, name: 'world'};
+                const failure = {exception_type: 'NexusFixtureFailure', message: 'fixture service failure'};
+                const terminal = {completed: 'ServiceCallCompleted', failed: 'ServiceCallFailed', cancelled: 'ServiceCallCancelled'}[status];
+                const event = (event_type, sequence, payload = {}) => ({event_type, sequence, payload});
+                return {
+                    scenario: status, caller_namespace: namespace, workflow_id: workflowId, run_id: runId,
+                    process_id: 200 + index, worker_process_id: 300 + index, installed_sdk_version: '1.2.3',
+                    public_method: caller === 'php' ? 'WorkflowContext.serviceOperation' : 'WorkflowContext.call_nexus_service',
+                    worker_log: 'synthetic worker identity', worker_exit_code: 0, worker_signal_handlers_available: true,
+                    receipts: [{method: 'POST', status: 200, path: `/worker/workflow-tasks/task-${identity}/complete`}],
+                    request_qualified: true, service_input_qualified: true, completed: status === 'completed',
+                    typed_failure_qualified: status === 'failed', cancellation_qualified: status === 'cancelled',
+                    result: {service_call_id: callId, status, result: value,
+                        failure_class: caller === 'php' ? 'DurableWorkflow\\Exception\\ServiceOperationFailed' : 'NexusOperationFailed',
+                        failure_message: failure.message, failure_type: failure.exception_type, cancelled: status === 'cancelled'},
+                    linked_service_run_id: linkedRun, linked_service_result: value,
+                    linked_service_history: {events: [event({completed: 'WorkflowCompleted', failed: 'WorkflowFailed', cancelled: 'WorkflowCancelled'}[status], 1, failure)]},
+                    history: {events: [event('WorkflowStarted', 0),
+                        event('ServiceCallStarted', 1, {service_call_id: callId, sequence: 1, caller_sdk_language: `sdk-${caller}`}),
+                        event(terminal, 2, {service_call_id: callId, sequence: 1}), event('WorkflowCompleted', 3)]},
+                    durable_service_call: {ok: true, status: 200, body: {service_call_id: callId, status,
+                        caller_workflow_instance_id: workflowId, caller_workflow_run_id: runId,
+                        caller_namespace: namespace, target_namespace: 'shared', linked_workflow_run_id: linkedRun,
+                        endpoint_name: `published-${service}-workflow-service`, operation_name: 'greet',
+                        service_name: service === 'php' ? 'PublishedWorkflowGreeter' : 'PublishedPythonWorkflowGreeter',
+                        service_error_type: failure.exception_type, completed_at: '2026-10-01T00:00:00Z', failed_at: '2026-10-01T00:00:00Z'}},
+                };
+            })}};
+    }
+    return probes;
+}
+
+test('authored qualification binds both namespace histories and every original terminal outcome', () => {
+    for (const [caller, service, serviceLanguage] of [['php', 'python', 'sdk-python'], ['python', 'php', 'workflow-php']]) {
+        const proof = authoredCallerWorkflowEvidence(authoredFixture(caller, service), `sdk-${caller}`, serviceLanguage, '1.2.3');
+        assert.equal(proof.qualified, true, proof.failure_reason);
+        assert.equal(proof.observations.length, 6);
+        assert.equal(proof.selected.caller_namespace, caller === 'php' ? 'tenant-a' : 'tenant-b');
+    }
+});
+
+test('aggregate cross-language completion uses executed workflows rather than an unrelated client admission', () => {
+    const input = fixture();
+    input.versions['sdk-php'] = '1.2.3';
+    input.authoredCallerProbes = authoredFixture();
+    const result = crossLanguageScenarioResult(input);
+    assert.equal(result.status, 'pass');
+    assert.equal(result.observed_outputs.service_call_id, 'call-php-completed-tenant-a');
+    assert.equal(result.observed_outputs.caller_workflow_run_id, 'run-php-completed-tenant-a');
+    assert.equal(result.observed_outputs.authored_caller_workflow_observations.length, 6);
+    assert.equal(result.observed_outputs.response_or_failure_surface.sdk_client_admission_service_call_id, 'original-call');
+});
+
+test('aggregate evidence refuses absent, unrelated, partial and contradictory authored outcomes', () => {
+    const corruptions = [
+        proof => { delete proof.completed; }, proof => { delete proof.failed; }, proof => { delete proof.cancelled; },
+        proof => { proof.completed.body.observations.pop(); },
+        proof => { proof.failed.body.observations[0].installed_sdk_version = '9.9.9'; },
+        proof => { proof.cancelled.body.observations[0].result.cancelled = false; },
+        proof => { proof.completed.body.observations[0].process_id = 0; },
+        proof => { proof.completed.body.observations[0].public_method = 'Client.startServiceOperation'; },
+        proof => { proof.completed.body.observations[0].durable_service_call.body.caller_workflow_run_id = 'unrelated'; },
+        proof => { proof.completed.body.observations[0].durable_service_call.body.target_namespace = 'foreign'; },
+        proof => { proof.completed.body.observations[0].durable_service_call.body.status = 'accepted'; },
+        proof => { proof.completed.body.observations[0].history.events.splice(2, 1); },
+        proof => { proof.failed.body.observations[0].linked_service_history.events = []; },
+        proof => { proof.completed.body.observations[0].result.result.name = 'wrong input'; },
+        proof => { proof.completed.body.observations[0].worker_exit_code = 255; },
+    ];
+    for (const corrupt of corruptions) {
+        const input = fixture();
+        input.versions['sdk-php'] = '1.2.3';
+        input.authoredCallerProbes = authoredFixture();
+        corrupt(input.authoredCallerProbes);
+        assert.notEqual(crossLanguageScenarioResult(input).status, 'pass');
+    }
+});
 
 function fixture(status = 'accepted', processId = 123) {
     const request = { name: 'world', scenario: 'php_caller_python_service' };
@@ -699,9 +785,14 @@ test('admission plus independent handler probes cannot qualify durable Nexus com
 });
 
 test('a terminal service snapshot does not prove an unexecuted caller workflow', () => {
-    const result = crossLanguageScenarioResult(fixture('completed'));
-    assert.equal(result.status, 'not_covered');
-    assert.equal(result.observed_outputs.response_or_failure_surface.caller_workflow_execution_verified, false);
+    for (const claimed of [false, true]) {
+        const input = fixture('completed');
+        input.workerExecution.workers[0].caller_workflow_invocation.executed = claimed;
+        input.workerExecution.workers[0].caller_workflow_invocation.execution_mode = 'claimed_workflow';
+        const result = crossLanguageScenarioResult(input);
+        assert.equal(result.status, 'not_covered');
+        assert.equal(result.observed_outputs.response_or_failure_surface.caller_workflow_execution_verified, false);
+    }
 });
 
 test('a caller language label without SDK process execution cannot qualify a cell', () => {

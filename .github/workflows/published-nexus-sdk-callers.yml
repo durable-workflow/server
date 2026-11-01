@@ -94,6 +94,8 @@ jobs:
           NEXUS_EXTERNAL_SDK_PROBES="$DW_NEXUS_RESULT_DIR/nexus-external-sdk-probes.json" \
             NEXUS_AUTHORED_AUTHORIZATION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-authored-authorization-probes.json" \
             node --test tests/Unit/NexusExternalSdkEvidenceTest.mjs
+          node -e 'const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (report.outcome !== "pass") throw new Error("Aggregate Nexus conformance: " + report.outcome);' \
+            "$DW_NEXUS_RESULT_DIR/nexus-conformance-result.json"
       - name: Summarize actual outcomes and bound retained diagnostics
         if: always()
         env:
@@ -118,7 +120,9 @@ jobs:
             const findings = report.findings || [];
             summary.conformance = {
               outcome: report.outcome,
-              scenario_statuses: (report.scenario_results || []).map(row => ({scenario_id: row.scenario_id, status: row.status})),
+              scenario_statuses: (report.scenario_results || []).map(row => ({scenario_id: row.scenario_id, status: row.status,
+                ...(row.observed_outputs?.authored_caller_workflow_observations
+                  ? {caller_workflows: row.observed_outputs.authored_caller_workflow_observations} : {})})),
               finding_count: findings.length,
               findings_truncated: findings.length > 64,
               findings: findings.slice(0, 64).map(finding => Object.fromEntries([
