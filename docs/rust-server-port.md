@@ -90,8 +90,9 @@ Updated October 27, 2026.
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
 - **Remaining for the release candidate:**
-  - (Takeover of the latest published PHP release, 2.11.7, is covered:
-    its layout is 2.11.3's.)
+  - (Takeover of the latest published PHP release, 2.11.8, is covered,
+    with its pending external payload deletions carried over;
+    [checkpoint](rust-server-port-checkpoints/2026-11-01-php-2118-takeover.md).)
   - the scope question with the operator: prepared local activities,
     workflow-bound Nexus handlers and external payload takeover;
   - publishing a final native release to Docker Hub. From November 1, native

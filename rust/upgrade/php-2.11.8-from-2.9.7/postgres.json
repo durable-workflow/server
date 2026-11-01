@@ -1,0 +1,190 @@
+{
+    "remove": [],
+    "add": [
+        [
+            "column",
+            "runtime_external_payload_deletions.1",
+            {
+                "name": "id",
+                "type": "character varying(26)",
+                "default": null,
+                "identity": "",
+                "not_null": true,
+                "collation": "default",
+                "generated": ""
+            }
+        ],
+        [
+            "column",
+            "runtime_external_payload_deletions.2",
+            {
+                "name": "namespace",
+                "type": "character varying(191)",
+                "default": null,
+                "identity": "",
+                "not_null": true,
+                "collation": "default",
+                "generated": ""
+            }
+        ],
+        [
+            "column",
+            "runtime_external_payload_deletions.3",
+            {
+                "name": "storage_uri",
+                "type": "text",
+                "default": null,
+                "identity": "",
+                "not_null": true,
+                "collation": "default",
+                "generated": ""
+            }
+        ],
+        [
+            "column",
+            "runtime_external_payload_deletions.4",
+            {
+                "name": "storage_uri_sha256",
+                "type": "character varying(64)",
+                "default": null,
+                "identity": "",
+                "not_null": true,
+                "collation": "default",
+                "generated": ""
+            }
+        ],
+        [
+            "column",
+            "runtime_external_payload_deletions.5",
+            {
+                "name": "storage_policy",
+                "type": "json",
+                "default": null,
+                "identity": "",
+                "not_null": true,
+                "collation": null,
+                "generated": ""
+            }
+        ],
+        [
+            "column",
+            "runtime_external_payload_deletions.6",
+            {
+                "name": "attempts",
+                "type": "integer",
+                "default": "0",
+                "identity": "",
+                "not_null": true,
+                "collation": null,
+                "generated": ""
+            }
+        ],
+        [
+            "column",
+            "runtime_external_payload_deletions.7",
+            {
+                "name": "failure_code",
+                "type": "character varying(255)",
+                "default": null,
+                "identity": "",
+                "not_null": false,
+                "collation": "default",
+                "generated": ""
+            }
+        ],
+        [
+            "column",
+            "runtime_external_payload_deletions.8",
+            {
+                "name": "created_at",
+                "type": "timestamp(0) without time zone",
+                "default": null,
+                "identity": "",
+                "not_null": false,
+                "collation": null,
+                "generated": ""
+            }
+        ],
+        [
+            "column",
+            "runtime_external_payload_deletions.9",
+            {
+                "name": "updated_at",
+                "type": "timestamp(0) without time zone",
+                "default": null,
+                "identity": "",
+                "not_null": false,
+                "collation": null,
+                "generated": ""
+            }
+        ],
+        [
+            "constraint",
+            "runtime_external_payload_deletions.runtime_external_payload_deletions_pkey",
+            {
+                "deferred": false,
+                "validated": true,
+                "deferrable": false,
+                "definition": "PRIMARY KEY (id)"
+            }
+        ],
+        [
+            "constraint",
+            "runtime_external_payload_deletions.runtime_payload_deletions_namespace_uri_unique",
+            {
+                "deferred": false,
+                "validated": true,
+                "deferrable": false,
+                "definition": "UNIQUE (namespace, storage_uri_sha256)"
+            }
+        ],
+        [
+            "index",
+            "runtime_external_payload_deletions_pkey",
+            {
+                "ready": true,
+                "valid": true,
+                "unique": true,
+                "primary": true,
+                "definition": "CREATE UNIQUE INDEX runtime_external_payload_deletions_pkey ON public.runtime_external_payload_deletions USING btree (id)"
+            }
+        ],
+        [
+            "index",
+            "runtime_payload_deletions_namespace_created_index",
+            {
+                "ready": true,
+                "valid": true,
+                "unique": false,
+                "primary": false,
+                "definition": "CREATE INDEX runtime_payload_deletions_namespace_created_index ON public.runtime_external_payload_deletions USING btree (namespace, created_at)"
+            }
+        ],
+        [
+            "index",
+            "runtime_payload_deletions_namespace_uri_unique",
+            {
+                "ready": true,
+                "valid": true,
+                "unique": true,
+                "primary": false,
+                "definition": "CREATE UNIQUE INDEX runtime_payload_deletions_namespace_uri_unique ON public.runtime_external_payload_deletions USING btree (namespace, storage_uri_sha256)"
+            }
+        ],
+        [
+            "relation",
+            "runtime_external_payload_deletions",
+            {
+                "kind": "r",
+                "view": null,
+                "options": null,
+                "partition": false,
+                "persistence": "p",
+                "row_security": false,
+                "access_method": "heap",
+                "partition_key": null,
+                "force_row_security": false
+            }
+        ]
+    ]
+}

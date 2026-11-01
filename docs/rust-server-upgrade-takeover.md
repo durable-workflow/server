@@ -295,7 +295,10 @@ with a recorded recipe:
   dispatch outbox and stream reclaim deadlines. The layout READMEs under
   `rust/upgrade/` and the port checkpoints describe each one. Published
   2.11.4, 2.11.5 and 2.11.7 add no migration, so their databases have the
-  2.11.3 layouts and the same recipe.
+  2.11.3 layouts and the same recipe. 2.11.8 adds pending external payload
+  deletions, which takeover carries over to native's own table without
+  deleting any object, refusing one native could never finish (a saved policy native cannot
+  execute, or an unknown failure).
 
 A release whose layout has no recipe is refused by step 1.
 
