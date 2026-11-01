@@ -281,11 +281,21 @@ contract fixture before its correction.
   leaves out: `supported_sdk_versions`, `client_compatibility`, `topology`,
   the diagnostics view, the external payload transaction limit and the
   conformance manifests.
-- **Fairness within a priority tier.** Native claims tasks by priority, then
-  availability, as PHP's candidate query orders them. PHP then rebalances
-  each priority tier across fairness keys by their weights
-  (`TaskFairnessScheduler`); native stores the keys and weights but does not
-  rebalance yet.
+- **Fairness within a priority tier** (October 31, closed). Published PHP
+  tries each batch of a poll's candidates (10 at the default
+  `max_tasks_per_poll`) in `TaskFairnessScheduler` order: fairness classes
+  take turns by weight. Its fairness state is `InMemoryTaskFairnessState`,
+  which starts empty on every request of its Apache server, so the order
+  never moves a poll's first candidate. It decides which candidate a poll
+  tries next when an earlier one cannot be claimed. Native now tries its
+  candidates in the same batches and order
+  ([checkpoint](rust-server-port-checkpoints/2026-10-31-task-fairness.md)).
+  Two differences remain:
+  - PHP's activity poll stops after one batch, while native keeps looking.
+  - Published PHP's resume workflow tasks and timer tasks carry the default
+    priority and no fairness key, against its own inheritance contract
+    ([workflow#971](https://github.com/durable-workflow/workflow/issues/971)).
+    Native gives every task its run's priority and fairness.
 - **When an external payload reference is claimed.** Published PHP retains
   a referenced object once it fetches the bytes, before the command is
   recorded, so a refused command still retains it. Native claims it in the
