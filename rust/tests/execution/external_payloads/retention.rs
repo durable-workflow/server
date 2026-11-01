@@ -253,3 +253,43 @@ async fn an_unsettled_reference_marks_the_instance_streams_blocked() {
     assert_eq!(prune(&router, "default", &run).await.1["reason"], "external_payload_cleanup_unavailable");
     assert_eq!(blocked(&database, &run, "external_payload_cleanup_unavailable").await, 1);
 }
+
+// `DetachedActivityRetentionHold` keeps a run before PHP plans its streams,
+// outside the prune's guarded transaction, so it marks nothing.
+#[tokio::test]
+async fn an_open_abandoned_activity_hold_marks_no_stream() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("objects");
+    let (database, _runtime, router) = setup(ExternalPayloadConfig::default(), &root).await;
+    let sole = upload(&router, "default", "detached").await;
+    let run = closed_run(&router, "default", "detached-streams", &sole).await;
+    inbound_stream(&database, &run).await;
+    // An activity scheduled under the abandon policy with no terminal event.
+    database.execute(AssertSqlSafe(format!(
+        "INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload) VALUES ('01JDETACHEDHOLD0000000000A','{run}',1000,'ActivityScheduled','{{\"sequence\":1000,\"activity_execution_id\":\"detached-activity\",\"activity\":{{\"id\":\"detached-activity\",\"cancellation_policy\":\"abandon\"}}}}')"))).await;
+    let (status, result) = prune(&router, "default", &run).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["reason"], "detached_activity_still_open", "{result}");
+    assert_eq!(count(&database, "SELECT COUNT(*) FROM workflow_inbound_streams WHERE cleanup_blocked_at IS NOT NULL OR cleanup_blocked_reason IS NOT NULL OR cleanup_blocked_run_id IS NOT NULL").await, 0);
+}
+
+// PHP's `HistoryRetentionEnforcer::pruneRun` catches every throwable inside
+// the prune's transaction, including `WorkflowRunRetentionCleanup::pruneRun`
+// refusing a run that is not closed, and marks the streams
+// `external_payload_cleanup_failed` before rethrowing.
+#[tokio::test]
+async fn an_inner_prunability_error_marks_the_streams_failed_as_php_does() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("objects");
+    let (database, _runtime, router) = setup(ExternalPayloadConfig::default(), &root).await;
+    let sole = upload(&router, "default", "unclosed").await;
+    let run = closed_run(&router, "default", "unclosed-streams", &sole).await;
+    inbound_stream(&database, &run).await;
+    database.execute(AssertSqlSafe(format!("UPDATE workflow_runs SET closed_at=NULL WHERE id='{run}'"))).await;
+    let (status, result) = prune(&router, "default", &run).await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+    assert_eq!(result["outcome"], "error", "{result}");
+    assert_eq!(result["reason"], format!("Workflow run [{run}] has not been closed."));
+    assert_eq!(blocked(&database, &run, "external_payload_cleanup_failed").await, 1);
+    assert!(object(&root, &sole).exists());
+}
