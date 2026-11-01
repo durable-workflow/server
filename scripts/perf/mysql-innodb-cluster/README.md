@@ -7,15 +7,17 @@ the settings they support are in
 [the November 1 checkpoint](../../../docs/rust-server-port-checkpoints/2026-11-01-mysql-innodb-cluster-router.md).
 
 Everything runs in Docker on one host: three members at 1 GiB each, Router at
-256 MiB, native at 512 MiB. Passwords are disposable fixture values.
+256 MiB, native at 512 MiB. `up.sh` generates a random password into
+`$DW_MRC_STATE/mysql-password`; scripts pass it through the environment.
 
 ```sh
 export DW_MRC_STATE=$PWD/.mrc DW_NATIVE_BINARY=/abs/path/durable-workflow-server
 mkdir -p "$DW_MRC_STATE"   # then put durable-workflow 2.12.2 under $DW_MRC_STATE/py
 bash up.sh                                    # cluster + Router on network dw-mrc
 bash failover.sh run2 dwrun2 150 30 kill      # hard kill the primary 30 s in
-bash dbcheck.sh dwrun2 > "$DW_MRC_STATE/run2/db.tsv"
-python3 verify.py "$DW_MRC_STATE/run2" "$DW_MRC_STATE/run2/db.tsv"
+r=$DW_MRC_STATE/run2; bash dbcheck.sh dwrun2 > "$r/db.tsv"
+{ echo '#kill'; cat "$r/kill.json"; echo '#load'; cat "$r/load.jsonl"
+  echo '#probe'; cat "$r/probe.jsonl"; echo '#db'; cat "$r/db.tsv"; } | python3 verify.py
 RATE=1 bash failover.sh run4 dwrun4 90 30 pause   # hung primary
 ```
 

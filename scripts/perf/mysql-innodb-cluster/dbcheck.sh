@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Database integrity after a failover run. Usage: dbcheck.sh <database> > rows.tsv
+set -uo pipefail
 db=$1
+[[ "$db" =~ ^[A-Za-z0-9_]+$ ]] || { echo "database must be a plain name" >&2; exit 2; }
 M=mirror.gcr.io/library/mysql@sha256:a0225d1ea6631c8bc2385dc4c2faba17bbf1834ecf369e1659a9a382bd8d5dd7
-timeout 60 docker run --rm --network dw-mrc --memory 128m $M mysql -h dw-mrc-router -P 6446 -uroot -pdwfixture -N $db -e "
+MYSQL_PWD=$(cat "${DW_MRC_STATE:?set DW_MRC_STATE}/mysql-password")
+export MYSQL_PWD
+timeout 60 docker run --rm --network dw-mrc --memory 128m -e MYSQL_PWD "$M" mysql -h dw-mrc-router -P 6446 -uroot -N "$db" -e "
 SELECT 'runs by status', GROUP_CONCAT(CONCAT(status,'=',n)) FROM (SELECT status, COUNT(*) n FROM workflow_runs GROUP BY status) x;
 SELECT 'workflow_tasks open', COUNT(*) FROM workflow_tasks WHERE status IN ('ready','leased');
 SELECT 'activity_attempts running', COUNT(*) FROM activity_attempts WHERE status='running';

@@ -8,11 +8,11 @@ import json
 import logging
 import sys
 import time
+import os
 import uuid
 
 from durable_workflow import Client, Worker, activity, workflow
 
-import os
 logging.basicConfig(level=os.environ.get("LOGLEVEL", "ERROR"))
 logging.getLogger("durable_workflow.worker").setLevel(os.environ.get("LOGLEVEL", "ERROR"))
 WF = "ha.timer_activity"
@@ -59,13 +59,12 @@ async def one(client, n, queue):
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--token", required=True)
     parser.add_argument("--count", type=int, default=120)
     parser.add_argument("--rate", type=float, default=2.0)
     args = parser.parse_args()
     queue = "ha-queue"
-    async with Client(args.base_url, token=args.token, namespace="default", timeout=10) as client:
+    client = Client(os.environ["NATIVE_URL"], token=os.environ["DW_AUTH_TOKEN"], namespace="default", timeout=10)
+    try:
         worker = Worker(client, task_queue=queue, workflows=[TimerActivity], activities=[echo],
                         worker_id=f"ha-worker-{uuid.uuid4().hex[:6]}", poll_timeout=2,
                         max_concurrent_workflow_tasks=8, max_concurrent_activity_tasks=8, heartbeat_interval=5)
@@ -77,6 +76,8 @@ async def main():
         await asyncio.gather(*tasks)
         emit({"event": "done"})
         worker_task.cancel()
+    finally:
+        await client.aclose()
 
 
 asyncio.run(main())
