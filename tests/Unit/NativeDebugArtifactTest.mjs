@@ -207,7 +207,7 @@ for (const failure of [false, true]) {
 
 test('the producer shares only three files with pinned actions and bounded retention', () => {
   const producer = workflowJob('native-debug-build');
-  assert.match(producer, /needs: changes\n {4}if: \$\{\{ needs\.changes\.outputs\.run == 'true' \}\}/);
+  assert.match(producer, /needs: changes\n {4}if: \$\{\{ needs\.changes\.outputs\.run == 'true' && needs\.changes\.outputs\.full != 'false' \}\}/);
   assert.match(producer, /persist-credentials: false/);
   assert.match(producer, /RESOURCE_SCOPE: dw-native-debug-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ github\.job \}\}/);
   assert.match(producer, /artifact_name: \$\{\{ steps\.artifact\.outputs\.name \}\}/);
@@ -227,8 +227,12 @@ test('the producer shares only three files with pinned actions and bounded reten
 test('all non-test consumers verify the same-run artifact before installing the executable', () => {
   for (const id of ['mysql-execution', 'postgres-storage', 'execution-and-codec']) {
     const block = workflowJob(id);
-    assert.match(block, /needs: \[published-sdk-adapters, native-debug-build\]/);
-    assert.match(block, /if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' \}\}/);
+    assert.match(block, /needs: \[changes, published-sdk-adapters, native-debug-build\]/);
+    // Only execution-and-codec runs on a push to main the merge queue already
+    // qualified; its native-tests part saves main's dependency cache.
+    assert.match(block, id === 'execution-and-codec'
+      ? /if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' \}\}/
+      : /if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' && needs\.changes\.outputs\.full != 'false' \}\}/);
     const download = block.slice(block.indexOf("      - name: Fetch this run's native debug server"),
       block.indexOf("      - name: Verify and install this run's native debug server"));
     assert.match(download, /matrix\.part != 'native-tests' && matrix\.part != 'native-tests-b'/);

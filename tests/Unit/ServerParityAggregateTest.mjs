@@ -10,8 +10,8 @@ import {copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameS
 import {tmpdir} from 'node:os';
 import {dirname, join, relative, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {matchingFiles, nulSeparatedPaths, patternRegExp, pushPathPatterns} from '../../scripts/conformance/server-parity/changes.mjs';
-import {decide} from '../../scripts/conformance/server-parity/aggregate.mjs';
+import {matchingFiles, nulSeparatedPaths, patternRegExp, pushPathPatterns, queueQualified} from '../../scripts/conformance/server-parity/changes.mjs';
+import {CACHE_JOBS, decide} from '../../scripts/conformance/server-parity/aggregate.mjs';
 
 const workflowPath = '.github/workflows/server-parity.yml';
 const workflowText = readFileSync(workflowPath, 'utf8');
@@ -130,10 +130,13 @@ test('the fixture jobs run only through the classifier and the result waits for 
   assert.match(blocks.changes, /^ {4}timeout-minutes: \d+$/m);
   assert.match(blocks.changes, /run: \$\{\{ steps\.classify\.outputs\.run \}\}/);
   assert.match(blocks.changes, /run: bash scripts\/conformance\/server-parity\/changes\.sh >> "\$GITHUB_OUTPUT"$/m);
-  // The root fixture jobs run only through the classifier.
+  assert.match(blocks.changes, /full: \$\{\{ steps\.classify\.outputs\.full \}\}/);
+  // The root fixture jobs run only through the classifier. Only the cache
+  // jobs run on a push to main the merge queue already qualified.
   const roots = ['published-sdk-adapters', 'codec-native-build', 'native-debug-build'];
   for (const id of roots) {
-    assert.match(blocks[id], /^ {4}needs: changes\n {4}if: \$\{\{ needs\.changes\.outputs\.run == 'true' \}\}$/m, id);
+    const full = CACHE_JOBS.includes(id) ? '' : " && needs\\.changes\\.outputs\\.full != 'false'";
+    assert.match(blocks[id], new RegExp(`^ {4}needs: changes\\n {4}if: \\$\\{\\{ needs\\.changes\\.outputs\\.run == 'true'${full} \\}\\}$`, 'm'), id);
   }
   const fixtureJobs = ids.filter(id => id !== 'changes' && id !== 'result');
   for (const id of fixtureJobs.filter(id => !roots.includes(id))) {
@@ -141,16 +144,28 @@ test('the fixture jobs run only through the classifier and the result waits for 
     // that. Deadline health uses the optimized artifact; matrix jobs also
     // wait for this run's verified debug server.
     const expected = id === 'codec-deadline-health'
-      ? '[published-sdk-adapters, codec-native-build]' : '[published-sdk-adapters, native-debug-build]';
+      ? '[published-sdk-adapters, codec-native-build]' : '[changes, published-sdk-adapters, native-debug-build]';
     assert.ok(blocks[id].split('\n').includes(`    needs: ${expected}`), `${id} needs ${expected}`);
     if (id === 'codec-deadline-health') {
       assert.doesNotMatch(blocks[id], /^ {4}if:/m, id);
     } else {
       // A failed debug producer cannot suppress independent native tests.
       // SDK success still requires a successful, run=true classifier.
-      assert.match(blocks[id], /^ {4}if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' \}\}$/m, id);
+      const full = CACHE_JOBS.includes(id) ? '' : " && needs.changes.outputs.full != 'false'";
+      assert.ok(blocks[id].split('\n').includes(
+        `    if: \${{ !cancelled() && needs.published-sdk-adapters.result == 'success'${full} }}`), id);
     }
   }
+  // The cache-refresh push keeps native-tests, the part that saves main's
+  // native dependency cache, and every part otherwise.
+  assert.ok(blocks['execution-and-codec'].split('\n').includes(
+    `        part: \${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '["native-tests","corpus","restarts","cohorts","sdk-directions","corrected-markers"]') }}`));
+  assert.match(blocks['execution-and-codec'], /matrix\.part == 'native-tests' && steps\.native_cargo\.outputs\.cache-hit != 'true'/);
+  assert.match(blocks['published-sdk-adapters'], /github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' && steps\.adapter_cargo\.outputs\.cache-hit != 'true'/);
+  // Only the classifier reads workflow runs, and only a push hands it a token.
+  assert.match(blocks.changes, /^ {4}permissions:\n {6}contents: read\n {6}actions: read$/m);
+  assert.ok(blocks.changes.split('\n').includes("          RUNS_TOKEN: ${{ github.event_name == 'push' && github.token || '' }}"));
+  assert.equal(workflowText.match(/actions: read/g).length, 1);
   // Every job other than the classifier and the result is a gated fixture job.
   assert.deepEqual(fixtureJobs.sort(), ['codec-deadline-health', 'codec-native-build', 'native-debug-build', 'execution-and-codec',
     'mysql-execution', 'postgres-storage', 'published-sdk-adapters'].sort());
@@ -188,6 +203,23 @@ test('the result passes when every fixture job passed', () => {
   assert.match(outcome.stdout, /Every fixture job passed/);
 });
 
+const cacheRefresh = () => Object.fromEntries(Object.entries(fixture('skipped', 'true')).map(([job, value]) =>
+  [job, job === 'changes' ? {result: 'success', outputs: {run: 'true', full: 'false'}} : CACHE_JOBS.includes(job) ? {result: 'success', outputs: {}} : value]));
+
+test('a merge-queue-qualified push passes when only the cache jobs ran and passed', () => {
+  const outcome = runAggregate(cacheRefresh());
+  assert.equal(outcome.status, 0, outcome.stderr);
+  assert.match(outcome.stdout, /merge queue already qualified this commit/);
+});
+
+test('an explicit full scope keeps the full expectation', () => {
+  const full = fixture('success', 'true');
+  full.changes.outputs.full = 'true';
+  assert.equal(decide(full).pass, true);
+  full['mysql-execution'] = {result: 'skipped', outputs: {}};
+  assert.match(decide(full).reason, /must be success when run=true: mysql-execution=skipped/);
+});
+
 test('the result passes when no input changed and every fixture job was skipped', () => {
   const outcome = runAggregate(fixture('skipped', 'false'));
   assert.equal(outcome.status, 0, outcome.stderr);
@@ -207,6 +239,11 @@ for (const [label, needs, reason] of [
   ['a classifier with an unknown decision', fixture('skipped', 'maybe'), /reported no decision \(maybe\)/],
   ['no fixture jobs', {changes: {result: 'success', outputs: {run: 'true'}}}, /No fixture jobs reported/],
   ['a context that is not an object', [], /not an object/],
+  ['an unknown scope', (() => { const needs = fixture('success', 'true'); needs.changes.outputs.full = 'partly'; return needs; })(), /unknown scope \(partly\)/],
+  ['a failed cache job on a qualified push', {...cacheRefresh(), 'execution-and-codec': {result: 'failure', outputs: {}}}, /skip every other fixture job: execution-and-codec=failure\./],
+  ['a skipped cache job on a qualified push', {...cacheRefresh(), 'published-sdk-adapters': {result: 'skipped', outputs: {}}}, /published-sdk-adapters=skipped\./],
+  ['a non-cache job that ran on a qualified push', {...cacheRefresh(), 'postgres-storage': {result: 'success', outputs: {}}}, /postgres-storage=success\./],
+  ['a missing cache job on a qualified push', (({'execution-and-codec': _, ...rest}) => rest)(cacheRefresh()), /Cache-refresh jobs did not report: execution-and-codec/],
 ]) {
   test(`the result fails on ${label}`, () => {
     const decision = decide(needs);
@@ -265,11 +302,21 @@ function pullRequest(change) {
   return {root, head};
 }
 
-function classify(root, env) {
-  // The workflow runs the wrapper from the repository root.
-  const outcome = spawnSync('bash', [classifierWrapper], {cwd: root, env: {...process.env, ...env}, encoding: 'utf8'});
+function classifyOutputs(root, env) {
+  // The workflow runs the wrapper from the repository root. No ambient token,
+  // ref or API endpoint reaches the classifier unless a test sets it.
+  const base = {...process.env};
+  for (const name of ['RUNS_TOKEN', 'GITHUB_REF', 'GITHUB_SHA', 'GITHUB_REPOSITORY', 'GITHUB_API_URL']) delete base[name];
+  const outcome = spawnSync('bash', [classifierWrapper], {cwd: root, env: {...base, ...env}, encoding: 'utf8'});
   assert.equal(outcome.status, 0, outcome.stderr);
-  return outcome.stdout.trim();
+  const lines = outcome.stdout.trim().split('\n');
+  assert.equal(lines.length, 2, outcome.stdout);
+  assert.match(lines[1], /^full=(?:true|false)$/);
+  return {run: lines[0], full: lines[1], stderr: outcome.stderr};
+}
+
+function classify(root, env) {
+  return classifyOutputs(root, env).run;
 }
 
 for (const [label, change, expected] of [
@@ -311,6 +358,56 @@ test('pull request classification runs every fixture when HEAD is not that pull 
   } finally {
     rmSync(root, {recursive: true, force: true});
   }
+});
+
+test('a push to main without a readable merge-queue qualification runs every fixture job', () => {
+  const {root, head} = pullRequest(({write}) => write('rust/src/lib.rs', 'x\n'));
+  try {
+    for (const env of [
+      {},
+      {GITHUB_REF: 'refs/heads/main', GITHUB_SHA: head, GITHUB_REPOSITORY: 'o/r'},
+      // An unreachable endpoint fails closed to the full qualification.
+      {GITHUB_REF: 'refs/heads/main', GITHUB_SHA: head, GITHUB_REPOSITORY: 'o/r', RUNS_TOKEN: 't', GITHUB_API_URL: 'https://127.0.0.1:9'},
+      {GITHUB_REF: 'refs/heads/feature', GITHUB_SHA: head, GITHUB_REPOSITORY: 'o/r', RUNS_TOKEN: 't'},
+    ]) {
+      const outputs = classifyOutputs(root, {EVENT_NAME: 'push', ...env});
+      assert.deepEqual([outputs.run, outputs.full], ['run=true', 'full=true'], JSON.stringify(env));
+    }
+    for (const event of ['pull_request', 'merge_group', 'workflow_dispatch']) {
+      assert.equal(classifyOutputs(root, {EVENT_NAME: event, PR_HEAD_SHA: head, RUNS_TOKEN: 't', GITHUB_REF: 'refs/heads/main'}).full, 'full=true', event);
+    }
+  } finally {
+    rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('only a successful merge-queue run of this workflow on the exact commit qualifies a push', async () => {
+  const sha = 'a'.repeat(40);
+  const good = {head_sha: sha, event: 'merge_group', conclusion: 'success', path: '.github/workflows/server-parity.yml'};
+  const requests = [];
+  const answer = (runs, {ok = true} = {}) => async (url, init) => {
+    requests.push({url, init});
+    return {ok, json: async () => ({workflow_runs: runs})};
+  };
+  const ask = (fetchImpl, overrides = {}) => queueQualified({sha, repository: 'durable-workflow/server', token: 't', fetchImpl, ...overrides});
+  assert.equal(await ask(answer([good])), true);
+  const {url, init} = requests[0];
+  assert.equal(url, `https://api.github.com/repos/durable-workflow/server/actions/workflows/server-parity.yml/runs?event=merge_group&status=success&head_sha=${sha}&per_page=20`);
+  assert.equal(init.headers.authorization, 'Bearer t');
+  for (const [label, run] of [
+    ['another commit', {...good, head_sha: 'b'.repeat(40)}],
+    ['a pull request run', {...good, event: 'pull_request'}],
+    ['a failed run', {...good, conclusion: 'failure'}],
+    ['another workflow', {...good, path: '.github/workflows/other.yml'}],
+  ]) assert.equal(await ask(answer([run])), false, label);
+  assert.equal(await ask(answer([])), false);
+  assert.equal(await ask(answer([good], {ok: false})), false);
+  assert.equal(await ask(async () => ({ok: true, json: async () => ({})})), false);
+  const before = requests.length;
+  for (const overrides of [{token: ''}, {sha: 'short'}, {repository: 'no-slash'}, {repository: 'o/r?x=1'}, {apiUrl: 'http://api.github.com'}]) {
+    assert.equal(await ask(answer([good]), overrides), false, JSON.stringify(overrides));
+  }
+  assert.equal(requests.length, before, 'invalid inputs make no request');
 });
 
 for (const event of ['push', 'workflow_dispatch', '']) {
@@ -446,7 +543,7 @@ test('an unavailable main retains full qualification without logging remote deta
     const outcome = spawnSync('bash', [classifierWrapper],
       {cwd: group.root, env: {...process.env, ...groupEvent(group)}, encoding: 'utf8'});
     assert.equal(outcome.status, 0, outcome.stderr);
-    assert.equal(outcome.stdout.trim(), 'run=true');
+    assert.equal(outcome.stdout.trim(), 'run=true\nfull=true');
     assert.doesNotMatch(outcome.stderr, /private-remote-marker/);
   } finally {
     rmSync(group.root, {recursive: true, force: true});
