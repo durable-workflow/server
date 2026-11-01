@@ -49,6 +49,6 @@ EXPOSE 8080
 # Native stops gracefully on SIGTERM; PHP's image declares SIGWINCH.
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/durable-workflow-server"]
-LABEL org.opencontainers.image.title="Durable Workflow Server (native release candidate)" \
+LABEL org.opencontainers.image.title="Durable Workflow Server (native)" \
       org.opencontainers.image.source="https://github.com/durable-workflow/server" \
       org.opencontainers.image.licenses="MIT"

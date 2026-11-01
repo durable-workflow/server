@@ -107,11 +107,16 @@ docker pull "$IMAGE"
 5. Start native on the taken-over database.
 
    ```sh
-   docker run -d -p 8080:8080 $source -e DW_AUTH_TOKEN "$IMAGE"
+   docker run -d -p 127.0.0.1:8080:8080 $source -e DW_AUTH_TOKEN "$IMAGE"
    ```
 
-   The image runs the repair pass itself (`DW_RUST_MAINTENANCE_LOOP=1`),
-   because it has no separate scheduler container.
+   This publishes the API on the host's loopback interface only. The API is
+   plain HTTP with bearer credentials: for remote access, publish it only to
+   the intended private interface or network and terminate HTTPS in the
+   reverse proxy the [Server reference](server-reference.md) describes;
+   never expose the raw API port to an untrusted network. The image runs the
+   repair pass itself (`DW_RUST_MAINTENANCE_LOOP=1`), because it has no
+   separate scheduler container.
 6. Do not restart PHP against the database: its ownership check refuses it.
 
 The native image uses the PHP image's paths: SQLite at

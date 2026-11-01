@@ -56,13 +56,27 @@ jq -e '.User=="1000:1000" and .StopSignal=="SIGTERM" and (.ExposedPorts|has("808
 # starts without the opt-in; a development build refuses to start without
 # DW_RUST_EXPERIMENTAL=1.
 release_tag=$(docker image inspect --format '{{index .Config.Labels "dev.durable-workflow.release.tag"}}' "$image")
+# A malformed label stops the smoke; a release image's server must report
+# exactly its label's version (checked on every backend below).
+release_version=$(bash "$(dirname "$0")/native-release-identity.sh" expect "$release_tag")
 optin=()
-if [[ -z "$release_tag" || "$release_tag" == "<no value>" ]]; then
+if [[ -z "$release_version" ]]; then
   status=0
   refusal=$(docker run --rm --platform "$platform" -e DW_AUTH_TOKEN=$token "$image" 2>&1) || status=$?
   test "$status" != 0
   grep -q 'requires DW_RUST_EXPERIMENTAL=1' <<<"$refusal"
   optin=(-e DW_RUST_EXPERIMENTAL=1)
+else
+  # A release image refuses the no-authentication driver, under either name,
+  # before it opens storage.
+  for name in DW_AUTH_DRIVER WORKFLOW_SERVER_AUTH_DRIVER; do
+    status=0
+    refusal=$(docker run --rm --platform "$platform" -v "$state:/app/database" -e DW_AUTH_TOKEN=$token \
+      -e "$name=none" -e DB_DATABASE=/app/database/no-auth.sqlite "$image" 2>&1) || status=$?
+    test "$status" != 0
+    grep -q 'refused in a release build' <<<"$refusal"
+    test ! -e "$state/no-auth.sqlite"
+  done
 fi
 
 # GET <path> from <host> port 8080 inside the job's network, with the bearer
@@ -105,13 +119,15 @@ serve() {
   wait_ready "$RESOURCE_SCOPE-native-$backend"
   local info
   info=$(get "$RESOURCE_SCOPE-native-$backend" /api/cluster/info "$token")
+  bash "$(dirname "$0")/native-release-identity.sh" check "$release_tag" "$(jq -r '.version' <<<"$info")"
   started=$(date +%s)
   docker stop --time 20 "$RESOURCE_SCOPE-native-$backend" >/dev/null
   local exit_code
   exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-$backend")
   test "$exit_code" = 0
   jq -cn --arg backend "$backend" --argjson info "$info" --argjson seconds "$(( $(date +%s) - started ))" \
-    '{backend:$backend, ready:true, cluster_info_keys:($info|keys|length), sigterm_exit:0, stop_seconds:$seconds}'
+    '{backend:$backend, ready:true, cluster_info_keys:($info|keys|length), version:$info.version,
+      sigterm_exit:0, stop_seconds:$seconds}'
 }
 
 results=()
@@ -141,7 +157,9 @@ test -e "$state/database.sqlite"
 
 digest=$(docker image inspect --format '{{.Id}}' "$image")
 printf '%s\n' "${results[@]}" | jq -s --arg image "$image" --arg platform "$platform" --arg id "$digest" \
+  --arg tag "$release_tag" --arg version "$release_version" \
   '{schema:"durable-workflow.native-image-smoke.v1", image:$image, platform:$platform, image_id:$id,
-    config:{user:"1000:1000", stop_signal:"SIGTERM", port:8080, opt_in_required:true},
+    release:(if $version == "" then null else {tag:$tag, version:$version, no_auth_refused:true} end),
+    config:{user:"1000:1000", stop_signal:"SIGTERM", port:8080, opt_in_required:($version == "")},
     backends:., takeover_commands:"present"}' > "$receipt"
 cat "$receipt"

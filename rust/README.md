@@ -20,7 +20,10 @@ does not select release optimization or remove the later profiling requirement.
 
 The HTTP executable requires nonempty `DW_AUTH_TOKEN`. A development build
 (no release version built in as `DW_SERVER_VERSION`) also requires
-`DW_RUST_EXPERIMENTAL=1`; a release build from a `native-` tag does not. With no role tokens, the legacy credential keeps compatibility
+`DW_RUST_EXPERIMENTAL=1`; a release build from a `native-` tag does not.
+Only a development build accepts `DW_AUTH_DRIVER=none` (or its legacy
+`WORKFLOW_SERVER_AUTH_DRIVER` name), which admits every request as an
+administrator; a release build refuses it before storage or the listener. With no role tokens, the legacy credential keeps compatibility
 access. Configuring any `DW_WORKER_TOKEN`, `DW_OPERATOR_TOKEN` or
 `DW_ADMIN_TOKEN` disables that bypass: the legacy credential becomes admin,
 and task polling/completion requires the worker role. Roles are exact membership;

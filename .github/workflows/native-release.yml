@@ -262,6 +262,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: dockerhub-native
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -314,12 +316,51 @@ jobs:
           subject-digest: ${{ steps.index.outputs.digest }}
           push-to-registry: true
 
-      # A final release (never a candidate) moves X.Y, X and latest forward to
-      # the attested index; an older release leaves each alias where it is.
-      - name: Move the rolling tags of a final release
-        if: needs.plan.outputs.dockerhub == 'true'
+  # A final release (never a candidate) moves X.Y, X and latest forward to the
+  # attested index. This is its own job so a failed alias write can be rerun
+  # alone ("Re-run failed jobs") from the already published index; it first
+  # re-verifies that both exact tags name that index. One repository-wide
+  # group serializes alias writes across native releases, and the script
+  # rechecks each alias's current version in the registry right before
+  # writing, so an older release never moves an alias backward.
+  aliases:
+    name: Move the rolling tags of a final release
+    needs: [plan, publish]
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.dockerhub == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: dockerhub-native
+    concurrency:
+      group: durable-workflow-server-rolling-aliases
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reconcile the rolling tags with the attested index
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+          INDEX_DIGEST: ${{ needs.publish.outputs.digest }}
           RELEASE_IMAGE_TAG_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
         run: bash scripts/ci/native-release-rolling-tags.sh

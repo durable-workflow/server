@@ -63,14 +63,14 @@ collect_release_tags() {
 # one is above this PHP release; a PHP release then keeps its own X and X.Y
 # aliases and leaves latest alone, so latest never moves back to PHP.
 native_final_owns_latest() {
-    native_latest="$(collect_release_tags | sed -n 's/^native-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' | sort -u -V | tail -n 1)"
+    native_latest="$(printf '%s\n' "$release_inventory" | sed -n 's/^native-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' | sort -u -V | tail -n 1)"
     [ -n "$native_latest" ] || return 1
     [ "$(printf '%s\n%s\n' "$native_latest" "$release_tag" | sort -V | tail -n 1)" != "$release_tag" ]
 }
 
 latest_known_stable_tag() {
     {
-        collect_release_tags
+        printf '%s\n' "$release_inventory"
         printf '%s\n' "$release_tag"
     } | while IFS= read -r candidate; do
         if is_stable_semver_tag "$candidate"; then
@@ -101,6 +101,16 @@ minor_patch="${release_tag#*.}"
 minor="${minor_patch%%.*}"
 minor_alias="${major}.${minor}"
 major_alias="$major"
+
+# One tag inventory, read once with its status checked, decides both the PHP
+# ordering and whether a native release owns latest. A failed lookup stops
+# here, before any registry write.
+release_inventory=""
+if [ -n "${RELEASE_IMAGE_KNOWN_TAGS:-}" ] || [ -n "$tag_source_url" ]; then
+    if ! release_inventory="$(collect_release_tags)"; then
+        exit 1
+    fi
+fi
 
 if [ -n "${RELEASE_IMAGE_KNOWN_TAGS:-}" ] || [ -n "$tag_source_url" ]; then
     latest_tag="$(latest_known_stable_tag)"
