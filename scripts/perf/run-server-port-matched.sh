@@ -68,6 +68,13 @@ if [[ $impl == native-image ]]; then
   fi
 fi
 
+# The PHP reference is the profile's (published 2.6.2 when it names none).
+php_server=$(j '.artifacts.php_server // empty')
+if [[ -n $php_server ]]; then
+  [[ $php_server =~ ^[a-z0-9./_-]+@sha256:[0-9a-f]{64}$ ]] || { echo "artifacts.php_server must be an image by digest." >&2; exit 1; }
+  export DW_PORT_PHP_IMAGE=$php_server
+fi
+
 if [[ $smoke == --smoke ]]; then
   warmup=5 offer=5 drain=60 repeats=1 idle_counts=6 idle_repeats=1
 else
@@ -98,7 +105,7 @@ docker_socket=""
 case "${DOCKER_HOST:-unix:///var/run/docker.sock}" in unix://*) docker_socket=${DOCKER_HOST:-unix:///var/run/docker.sock}; docker_socket=${docker_socket#unix://} ;; esac
 jq -n --arg impl "$impl" --arg project "$project" --arg profile "$profile" \
   --arg profile_sha "$(sha256sum "$profile" | cut -d ' ' -f1)" \
-  --arg source "$(git -C "$DW_PORT_SOURCE_ROOT" rev-parse HEAD)" --arg binary "$binary_sha" --arg native_image "$native_image" \
+  --arg source "$(git -C "$DW_PORT_SOURCE_ROOT" rev-parse HEAD)" --arg binary "$binary_sha" --arg native_image "$native_image" --arg php_server "${php_server:-}" \
   --arg smoke "$smoke" --arg kernel "$(uname -r)" --arg cpus "$(nproc)" \
   --arg memory "$(awk '/MemTotal/ {print $2 * 1024}' /proc/meminfo)" \
   --arg docker "$(docker version --format '{{.Server.Version}}')" --arg cgroup "$cgroup_driver" \
@@ -106,7 +113,7 @@ jq -n --arg impl "$impl" --arg project "$project" --arg profile "$profile" \
   --arg filesystem "$(df -T "$(docker info --format '{{.DockerRootDir}}')" | awk 'NR==2 {print $2}')" \
   --arg cpu_model "$(awk -F': ' '/model name/ {print $2; exit}' /proc/cpuinfo)" \
   '{implementation:$impl,compose_project:$project,profile:$profile,profile_sha256:$profile_sha,source_revision:$source,
-    native_binary_sha256:$binary,native_image:$native_image,smoke:($smoke=="--smoke"),idle_only:($smoke=="--idle-only"),machine:{kernel:$kernel,logical_cpus:($cpus|tonumber),
+    native_binary_sha256:$binary,native_image:$native_image,php_server:$php_server,smoke:($smoke=="--smoke"),idle_only:($smoke=="--idle-only"),machine:{kernel:$kernel,logical_cpus:($cpus|tonumber),
     physical_memory_bytes:($memory|tonumber),cpu_model:$cpu_model,docker:$docker,cgroup_driver:$cgroup,
     docker_storage_driver:$storage,docker_root_filesystem:$filesystem}}' > "$out/identity.json"
 
