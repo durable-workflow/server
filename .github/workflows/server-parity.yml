@@ -126,6 +126,11 @@ on:
       - tests/Support/ServerParityAdmissionObservation.mjs
       - tests/Support/ServerParityVisibilityObservation.mjs
       - rust/**
+      - tests/Fixtures/ActivityResultInspection/**
+      - tests/Fixtures/ServerParityReaders/**
+      - tests/Conformance/ServerParity*.mjs
+      - benchmarks/capacity/v1/bindings/php/**
+      - benchmarks/server-port/v2/matched.json
   merge_group:
   workflow_dispatch:
 
