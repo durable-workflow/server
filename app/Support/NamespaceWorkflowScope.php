@@ -7,6 +7,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\NamespaceIdentity;
 
 class NamespaceWorkflowScope
 {
@@ -29,9 +30,8 @@ class NamespaceWorkflowScope
 
     public static function workflowBound(string $namespace, string $workflowId): bool
     {
-        return WorkflowInstance::query()
+        return NamespaceIdentity::constrain(WorkflowInstance::query(), $namespace)
             ->whereKey($workflowId)
-            ->where('namespace', $namespace)
             ->exists();
     }
 
@@ -48,8 +48,7 @@ class NamespaceWorkflowScope
 
     public static function runQuery(string $namespace, string $workflowId): Builder
     {
-        return WorkflowRun::query()
-            ->where('workflow_runs.namespace', $namespace)
+        return self::ownedRunQuery(WorkflowRun::query(), $namespace)
             ->where('workflow_runs.workflow_instance_id', $workflowId);
     }
 
@@ -69,20 +68,28 @@ class NamespaceWorkflowScope
 
     public static function runSummaryQuery(string $namespace): Builder
     {
-        return WorkflowRunSummary::query()
-            ->where('workflow_run_summaries.namespace', $namespace);
+        // Cached metadata is not authority for a legacy import's owner.
+        // Keep filtering and pagination inside the canonical run boundary.
+        return NamespaceIdentity::constrain(WorkflowRunSummary::query(), $namespace)
+            ->whereHas('run', static fn (Builder $run) => self::ownedRunQuery($run, $namespace)
+                ->whereColumn('workflow_runs.workflow_instance_id', 'workflow_run_summaries.workflow_instance_id'));
+    }
+
+    public static function ownedRunQuery(Builder $query, string $namespace): Builder
+    {
+        return NamespaceIdentity::constrain($query, $namespace)
+            ->whereHas('instance', static fn (Builder $instance) => NamespaceIdentity::constrain($instance, $namespace));
     }
 
     public static function taskQuery(string $namespace): Builder
     {
-        return WorkflowTask::query()
-            ->where('workflow_tasks.namespace', $namespace);
+        return NamespaceIdentity::constrain(WorkflowTask::query(), $namespace)
+            ->whereHas('run', static fn (Builder $run) => self::ownedRunQuery($run, $namespace));
     }
 
     public static function task(string $namespace, string $taskId): ?WorkflowTask
     {
-        return WorkflowTask::query()
-            ->where('namespace', $namespace)
+        return self::taskQuery($namespace)
             ->whereKey($taskId)
             ->first();
     }
@@ -98,7 +105,7 @@ class NamespaceWorkflowScope
             return null;
         }
 
-        $run = WorkflowRun::query()->where('namespace', $namespace)
+        $run = self::ownedRunQuery(WorkflowRun::query(), $namespace)
             ->whereKey($runId)->lockForUpdate()->first();
         if (! $run instanceof WorkflowRun) {
             return null;
