@@ -94,8 +94,15 @@ Updated October 27, 2026.
     its layout is 2.11.3's.)
   - the scope question with the operator: prepared local activities,
     workflow-bound Nexus handlers and external payload takeover;
-  - publishing the native image to Docker Hub (release candidate 1,
-    `ghcr.io/durable-workflow/server-native:3.0.0-rc.1`, is on GHCR);
+  - publishing a final native release to Docker Hub. From November 1, native
+    releases publish to the PHP image's own repositories,
+    `durableworkflow/server` and `ghcr.io/durable-workflow/server`, as major
+    version 3 (operator decision). Candidates 1 and 2 are on GHCR as
+    `ghcr.io/durable-workflow/server-native:3.0.0-rc.1` and `3.0.0-rc.2`.
+    Before the first final native tag reaches Docker Hub, the
+    published-artifact conformance scripts that default to the newest
+    `durableworkflow/server` tag (namespaces, principal attribution, Python,
+    replay, sagas and migration) must either run native or pin PHP;
   - differential qualification of the published image. (Matched
     performance against the recorded PHP baseline is met on one host for
     release candidate 1: throughput, memory and idle long polls, with about a
