@@ -432,15 +432,29 @@ contract fixture before its correction.
 - **Key order inside plain JSON input.** For input that is not an envelope,
   PHP encodes nested objects as Avro maps in request order; native encodes
   them with sorted keys. The decoded values are equal, but the blobs differ.
-- **Child completion while the parent has an open workflow task.** Published
-  Workflow records the child resolution and reuses the parent's existing ready
-  or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
-  Without a cooperative cancellation request, native gives the resolution
-  its own resume task, as activity and timer resolutions do
-  ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
-  Signals still create no resume while the parent
-  waits on a child, because only signal and condition waits count as open
-  waits.
+- **Child completion while the parent has an open workflow task**
+  (November 1; ready task closed, leased task decided;
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-child-open-parent-task.md)).
+  Published PHP 2.11.7 records the child resolution and, while the parent
+  has a ready or leased workflow task, creates none and leaves that task's
+  payload as it is (`dispatchParentResumeTasks`).
+  - **Ready task.** Native now does the same: the ready task replays the
+    parent with the resolution in its history. An update task does not
+    replay the workflow, so beside one the resolution still gets its own
+    resume task. The `child-open-parent-task` fixture records it against
+    published 2.11.7.
+  - **Leased task.** On 2.11.7 a lease whose worker read history before the
+    resolution completes without it, and the parent is left with no task;
+    the repair pass does not recover it
+    ([workflow#962](https://github.com/durable-workflow/workflow/issues/962)).
+    Core 2.15.10, not yet in a published Server release, creates one child
+    resume task when such a lease completes. Native gives the resolution
+    its own resume task at once, as activity and timer resolutions do on
+    both servers. Compare again when the parity reference moves to a Server
+    release with Core 2.15.10.
+  - A signal creates no resume while the parent waits only on a child, as
+    on PHP: `PendingMessageTask::signalCanAdvanceRun` advances only signal
+    and condition waits.
 - **Update delivery into a ready task** (November 1, decided: native
   keeps its behavior). Published PHP merges an accepted update into the
   run's ready workflow task (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).

@@ -200,6 +200,8 @@ mod priority_fairness;
 mod completion_rules;
 #[path = "execution/command_batches.rs"]
 mod command_batches;
+#[path = "execution/child_open_parent_task.rs"]
+mod child_open_parent_task;
 #[path = "execution/update_routing.rs"]
 mod update_routing;
 #[path = "execution/command_payloads.rs"]

@@ -20,6 +20,7 @@ import {checkLargeCommandBatches} from './large-command-batches-contract.mjs';
 import {checkManyUpdates} from './many-updates-contract.mjs';
 import {checkWorkerErrorBodies} from './worker-error-bodies-contract.mjs';
 import {checkChildDescriptions} from './child-descriptions-contract.mjs';
+import {checkChildOpenParentTask} from './child-open-parent-task-contract.mjs';
 import {checkChildRetries} from './child-retries-contract.mjs';
 import {checkActivityLateOutcomes} from './activity-late-outcomes-contract.mjs';
 import {checkChildVisibility} from './child-visibility-contract.mjs';
@@ -197,6 +198,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const manyUpdates = fixture.many_updates ? checkManyUpdates(fixture, observation) : null;
   const workerErrorBodies = fixture.worker_error_bodies ? checkWorkerErrorBodies(fixture, observation) : null;
   const childDescriptions = fixture.child_descriptions ? checkChildDescriptions(fixture, observation) : null;
+  const childOpenParentTask = fixture.child_open_parent_task ? checkChildOpenParentTask(fixture, observation) : null;
   const childRetries = fixture.child_retries ? checkChildRetries(fixture, observation) : null;
   const activityLateOutcomes = fixture.activity_late_outcomes ? checkActivityLateOutcomes(fixture, observation) : null;
   const childVisibility = fixture.child_visibility ? checkChildVisibility(fixture, observation) : null;
@@ -792,6 +794,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(manyUpdates ? {many_updates: manyUpdates} : {}),
     ...(workerErrorBodies ? {worker_error_bodies: workerErrorBodies} : {}),
     ...(childDescriptions ? {child_descriptions: childDescriptions} : {}),
+    ...(childOpenParentTask ? {child_open_parent_task: childOpenParentTask} : {}),
     ...(childRetries ? {child_retries: childRetries} : {}),
     ...(activityLateOutcomes ? {activity_late_outcomes: activityLateOutcomes} : {}),
     ...(childVisibility ? {child_visibility: childVisibility} : {}),
