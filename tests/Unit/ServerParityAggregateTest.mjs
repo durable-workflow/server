@@ -53,6 +53,7 @@ test('pull requests run without a path filter and push keeps the one path list',
     'tests/Fixtures/ActivityResultInspection/v1.json',
     'tests/Fixtures/ServerParityReaders/sdk-signals.mjs',
     'tests/Conformance/ServerParityDeadlinePollTest.mjs',
+    'benchmarks/capacity/v1/bindings/php/capacity_adapter.php',
     'benchmarks/server-port/v2/matched.json',
   ]) {
     assert.deepEqual(matchingFiles(patterns, [input]), [input], `${input} must re-run the fixtures`);
