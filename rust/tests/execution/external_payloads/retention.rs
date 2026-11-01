@@ -7,7 +7,7 @@ use sqlx::AssertSqlSafe;
 const PASS: &str = "/api/system/retention/pass";
 
 /// A JSON control-plane request in `namespace`.
-async fn ns_request(router: &Router, method: &str, path: &str, namespace: &str, value: Value) -> (StatusCode, Value) {
+pub(super) async fn ns_request(router: &Router, method: &str, path: &str, namespace: &str, value: Value) -> (StatusCode, Value) {
     let response = router
         .clone()
         .oneshot(
@@ -29,7 +29,7 @@ async fn ns_request(router: &Router, method: &str, path: &str, namespace: &str, 
 }
 
 /// An uploaded Avro payload's reference in `namespace`.
-async fn upload(router: &Router, namespace: &str, text: &str) -> Value {
+pub(super) async fn upload(router: &Router, namespace: &str, text: &str) -> Value {
     let blob = durable_workflow_server::codec::ValueCodec::new()
         .unwrap()
         .encode(&Payload::Array(vec![Payload::String(text.into())]))
@@ -41,7 +41,7 @@ async fn upload(router: &Router, namespace: &str, text: &str) -> Value {
 }
 
 /// A terminated run whose input is `reference`.
-async fn closed_run(router: &Router, namespace: &str, workflow: &str, reference: &Value) -> String {
+pub(super) async fn closed_run(router: &Router, namespace: &str, workflow: &str, reference: &Value) -> String {
     let (status, started) = ns_request(router, "POST", "/api/workflows", namespace, json!({"workflow_id": workflow,
         "workflow_type": "echo", "task_queue": workflow, "input": {"codec": "avro", "external_payload": reference}})).await;
     assert_eq!(status, StatusCode::CREATED, "{started}");
@@ -64,12 +64,12 @@ fn pruned(result: &Value, external_payloads: i64) {
 }
 
 /// The local driver's content-addressed object path.
-fn object(root: &std::path::Path, reference: &Value) -> std::path::PathBuf {
+pub(super) fn object(root: &std::path::Path, reference: &Value) -> std::path::PathBuf {
     let sha = reference["sha256"].as_str().unwrap();
     root.join("avro").join(&sha[..2]).join(sha)
 }
 
-async fn registered(database: &TestDatabase, reference: &Value) -> i64 {
+pub(super) async fn registered(database: &TestDatabase, reference: &Value) -> i64 {
     count(database, AssertSqlSafe(format!("SELECT COUNT(*) FROM runtime_external_payloads WHERE id='{}'",
         reference["reference_id"].as_str().unwrap()))).await
 }
@@ -137,13 +137,17 @@ async fn retention_without_storage_or_after_a_failed_delete_keeps_the_run() {
     let first = closed_run(&router, "default", "shared-1", &shared).await;
     let second = closed_run(&router, "default", "shared-2", &shared).await;
 
+    inbound_stream(&database, &run).await;
+
     // Without storage, a run with an object to delete is skipped; one whose
-    // objects a retained run holds needs none.
+    // objects a retained run holds needs none. The skip marks the instance's
+    // inbound streams blocked, as PHP's `markBlocked` does.
     assert_eq!(policy(&router, "default", &root, false).await, StatusCode::OK);
     let (status, result) = prune(&router, "default", &run).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result, json!({"run_id": run, "outcome": "skipped", "reason": "external_payload_storage_driver_unavailable"}));
     assert!(kept_details(&database, &run).await);
+    assert_eq!(blocked(&database, &run, "external_payload_storage_driver_unavailable").await, 1);
     pruned(&prune(&router, "default", &first).await.1, 0);
     assert_eq!(prune(&router, "default", &second).await.1["reason"], "external_payload_storage_driver_unavailable");
     assert_eq!(policy(&router, "default", &root, true).await, StatusCode::OK);
@@ -157,6 +161,7 @@ async fn retention_without_storage_or_after_a_failed_delete_keeps_the_run() {
     assert!(object(&root, &sole).exists());
     assert_eq!(registered(&database, &sole).await, 1);
     assert!(kept_details(&database, &run).await);
+    assert_eq!(blocked(&database, &run, "external_payload_cleanup_failed").await, 1, "a failed prune marks its reason");
     database.execute("UPDATE runtime_external_payload_backup_hold SET expires_at='2000-01-01 00:00:00'").await;
 
     // A storage failure does the same; the next pass deletes the object.
@@ -177,7 +182,44 @@ async fn retention_without_storage_or_after_a_failed_delete_keeps_the_run() {
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
     pruned(&prune(&router, "default", &run).await.1, 1);
     assert!(!object(&root, &sole).exists());
+    // The terminal instance's last retained run takes its streams with it.
+    assert_eq!(count(&database, "SELECT COUNT(*) FROM workflow_inbound_streams").await, 0);
     pruned(&prune(&router, "default", &second).await.1, 1);
+}
+
+/// An inbound message stream on the run's instance.
+async fn inbound_stream(database: &TestDatabase, run: &str) {
+    database.execute(AssertSqlSafe(format!(
+        "INSERT INTO workflow_inbound_streams(namespace,workflow_instance_id,stream_name) SELECT namespace,workflow_instance_id,'input' FROM workflow_runs WHERE id='{run}'"))).await;
+}
+
+/// The instance's inbound streams marked blocked by `run` for `reason`.
+async fn blocked(database: &TestDatabase, run: &str, reason: &str) -> i64 {
+    count(database, AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM workflow_inbound_streams WHERE cleanup_blocked_at IS NOT NULL AND cleanup_blocked_run_id='{run}' AND cleanup_blocked_reason='{reason}'"))).await
+}
+
+// A continued instance keeps its streams. A prune that cannot settle the
+// run's references marks them blocked; a later prune of the same run clears
+// the mark, and an open abandoned activity's hold marks nothing.
+#[tokio::test]
+async fn a_blocked_prune_marks_its_instance_streams_until_it_completes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("objects");
+    let (database, _runtime, router) = setup(ExternalPayloadConfig::default(), &root).await;
+    let sole = upload(&router, "default", "marked").await;
+    let run = closed_run(&router, "default", "marked", &sole).await;
+    inbound_stream(&database, &run).await;
+    // A retained later run of the instance keeps the streams in place.
+    database.execute(AssertSqlSafe(format!(
+        "INSERT INTO workflow_run_summaries(id,workflow_instance_id,run_number,class,workflow_type,namespace,status,status_bucket) SELECT 'later-run',workflow_instance_id,2,'echo','echo','default','running','running' FROM workflow_runs WHERE id='{run}'"))).await;
+    assert_eq!(policy(&router, "default", &root, false).await, StatusCode::OK);
+    assert_eq!(prune(&router, "default", &run).await.1["reason"], "external_payload_storage_driver_unavailable");
+    assert_eq!(blocked(&database, &run, "external_payload_storage_driver_unavailable").await, 1);
+    assert_eq!(policy(&router, "default", &root, true).await, StatusCode::OK);
+    pruned(&prune(&router, "default", &run).await.1, 1);
+    assert_eq!(count(&database, "SELECT COUNT(*) FROM workflow_inbound_streams WHERE cleanup_blocked_at IS NULL AND cleanup_blocked_reason IS NULL AND cleanup_blocked_run_id IS NULL").await, 1,
+        "the completed prune clears its mark and keeps the stream");
 }
 
 #[tokio::test]
@@ -195,4 +237,19 @@ async fn retention_keeps_a_run_holding_a_reference_native_cannot_settle() {
     assert_eq!(result["reason"], "external_payload_cleanup_unavailable", "{result}");
     assert!(object(&root, &sole).exists());
     assert!(kept_details(&database, &run).await);
+}
+
+// The skip for a reference native cannot settle marks the streams too.
+#[tokio::test]
+async fn an_unsettled_reference_marks_the_instance_streams_blocked() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("objects");
+    let (database, _runtime, router) = setup(ExternalPayloadConfig::default(), &root).await;
+    let sole = upload(&router, "default", "sole").await;
+    let run = closed_run(&router, "default", "imported-streams", &sole).await;
+    inbound_stream(&database, &run).await;
+    database.execute(AssertSqlSafe(format!(
+        "UPDATE workflow_runs SET output='dw-external-payload:v1:e30=' WHERE id='{run}'"))).await;
+    assert_eq!(prune(&router, "default", &run).await.1["reason"], "external_payload_cleanup_unavailable");
+    assert_eq!(blocked(&database, &run, "external_payload_cleanup_unavailable").await, 1);
 }

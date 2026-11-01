@@ -121,6 +121,13 @@ pub(super) trait Backend: Database {
         "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload::text"), "))",
         "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata::text"), ")"
     );
+    // The namespace's stream rows holding an external reference, which
+    // native's namespace delete does not settle ($1-$3 bind the namespace).
+    const NAMESPACE_STREAM_REFERENCES: &str = concat!(
+        "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE namespace=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload::text"), "))",
+        "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE namespace=$2 AND ", super::retention::reference!("metadata::text"), ")",
+        "+(SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE namespace=$3 AND ", super::retention::reference!("payload_blob"), ")"
+    );
     // `duplicateBridgeCommand`: the latest accepted command PHP recorded for
     // this adapter, action, key and target name ($6 names the target field),
     // filtered in the database as PHP's JSON-path query is. PHP's bridge
@@ -243,6 +250,11 @@ ORDER BY t.available_order,t.id LIMIT 100
     const RUN_STREAM_REFERENCES: &str = concat!(
         "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), "))",
         "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata"), ")"
+    );
+    const NAMESPACE_STREAM_REFERENCES: &str = concat!(
+        "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE namespace=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), "))",
+        "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE namespace=$2 AND ", super::retention::reference!("metadata"), ")",
+        "+(SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE namespace=$3 AND ", super::retention::reference!("payload_blob"), ")"
     );
     const BRIDGE_COMMAND: &str = "SELECT workflow_run_id,resolved_workflow_run_id FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' AND json_extract(context,'$.server.metadata.adapter')=$3 AND json_extract(context,'$.server.metadata.action')=$4 AND json_extract(context,'$.server.metadata.idempotency_key')=$5 AND json_extract(context,'$.server.metadata.'||$6)=$7 AND (request_id IS NULL OR request_id=$8) ORDER BY accepted_at DESC,command_sequence DESC LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = i64::MAX;
@@ -504,6 +516,11 @@ impl Backend for MySql {
     const RUN_STREAM_REFERENCES: &str = concat!(
         "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE workflow_run_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), "))",
         "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE workflow_run_id=$2 AND ", super::retention::reference!("metadata"), ")"
+    );
+    const NAMESPACE_STREAM_REFERENCES: &str = concat!(
+        "SELECT (SELECT COUNT(*) FROM workflow_durable_stream_items WHERE namespace=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), "))",
+        "+(SELECT COUNT(*) FROM workflow_durable_streams WHERE namespace=$2 AND ", super::retention::reference!("metadata"), ")",
+        "+(SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE namespace=$3 AND ", super::retention::reference!("payload_blob"), ")"
     );
     const READ_SNAPSHOT_BEGIN: &str = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY";
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT h.sequence,h.event_type,CASE WHEN page.projection_bytes<=8388608 THEN h.payload ELSE NULL END AS payload,h.workflow_task_id,h.recorded_at,page.projection_count FROM (SELECT id,sequence,COUNT(*) OVER () AS projection_count,SUM(payload_bytes) OVER (ORDER BY sequence) AS projection_bytes FROM (SELECT id,sequence,octet_length(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled')) AS sizes ORDER BY sequence LIMIT 10001) AS page JOIN workflow_history_events h ON h.id=page.id ORDER BY page.sequence";

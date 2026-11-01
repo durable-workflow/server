@@ -129,7 +129,9 @@ any other unknown path or method answers PHP's own 404 or 405
   answered PHP
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-waterline-service-mode.md));
   namespace delete, with the
-  `namespace-delete` fixture. The JSON
+  `namespace-delete` fixture, and its external payloads, with the
+  `namespace-delete-payloads` fixture
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-external-payload-cleanup.md)). The JSON
   `GET|POST /api/system/metrics` is served with the `system-metrics`
   fixture: namespace failure, durable-state and payload counts are exact;
   native enforces no admission, durable-state or payload quota, so limits
@@ -470,8 +472,11 @@ contract fixture before its correction.
   `retention-external-payloads` fixture records it against published 2.11.7.
   A run holding a reference native cannot settle (PHP's stored format from a
   workflow import, an envelope, or one on an inbound or durable stream) is
-  still skipped with `external_payload_cleanup_unavailable`, and native does
-  not mark the instance's inbound streams blocked on a skip as PHP does.
+  still skipped with `external_payload_cleanup_unavailable`. Since November 1,
+  a skip or failure of the payload cleanup marks the instance's inbound
+  streams blocked with its reason, as PHP's `markBlocked` does, and a later
+  completed prune of that run clears the mark
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-external-payload-cleanup.md)).
   A run whose instance has inbound message streams is pruned as PHP's
   `MessageStreamRetentionCleanup` prunes it (October 27): the messages it
   consumed lose their payloads once a retained later run's cursor checkpoint

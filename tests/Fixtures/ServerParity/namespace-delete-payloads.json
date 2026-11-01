@@ -1,0 +1,104 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "namespace-delete-payloads",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "namespace delete payloads λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "namespace delete payloads λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "namespace_delete_payloads": {
+    "setup": {
+      "policies": [
+        200,
+        200,
+        200
+      ],
+      "uploads": [
+        201,
+        201,
+        201,
+        201,
+        201
+      ],
+      "runs": {
+        "sole": 201,
+        "mine": 201,
+        "theirs": 201
+      },
+      "peer_references_differ": true,
+      "storage_off": 200,
+      "storage_on": 200
+    },
+    "steps": {
+      "storage off: refused": {
+        "status": 503,
+        "body": {
+          "message": "Namespace cleanup requires deleting external payloads, but external payload storage is unavailable.",
+          "reason": "external_payload_storage_driver_unavailable",
+          "error": "External payload storage driver is unavailable for namespace cleanup."
+        },
+        "namespace_matches": true
+      },
+      "storage off: namespace remains": {
+        "status": 200
+      },
+      "deleted": {
+        "status": 200,
+        "name_matches": true,
+        "outcome": "deleted",
+        "payloads": {
+          "external_payloads_deleted": 1,
+          "runtime_external_payload_references": 2
+        }
+      },
+      "deleted: namespace gone": {
+        "status": 404
+      },
+      "peer fetched": {
+        "status": 200,
+        "bytes_match": true
+      },
+      "peer deleted": {
+        "status": 200,
+        "name_matches": true,
+        "outcome": "deleted",
+        "payloads": {
+          "external_payloads_deleted": 1
+        }
+      },
+      "idle deleted": {
+        "status": 200,
+        "name_matches": true,
+        "outcome": "deleted",
+        "payloads": {
+          "runtime_external_payload_references": 1
+        }
+      }
+    }
+  }
+}
