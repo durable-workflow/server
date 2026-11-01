@@ -159,3 +159,163 @@ async fn repair_settles_an_expired_activity_lease_by_its_retry_policy_like_php()
         database.remove().await;
     }
 }
+
+/// The run's open tasks' types and payloads, oldest first.
+async fn open_tasks(database: &TestDatabase, run: &str) -> Vec<(String, Value)> {
+    let sql = |payload: &str| format!("SELECT task_type, {payload} FROM workflow_tasks WHERE workflow_run_id='{run}' AND status IN ('ready','leased') ORDER BY created_at, id");
+    text_rows(database, &sql("payload"), &sql("payload::text"), &sql("CAST(payload AS CHAR)")).await
+        .into_iter().map(|(kind, payload)| (kind, serde_json::from_str(&payload).unwrap())).collect()
+}
+
+/// When the run's open tasks are available, as stored.
+async fn available(database: &TestDatabase, run: &str) -> Vec<(String, String)> {
+    let sql = |at: &str| format!("SELECT task_type, {at} FROM workflow_tasks WHERE workflow_run_id='{run}' AND status IN ('ready','leased') ORDER BY created_at, id");
+    text_rows(database, &sql("available_at"), &sql("available_at::text"), &sql("CAST(available_at AS CHAR)")).await
+}
+
+/// Waits until the run's history records `kind`.
+async fn await_event(app: &Router, started: &Value, kind: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let history = run_history(app, &started["workflow_id"], &started["run_id"]).await;
+            if history.as_array().unwrap().iter().any(|event| event["event_type"] == kind) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{kind} is recorded"));
+}
+
+/// The original payload without the named keys.
+fn without(payload: &Value, keys: &[&str]) -> Value {
+    let mut payload = payload.clone();
+    for key in keys {
+        payload.as_object_mut().unwrap().remove(*key);
+    }
+    payload
+}
+
+// Published PHP's repair command also recreates the missing task of a run
+// waiting on a received signal, an accepted update or a resolved child, and
+// of a condition or signal wait's timeout (`TaskRepair::createMissingTask`
+// with `forMissingWorkflowTask`'s payloads). Recorded against published
+// Server 2.11.7 with the open task row deleted from its SQLite database:
+// - a received signal or an accepted update gets a workflow task with the
+//   same payload as the lost one;
+// - a resolved child gets a workflow task with its child run's resume
+//   fields, without the resolution event's sequence and type;
+// - a pending timeout gets its timer task again, available at the deadline;
+// - a fired timeout gets the workflow task that applies it, without the
+//   timer kind and event type that firing records.
+// The run is then described as it was before the task was lost.
+#[tokio::test]
+async fn repair_creates_a_missing_signal_update_child_or_timeout_task_like_php() {
+    let int = || json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))});
+    for (id, kind, wait_kind) in [
+        ("missing-signal", "workflow", "workflow-task"),
+        ("missing-update", "workflow", "update"),
+        ("missing-child", "workflow", "workflow-task"),
+        ("missing-signal-timeout", "timer", "signal"),
+        ("missing-signal-timeout-fired", "workflow", "signal"),
+        ("missing-condition-timeout", "timer", "condition"),
+        ("missing-condition-timeout-fired", "workflow", "condition"),
+    ] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        runtime.set_maintenance_repair(false);
+        let app = router(runtime.clone());
+        if id == "missing-child" {
+            register(&app, "worker", json!(["echo", "child"]), json!([])).await;
+        } else {
+            update_worker(&app, "worker").await;
+        }
+        let started = start(&app, id).await;
+        let run = started["run_id"].as_str().unwrap();
+        let task = poll(&app, "worker", "workflow").await;
+        let command = match id {
+            "missing-signal" | "missing-update" => json!({"type":"open_signal_wait","signal_name":"finish"}),
+            "missing-child" => child_command(1),
+            "missing-signal-timeout" => json!({"type":"open_signal_wait","signal_name":"finish","timeout_seconds":3600}),
+            "missing-signal-timeout-fired" => json!({"type":"open_signal_wait","signal_name":"finish","timeout_seconds":1}),
+            "missing-condition-timeout" => json!({"type":"open_condition_wait","condition_key":"ready","timeout_seconds":3600}),
+            _ => json!({"type":"open_condition_wait","condition_key":"ready","timeout_seconds":1}),
+        };
+        let (status, body) = finish_task(&app, &task, json!([command])).await;
+        assert_eq!(status, StatusCode::OK, "{id}: {body}");
+        match id {
+            "missing-signal" => {
+                let (status, body) = request(&app, "POST", &format!("/api/workflows/{id}/signal/finish"), int()).await;
+                assert!(status.is_success(), "{id}: {body}");
+            }
+            "missing-update" => {
+                let mut input = int();
+                input["wait_for"] = json!("accepted");
+                let (status, body) = request(&app, "POST", &format!("/api/workflows/{id}/update/set"), input).await;
+                assert!(status.is_success(), "{id}: {body}");
+            }
+            "missing-child" => {
+                let child = poll(&app, "worker", "workflow").await;
+                assert_ne!(child["workflow_id"], id, "{child}");
+                let complete = json!({"type":"complete_workflow","result":envelope(Payload::Long(1))});
+                assert_eq!(finish_task(&app, &child, json!([complete])).await.0, StatusCode::OK, "{id}");
+            }
+            "missing-signal-timeout-fired" | "missing-condition-timeout-fired" => await_event(&app, &started, "TimerFired").await,
+            _ => {}
+        }
+        let (_, described) = request(&app, "GET", &format!("/api/workflows/{id}"), Value::Null).await;
+        assert_eq!(described["wait_kind"], wait_kind, "{id}: {described}");
+        let lost = open_tasks(&database, run).await;
+        assert_eq!(lost.len(), 1, "{id}: {lost:?}");
+        assert_eq!(lost[0].0, kind, "{id}: {lost:?}");
+        let lost_at = available(&database, run).await;
+        database.execute(sqlx::AssertSqlSafe(format!("DELETE FROM workflow_tasks WHERE workflow_run_id='{run}' AND status IN ('ready','leased')"))).await;
+
+        let (status, repaired) = repair(&app, id).await;
+        assert_eq!((status, repaired["outcome"].clone()), (StatusCode::OK, json!("repair_dispatched")), "{id}: {repaired}");
+        let event = &repairs(&app, &started).await[0]["payload"];
+        let summary_kind = match id {
+            "missing-signal" | "missing-signal-timeout" | "missing-signal-timeout-fired" => "signal",
+            "missing-update" => "update",
+            "missing-child" => "child",
+            _ => "condition",
+        };
+        assert_eq!(
+            (event["liveness_state"].clone(), event["wait_kind"].clone(), event["task_type"].clone(), event["task"]["repair_count"].clone()),
+            (json!("repair_needed"), json!(summary_kind), json!(kind), json!(1)),
+            "{id}: {event}"
+        );
+        let created = open_tasks(&database, run).await;
+        assert_eq!(created.len(), 1, "{id}: {created:?}");
+        let original = &lost[0].1;
+        let expected = match id {
+            // `forUpdate`, which names the wait; native's accepted update
+            // task carries only the update and command.
+            "missing-update" => {
+                let update = original["workflow_update_id"].as_str().unwrap();
+                let mut expected = original.clone();
+                expected["workflow_wait_kind"] = json!("update");
+                expected["open_wait_id"] = json!(format!("update:{update}"));
+                expected["resume_source_id"] = json!(update);
+                expected
+            }
+            "missing-child" => without(original, &["workflow_history_event_id", "workflow_sequence", "workflow_event_type"]),
+            "missing-signal-timeout-fired" | "missing-condition-timeout-fired" => without(original, &["timer_kind", "workflow_event_type"]),
+            _ => original.clone(),
+        };
+        assert_eq!(created[0], (kind.to_owned(), expected), "{id}: lost {original}");
+        let (_, described) = request(&app, "GET", &format!("/api/workflows/{id}"), Value::Null).await;
+        assert_eq!(described["wait_kind"], wait_kind, "{id}: {described}");
+        if kind == "timer" {
+            // The timer task is available at the timeout's deadline, as the
+            // lost one was.
+            assert_eq!(available(&database, run).await, lost_at, "{id}");
+        } else {
+            let claimed = poll(&app, "worker", "workflow").await;
+            assert_eq!(claimed["workflow_id"], id, "{id}: {claimed}");
+        }
+        runtime.close().await;
+        database.remove().await;
+    }
+}

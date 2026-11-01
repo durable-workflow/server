@@ -112,10 +112,40 @@ where
             summary.repair_blocked = Some("unsupported_history");
             summary.problem = true;
         }
-        // A received signal without a task has its own application-repair
-        // classifier. Do not mislabel it as an ordinary external wait.
-        if summary.task_id.is_none() && Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
-            .bind(&run_id).fetch_one(&mut **tx).await? > 0 { return Ok(None); }
+        // `openSignalApplicationWait`: a received signal without an open task
+        // waits to be applied, and needs repair. It describes the run ahead of
+        // timers, conditions, children and signal waits.
+        if summary.task_id.is_none()
+            && let Some(signal) = Self::query("SELECT id,signal_name,received_at FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,CASE WHEN received_at IS NULL THEN 1 ELSE 0 END,received_at,id LIMIT 1")
+                .bind(&run_id).fetch_optional(&mut **tx).await?
+        {
+            // An open activity or accepted update takes precedence in PHP;
+            // native leaves those combinations, and a blocked replay, unprojected.
+            if summary.state == "workflow_replay_blocked"
+                || Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running')")
+                    .bind(&run_id).fetch_one(&mut **tx).await? > 0
+                || Self::scalar("SELECT COUNT(*) FROM workflow_updates WHERE workflow_run_id=$1 AND status='accepted'")
+                    .bind(&run_id).fetch_one(&mut **tx).await? > 0
+            {
+                return Ok(None);
+            }
+            let id = DB::string(&signal, "id")?;
+            let name = DB::optional_string(&signal, "signal_name")?.filter(|name| !name.is_empty()).unwrap_or_else(|| "signal".into());
+            summary.state = "repair_needed".into();
+            summary.reason = format!("Accepted signal {name} is received without an open workflow task.");
+            summary.repair_blocked = None;
+            summary.problem = true;
+            summary.wait = Some(SummaryWait {
+                kind: "signal",
+                id: format!("signal-application:{id}"),
+                reason: format!("Waiting to apply signal {name}"),
+                started_at: DB::optional_instant(&signal, "received_at")?,
+                deadline_at: None,
+                source_kind: "workflow_signal",
+                source_id: Some(id),
+            });
+            return Ok(Some(summary));
+        }
         if !Self::apply_external_wait_summary(tx, &run_id, external_waits, &mut summary).await? {
             return Ok(None);
         }

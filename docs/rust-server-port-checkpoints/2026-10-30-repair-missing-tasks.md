@@ -44,7 +44,6 @@
 - **Tests.** In `workflow_repair.rs`:
   - `repair_creates_a_missing_workflow_activity_or_timer_task_like_php`;
   - `repair_settles_an_expired_activity_lease_by_its_retry_policy_like_php`.
-- **Not covered.** The missing task of an update, signal or child wait, or
-  of a condition or signal wait's timeout timer. PHP builds those tasks'
-  payloads from the wait (`forMissing…Task`), and native still refuses
-  them.
+- **Not covered here.** The missing task of an update, signal or child
+  wait, or of a condition or signal wait's timeout timer. Closed on
+  November 1 ([checkpoint](2026-11-01-repair-missing-wait-tasks.md)).

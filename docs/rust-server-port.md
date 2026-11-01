@@ -140,8 +140,8 @@ any other unknown path or method answers PHP's own 404 or 405
   `prometheus-metrics` fixture, with PHP's default limit of 100 series per
   family. External payload cleanup and its pass are served with the
   `payload-cleanup` fixture. The task repair pass is served with the
-  `repair-pass` fixture; a recovery native does not perform yet is
-  reported as its candidate's failure, with 207.
+  `repair-pass` fixture; a candidate whose recovery fails is reported as
+  a failure, with 207.
 - **Worker protocol features.**
   - Prepared local activities (prepare, checkpoint, group checkpoint,
     recover, heartbeat, control, outcome and cancellation acknowledgement)
@@ -313,22 +313,29 @@ contract fixture before its correction.
   is a contract decision, recorded in
   [Server #690](https://github.com/durable-workflow/server/issues/690)
   (`tests/execution/update_routing.rs`).
-- **Repair of a run without a recoverable task** (October 30, mostly
-  closed). Published PHP's repair command creates a run's missing task and
-  settles an expired activity-task lease through the activity's retry
-  policy. Native's repair command and repair pass now do too:
+- **Repair of a run without a recoverable task** (October 30 and
+  November 1, closed). Published PHP's repair command creates a run's
+  missing task and settles an expired activity-task lease through the
+  activity's retry policy. Native's repair command and repair pass now do
+  too:
   - a missing workflow task is recreated;
   - a missing activity task is recreated for the pending execution, with
     its latest retry's fields;
   - a missing timer task is recreated, available at the fire time;
-  - an expired activity lease is settled by the activity's retry policy.
+  - an expired activity lease is settled by the activity's retry policy;
+  - a received signal, an accepted update or a resolved child gets the
+    workflow task that resumes the run from it;
+  - a condition or signal wait's pending timeout gets its timer task
+    again, available at the deadline, and a fired timeout gets the
+    workflow task that applies it.
 
   Native's scheduler usually settles such a lease first, as PHP's repair
   loop does
-  ([checkpoint](rust-server-port-checkpoints/2026-10-30-repair-missing-tasks.md)).
-  Still refused with `development_workflow_task_repair_unqualified`: the
-  missing task of an update, signal or child wait, or of a condition or
-  signal wait's timeout timer.
+  ([checkpoint](rust-server-port-checkpoints/2026-10-30-repair-missing-tasks.md),
+  [wait tasks](rust-server-port-checkpoints/2026-11-01-repair-missing-wait-tasks.md)).
+  A run with a received signal and no open task is now projected as PHP
+  projects it: waiting to apply the signal, and needing repair. Native no
+  longer refuses a repair with `development_workflow_task_repair_unqualified`.
 - **Structural limits.** For external workers, published PHP enforces four
   of the Workflow package's `DW_V2_LIMIT_*` limits: the memo size, the
   command batch size as a bound on parallel group metadata, the pending
