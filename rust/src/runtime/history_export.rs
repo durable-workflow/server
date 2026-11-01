@@ -1,9 +1,9 @@
 //! `HistoryExport::forRun` (Workflow 2.5.5): the replay bundle of one run.
 //!
 //! The bundle is built from the run's rows as JSON objects keyed by column.
-//! Native keeps no timeline or full wait projection yet, so those sections
-//! are empty and `selected_run` names them unavailable. Timers and lineage
-//! are rebuilt from history and links, as PHP rebuilds a missing projection.
+//! Waits are the run's stored `workflow_run_waits` rows. The timeline, timers
+//! and lineage are rebuilt from history and links, as PHP rebuilds a missing
+//! projection.
 use super::backend::Backend;
 use super::external_resolution::stored_envelope;
 use super::task_queues::json_time;
@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 pub(super) const SCHEMA: &str = "durable-workflow.v2.history-export";
 /// CRC-64-AVRO of the protocol Value schema, as single-object frames carry it.
 pub(super) const VALUE_FINGERPRINT: &str = "e2a33dff55802237";
-const UNAVAILABLE: &str = "native_unavailable";
 const ACTIVITY_EVENTS: &[&str] = &[
     "ActivityScheduled",
     "ActivityStarted",
@@ -158,6 +157,8 @@ pub(super) struct Rows {
     pub(super) failures: Vec<Value>,
     pub(super) parents: Vec<Value>,
     pub(super) children: Vec<Value>,
+    /// The run's `workflow_run_waits` rows in display order.
+    pub(super) waits: Vec<Value>,
     /// The memo projection, `[]` when the run has none.
     pub(super) memo: Value,
     /// `MemoPayload::mapEnvelope`, null when the run has no memo.
@@ -454,12 +455,32 @@ fn timers(events: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// PHP's built-in throwables, which `FailureFactory::replayResolution`
+/// always resolves from a failure's recorded class.
+const PHP_THROWABLES: &[&str] = &[
+    "Exception", "ErrorException", "Error", "TypeError", "ValueError", "ArithmeticError", "DivisionByZeroError",
+    "ArgumentCountError", "AssertionError", "CompileError", "ParseError", "UnhandledMatchError", "JsonException",
+    "RuntimeException", "LogicException", "BadFunctionCallException", "BadMethodCallException", "DomainException",
+    "InvalidArgumentException", "LengthException", "OutOfRangeException", "OutOfBoundsException", "OverflowException",
+    "RangeException", "UnderflowException", "UnexpectedValueException",
+];
+
+/// `FailureFactory::replayResolution` for a recorded class: a PHP built-in
+/// throwable resolves as recorded; native knows no other PHP class.
+fn exception_resolution(class: &Value) -> (Value, Value) {
+    match class.as_str().map(|class| class.trim_start_matches('\\')) {
+        Some(class) if PHP_THROWABLES.contains(&class) => (json!(class), json!("recorded_class")),
+        _ => (Value::Null, json!("unresolved")),
+    }
+}
+
 fn failure(row: &Value) -> Value {
+    let (resolved, source) = exception_resolution(&row["exception_class"]);
     json!({"id": row["id"], "source_kind": row["source_kind"], "source_id": row["source_id"],
         "propagation_kind": row["propagation_kind"], "failure_category": row["failure_category"],
         "non_retryable": row["non_retryable"], "handled": row["handled"], "history_authority": "typed_history",
         "diagnostic_only": false, "exception_type": null, "exception_class": row["exception_class"],
-        "exception_resolved_class": null, "exception_resolution_source": null, "exception_resolution_error": null,
+        "exception_resolved_class": resolved, "exception_resolution_source": source, "exception_resolution_error": null,
         "exception_replay_blocked": false, "message": row["message"], "file": row["file"], "line": row["line"],
         "trace_preview": row["trace_preview"], "created_at": row["created_at"]})
 }
@@ -655,21 +676,27 @@ pub(super) fn bundle(rows: &Rows, exported_at: &str, signing: Option<&Signing>) 
     );
     let activities: Vec<Value> =
         rows.executions.iter().map(|execution| activity(execution, &rows.events, &rows.attempts)).collect();
+    let timers = timers(&rows.events);
+    let failures: Vec<Value> = rows.failures.iter().map(failure).collect();
+    let codec = crate::codec::ValueCodec::new().ok();
+    let timeline = super::export_timeline::timeline(rows, &timers, &failures, codec.as_ref(), super::previews::project);
+    let waits = super::export_waits::waits(rows, &timers);
     let mut bundle = json!({
         "schema": SCHEMA, "schema_version": 2, "exported_at": exported_at, "dedupe_key": dedupe_key,
         "history_complete": terminal, "workflow": workflow(rows), "payloads": payloads(run), "summary": summary(rows),
-        "selected_run": {"waits_projection_source": UNAVAILABLE, "timeline_projection_source": UNAVAILABLE,
+        "selected_run": {"waits_projection_source": "workflow_run_waits",
+            "timeline_projection_source": "workflow_run_timeline_entries_rebuilt",
             "timers_projection_source": "workflow_run_timer_entries_rebuilt", "timers_projection_rebuild_reasons": [],
             "lineage_projection_source": "workflow_run_lineage_entries_rebuilt"},
         "history_events": rows.events.iter().map(history_event).collect::<Vec<_>>(),
-        "waits": [], "timeline": [], "linked_intakes_scope": "selected_run", "linked_intakes": [],
+        "waits": waits, "timeline": timeline, "linked_intakes_scope": "selected_run", "linked_intakes": [],
         "commands": rows.commands.iter().map(command).collect::<Vec<_>>(),
         "signals": rows.signals.iter().map(signal).collect::<Vec<_>>(),
         "updates": rows.updates.iter().map(update).collect::<Vec<_>>(),
         "tasks": rows.tasks.iter().map(task).collect::<Vec<_>>(),
         "activities": activities,
-        "timers": timers(&rows.events),
-        "failures": rows.failures.iter().map(failure).collect::<Vec<_>>(),
+        "timers": timers,
+        "failures": failures,
         "links": {"projection_source": "workflow_run_lineage_entries_rebuilt",
             "parents": rows.parents.iter().map(|row| link(row, run, true)).collect::<Vec<_>>(),
             "children": rows.children.iter().map(|row| link(row, run, false)).collect::<Vec<_>>()},

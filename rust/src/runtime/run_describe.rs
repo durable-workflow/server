@@ -141,7 +141,7 @@ where
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(|| super::refuse(axum::http::StatusCode::NOT_FOUND, "run_not_found"))?;
-        let mut sections = Vec::with_capacity(11);
+        let mut sections = Vec::with_capacity(12);
         for (sql, columns) in [
             (export::EVENTS_SQL, export::EVENTS),
             (export::COMMANDS_SQL, export::COMMANDS),
@@ -153,6 +153,7 @@ where
             (export::FAILURES_SQL, export::FAILURES),
             (export::PARENTS_SQL, export::LINKS),
             (export::CHILDREN_SQL, export::LINKS),
+            (super::export_waits::WAITS_SQL, super::export_waits::WAITS),
             (export::SUMMARY_SQL, export::SUMMARY),
         ] {
             let rows = Self::query(sql).bind(run_id).fetch_all(&mut *tx).await?;
@@ -181,6 +182,7 @@ where
             failures: next(),
             parents: next(),
             children: next(),
+            waits: next(),
             ..Default::default()
         };
         rows.summary = next().into_iter().next();

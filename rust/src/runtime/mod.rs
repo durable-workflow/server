@@ -63,6 +63,8 @@ mod external_wait_summary;
 mod failure_commands;
 mod history_budget;
 mod history_pages;
+mod export_timeline;
+mod export_waits;
 mod history_export;
 mod input_envelope;
 mod history_presentation;

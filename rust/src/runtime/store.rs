@@ -40,6 +40,8 @@ const TASK_SNAPSHOT_EVENTS: &[&str] = &[
     "SignalWaitOpened",
     "TimerFired",
     "TimerScheduled",
+    "UpdateApplied",
+    "UpdateCompleted",
     "VersionMarkerRecorded",
     "WorkflowCompleted",
     "WorkflowContinuedAsNew",

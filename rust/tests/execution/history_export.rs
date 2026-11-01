@@ -56,6 +56,28 @@ async fn history_export_bundles_a_completed_run_like_php() {
     assert_eq!(activity["result"], envelope(Payload::Long(7))["blob"]);
     assert_eq!(activity["attempts"].as_array().unwrap().len(), 1);
     assert_eq!(bundle["summary"]["status"], "completed");
+    // The stored wait and a timeline point per history event, as
+    // `SelectedRunSnapshot` serves them.
+    assert_eq!(bundle["selected_run"]["waits_projection_source"], "workflow_run_waits");
+    assert_eq!(bundle["selected_run"]["timeline_projection_source"], "workflow_run_timeline_entries_rebuilt");
+    let waits = bundle["waits"].as_array().unwrap();
+    assert_eq!(waits.len(), 1, "{waits:?}");
+    assert_eq!((waits[0]["kind"].clone(), waits[0]["status"].clone(), waits[0]["summary"].clone()),
+        (json!("activity"), json!("resolved"), json!("Activity act completed.")));
+    assert_eq!((waits[0]["diagnostic_only"].clone(), waits[0]["task_backed"].clone(), waits[0]["timeout_fired_at"].clone()),
+        (json!(false), json!(false), Value::Null));
+    let timeline = bundle["timeline"].as_array().unwrap();
+    assert_eq!(timeline.len(), events.len());
+    let point = |kind: &str| timeline.iter().find(|entry| entry["type"] == kind).unwrap_or_else(|| panic!("{kind}"));
+    assert_eq!(point("StartAccepted")["summary"], "Start accepted as started_new.");
+    assert_eq!(point("SignalReceived")["summary"], "Signal approve received.");
+    let scheduled = point("ActivityScheduled");
+    assert_eq!((scheduled["kind"].clone(), scheduled["source_kind"].clone(), scheduled["summary"].clone()),
+        (json!("activity"), json!("activity_execution"), json!("Scheduled act.")));
+    assert_eq!(scheduled["activity"]["status"], "pending");
+    assert_eq!(point("ActivityCompleted")["summary"], "Completed act.");
+    assert_eq!(point("WorkflowCompleted")["source_id"], json!(run));
+    assert_eq!(point("StartAccepted")["command"]["payload"], json!([1]));
     // Every available Avro payload is a single-object frame of the Value schema.
     let entries = bundle["payload_manifest"]["entries"].as_array().unwrap();
     assert!(entries.iter().any(|entry| entry["path"] == "payloads.output.data"));
@@ -71,4 +93,47 @@ async fn history_export_bundles_a_completed_run_like_php() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
     assert_eq!(missing["reason"], "run_not_found");
     assert_eq!(missing["run_id"], "missing");
+}
+
+// A signal wait opened and resumed, and a failed run: the wait's own fields
+// and the timeline's summaries follow `RunWaitView` and `HistoryTimeline`.
+#[tokio::test]
+async fn history_export_serves_signal_waits_and_failures_like_php() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let (status, started) = request(&app, "POST", "/api/workflows", json!({"workflow_id":"waiting","workflow_type":"echo",
+        "task_queue":"test","input":[1]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let run = started["run_id"].as_str().unwrap();
+    let task = poll(&app, "worker", "workflow").await;
+    let wait = json!({"type":"open_signal_wait","signal_name":"go"});
+    assert_eq!(finish_task(&app, &task, json!([wait])).await.0, StatusCode::OK);
+    let path = format!("/api/workflows/waiting/runs/{run}/history/export");
+    let (_, bundle) = request(&app, "GET", &path, Value::Null).await;
+    let open = &bundle["waits"][0];
+    assert_eq!((open["kind"].clone(), open["status"].clone(), open["source_status"].clone(), open["summary"].clone()),
+        (json!("signal"), json!("open"), json!("waiting"), json!("Waiting for signal go.")));
+    assert_eq!(open["signal_wait_id"], open["id"]);
+    assert_eq!((open["external_only"].clone(), open["history_authority"].clone(), open["timeout_seconds"].clone()),
+        (json!(true), Value::Null, Value::Null));
+    assert_eq!(bundle["timeline"][2]["summary"], "Waiting for signal go.");
+
+    let (status, _) = request(&app, "POST", "/api/workflows/waiting/signal/go", json!({"input":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let task = poll(&app, "worker", "workflow").await;
+    let fail = json!({"type":"fail_workflow","message":"run failed","exception_type":"Boom"});
+    assert_eq!(finish_task(&app, &task, json!([fail])).await.0, StatusCode::OK);
+    let (_, bundle) = request(&app, "GET", &path, Value::Null).await;
+    let closed = &bundle["waits"][0];
+    assert_eq!((closed["status"].clone(), closed["source_status"].clone(), closed["summary"].clone()),
+        (json!("resolved"), json!("applied"), json!("Signal go received.")));
+    assert!(closed["signal_id"].is_string(), "{closed}");
+    let timeline = bundle["timeline"].as_array().unwrap();
+    let failed = timeline.last().unwrap();
+    assert_eq!((failed["type"].clone(), failed["summary"].clone()), (json!("WorkflowFailed"), json!("Workflow failed: run failed.")));
+    assert_eq!((failed["failure"]["propagation_kind"].clone(), failed["failure"]["handled"].clone()), (json!("terminal"), json!(false)));
+    assert_eq!((failed["exception_resolved_class"].clone(), failed["exception_resolution_source"].clone()),
+        (json!("RuntimeException"), json!("recorded_class")));
+    assert!(timeline.iter().any(|entry| entry["summary"] == "Applied signal go."));
 }
