@@ -112,6 +112,25 @@ jobs:
             const message = JSON.stringify(value).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
             console.log('::notice title=Nexus SDK outcomes::' + message);
           };
+          const conformancePath = path.join(root, 'nexus-conformance-result.json');
+          if (fs.existsSync(conformancePath)) {
+            const report = JSON.parse(fs.readFileSync(conformancePath, 'utf8'));
+            const findings = report.findings || [];
+            summary.conformance = {
+              outcome: report.outcome,
+              scenario_statuses: (report.scenario_results || []).map(row => ({scenario_id: row.scenario_id, status: row.status})),
+              finding_count: findings.length,
+              findings_truncated: findings.length > 64,
+              findings: findings.slice(0, 64).map(finding => Object.fromEntries([
+                'scenario_id', 'type', 'finding_type', 'owning_surface', 'finding_url', 'issue_url',
+                'observed_behavior', 'expected_behavior', 'next_acceptance_criterion',
+              ].filter(key => typeof finding[key] === 'string').map(key => [key, finding[key].slice(0, 1500)]))),
+            };
+            emitOutcome({kind: 'conformance', outcome: report.outcome,
+              scenario_statuses: summary.conformance.scenario_statuses, finding_count: findings.length});
+          } else {
+            summary.conformance = {missing: true};
+          }
           for (const [kind, name] of [['external', 'nexus-external-sdk-probes.json'],
             ['authorization', 'nexus-authored-authorization-probes.json'],
             ['uncaught', 'nexus-uncaught-failure-probes.json']]) {
