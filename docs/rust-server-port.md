@@ -430,12 +430,17 @@ contract fixture before its correction.
   Signals still create no resume while the parent
   waits on a child, because only signal and condition waits count as open
   waits.
-- **Update delivery into a ready task.** Published PHP admits an update
-  whenever its run is active and merges it into the run's ready workflow
-  task, if one exists (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).
-  Native gives each update its own task once the run has no open workflow
-  task. The Rust SDK treats a task carrying `workflow_update_id` as an update
-  task, so a merged first task would not replay the workflow.
+- **Update delivery into a ready task** (November 1, decided: native
+  keeps its behavior). Published PHP merges an accepted update into the
+  run's ready workflow task (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).
+  An update accepted before the first poll therefore gives the empty start
+  task a `workflow_update_id`, and the published Rust, Python and PHP SDKs
+  run such a task as update-only, so the workflow body waits for repair. A
+  later update also overwrites an earlier one on the same ready task. Native
+  delivers each update in its own task once the run has no open workflow
+  task, oldest first, as PHP does behind a leased task. PHP's merge is
+  reported as
+  [server#902](https://github.com/durable-workflow/server/issues/902).
 - **Timer firing under the CPU deadline profile on slower hosts.** In local
   MySQL 8.0 cells, where eight dense readers saturate the one-CPU database and
   the one-CPU native server, one of six runs fired the three-second timer
