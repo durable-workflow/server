@@ -1173,11 +1173,12 @@ def selected_docker_tag() -> str:
         if "@" in image:
             raise RuntimeError("DW_SERVER_VERSION must name the exact release for a digest-pinned server image")
         raise RuntimeError("DW_SERVER_IMAGE must use an exact SemVer tag or an image digest")
+    # Auto-selection follows the PHP 2.x line; native releases are 3.x (Server #325).
     payload = read_json("https://registry.hub.docker.com/v2/repositories/durableworkflow/server/tags?page_size=100")
     tags = [
         str(item.get("name", ""))
         for item in payload.get("results", [])
-        if exact_server_tag(str(item.get("name", "")))
+        if exact_server_tag(str(item.get("name", ""))) and str(item.get("name", "")).startswith("2.")
     ]
     if not tags:
         raise RuntimeError("could not resolve a concrete durableworkflow/server tag")

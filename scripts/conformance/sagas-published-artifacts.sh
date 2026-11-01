@@ -1024,12 +1024,13 @@ def docker_server_image() -> tuple[str, str]:
     if version is not None:
         version = validate_server_version(version, "DW_SERVER_VERSION")
     else:
+        # Auto-selection follows the PHP 2.x line; native releases are 3.x (Server #325).
         for name in docker_hub_server_tags():
-            if is_exact_server_patch_tag(name):
+            if is_exact_server_patch_tag(name) and name.startswith("2."):
                 version = name
                 break
         else:
-            raise RuntimeError("no durableworkflow/server exact SemVer tag found")
+            raise RuntimeError("no durableworkflow/server exact 2.x SemVer tag found")
     return f"durableworkflow/server:{version}", version
 
 
