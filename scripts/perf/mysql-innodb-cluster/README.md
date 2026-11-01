@@ -11,15 +11,17 @@ Everything runs in Docker on one host: three members at 1 GiB each, Router at
 
 ```sh
 export DW_MRC_STATE=$PWD/.mrc DW_NATIVE_BINARY=/abs/path/durable-workflow-server
-mkdir -p "$DW_MRC_STATE"
-docker run --rm --user 1000:1000 -e HOME=/tmp -v "$DW_MRC_STATE:/mrc" python:3.12-slim \
-  pip install -q --target /mrc/py durable-workflow==2.12.2
+mkdir -p "$DW_MRC_STATE"   # then put durable-workflow 2.12.2 under $DW_MRC_STATE/py
 bash up.sh                                    # cluster + Router on network dw-mrc
 bash failover.sh run2 dwrun2 150 30 kill      # hard kill the primary 30 s in
 bash dbcheck.sh dwrun2 > "$DW_MRC_STATE/run2/db.tsv"
 python3 verify.py "$DW_MRC_STATE/run2" "$DW_MRC_STATE/run2/db.tsv"
 RATE=1 bash failover.sh run4 dwrun4 90 30 pause   # hung primary
 ```
+
+The load driver imports the published Python SDK, `durable-workflow` 2.12.2,
+from `$DW_MRC_STATE/py` (a `--target` install for CPython 3.12; use the
+repository's patched-pip bootstrap, `scripts/ci/bootstrap-patched-pip.sh`).
 
 `failover.sh` starts native on a fresh database through Router, probes
 `/api/ready` and `/api/health` every 0.5 s, drives Python SDK workflows (a
