@@ -35,7 +35,7 @@ where
 /// PHP's `NamespaceExternalPayloadStorage::untrackedDriverFor`: an empty
 /// policy is unconfigured, `enabled: false` disables it, and anything else
 /// names the driver that serves the namespace's uploads.
-pub(super) fn unsupported(policy: &Option<Value>) -> Option<&'static str> {
+fn unsupported(policy: &Option<Value>) -> Option<&'static str> {
     let policy = policy.as_ref()?;
     let configured = match policy {
         Value::Object(fields) => !fields.is_empty(),

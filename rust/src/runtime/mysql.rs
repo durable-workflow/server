@@ -1498,7 +1498,7 @@ mod tests {
             let mut connection = db.connection().await;
             for statement in [
                 r#"INSERT INTO runtime_external_payload_deletions(id,namespace,storage_uri,storage_uri_sha256,storage_policy,attempts,failure_code,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kdel1','default','file:///payloads/default/a','aaaa','{"driver":"local","enabled":true}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#,
-                r#"INSERT INTO runtime_external_payload_deletions(id,namespace,storage_uri,storage_uri_sha256,storage_policy,attempts,failure_code,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kdel2','gone','file:///payloads/gone/b','bbbb','[]',3,'backup_hold','2026-11-01 09:00:00','2026-11-01 09:30:00')"#,
+                r#"INSERT INTO runtime_external_payload_deletions(id,namespace,storage_uri,storage_uri_sha256,storage_policy,attempts,failure_code,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kdel2','gone','file:///payloads/gone/b','bbbb','{"driver":"local"}',3,'backup_hold','2026-11-01 09:00:00','2026-11-01 09:30:00')"#,
             ] {
                 connection.execute(statement).await.unwrap();
             }

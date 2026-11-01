@@ -1180,7 +1180,7 @@ async fn takeover_carries_php_2118_pending_deletions_over() {
         // Two deletions PHP recorded after commit: one not yet attempted,
         // one whose provider failed twice; and the policy each saved.
         mutate(&path, r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel1','default','file:///payloads/default/a','5d41402abc4b2a76b9719d911017c592aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','{"driver":"local","enabled":true,"config":{"uri":"file:///payloads/default"}}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#).await;
-        mutate(&path, r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel2','gone','file:///payloads/gone/b','5d41402abc4b2a76b9719d911017c592bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','[]',2,'storage_unavailable','2026-11-01 09:00:00','2026-11-01 09:30:00')"#).await;
+        mutate(&path, r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel2','gone','file:///payloads/gone/b','5d41402abc4b2a76b9719d911017c592bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','{"driver":"local","config":{"uri":"file:///payloads/gone"}}',2,'storage_unavailable','2026-11-01 09:00:00','2026-11-01 09:30:00')"#).await;
         let inspection = inspect_sqlite(&path).await.unwrap();
         assert_eq!(inspection["source_layout"], release);
         assert_eq!(inspection["status"], "inspected", "{inspection}");
@@ -1219,14 +1219,17 @@ async fn takeover_carries_php_2118_pending_deletions_over() {
     }
 }
 
-/// A pending deletion native could never finish (a saved policy naming a
-/// driver native does not serve, or a failure PHP does not record) refuses
-/// takeover before any change.
+/// A pending deletion native could never finish (a saved policy native's
+/// deletion cannot execute: another driver, an empty policy or a disabled
+/// one; or a failure PHP does not record) refuses takeover before any change.
 #[tokio::test]
 async fn takeover_refuses_a_php_2118_deletion_native_could_never_finish() {
     for (row, reason_counted) in [
-        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel3','default','s3://bucket/c','cccc','{"driver":"s3","config":{"bucket":"bucket"}}',1,'storage_unavailable','2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_driver_unsupported"),
-        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel4','default','file:///payloads/d','dddd','[]',1,'provider_quota','2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_failure_unrecognized"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel3','default','s3://bucket/c','cccc','{"driver":"s3","config":{"bucket":"bucket"}}',1,'storage_unavailable','2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_unexecutable"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel5','default','file:///payloads/e','eeee','[]',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_unexecutable"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel6','default','file:///payloads/f','ffff','{}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_unexecutable"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel7','default','file:///payloads/g','gggg','{"driver":"local","enabled":false}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_unexecutable"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel4','default','file:///payloads/d','dddd','{"driver":"local"}',1,'provider_quota','2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_failure_unrecognized"),
     ] {
         let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113, RELEASE_2118]).await;
         mutate(&path, row).await;

@@ -7,11 +7,13 @@
 //! during takeover.
 //!
 //! A deletion native could never finish is refused before takeover changes
-//! anything: one whose saved storage policy names a driver native does not
-//! serve (the rule `storage_scan` applies to live namespace policies), or one
-//! whose recorded failure is not one PHP writes. The report counts rows by
-//! reason and never contains namespaces, URIs or policy values.
-use super::storage_scan;
+//! anything: one whose saved storage policy native cannot execute, or one
+//! whose recorded failure is not one PHP writes. Native deletes an object
+//! only through an enabled `local` policy (`external_transport::local_for`),
+//! so an empty policy, `enabled: false`, another driver, or a `config.uri`
+//! that is not a `file://` root (which native would replace with its default
+//! root) can never finish. The report counts rows by reason and never
+//! contains namespaces, URIs or policy values.
 use crate::runtime::{Result, backend::Backend};
 use serde_json::{Value, json};
 use sqlx::{Executor, IntoArguments};
@@ -48,13 +50,20 @@ where
     }))
 }
 
-/// The failures 2.11.8's `RuntimeExternalPayloadDeletions::attempt` records.
+/// The failures 2.11.8's `RuntimeExternalPayloadDeletions::attempt` records,
+/// and the saved policies native's deletion can execute.
 fn unsupported(policy: &Value, failure: Option<&str>) -> Option<&'static str> {
     if !matches!(failure, None | Some("backup_hold") | Some("storage_unavailable")) {
         return Some("external_payload_deletion_failure_unrecognized");
     }
-    storage_scan::unsupported(&Some(policy.clone()))
-        .map(|_| "external_payload_deletion_storage_driver_unsupported")
+    let root = match &policy["config"]["uri"] {
+        Value::Null => true,
+        Value::String(uri) => uri.starts_with("file://"),
+        _ => false,
+    };
+    let executable =
+        policy.is_object() && policy["driver"] == "local" && policy["enabled"] != false && root;
+    (!executable).then_some("external_payload_deletion_storage_unexecutable")
 }
 
 #[cfg(test)]
@@ -64,18 +73,29 @@ mod tests {
     #[test]
     fn only_a_deletion_native_could_never_finish_is_refused() {
         for (policy, failure) in [
-            (json!([]), None),
-            (json!({}), Some("storage_unavailable")),
             (json!({"driver": "local", "enabled": true, "config": {"uri": "file:///data"}}), None),
             (json!({"driver": "local"}), Some("backup_hold")),
-            (json!({"driver": "s3", "enabled": false}), None),
+            (json!({"driver": "local", "enabled": true}), Some("storage_unavailable")),
         ] {
             assert_eq!(unsupported(&policy, failure), None, "{policy} {failure:?}");
         }
-        assert_eq!(
-            unsupported(&json!({"driver": "s3", "config": {"bucket": "b"}}), None),
-            Some("external_payload_deletion_storage_driver_unsupported")
-        );
+        for policy in [
+            json!([]),
+            json!({}),
+            Value::Null,
+            json!({"driver": "local", "enabled": false}),
+            json!({"driver": "s3", "enabled": false}),
+            json!({"driver": "s3", "config": {"bucket": "b"}}),
+            json!({"driver": "LOCAL"}),
+            json!({"driver": "local", "config": {"uri": "s3://bucket/prefix"}}),
+            json!({"driver": "local", "config": {"uri": 7}}),
+        ] {
+            assert_eq!(
+                unsupported(&policy, None),
+                Some("external_payload_deletion_storage_unexecutable"),
+                "{policy}"
+            );
+        }
         assert_eq!(
             unsupported(&json!({"driver": "local"}), Some("provider_quota")),
             Some("external_payload_deletion_failure_unrecognized")

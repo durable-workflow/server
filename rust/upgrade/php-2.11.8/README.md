@@ -31,5 +31,6 @@ as PHP's do. No object is deleted during takeover. PHP's table is then
 dropped. Inspection reports `external_payload_deletion_inspection`, and
 takeover refuses before any change
 (`upgrade_source_external_payload_deletions_unsupported`) while a pending
-deletion names a storage driver native does not serve, or a failure PHP does
-not record. MySQL and MariaDB run this as resumable journal step 11.
+deletion's saved policy is one native cannot execute (empty, disabled,
+another driver, or a `config.uri` that is not a `file://` root), or it
+records a failure PHP does not write. MySQL and MariaDB run this as resumable journal step 11.
