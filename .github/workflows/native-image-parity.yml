@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       native_image:
-        description: 'Native image by digest, for example ghcr.io/durable-workflow/server-native@sha256:<index digest>'
+        description: 'Native image by digest, for example ghcr.io/durable-workflow/server@sha256:<native index digest>'
         required: true
   pull_request:
     paths:
