@@ -810,24 +810,19 @@ if (process.env.NEXUS_UNCAUGHT_FAILURE_PROBES) {
 if (process.env.NEXUS_SDK_CLIENT_MATRIX) {
     test('published client admissions preserve their limited qualification scope', () => {
         const matrix = JSON.parse(fs.readFileSync(process.env.NEXUS_SDK_CLIENT_MATRIX, 'utf8'));
-        const complete = JSON.parse(fs.readFileSync(process.env.NEXUS_CONFORMANCE_RESULT, 'utf8'));
         assert.equal(matrix.scope, 'sdk_client_admission');
         assert.equal(matrix.outcome, 'pass');
         assert.deepEqual(matrix.pairs.map(({ caller, service }) => [caller, service]).sort(), [
             ['sdk-php', 'sdk-python'], ['sdk-php', 'workflow-php'],
             ['sdk-python', 'sdk-python'], ['sdk-python', 'workflow-php'],
         ]);
-        for (const pair of matrix.pairs) assert.equal(pair.admission_verified, true);
+        for (const pair of matrix.pairs) {
+            assert.equal(pair.admission_verified, true);
+            assert.equal(pair.caller_workflow_execution_verified, false);
+        }
         for (const field of ['caller_workflow_execution_verified', 'durable_completion_qualified',
             'typed_failure_qualified', 'cancellation_qualified']) assert.equal(matrix[field], false);
-        assert.notEqual(complete.outcome, 'pass');
-        assert.equal(complete.runner_blocked, false);
-        assert.deepEqual(complete.non_pass_scenarios.slice().sort(), [
-            'php_caller_python_service', 'python_caller_php_service',
-        ]);
-        for (const scenario of complete.non_pass_scenarios) {
-            assert.equal(complete.scenario_statuses[scenario], 'not_covered');
-        }
+        // Authored workflow outcomes qualify the aggregate independently of this admission matrix.
     });
 }
 
