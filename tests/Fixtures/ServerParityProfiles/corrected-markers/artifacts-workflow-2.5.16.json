@@ -21,7 +21,7 @@
   },
   "workflow": "2.5.16",
   "workflow_source_commit": "c677f374df788afa5c4d6df2b5cf0722f03a99d6",
-  "embedded_composer_lock_sha256": "957bf6e7d5b5acd0baaac88258b61ec1a8def8927d5fbd04632cb593772b3fd7",
+  "embedded_composer_lock_sha256": "f0be5009470cc9a02c861a2b8b1b731b5612f5acd9f4ffbda2212a3ec79375db",
   "workflow_loaded_sources": {
     "src/V2/Support/VersionDecisions.php": "ffb22f79ffc08eceb2ffd7b96ecb2ad91c931f9fb5fac8bc4bdde75a57eff5e1",
     "src/V2/Support/WorkflowExecutor.php": "85dd889ccaa5d973542a5b194e32bc043d1083248d2f4b9dff80b87ea77678d1",
@@ -31,7 +31,7 @@
   "embedded_original": {
     "version": "2.5.6",
     "source_commit": "29c94c14d9d413509b26ff761b997533c021fcfe",
-    "composer_lock_sha256": "88fd7506efe2fe488304fa6c69e5e8f0816def2cc09b59470008631127a6aba3",
+    "composer_lock_sha256": "6ddfe31bef1fa1256f3b43786388511fc6a014458ce66f233dc3b1a6eeb1d513",
     "shutdown": "normal_cli_exit",
     "loaded_sources": {
       "src/V2/Support/VersionResolver.php": "e760da9abea6ca74057c84c7e30b841bb4a039fa185ec376b2b3332de16e756c",
