@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowNamespace;
+use App\Support\ExternalPayloadBackupHold;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RuntimeExternalPayloadCleanup;
 use App\Support\RuntimeExternalPayloadDeletions;
@@ -157,14 +158,103 @@ final class ExternalPayloadRetentionRollbackTest extends TestCase
     public function test_saved_policy_recovers_pending_deletion_after_namespace_and_process_state_are_gone(): void
     {
         $this->provider->unavailable = true;
-        $this->prune()->assertOk()->assertJsonPath('external_payload_cleanup.pending', 2);
-        WorkflowNamespace::query()->where('name', 'default')->delete();
+        $this->deleteJson('/api/namespaces/default', [], $this->apiHeaders())
+            ->assertOk()->assertJsonPath('status', 'deleted');
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 2);
+        $this->assertDatabaseMissing('workflow_namespaces', ['name' => 'default']);
+        $this->assertSame(2, $this->readableObjects());
         app()->forgetInstance(NamespaceExternalPayloadStorage::class);
 
         $report = app(RuntimeExternalPayloadCleanup::class)->runPass();
         $this->assertSame(0, $report['retention_cleanup']['pending']);
         $this->assertSame(0, $this->readableObjects());
         $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+    }
+
+    public function test_namespace_database_failure_preserves_all_registrations_and_bytes(): void
+    {
+        $armed = true;
+        DB::listen(static function (QueryExecuted $event) use (&$armed): void {
+            if ($armed && str_starts_with(strtolower(ltrim($event->sql)), 'delete')
+                && str_contains($event->sql, 'runtime_external_payloads')) {
+                $armed = false;
+                throw new \RuntimeException('Synthetic namespace registry deletion failure');
+            }
+        });
+
+        $this->deleteJson('/api/namespaces/default', [], $this->apiHeaders())->assertStatus(500);
+        $this->assertDatabaseHas('workflow_namespaces', ['name' => 'default']);
+        $this->assertDatabaseCount('runtime_external_payloads', 2);
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+        $this->assertDatabaseCount('workflow_durable_stream_items', 2);
+        $this->assertSame(0, $this->provider->attempts);
+        $this->assertSame(2, $this->readableObjects());
+    }
+
+    public function test_backup_hold_acquired_after_staging_blocks_bytes_and_is_visible_to_maintenance(): void
+    {
+        $owner = (string) Str::uuid();
+        $armed = true;
+        DB::listen(static function (QueryExecuted $event) use (&$armed, $owner): void {
+            $sql = strtolower(ltrim($event->sql));
+            if ($armed && str_starts_with($sql, 'update')
+                && str_contains($sql, 'workflow_runs') && str_contains($sql, 'details_pruned_at')) {
+                $armed = false;
+                app(ExternalPayloadBackupHold::class)->acquire($owner, 600);
+            }
+        });
+
+        $this->prune()->assertOk()->assertJsonPath('pruned', 1)
+            ->assertJsonPath('external_payload_cleanup.pending', 2)
+            ->assertJsonPath('external_payload_cleanup.blocked', 2);
+        $this->assertSame(2, $this->readableObjects());
+        $this->assertSame(0, $this->provider->attempts);
+        $this->getJson('/api/system/external-payload-cleanup', $this->apiHeaders())
+            ->assertOk()->assertJsonPath('retention_cleanup.pending', 2);
+        $this->postJson('/api/system/external-payload-cleanup/pass', [], $this->apiHeaders())
+            ->assertStatus(207)->assertJsonPath('cleanup.retention_cleanup.pending', 2);
+        $this->artisan('external-payloads:cleanup', ['--namespace' => 'default', '--json' => true])
+            ->assertExitCode(1);
+
+        app(ExternalPayloadBackupHold::class)->release($owner);
+        $this->artisan('external-payloads:cleanup', ['--namespace' => 'default', '--json' => true])
+            ->assertExitCode(0);
+        $this->assertSame(0, $this->readableObjects());
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+    }
+
+    public function test_a_new_unregistered_legacy_reference_cancels_the_old_deletion(): void
+    {
+        $this->provider->unavailable = true;
+        $this->prune()->assertOk()->assertJsonPath('external_payload_cleanup.pending', 2);
+        $instance = WorkflowInstance::query()->create([
+            'id' => (string) Str::ulid(), 'namespace' => 'default',
+            'workflow_class' => 'LegacyKeeperWorkflow', 'workflow_type' => 'synthetic.legacy-keeper',
+        ]);
+        $keeper = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(), 'workflow_instance_id' => $instance->id,
+            'run_number' => 1, 'namespace' => 'default', 'status' => 'running',
+            'workflow_class' => 'LegacyKeeperWorkflow', 'workflow_type' => 'synthetic.legacy-keeper',
+        ]);
+        $uri = array_key_first($this->objects);
+        $stream = WorkflowDurableStream::query()->create([
+            'namespace' => 'default', 'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $keeper->id, 'stream_name' => 'legacy-keeper', 'status' => 'open',
+            'last_offset' => 0, 'total_items' => 1, 'opened_at' => now(),
+        ]);
+        WorkflowDurableStreamItem::query()->create([
+            'stream_id' => $stream->id, 'namespace' => 'default', 'workflow_run_id' => $keeper->id,
+            'stream_name' => 'legacy-keeper', 'offset' => 0, 'payload_reference' => $uri,
+            'payload_codec' => 'avro', 'emitted_at' => now(),
+        ]);
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->provider->unavailable = false;
+
+        app(RuntimeExternalPayloadDeletions::class)->retryPending('default', 10);
+        $this->assertSame($this->objects[$uri], $this->provider->get($uri));
+        $this->assertSame(1, $this->readableObjects());
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+        $this->assertDatabaseHas('workflow_durable_stream_items', ['stream_id' => $stream->id, 'payload_reference' => $uri]);
     }
 
     public function test_a_new_registration_in_another_namespace_cancels_the_old_deletion(): void
