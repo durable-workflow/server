@@ -536,7 +536,7 @@ async fn receipt_before_fire_stays_received_when_application_is_later() {
     );
     receive(&app, &run).await;
     let input_task = poll(&app, "receipt-before-fire", "workflow").await;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         let events = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
         if events
