@@ -184,7 +184,7 @@ that workflow's implementation into the Server process:
 | `update_workflow` | Existing workflow instance and declared update name. |
 | `query_workflow` | Existing workflow instance and declared query name. |
 
-The start uses the same task-queue resolution and promoted worker build as a
+The start uses the same task-queue resolution and any promoted worker build as a
 normal workflow start. Its durable command declarations come from that selected
 namespace, queue, workflow type and build cohort. A different queue's handler
 registration cannot supply the target run's update or query contract. Register
@@ -197,7 +197,7 @@ update may initially return a started call without a result. Retain its
 `service_call_id` and use the describe route until the call is terminal; replay
 the same idempotency key for the same intent rather than creating another call.
 
-An invalid update argument produces a typed Nexus handler failure with
+When its captured contract rejects an update argument, Nexus returns a typed handler failure with
 `accepted: false` and HTTP 409, such as `invalid_update_arguments`. The rejected
 command remains available for inspection. This differs from request validation,
 such as an invalid top-level zero completion wait, which returns HTTP 422 before
