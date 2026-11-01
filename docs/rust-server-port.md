@@ -532,6 +532,17 @@ contract fixture before its correction.
   consumed lose their payloads once a retained later run's cursor checkpoint
   covers them, and the instance's last retained run, once terminal, takes the
   instance's streams with it.
+- **Native schema upgrades** (November 1, closed). Native once had no
+  migration between its own schema versions, so the move to version 8 left
+  release candidate databases (version 7) unable to open. The explicit
+  `schema-upgrade` command now upgrades a stopped, backed-up native database
+  on all four backends, as `upgrade-takeover` runs: it recognises the earlier
+  version exactly, runs each later step file and records the new cumulative
+  migration, verified as a fresh bootstrap is. Startup refuses an earlier
+  version (`native_schema_upgrade_required`) or a later one
+  (`native_schema_newer_than_binary`) instead of upgrading. MySQL and MariaDB
+  fence the marker as `rust-upgrading` and resume an interrupted upgrade
+  ([schema upgrades](../rust/README.md#native-schema-upgrades)).
 - **Deeply nested JSON bodies** (October 30, closed). Published PHP's
   `json_decode` reads bodies nested up to 511 levels (its default depth of
   512) and refuses deeper ones with `400 malformed_json`. Native's handlers
