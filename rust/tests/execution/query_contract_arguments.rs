@@ -121,14 +121,21 @@ async fn a_registered_json_default_takes_phps_array_shape() {
     contract_worker(&app).await;
     start(&app, "contract-query").await;
     let list = Payload::Array(vec![Payload::String("x".into()), Payload::String("y".into())]);
-    assert_eq!(routed(&app, "listdef", envelope(Payload::Array(vec![]))).await, envelope(Payload::Array(vec![list])));
-    // A map default reaches the worker in its registered key order.
-    let ordered = OrderedValue::Array(vec![OrderedValue::Map(vec![("z".into(), OrderedValue::Long(20)),
-        ("a".into(), OrderedValue::Long(10))])]);
+    assert_eq!(routed(&app, "listdef", envelope(Payload::Array(vec![]))).await, envelope(Payload::Array(vec![list.clone()])));
+    // A map default reaches the worker in the key order the database keeps:
+    // the registered order, except that a MySQL json column orders keys by
+    // length, then bytes, for PHP as for native.
+    let mysql = matches!(database, TestDatabase::MySql { .. });
+    let (z, a) = (("z".to_owned(), OrderedValue::Long(20)), ("a".to_owned(), OrderedValue::Long(10)));
+    let ordered = OrderedValue::Array(vec![OrderedValue::Map(if mysql { vec![a, z] } else { vec![z, a] })]);
     assert_eq!(routed(&app, "orderdef", envelope(Payload::Array(vec![]))).await,
         json!({"codec": "avro", "blob": ValueCodec::new().unwrap().encode_ordered_value(&ordered).unwrap()}));
     // Keys 0 to n-1 out of order are not a list, so PHP's encoder fails.
-    for query in ["gapdef", "descdef"] {
+    // MySQL stores them in order, which makes them a list.
+    if mysql {
+        assert_eq!(routed(&app, "descdef", envelope(Payload::Array(vec![]))).await, envelope(Payload::Array(vec![list.clone()])));
+    }
+    for query in if mysql { vec!["gapdef"] } else { vec!["gapdef", "descdef"] } {
         let (status, body) = request(&app, "POST", &format!("/api/workflows/contract-query/query/{query}"),
             json!({"input": envelope(Payload::Array(vec![]))})).await;
         assert_eq!((status, body["reason"].clone()), (StatusCode::INTERNAL_SERVER_ERROR, json!("query_default_unencodable")),
