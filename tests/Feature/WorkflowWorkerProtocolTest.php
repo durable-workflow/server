@@ -3689,6 +3689,79 @@ class WorkflowWorkerProtocolTest extends TestCase
         );
     }
 
+    #[DataProvider('waitingHistoryDeadlineCases')]
+    public function test_waiting_for_history_ack_enforces_the_original_deadline(string $kind, bool $expired): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default');
+        $clock = Carbon::parse('2026-11-01T18:00:00Z');
+        Carbon::setTestNow($clock);
+
+        try {
+            $runId = $this->postJson('/api/workflows', [
+                'workflow_id' => 'waiting-history-deadline',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'waiting-history-deadline',
+                'input' => ['deadline'],
+                'run_timeout_seconds' => $kind === 'run' ? 2 : 60,
+                'execution_timeout_seconds' => $kind === 'execution' ? 2 : 60,
+            ], $this->apiHeaders())->assertCreated()->json('run_id');
+            $this->registerWorker('waiting-history-deadline-worker', 'waiting-history-deadline');
+            $task = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'waiting-history-deadline-worker', 'task_queue' => 'waiting-history-deadline',
+            ], $this->workerHeaders())->assertOk()->json('task');
+            $this->assertIsArray($task);
+            Carbon::setTestNow($clock->copy()->addSeconds($expired ? 3 : 1));
+            $body = [
+                'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
+                'failure' => ['type' => 'WorkflowTaskWaitingForHistory', 'message' => 'history is not ready yet'],
+            ];
+            $path = '/api/worker/workflow-tasks/'.$task['task_id'].'/fail';
+            $runBefore = WorkflowRun::query()->findOrFail($runId)->getRawOriginal();
+            $historyBefore = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
+            $stale = $body;
+            $stale['workflow_task_attempt']++;
+            $this->postJson($path, $stale, $this->workerHeaders())->assertStatus(409);
+            $this->assertSame($runBefore, WorkflowRun::query()->findOrFail($runId)->getRawOriginal());
+            $this->assertSame($historyBefore, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
+
+            $response = $this->postJson($path, $body, $this->workerHeaders());
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $closed = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::WorkflowTimedOut->value)->count();
+            if (! $expired) {
+                $response->assertOk()->assertJsonPath('recorded', true);
+                $this->assertSame('waiting', $run->status->value);
+                $this->assertSame(0, $closed);
+
+                return;
+            }
+
+            $response->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', 'run_timed_out');
+            $this->assertSame('failed', $run->status->value);
+            $this->assertSame('timed_out', $run->closed_reason);
+            $this->assertSame(1, $closed);
+            $this->assertSame($kind.'_timeout', WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::WorkflowTimedOut->value)->sole()->payload['timeout_kind']);
+            $this->assertFalse(WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])->exists());
+            $this->postJson($path, $body, $this->workerHeaders())->assertStatus(409);
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::WorkflowTimedOut->value)->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public static function waitingHistoryDeadlineCases(): iterable
+    {
+        yield 'elapsed run deadline' => ['run', true];
+        yield 'elapsed execution deadline' => ['execution', true];
+        yield 'unelapsed run deadline' => ['run', false];
+        yield 'unelapsed execution deadline' => ['execution', false];
+    }
+
     public function test_waiting_for_history_failure_type_acknowledges_the_wait_without_message_phrase(): void
     {
         Queue::fake();
