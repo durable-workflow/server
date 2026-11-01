@@ -101,11 +101,29 @@ echo "  profile: $PROFILE"
 echo "  port: $SERVER_PORT"
 echo "  endpoint: $ENDPOINT_MODE"
 
+# The native published file refuses to render without an explicit shared
+# token, and publishes the API on loopback only. The PHP 2.x file
+# (docker-compose.php.yml) keeps its own defaults.
+NATIVE_PUBLISHED=false
+if [ "$(basename "$COMPOSE_FILE")" = "docker-compose.published.yml" ]; then
+  NATIVE_PUBLISHED=true
+fi
+if [ "$NATIVE_PUBLISHED" = true ] && env -u DW_AUTH_TOKEN docker compose -p "$PROJECT" -f "$COMPOSE_FILE" config -q >/dev/null 2>&1; then
+  echo "Compose rendered without DW_AUTH_TOKEN; it must refuse an unset token" >&2
+  exit 1
+fi
+
 compose pull
 compose up -d --wait
 
 if [ "$ENDPOINT_MODE" = "host" ]; then
-  SERVER_PORT="$(compose port server 8080 | awk -F: 'END {print $NF}')"
+  published="$(compose port server 8080)"
+  # The default host binding is loopback only.
+  if [ "$NATIVE_PUBLISHED" = true ] && [ -z "${SERVER_BIND_ADDRESS:-}" ] && [ "${published%%:*}" != "127.0.0.1" ]; then
+    echo "server port is published on ${published}, not loopback" >&2
+    exit 1
+  fi
+  SERVER_PORT="$(printf '%s\n' "$published" | awk -F: 'END {print $NF}')"
   if [ -z "$SERVER_PORT" ]; then
     echo "Unable to discover the published server port for $PROJECT" >&2
     exit 1

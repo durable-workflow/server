@@ -22,8 +22,10 @@ services:
     image: *server-image
     platform: ${DW_SERVER_PLATFORM:-}
     restart: unless-stopped
+    # Loopback only by default. For remote access set SERVER_BIND_ADDRESS to a
+    # protected private interface and terminate HTTPS at a reverse proxy.
     ports:
-      - "${SERVER_PORT:-8080}:8080"
+      - "${SERVER_BIND_ADDRESS:-127.0.0.1}:${SERVER_PORT:-8080}:8080"
     environment:
       # Release candidates refuse to start without this opt-in. The final
       # 3.0.0 image does not need it.
@@ -35,12 +37,13 @@ services:
       DB_DATABASE: ${DB_DATABASE:-durable_workflow}
       DB_USERNAME: ${DB_USERNAME:-workflow}
       DB_PASSWORD: ${DB_PASSWORD:-workflow}
-      # Token auth. dev-token is for local use only: native requires a shared
-      # DW_AUTH_TOKEN and accepts it for every role (it refuses
-      # DW_AUTH_BACKWARD_COMPATIBLE=false), so production must set a strong
-      # one. The role tokens add narrower worker, operator and admin tokens.
+      # Token auth. There is no default token: Compose refuses to start until
+      # DW_AUTH_TOKEN is set. Native requires this shared token and accepts it
+      # for every role (it refuses DW_AUTH_BACKWARD_COMPATIBLE=false), so use a
+      # strong random value outside local testing. The role tokens add
+      # narrower worker, operator and admin tokens.
       DW_AUTH_DRIVER: ${DW_AUTH_DRIVER:-token}
-      DW_AUTH_TOKEN: ${DW_AUTH_TOKEN:-dev-token}
+      DW_AUTH_TOKEN: ${DW_AUTH_TOKEN:?Set DW_AUTH_TOKEN, for example export DW_AUTH_TOKEN=dev-token for local testing}
       DW_RUNTIME_CREDENTIALS_ENABLED: ${DW_RUNTIME_CREDENTIALS_ENABLED:-false}
       DW_WORKER_TOKEN: ${DW_WORKER_TOKEN:-}
       DW_OPERATOR_TOKEN: ${DW_OPERATOR_TOKEN:-}

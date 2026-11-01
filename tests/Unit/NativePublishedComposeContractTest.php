@@ -56,6 +56,23 @@ class NativePublishedComposeContractTest extends TestCase
         }
     }
 
+    public function test_published_compose_fails_closed_without_a_token_and_binds_loopback(): void
+    {
+        $source = $this->read('docker-compose.published.yml');
+        $compose = Yaml::parse($source);
+
+        // No implicit shared token: Compose refuses to render until one is set.
+        $this->assertMatchesRegularExpression('/^      DW_AUTH_TOKEN: \$\{DW_AUTH_TOKEN:\?[^}]+\}$/m', $source);
+        $this->assertStringNotContainsString('DW_AUTH_TOKEN:-', $source);
+
+        // The API is published on loopback unless an interface is chosen.
+        $this->assertSame(
+            ['${SERVER_BIND_ADDRESS:-127.0.0.1}:${SERVER_PORT:-8080}:8080'],
+            $compose['services']['server']['ports'],
+        );
+        $this->assertArrayNotHasKey('ports', $compose['services']['mysql']);
+    }
+
     public function test_healthcheck_reads_readiness_without_curl(): void
     {
         $server = Yaml::parse($this->read('docker-compose.published.yml'))['services']['server'];

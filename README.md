@@ -45,7 +45,10 @@ curl -H "Authorization: Bearer $DW_AUTH_TOKEN" \
   http://localhost:8080/api/cluster/info
 ```
 
-This development configuration uses the shared `dev-token`. Production
+The file requires `DW_AUTH_TOKEN` and publishes the API on `127.0.0.1` only;
+set `SERVER_BIND_ADDRESS` to a protected private interface for remote access and
+terminate HTTPS at a reverse proxy. This development configuration uses the
+shared `dev-token`. Production
 deployments must set a strong `DW_AUTH_TOKEN` (native accepts it for every
 role), should add role-scoped worker, operator, and administrator tokens, and
 should pin the Server image by version or digest. See the

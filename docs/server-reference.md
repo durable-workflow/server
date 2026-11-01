@@ -107,8 +107,9 @@ Image selection:
 #### Local Development Compose
 
 This recipe is for one developer machine or internal non-production testing. It
-runs the native server with MySQL in named volumes, exposes only the API port,
-and uses the shared `DW_AUTH_TOKEN` for quick verification. The PHP 2.x stack
+runs the native server with MySQL in named volumes, publishes only the API port
+and only on `127.0.0.1`, and uses the shared `DW_AUTH_TOKEN` for quick
+verification. Compose refuses to start until `DW_AUTH_TOKEN` is set. The PHP 2.x stack
 (server, queue worker, scheduler, bootstrap job and Redis) is
 `docker-compose.php.yml`; the PHP-specific procedures below that run `artisan`
 commands apply to it.
@@ -149,6 +150,8 @@ Create a production env file outside source control:
 ```env
 DW_SERVER_IMAGE=durableworkflow/server:<server-version>
 SERVER_PORT=8080
+# Loopback by default. Use a protected private interface for the reverse proxy.
+SERVER_BIND_ADDRESS=127.0.0.1
 
 DB_DATABASE=durable_workflow
 DB_USERNAME=workflow
