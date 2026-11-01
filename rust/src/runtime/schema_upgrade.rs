@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{
     Connection, SqliteConnection, mysql::MySqlConnectOptions, postgres::PgConnectOptions,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
+    sqlite::{SqliteConnectOptions, SqliteSynchronous},
 };
 use std::{path::Path, time::Duration};
 
@@ -58,7 +58,10 @@ fn report(backend: &str, from: i64, to: i64) -> Value {
 }
 
 /// Upgrade a native SQLite database in one `BEGIN IMMEDIATE` transaction.
-/// The database must already exist and be native-owned.
+/// The database must already exist and be native-owned. It is recognised
+/// through a read-only connection first, so a refused or current database is
+/// left exactly as it was, journal mode included. The upgrade itself keeps
+/// the file's journal mode; native startup enables WAL as it always does.
 pub async fn upgrade_sqlite(database: &str) -> Result<Value> {
     if database.is_empty() || database.contains('?') || database.contains(':') {
         return Err(refuse(
@@ -69,11 +72,38 @@ pub async fn upgrade_sqlite(database: &str) -> Result<Value> {
     if !Path::new(database).exists() {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
     }
+    async fn owned(connection: &mut SqliteConnection) -> Result<()> {
+        let owned: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='dw_server_schema')",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        if !owned {
+            return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
+        }
+        Ok(())
+    }
+    let mut read = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(database)
+            .read_only(true)
+            .foreign_keys(false),
+    )
+    .await?;
+    let recognised = async {
+        owned(&mut read).await?;
+        super::schema::recognise(&mut read).await
+    }
+    .await;
+    read.close().await?;
+    if recognised?.is_none() {
+        return Ok(report("sqlite", super::schema::VERSION, super::schema::VERSION));
+    }
+    // No journal_mode option: the file keeps the mode it has.
     let mut connection = SqliteConnection::connect_with(
         &SqliteConnectOptions::new()
             .filename(database)
             .create_if_missing(false)
-            .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true)
             .busy_timeout(Duration::from_secs(5)),
@@ -81,14 +111,7 @@ pub async fn upgrade_sqlite(database: &str) -> Result<Value> {
     .await?;
     let result = async {
         let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-        let owned: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='dw_server_schema')",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if !owned {
-            return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
-        }
+        owned(&mut tx).await?;
         let from = super::schema::upgrade(&mut tx).await?;
         tx.commit().await?;
         Ok::<_, RuntimeError>(from)

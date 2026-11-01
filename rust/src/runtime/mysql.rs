@@ -1987,9 +1987,10 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
-    async fn qualification_schema_upgrade_resumes_an_interrupted_run() {
+    async fn qualification_schema_upgrade_resumes_simulated_interrupted_states() {
         // DDL commits on its own, so a killed upgrade leaves the fencing
-        // marker, with the new table either not yet or already created.
+        // marker, with the new table either not yet or already created. These
+        // states are constructed here; no upgrade process is killed.
         for created in [false, true] {
             let db = Database::new().await;
             let flavor = version_7_database(&db).await;

@@ -92,10 +92,11 @@ async fn earlier_catalog(migration: &'static Migration) -> Result<Catalog> {
     result
 }
 
-/// Move a native database from an earlier version to this one. The caller
-/// holds `BEGIN IMMEDIATE`, so the steps, the recorded migration and the
-/// marker commit together or not at all. Returns the version found.
-pub(super) async fn upgrade(connection: &mut SqliteConnection) -> Result<i64> {
+/// Recognises a native database without changing it: `None` for this
+/// version, verified; the earlier version and its recorded migration for one
+/// `upgrade` can move, after checking that version's marker, ledger and
+/// catalog exactly. Anything else is refused.
+pub(super) async fn recognise(connection: &mut SqliteConnection) -> Result<Option<(i64, &'static Migration)>> {
     use super::schema_upgrade::{DEVELOPMENT_ENGINE, marker_refusal};
     let markers: Vec<(String, i64)> = sqlx::query_as("SELECT engine,version FROM dw_server_schema")
         .fetch_all(&mut *connection)
@@ -106,7 +107,7 @@ pub(super) async fn upgrade(connection: &mut SqliteConnection) -> Result<i64> {
     let from = *from;
     if engine == DEVELOPMENT_ENGINE && from == VERSION {
         verify(connection).await?;
-        return Ok(from);
+        return Ok(None);
     }
     let Some(earlier) = earlier_migration(from).filter(|_| engine == DEVELOPMENT_ENGINE) else {
         return Err(marker_refusal(engine, from, VERSION));
@@ -127,6 +128,17 @@ pub(super) async fn upgrade(connection: &mut SqliteConnection) -> Result<i64> {
             "native_schema_catalog_mismatch",
         ));
     }
+    Ok(Some((from, earlier)))
+}
+
+/// Move a native database from an earlier version to this one. The caller
+/// holds `BEGIN IMMEDIATE`, so the recheck, the steps, the recorded
+/// migration and the marker commit together or not at all. Returns the
+/// version found.
+pub(super) async fn upgrade(connection: &mut SqliteConnection) -> Result<i64> {
+    let Some((from, _)) = recognise(connection).await? else {
+        return Ok(VERSION);
+    };
     for version in from..VERSION {
         let sql = step(version).ok_or(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"))?;
         sqlx::raw_sql(sql).execute(&mut *connection).await?;
@@ -606,11 +618,15 @@ mod tests {
     /// A database exactly as release candidates 1 and 2 bootstrapped it:
     /// schema version 7, its cumulative migration and its marker.
     async fn version_7_database(path: &Path) {
+        version_7_database_in(path, SqliteJournalMode::Wal).await;
+    }
+
+    async fn version_7_database_in(path: &Path, mode: SqliteJournalMode) {
         let mut connection = SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
                 .filename(path)
                 .create_if_missing(true)
-                .journal_mode(SqliteJournalMode::Wal),
+                .journal_mode(mode),
         )
         .await
         .unwrap();
@@ -751,5 +767,50 @@ mod tests {
             "native_schema_not_initialized"
         );
         assert!(!missing.exists());
+    }
+
+    /// The journal mode and the exact bytes of a closed database file.
+    async fn journal_and_bytes(path: &Path) -> (String, Vec<u8>) {
+        let mut connection =
+            SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(path).read_only(true))
+                .await
+                .unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        (mode, std::fs::read(path).unwrap())
+    }
+
+    #[tokio::test]
+    async fn schema_upgrade_leaves_a_refused_or_current_database_as_it_was() {
+        let directory = tempfile::tempdir().unwrap();
+        // A refused database, in rollback-journal mode, keeps its mode and bytes.
+        let refused = directory.path().join("refused.sqlite");
+        version_7_database_in(&refused, SqliteJournalMode::Delete).await;
+        raw(&refused, "UPDATE dw_server_schema SET engine='php'").await;
+        let before = journal_and_bytes(&refused).await;
+        assert_eq!(before.0, "delete");
+        assert_eq!(
+            reason(super::super::schema_upgrade::upgrade_sqlite(refused.to_str().unwrap()).await).await,
+            "unsupported_rust_schema"
+        );
+        assert_eq!(journal_and_bytes(&refused).await, before, "a refusal changes nothing");
+        assert!(!directory.path().join("refused.sqlite-wal").exists());
+
+        // A current database restored in rollback-journal mode is only verified.
+        let current = directory.path().join("current.sqlite");
+        super::super::sqlite::open(current.to_str().unwrap()).await.unwrap().close().await;
+        raw(&current, "PRAGMA journal_mode=DELETE").await;
+        let before = journal_and_bytes(&current).await;
+        assert_eq!(before.0, "delete");
+        let report = super::super::schema_upgrade::upgrade_sqlite(current.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["status"], "current");
+        assert_eq!(journal_and_bytes(&current).await, before, "a current database is only read");
+
+        // An upgrade keeps the file's journal mode.
+        let upgraded = directory.path().join("upgraded.sqlite");
+        version_7_database_in(&upgraded, SqliteJournalMode::Delete).await;
+        let report = super::super::schema_upgrade::upgrade_sqlite(upgraded.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["status"], "upgraded");
+        assert_eq!(journal_and_bytes(&upgraded).await.0, "delete");
     }
 }
