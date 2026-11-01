@@ -18,3 +18,14 @@ selected build cohort. A later registration applies to new admissions and
 preserves the original run's durable snapshot. Existing runs with missing
 metadata remain unavailable until an explicit supported recovery can establish
 their original contract.
+
+Workflow-bound Nexus starts, updates and queries use the same declarations as
+the ordinary workflow routes. [Nexus workflow bindings](contracts/nexus.md#workflow-bindings)
+describe queue selection, result observation and typed refusals.
+
+An update's durable identity and completion record distinguish it from a second
+accepted update. SDKs that reconstruct workflow state may invoke its recorded
+handler again during replay, including replay for a query. Keep replayed
+handlers deterministic and use durable workflow operations for external
+effects. A callback entry count alone does not prove duplicate admission or
+exactly-once external execution.

@@ -172,6 +172,37 @@ The execute, describe, and cancel surfaces require the operator role.
 Catalog mutations require admin. The caller-history surface requires
 operator and is read-only.
 
+## Workflow bindings
+
+PHP Server can bind catalog operations to an SDK-worker workflow without loading
+that workflow's implementation into the Server process:
+
+| Binding | Target |
+|---|---|
+| `start_workflow` | Workflow type, with optional `workflow_instance_id` and `queue` in `handler_binding`. |
+| `signal_workflow` | Existing workflow instance and declared signal name. |
+| `update_workflow` | Existing workflow instance and declared update name. |
+| `query_workflow` | Existing workflow instance and declared query name. |
+
+The start uses the same task-queue resolution and promoted worker build as a
+normal workflow start. Its durable command declarations come from that selected
+namespace, queue, workflow type and build cohort. A different queue's handler
+registration cannot supply the target run's update or query contract. Register
+the target worker and its declarations before starting the workflow. See
+[worker command declarations](../worker-command-contracts.md).
+
+Use the SDK's Avro argument encoding. A completed query or update exposes its
+value in `result_envelope`, including null, false and zero. An asynchronous
+update may initially return a started call without a result. Retain its
+`service_call_id` and use the describe route until the call is terminal; replay
+the same idempotency key for the same intent rather than creating another call.
+
+An invalid update argument produces a typed Nexus handler failure with
+`accepted: false` and HTTP 409, such as `invalid_update_arguments`. The rejected
+command remains available for inspection. This differs from request validation,
+such as an invalid top-level zero completion wait, which returns HTTP 422 before
+admission. Use the call and rejected command to inspect the refusal.
+
 ## Durable record and retry semantics
 
 Workflow task completion derives caller namespace and run/instance identity from
