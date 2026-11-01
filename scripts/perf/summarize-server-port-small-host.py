@@ -6,8 +6,14 @@
 DRIVER_DIR is the driver's output and TARGET_DIR the target side's. Windows
 come from the driver's windows.tsv; target CPU, memory, swap, OOM kills and
 pressure come from the target's one-second host samples in the same window,
-matched by wall clock (both hosts must be NTP-synchronized; their clock
-records are included). Prints one JSON document.
+matched by wall clock (both hosts must be NTP-synchronized).
+
+The output is meant to be committed publicly, so it is an explicit
+allowlist: artifact and source identity, plan and machine shape, clock
+synchronization and offsets, results and teardown. It never copies private
+endpoints, absolute paths, raw clock text (which can name NTP peers), server
+or project identifiers, or per-workflow identifiers; the raw result
+directories stay private and disposable. Prints one JSON document.
 """
 
 import json
@@ -227,18 +233,75 @@ def idle_summaries(driver, target, samples, marks):
         if name.startswith("idle-"):
             window = observed(driver, target, samples, mark)
             window.pop("driver_cpu_busy_fraction")
-            idle.append({"name": name, "probe": last_json_line(driver / f"{name}.json"), **window})
+            idle.append({"name": name, "probe": public_idle_probe(last_json_line(driver / f"{name}.json")), **window})
     return idle
 
 
+OFFSET_UNITS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0}
+
+
+def clock_offsets(text):
+    """Offsets in seconds from chronyc tracking and timedatectl timesync-status."""
+    offsets = []
+    for value, direction in re.findall(r"System time\s*:\s*([0-9.]+) seconds (fast|slow)", text):
+        offsets.append(float(value) if direction == "fast" else -float(value))
+    for value, unit in re.findall(r"^\s*Offset:\s*([+-]?[0-9.]+)(ns|us|ms|s)\b", text, re.MULTILINE):
+        offsets.append(float(value) * OFFSET_UNITS[unit])
+    return offsets
+
+
 def clock_records(driver, target):
+    """Synchronization state and numeric offsets only, never the raw text."""
     clock = {}
     for side, folder, files in (("driver", driver, ("clock-start.txt", "clock-end.txt")),
                                 ("target", target, ("clock-up.txt", "clock-down.txt"))):
         texts = [read_text(folder / f) or "" for f in files]
-        clock[side] = {"ntp_synchronized_at_both_ends": all(re.search(r"NTPSynchronized=yes", t) for t in texts),
-                       "records": texts}
+        offsets = [offset for text in texts for offset in clock_offsets(text)]
+        clock[side] = {
+            "ntp_synchronized_at_both_ends": all(re.search(r"NTPSynchronized=yes", t) for t in texts),
+            "max_abs_offset_seconds": max((abs(o) for o in offsets), default=None),
+        }
     return clock
+
+
+MACHINE_FIELDS = ("kernel", "logical_cpus", "physical_memory_bytes", "swap_bytes", "cpu_model", "docker",
+                  "compose", "cgroup_driver", "docker_storage_driver")
+
+
+def pick(source, fields):
+    source = source if isinstance(source, dict) else {}
+    return {field: source[field] for field in fields if field in source}
+
+
+def public_driver(identity):
+    if not isinstance(identity, dict):
+        return None
+    server = identity.get("target_server") if isinstance(identity.get("target_server"), dict) else {}
+    return {
+        **pick(identity, ("profile_sha256", "source_revision", "provider_plan", "smoke")),
+        "machine": pick(identity.get("machine"), MACHINE_FIELDS),
+        "target_server": pick(server, ("version", "implementation")),
+    }
+
+
+def public_target(identity):
+    if not isinstance(identity, dict):
+        return None
+    return {
+        **pick(identity, ("mode", "database", "server_image", "profile_sha256", "provider_plan", "container_limits")),
+        "machine": pick(identity.get("machine"), MACHINE_FIELDS),
+    }
+
+
+def public_idle_probe(result):
+    if not isinstance(result, dict):
+        return None
+    errors = result.get("cleanup_errors")
+    return {
+        **pick(result, ("requested_polls", "requested_poll_timeout_seconds", "outcomes", "outcomes_by_kind",
+                        "all_registered", "sdk_php", "php")),
+        "cleanup_errors": len(errors) if isinstance(errors, list) else errors,
+    }
 
 
 def lines(path):
@@ -253,8 +316,8 @@ def main():
     whole = target_window(samples, samples[0]["unix_seconds"], samples[-1]["unix_seconds"]) if samples else None
     print(json.dumps({
         "schema": "durable-workflow.server-port-small-host-summary/v1",
-        "driver": read_json(driver / "identity.json"),
-        "target": read_json(target / "identity.json"),
+        "driver": public_driver(read_json(driver / "identity.json")),
+        "target": public_target(read_json(target / "identity.json")),
         "capacity": read_json(driver / "capacity.json"),
         "steps": steps,
         "idle": idle_summaries(driver, target, samples, marks),

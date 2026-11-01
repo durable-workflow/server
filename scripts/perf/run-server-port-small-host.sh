@@ -19,7 +19,27 @@ out=$2
 target=${3%/}
 smoke=${4:-}
 case "$smoke" in ""|--smoke) ;; *) echo "Unknown option $smoke." >&2; exit 2 ;; esac
-[[ $target =~ ^https?://[^/]+$ ]] || { echo "TARGET_URL is the scheme, the target private address and port 8080, with no path." >&2; exit 2; }
+# A measured run accepts only a private (RFC 1918) IPv4 address for the target.
+# Loopback is accepted only in an explicit local stand-in (DW_SMALL_STAND_IN=1).
+private_ipv4() {
+  local ip=$1 a b octet
+  [[ $ip =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  # Canonical dotted decimal only: a multi-digit octet with a leading zero
+  # (010.0.0.1) reads as octal to common socket parsers and can name a
+  # public address.
+  for octet in "${BASH_REMATCH[@]:1}"; do
+    [[ $octet == 0 || $octet != 0* ]] || return 1
+    (( 10#$octet <= 255 )) || return 1
+  done
+  a=$((10#${BASH_REMATCH[1]})) b=$((10#${BASH_REMATCH[2]}))
+  if (( a == 10 )) || (( a == 172 && b >= 16 && b <= 31 )) || (( a == 192 && b == 168 )); then return 0; fi
+  [[ ${DW_SMALL_STAND_IN:-} == 1 ]] && (( a == 127 ))
+}
+# The target is plain HTTP on a private address and port 8080, nothing else.
+if ! [[ $target =~ ^http://([0-9.]+):8080$ ]] || ! private_ipv4 "${BASH_REMATCH[1]}"; then
+  echo "TARGET_URL must be the target's private (RFC 1918) IPv4 address on port 8080, with no path." >&2
+  exit 2
+fi
 : "${DW_PORT_SOURCE_ROOT:?Set the absolute source directory}"
 : "${DW_PORT_SDK_ROOT:?Set the normally installed SDK directory}"
 compose="$DW_PORT_SOURCE_ROOT/scripts/perf/small-host-driver.compose.yml"
@@ -204,10 +224,12 @@ log "driving $target from $project"
 printf 'name\trate_per_second\tprobes\tsdk_workers\tverdict\tplanned\tclosed_in_window\tmax_probe_p95_seconds\treasons\n' > "$out/ladder.tsv"
 sample & samplers+=($!)
 image=$(dc config --format json | jq -r '.services.probe.image')
+# The endpoint reaches the observer as data in its environment, never as
+# shell syntax.
 docker run -d --name "$project-health" --label "com.docker.compose.project=$project-observer" \
-  --user 1000:1000 --cpus 0.1 --memory 64m --entrypoint sh "$image" -c \
-  "while :; do for path in health ready; do printf '%s %s ' \"\$(date -u +%s.%N)\" \$path; \
-   curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 2 $target/api/\$path || echo 'error -'; done; sleep 1; done" \
+  --user 1000:1000 --cpus 0.1 --memory 64m -e OBSERVED_URL="$target" --entrypoint sh "$image" -c \
+  'while :; do for path in health ready; do printf "%s %s " "$(date -u +%s.%N)" "$path"; \
+   curl -s -o /dev/null -w "%{http_code} %{time_total}\n" --max-time 2 "$OBSERVED_URL/api/$path" || echo "error -"; done; sleep 1; done' \
   > /dev/null 2>> "$out/run.log"
 
 step setup "${rates[0]}" 5 || log "setup window failed; the ladder continues so its evidence is kept"

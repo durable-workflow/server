@@ -21,8 +21,10 @@ capacity claim. The 4 vCPU comparison host instead runs the matched profile
   - `php-mysql`: published PHP 2.11.8 HTTP, queue worker and scheduler with
     MySQL 8.4 and Redis.
 - **Credentials.** The target script generates disposable MySQL and Redis
-  passwords for each run and never writes them to disk. The server token is
-  the fixed benchmark token the driver uses.
+  passwords for each run. They are not written to the repository or the
+  result files. Docker keeps them in the containers' configuration (and Redis
+  in its process arguments) until the project is removed at teardown. The
+  server token is the fixed benchmark token the driver uses.
 - **Capacity ladder.** After a 30-second warmup, the driver offers each rate
   in `ladder.rates_per_second` (0.5 to 32 workflows/s) for 60 seconds. It runs
   one probe process per 4 workflows/s and two SDK workers per probe, so the
@@ -50,8 +52,13 @@ capacity claim. The 4 vCPU comparison host instead runs the matched profile
   each fresh, with nothing else running.
 - Driver: one host in the same VPC with at least 4 vCPU (for example
   `vhp-4c-8gb-amd`), reused across targets.
-- Network: each target publishes 8080 only on its private address. Allow
-  8080 from the driver's private address only.
+- Network: each target publishes 8080 only on its private address, and the
+  scripts refuse anything else. The target bind must be a private (RFC 1918)
+  IPv4 address, never a wildcard or public one. The driver's target URL must
+  be that address on port 8080 with no path. Plain HTTP is used only because
+  the payloads are synthetic and the network is source-restricted. The
+  firewall must allow 8080 only from the driver's private address, and the
+  private run receipt records that rule.
 - Clock: latency compares the driver's start time with the server's
   `closed_at`, so both hosts must report `NTPSynchronized=yes`. Each run
   records the NTP state; check it before trusting a run.
@@ -123,7 +130,8 @@ cat results/target-native-mysql/teardown.txt   # must be: containers=0 volumes=0
 ```
 
 Then summarize on either host, after copying the other side's output
-directory over:
+directory over. The raw directories hold private endpoints, paths and clock
+records. Keep them private and never commit them.
 
 ```sh
 python3 -I scripts/perf/summarize-server-port-small-host.py \
@@ -132,6 +140,11 @@ python3 -I scripts/perf/summarize-server-port-small-host.py \
 
 ## Reading a summary
 
+- The summary is an explicit public allowlist: artifact and source identity,
+  plan and machine shape, clock synchronization and offsets, results and
+  teardown. It leaves out endpoints, paths, raw clock text and run
+  identifiers, and `tests/Unit/Support/small_host_summary_test.py` guards
+  this.
 - `capacity.sustained_rate_per_second` is the plan's sustained one-activity
   capacity for that mode.
 - For each step: `steps[].target` (host CPU, memory, swap, OOM kills and
@@ -164,11 +177,12 @@ native-image runs on one `vhp-4c-8gb-amd` host.
 
 ## Local stand-in
 
-Two optional variables exist only for a local stand-in check, never for a
+These optional variables exist only for a local stand-in check, never for a
 measured run:
 - `DW_SMALL_TARGET_COMPOSE_OVERRIDE` and `DW_SMALL_DRIVER_COMPOSE_OVERRIDE`
   add a Compose file, for example to cap the target at 1 CPU / 1 GiB on a
   shared host;
-- `DW_SMALL_PROJECT_PREFIX` changes the project prefix.
+- `DW_SMALL_PROJECT_PREFIX` changes the project prefix;
+- `DW_SMALL_STAND_IN=1` also accepts a loopback target address.
 
 The profile's first stand-in check is recorded in [smoke.md](smoke.md).
