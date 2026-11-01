@@ -2695,7 +2695,8 @@ where
         // deadline closes the run as timed out, and the worker gets the same
         // receipt a completion would (outcome `completed`, `run_status`
         // `failed`, reason `run_timed_out`): PHP SDK 3.6.1 recognises that
-        // receipt and exits on any other refusal. Published 2.11.8
+        // receipt, and does not recognise a timeout refusal shaped as
+        // `waiting_for_history`. Published 2.11.8
         // acknowledged the wait and left the run waiting.
         if [DB::optional_instant(&run, "execution_deadline_at")?, DB::optional_instant(&run, "run_deadline_at")?]
             .into_iter()

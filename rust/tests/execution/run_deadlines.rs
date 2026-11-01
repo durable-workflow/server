@@ -80,7 +80,8 @@ async fn workflow_task_before_the_deadline_completes_normally() {
 
 // Server #794: a failure or history wait reported after the run's deadline
 // closes the run as timed out, and the worker gets the same receipt a
-// completion gets (PHP SDK 3.6.1 exits on any other refusal). Published 2.11.8
+// completion gets (PHP SDK 3.6.1 does not recognise a timeout refusal shaped
+// as `waiting_for_history`). Published 2.11.8
 // acknowledged the wait and left the run waiting.
 #[tokio::test]
 async fn reports_after_a_deadline_time_out_the_run_with_the_completion_receipt() {

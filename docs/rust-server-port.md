@@ -479,7 +479,8 @@ contract fixture before its correction.
   for a timed-out run: `409`, `outcome` `completed`, `recorded` false,
   `run_status` `failed`, `reason` `run_timed_out`, with the original
   `task_id`, `workflow_task_attempt` and `run_id`. PHP SDK 3.6.1 recognises
-  that receipt and exits on any other refusal. The run gets one
+  that receipt, and does not recognise a timeout refusal shaped as
+  `waiting_for_history`. The run gets one
   `WorkflowTimedOut` with the deadline's `timeout_kind`, and no workflow
   task stays open. A stale attempt still changes nothing, and a replay adds
   no second timeout
