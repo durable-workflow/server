@@ -43,6 +43,8 @@ This embedded component observation makes no service SDK clock-helper claim.
 Server #820 refreshed only `symfony/http-foundation` to 7.4.21 in this lock and
 both `legacy-marker-aliases` role locks (GHSA-r925-mgvr-h9cc); Workflow
 packages and loaded-source hashes are unchanged.
+Server #325 later refreshed only `symfony/mime` to 7.4.22 in the same three
+locks (CVE-2026-45070), on the same terms.
 Run `bash scripts/conformance/server-parity/repeated-patch-profile.sh BACKEND
 PHP_URL NATIVE_URL` after the ordinary targets and adapter are prepared, with
 the same `RESOURCE_SCOPE` and database-image variables as the owning CI job.
