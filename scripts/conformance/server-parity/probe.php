@@ -443,6 +443,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $childVisibility = isset($fixture['child_visibility']) ? finishHttpChildVisibility($client, $fixture, $workflowId, $url) : null;
     $clusterCapabilities = isset($fixture['cluster_capabilities']) ? finishHttpClusterCapabilities($client, $fixture, $workflowId, $url) : null;
     $deepJsonBodies = isset($fixture['deep_json_bodies']) ? finishHttpDeepJsonBodies($client, $fixture, $workflowId, $url) : null;
+    $keyOrder = isset($fixture['key_order']) ? finishHttpKeyOrder($client, $fixture, $workflowId, $url) : null;
     $visibilityCollation = isset($fixture['visibility_collation']) ? finishHttpVisibilityCollation($client, $fixture, $workflowId, $url) : null;
     $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
     $parallelCancellation = isset($fixture['parallel_cancellation']) ? finishHttpParallelCancellation($client, $fixture, $workflowId, $url) : null;
@@ -589,6 +590,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'child_visibility' => $childVisibility,
         'cluster_capabilities' => $clusterCapabilities,
         'deep_json_bodies' => $deepJsonBodies,
+        'key_order' => $keyOrder,
         'visibility_collation' => $visibilityCollation,
         'retried_child_cancellation' => $retriedChildCancellation,
         'parallel_cancellation' => $parallelCancellation,
@@ -938,6 +940,7 @@ try {
     require __DIR__.'/child-visibility-probe.php';
     require __DIR__.'/cluster-capabilities-probe.php';
     require __DIR__.'/deep-json-bodies-probe.php';
+    require __DIR__.'/key-order-probe.php';
     require __DIR__.'/visibility-collation-probe.php';
     require __DIR__.'/retried-child-cancellation-probe.php';
     require __DIR__.'/parallel-cancellation-probe.php';
@@ -1164,6 +1167,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['deep_json_bodies'])) {
         $observation['deep_json_bodies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_request_bodies'];
+    }
+    if ($mode === 'embedded' && isset($fixture['key_order'])) {
+        $observation['key_order'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_request_bodies'];
     }
     if ($mode === 'embedded' && isset($fixture['visibility_collation'])) {
         $observation['visibility_collation'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_list_queries'];

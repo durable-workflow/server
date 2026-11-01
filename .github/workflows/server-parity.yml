@@ -72,6 +72,7 @@ on:
       - tests/Unit/ServerParityChildVisibilityContractTest.mjs
       - tests/Unit/ServerParityClusterCapabilitiesContractTest.mjs
       - tests/Unit/ServerParityDeepJsonBodiesContractTest.mjs
+      - tests/Unit/ServerParityKeyOrderContractTest.mjs
       - tests/Unit/ServerParityVisibilityCollationContractTest.mjs
       - tests/Unit/ServerParityRetriedChildCancellationContractTest.mjs
       - tests/Unit/ServerParityParallelCancellationContractTest.mjs
@@ -2225,6 +2226,7 @@ jobs:
               tests/Unit/ServerParityChildVisibilityContractTest.mjs \
               tests/Unit/ServerParityClusterCapabilitiesContractTest.mjs \
               tests/Unit/ServerParityDeepJsonBodiesContractTest.mjs \
+              tests/Unit/ServerParityKeyOrderContractTest.mjs \
               tests/Unit/ServerParityVisibilityCollationContractTest.mjs \
               tests/Unit/ServerParityRetriedChildCancellationContractTest.mjs \
               tests/Unit/ServerParityParallelCancellationContractTest.mjs \
