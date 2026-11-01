@@ -1936,7 +1936,7 @@ async function runPythonLifecycleShard({ startedAt, artifactVersions, artifactSo
   const overlayPath = path.join(resultDir, 'schedules-python-lifecycle-compose.override.yml');
   const composeFiles = [
     '-f',
-    path.join(repoRoot, 'docker-compose.published.yml'),
+    path.join(repoRoot, 'docker-compose.php.yml'),
     '-f',
     overlayPath,
   ];
@@ -2461,7 +2461,7 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
   const cadenceEvidencePath = path.join(resultDir, 'schedules-cadence-evidence.json');
   const composeFiles = [
     '-f',
-    path.join(repoRoot, 'docker-compose.published.yml'),
+    path.join(repoRoot, 'docker-compose.php.yml'),
     '-f',
     overlayPath,
   ];
@@ -3113,7 +3113,7 @@ async function runOperatorControlsShard({ startedAt, artifactVersions, artifactS
   const overlayPath = path.join(resultDir, 'schedules-operator-controls-compose.override.yml');
   const composeFiles = [
     '-f',
-    path.join(repoRoot, 'docker-compose.published.yml'),
+    path.join(repoRoot, 'docker-compose.php.yml'),
     '-f',
     overlayPath,
   ];
@@ -4109,7 +4109,7 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
   const overlayPath = path.join(resultDir, 'schedules-missed-restart-compose.override.yml');
   const composeFiles = [
     '-f',
-    path.join(repoRoot, 'docker-compose.published.yml'),
+    path.join(repoRoot, 'docker-compose.php.yml'),
     '-f',
     overlayPath,
   ];
@@ -4854,7 +4854,7 @@ async function runAdversarialShard({ startedAt, artifactVersions, artifactSource
   const overlayPath = path.join(resultDir, 'schedules-adversarial-compose.override.yml');
   const composeFiles = [
     '-f',
-    path.join(repoRoot, 'docker-compose.published.yml'),
+    path.join(repoRoot, 'docker-compose.php.yml'),
     '-f',
     overlayPath,
   ];
@@ -5817,7 +5817,7 @@ async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources
   const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
   let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
   const composeProject = sanitizeDockerName(runId);
-  const composeFiles = ['-f', path.join(repoRoot, 'docker-compose.published.yml')];
+  const composeFiles = ['-f', path.join(repoRoot, 'docker-compose.php.yml')];
   let composeStarted = false;
   let cliPath = '';
 
@@ -6457,7 +6457,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
   const overlayPath = path.join(resultDir, 'schedules-cross-language-compose.override.yml');
   const composeFiles = [
     '-f',
-    path.join(repoRoot, 'docker-compose.published.yml'),
+    path.join(repoRoot, 'docker-compose.php.yml'),
     '-f',
     overlayPath,
   ];
@@ -7742,7 +7742,7 @@ async function runPhpSurfaceShard({ startedAt, artifactVersions, artifactSources
   const overlayPath = path.join(resultDir, 'schedules-php-surface-compose.override.yml');
   const composeFiles = [
     '-f',
-    path.join(repoRoot, 'docker-compose.published.yml'),
+    path.join(repoRoot, 'docker-compose.php.yml'),
     '-f',
     overlayPath,
   ];

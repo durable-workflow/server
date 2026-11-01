@@ -1,14 +1,15 @@
 name: Published Compose Smoke
 
 on:
+  pull_request:
+    paths:
+      - docker-compose.published.yml
+      - scripts/smoke-published-compose.sh
+      - .github/workflows/published-compose.yml
   workflow_dispatch:
     inputs:
-      server_tag:
-        description: "Published durableworkflow/server tag to test when DW_SERVER_IMAGE is not set"
-        required: false
-        default: "0.2"
       server_image:
-        description: "Full image reference or digest override, for example ghcr.io/durable-workflow/server:<exact-version>"
+        description: "Native image reference or digest to test instead of docker-compose.published.yml's default"
         required: false
         default: ""
 
@@ -52,10 +53,8 @@ jobs:
 
       - name: Set Compose image selector
         env:
-          INPUT_SERVER_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.server_tag || '0.2' }}
           INPUT_SERVER_IMAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.server_image || '' }}
         run: |
-          echo "DW_SERVER_TAG=${INPUT_SERVER_TAG:-0.2}" >> "$GITHUB_ENV"
           if [ -n "$INPUT_SERVER_IMAGE" ]; then
             echo "DW_SERVER_IMAGE=$INPUT_SERVER_IMAGE" >> "$GITHUB_ENV"
           fi

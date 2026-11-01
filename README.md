@@ -25,9 +25,13 @@ For the 21 October 2026 critical PHP update, follow the
 [PHP runtime security notice](docs/security/php-runtime-2026-10-21.md) and verify
 the patched runtime in every deployed role.
 
-The published Compose stack starts Server with MySQL, Redis, a queue worker,
-and the scheduler. It bootstraps the database and the default namespace before
-accepting traffic.
+The published Compose stack starts the native Server with MySQL. Native is a
+single process: it creates its schema and the default namespace at startup and
+runs its own maintenance, so there is no Redis, queue worker or scheduler. The
+PHP 2.x stack remains available as
+[`docker-compose.php.yml`](docker-compose.php.yml) for installations that pin
+it; see the [native takeover runbook](docs/rust-server-upgrade-takeover.md) to
+move an existing PHP database to native.
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docker-compose.published.yml
@@ -41,9 +45,10 @@ curl -H "Authorization: Bearer $DW_AUTH_TOKEN" \
   http://localhost:8080/api/cluster/info
 ```
 
-This development configuration uses a single compatibility token. Production
-deployments should use role-scoped worker, operator, and administrator
-credentials and pin the Server image by version or digest. See the
+This development configuration uses the shared `dev-token`. Production
+deployments must set a strong `DW_AUTH_TOKEN` (native accepts it for every
+role), should add role-scoped worker, operator, and administrator tokens, and
+should pin the Server image by version or digest. See the
 [self-hosting reference](docs/server-reference.md) for SQLite, production
 Compose, authentication, backup, upgrade, API, and configuration guidance.
 For a tested recovery sequence, see the

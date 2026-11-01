@@ -58,7 +58,7 @@ class DedicatedMatchingComposeContractTest extends TestCase
     public function test_override_uses_the_same_image_alias_as_published_compose(): void
     {
         $override = $this->read('docker-compose.dedicated-matching.yml');
-        $published = $this->read('docker-compose.published.yml');
+        $published = $this->read('docker-compose.php.yml');
         $source = json_decode(
             $this->read('resources/release/source-release.json'),
             true,
@@ -85,7 +85,7 @@ class DedicatedMatchingComposeContractTest extends TestCase
 
     public function test_published_compose_pins_topology_identity_for_supported_processes(): void
     {
-        $published = $this->read('docker-compose.published.yml');
+        $published = $this->read('docker-compose.php.yml');
 
         foreach ([
             'DW_SERVER_TOPOLOGY_SHAPE: standalone_server',

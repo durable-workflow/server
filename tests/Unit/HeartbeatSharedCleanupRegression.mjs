@@ -121,7 +121,7 @@ function sharedState(project, overrideFile) {
     },
     compose: {
       project,
-      base_file: 'docker-compose.published.yml',
+      base_file: 'docker-compose.php.yml',
       override_file: path.basename(overrideFile),
       network: `${project}_default`,
     },
