@@ -38,7 +38,9 @@ case "$command" in
     rm -f "$LIVE/$name" ;;
   inspect)
     if [[ -n "\${INSPECT_FAILS:-}" ]]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi
-    if [[ -e "$LIVE/$name" ]]; then echo true; else echo "Error: No such object: $name" >&2; exit 1; fi ;;
+    if [[ -e "$LIVE/$name" ]]; then echo true; exit 0; fi
+    if [[ -n "\${LOWERCASE_ABSENT:-}" ]]; then echo "error: no such object: $name" >&2; else echo "Error: No such object: $name" >&2; fi
+    exit 1 ;;
   *) exit 2 ;;
 esac
 `);
@@ -82,6 +84,15 @@ test('every cell runs once, in its own scope, after the previous one stopped, an
   assert.deepEqual(events, DATABASES.map(started));
   assert.deepEqual(new Set(Object.values(statuses)), new Set(['0']));
   assert.deepEqual(states, []);
+});
+
+// Run 41338240707 on #925: the Ubuntu 26 runner image's Docker CLI reports a
+// removed container in lower case, which the absence check did not accept.
+test("a removed container reported in lower case counts as stopped", () => {
+  const {child, statuses, events} = runCells({LOWERCASE_ABSENT: '1'});
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(events, DATABASES.map(started));
+  assert.deepEqual(new Set(Object.values(statuses)), new Set(['0']));
 });
 
 // Run 40110569900 on #748: the MySQL-family cells exited 2 because their
