@@ -10,9 +10,9 @@ const observation = (collation, answers) => structuredClone({mode: 'http',
 
 test('each collation passes with its own published answers', () => {
   assert.deepStrictEqual(checkVisibilityCollation(fixture, observation('exact', exact)),
-    {scope: 'visibility_collation', collation: 'exact'});
+    {scope: 'visibility_collation'});
   assert.deepStrictEqual(checkVisibilityCollation(fixture, observation('mysql', mysql)),
-    {scope: 'visibility_collation', collation: 'mysql'});
+    {scope: 'visibility_collation'});
 });
 
 test('embedded applications have no HTTP list queries', () => {

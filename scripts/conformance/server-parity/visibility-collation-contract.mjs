@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 // (visibility-collation-probe.php), recorded against published Server 2.11.7
 // on SQLite and on MySQL 8. The observation names its collation, `exact`
 // (SQLite, PostgreSQL) or `mysql` (utf8mb4_unicode_ci), and `expected`
-// holds each collation's whole observation.
+// holds each collation's whole observation. The comparable projection
+// leaves the collation out: embedded recordings have none.
 export function checkVisibilityCollation(fixture, observation) {
   const definition = fixture.visibility_collation;
   const state = observation.visibility_collation;
@@ -17,5 +18,5 @@ export function checkVisibilityCollation(fixture, observation) {
   assert.ok(Object.hasOwn(definition.expected, state.collation), `visibility collation ${state.collation}`);
   assert.deepStrictEqual(state, {applicable: true, collation: state.collation, ...definition.expected[state.collation]},
     `visibility collation (${state.collation})`);
-  return {scope: 'visibility_collation', collation: state.collation};
+  return {scope: 'visibility_collation'};
 }
