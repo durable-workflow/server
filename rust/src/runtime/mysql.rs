@@ -156,6 +156,69 @@ impl Flavor {
             "CREATE TABLE IF NOT EXISTS dw_service_admission_counters",
         ))
     }
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::MySql => "mysql",
+            Self::MariaDb => "mariadb",
+        }
+    }
+    /// The cumulative bootstrap an earlier native version recorded, byte for
+    /// byte, with the catalog captured from a real server for that version.
+    fn earlier(self, version: i64) -> Option<(&'static Migration, &'static str)> {
+        static MYSQL_7: OnceLock<Migration> = OnceLock::new();
+        static MARIA_7: OnceLock<Migration> = OnceLock::new();
+        let description = "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters";
+        let earlier = |slot: &'static OnceLock<Migration>, sql: &'static str| {
+            slot.get_or_init(|| {
+                Migration::new(7, description.into(), MigrationType::Simple, sql.into_sql_str(), false)
+            })
+        };
+        match (self, version) {
+            (Self::MySql, 7) => Some((
+                earlier(
+                    &MYSQL_7,
+                    concat!(
+                        include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0007_service_calls.sql")
+                    ),
+                ),
+                include_str!("../../migrations/mysql/0007_catalog.json"),
+            )),
+            (Self::MariaDb, 7) => Some((
+                earlier(
+                    &MARIA_7,
+                    concat!(
+                        include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0007_service_calls.sql")
+                    ),
+                ),
+                include_str!("../../migrations/mariadb/0007_catalog.json"),
+            )),
+            _ => None,
+        }
+    }
+    /// The step file that moves a native database from `version` to the next.
+    fn step(self, version: i64) -> Option<&'static str> {
+        match (self, version) {
+            (Self::MySql, 7) => Some(include_str!("../../migrations/mysql/0008_external_payload_deletions.sql")),
+            (Self::MariaDb, 7) => Some(include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql")),
+            _ => None,
+        }
+    }
     pub(super) fn checksum(self) -> &'static [u8] {
         self.migrator().iter().next().unwrap().checksum.as_ref()
     }
@@ -402,7 +465,12 @@ async fn history(
         || markers[0].1 != VERSION
         || markers[0].2 != flavor.checksum()
     {
-        return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+        return Err(match markers.as_slice() {
+            [(found, version, _)] if !initializing && (found != engine || *version != VERSION) => {
+                super::schema_upgrade::marker_refusal(found, *version, VERSION)
+            }
+            _ => refuse(StatusCode::CONFLICT, "unsupported_rust_schema"),
+        });
     }
     let tables = scope(connection).await?;
     if !tables.iter().any(|name| name == "_sqlx_migrations") {
@@ -517,6 +585,131 @@ async fn preflight(connection: &mut MySqlConnection, flavor: Flavor) -> Result<(
     } else {
         verify(connection, flavor).await
     }
+}
+
+/// Upgrade an earlier native schema version to this one under the bootstrap
+/// named lock. DDL commits on its own here, so the marker first moves to
+/// `rust-upgrading`, which fences every node, and a rerun resumes from
+/// whatever the interrupted run left. Returns the backend and the version
+/// found; a current database is only verified.
+pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'static str, i64)> {
+    use super::schema_upgrade::{DEVELOPMENT_ENGINE, UPGRADING_ENGINE, marker_refusal};
+    let mut connection = MySqlConnection::connect_with(&options(connect_options)).await?;
+    let result = async {
+        configure(&mut connection).await?;
+        let locked: Option<i64> = sqlx::query_scalar("SELECT GET_LOCK(CONCAT('dw-native-bootstrap:',SHA1(DATABASE())),60)")
+            .fetch_one(&mut connection)
+            .await?;
+        if locked != Some(1) {
+            return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "native_initialization_busy"));
+        }
+        let flavor = Flavor::detect(&mut connection).await?;
+        if !scope(&mut connection).await?.iter().any(|name| name == "dw_server_schema") {
+            return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
+        }
+        let markers: Vec<(String, i64, Vec<u8>)> =
+            sqlx::query_as("SELECT engine,version,bootstrap_checksum FROM dw_server_schema")
+                .fetch_all(&mut connection)
+                .await?;
+        let [(engine, from, checksum)] = markers.as_slice() else {
+            return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+        };
+        let from = *from;
+        if engine == DEVELOPMENT_ENGINE && from == VERSION {
+            verify(&mut connection, flavor).await?;
+            return Ok((flavor.name(), from));
+        }
+        let Some((earlier, earlier_catalog)) = flavor
+            .earlier(from)
+            .filter(|_| engine == DEVELOPMENT_ENGINE || engine == UPGRADING_ENGINE)
+        else {
+            return Err(marker_refusal(engine, from, VERSION));
+        };
+        if checksum.as_slice() != earlier.checksum.as_ref() {
+            return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+        }
+        let applied: Vec<(i64, bool, Vec<u8>)> =
+            sqlx::query_as("SELECT version,success,checksum FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&mut connection)
+                .await?;
+        if applied != [(from, true, earlier.checksum.to_vec())] {
+            return Err(refuse(StatusCode::CONFLICT, "native_migration_history_mismatch"));
+        }
+        let earlier_catalog: Catalog = serde_json::from_str(&canonical(earlier_catalog))?;
+        let actual = catalog(&mut connection).await?;
+        if engine == DEVELOPMENT_ENGINE {
+            if actual != earlier_catalog {
+                return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+            }
+            let fenced = sqlx::query("UPDATE dw_server_schema SET engine=? WHERE engine=? AND version=? AND bootstrap_checksum=?")
+                .bind(UPGRADING_ENGINE)
+                .bind(DEVELOPMENT_ENGINE)
+                .bind(from)
+                .bind(earlier.checksum.as_ref())
+                .execute(&mut connection)
+                .await?;
+            if fenced.rows_affected() != 1 {
+                return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+            }
+        } else {
+            // A resumed upgrade: every relation is exactly the earlier or the
+            // new definition, and every earlier relation is still there.
+            let earlier_tables: BTreeMap<_, _> = earlier_catalog.into_iter().collect();
+            let current: BTreeMap<_, _> = flavor.expected()?.into_iter().collect();
+            let partial = actual.iter().all(|(name, ddl)| {
+                earlier_tables.get(name) == Some(ddl) || current.get(name) == Some(ddl)
+            }) && earlier_tables
+                .keys()
+                .all(|name| actual.iter().any(|(table, _)| table == name));
+            if !partial {
+                return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+            }
+        }
+        // Each step's own marker update names the development engine, so it
+        // changes nothing while the marker fences the upgrade.
+        for version in from..VERSION {
+            let sql = flavor
+                .step(version)
+                .ok_or(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"))?;
+            connection
+                .execute(AssertSqlSafe(sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")))
+                .await?;
+        }
+        if catalog(&mut connection).await? != flavor.expected()? {
+            return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+        }
+        let migration = flavor.migration();
+        let mut tx = connection.begin().await?;
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version=?")
+            .bind(from)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO _sqlx_migrations(version,description,success,checksum,execution_time) VALUES (?,?,TRUE,?,0)")
+            .bind(migration.version)
+            .bind(migration.description.as_ref())
+            .bind(migration.checksum.as_ref())
+            .execute(&mut *tx)
+            .await?;
+        let marked = sqlx::query("UPDATE dw_server_schema SET engine=?,version=?,bootstrap_checksum=? WHERE engine=? AND version=? AND bootstrap_checksum=?")
+            .bind(DEVELOPMENT_ENGINE)
+            .bind(VERSION)
+            .bind(flavor.checksum())
+            .bind(UPGRADING_ENGINE)
+            .bind(from)
+            .bind(earlier.checksum.as_ref())
+            .execute(&mut *tx)
+            .await?;
+        if marked.rows_affected() != 1 {
+            return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+        }
+        tx.commit().await?;
+        verify(&mut connection, flavor).await?;
+        Ok::<_, super::RuntimeError>((flavor.name(), from))
+    }
+    .await;
+    // Named locks are session scoped, including on errors/process death.
+    connection.close().await?;
+    result
 }
 
 pub struct MySqlStorage {
@@ -950,7 +1143,7 @@ mod tests {
         for (mutation, reason) in [
             (
                 "UPDATE dw_server_schema SET version=99",
-                "unsupported_rust_schema",
+                "native_schema_newer_than_binary",
             ),
             (
                 "UPDATE dw_server_schema SET version=2",
@@ -1708,5 +1901,148 @@ mod tests {
             converted(&db).await;
             db.remove().await;
         }
+    }
+
+    fn checksum_hex(migration: &Migration) -> String {
+        migration.checksum.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    #[test]
+    fn released_step_files_keep_the_checksum_their_release_recorded() {
+        // Release candidates 1 and 2 recorded these checksums for version 7.
+        // Editing 0003-0007 would make their databases unrecognisable.
+        for (flavor, pinned) in [
+            (Flavor::MySql, include_str!("../../migrations/mysql/0007_checksum.txt")),
+            (Flavor::MariaDb, include_str!("../../migrations/mariadb/0007_checksum.txt")),
+        ] {
+            assert_eq!(checksum_hex(flavor.earlier(7).unwrap().0), pinned.trim());
+        }
+    }
+
+    /// A database exactly as release candidates 1 and 2 bootstrapped it, with
+    /// its catalog checked against the one captured for version 7.
+    async fn version_7_database(db: &Database) -> Flavor {
+        let mut connection = db.connection().await;
+        configure(&mut connection).await.unwrap();
+        let flavor = Flavor::detect(&mut connection).await.unwrap();
+        let (earlier, earlier_catalog) = flavor.earlier(7).unwrap();
+        connection.execute(MARKER_SQL).await.unwrap();
+        sqlx::query("INSERT INTO dw_server_schema VALUES ('rust-initializing',7,?)")
+            .bind(earlier.checksum.as_ref())
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.execute(LEDGER_SQL).await.unwrap();
+        let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
+        migrator.set_locking(false);
+        migrator.run(&mut connection).await.unwrap();
+        let expected: Catalog = serde_json::from_str(&canonical(earlier_catalog)).unwrap();
+        assert_eq!(catalog(&mut connection).await.unwrap(), expected);
+        sqlx::query("UPDATE dw_server_schema SET engine='rust-development' WHERE engine='rust-initializing'")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 7')")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+        flavor
+    }
+
+    fn upgrade_refused(result: Result<(&'static str, i64)>, expected: &str) {
+        match result {
+            Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
+            Err(error) => panic!("unexpected upgrade error: {error}"),
+            Ok(found) => panic!("upgrade accepted {found:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_schema_upgrade_moves_version_7_to_the_current_schema() {
+        let db = Database::new().await;
+        let flavor = version_7_database(&db).await;
+        refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 7));
+        // Opening verifies marker, ledger checksum and the captured catalog
+        // of a fresh bootstrap; rows written at version 7 are kept.
+        let storage = MySqlStorage::open(db.options.clone()).await.unwrap();
+        storage.close().await;
+        let mut connection = db.connection().await;
+        let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(kept, "seeded at version 7");
+        let ledger: Vec<(i64, bool)> = sqlx::query_as("SELECT version,success FROM _sqlx_migrations")
+            .fetch_all(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(ledger, [(VERSION, true)]);
+        connection.close().await.unwrap();
+        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), VERSION));
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_schema_upgrade_resumes_an_interrupted_run() {
+        // DDL commits on its own, so a killed upgrade leaves the fencing
+        // marker, with the new table either not yet or already created.
+        for created in [false, true] {
+            let db = Database::new().await;
+            let flavor = version_7_database(&db).await;
+            let mut connection = db.connection().await;
+            sqlx::query("UPDATE dw_server_schema SET engine='rust-upgrading'")
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            if created {
+                connection
+                    .execute(AssertSqlSafe(flavor.step(7).unwrap().to_owned()))
+                    .await
+                    .unwrap();
+            }
+            connection.close().await.unwrap();
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_incomplete");
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 7), "created {created}");
+            MySqlStorage::open(db.options.clone()).await.unwrap().close().await;
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_schema_upgrade_refuses_what_it_cannot_recognise() {
+        for (mutation, reason) in [
+            ("ALTER TABLE workflow_namespaces ADD COLUMN unexpected TEXT NULL", "native_schema_catalog_mismatch"),
+            ("UPDATE _sqlx_migrations SET checksum=X'00'", "native_migration_history_mismatch"),
+            ("UPDATE dw_server_schema SET bootstrap_checksum=X'00'", "unsupported_rust_schema"),
+            ("UPDATE dw_server_schema SET version=9", "native_schema_newer_than_binary"),
+            ("UPDATE dw_server_schema SET version=5", "unsupported_rust_schema"),
+        ] {
+            let db = Database::new().await;
+            version_7_database(&db).await;
+            let mut connection = db.connection().await;
+            connection.execute(AssertSqlSafe(mutation.to_owned())).await.unwrap();
+            upgrade_refused(upgrade(db.options.clone()).await, reason);
+            // Refused before any DDL or marker change.
+            let added: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='dw_external_payload_deletions'")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            assert_eq!(added, 0, "{mutation}");
+            let engine: String = sqlx::query_scalar("SELECT engine FROM dw_server_schema")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            assert_eq!(engine, "rust-development", "{mutation}");
+            connection.close().await.unwrap();
+            db.remove().await;
+        }
+        let empty = Database::new().await;
+        upgrade_refused(upgrade(empty.options.clone()).await, "native_schema_not_initialized");
+        empty.remove().await;
     }
 }
