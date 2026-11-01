@@ -5,6 +5,7 @@ declare(strict_types=1);
 require '/tmp/dw-php/vendor/autoload.php';
 
 use DurableWorkflow\Client;
+use DurableWorkflow\Exception\ServerException;
 use DurableWorkflow\Exception\WorkflowCancelled;
 use DurableWorkflow\Worker;
 use DurableWorkflow\Worker\WorkflowContext;
@@ -26,7 +27,15 @@ error_log(json_encode([
 ], JSON_THROW_ON_ERROR));
 
 $client = new Client('http://server:8080', namespace: 'shared', token: $input['token'], workerProtocolVersion: '1.20');
-(new Worker($client, 'nexus-php-workflow', enableCooperativeCancellation: true))
+$worker = (new Worker($client, 'nexus-php-workflow',
+    diagnosticListener: static function (string $event, array $context): void {
+        $fields = array_intersect_key($context, array_flip([
+            'worker_id', 'task_queue', 'task_id', 'operation', 'kind', 'reason', 'terminal_reason',
+            'status', 'poll_status', 'poll_request_id', 'attempt', 'retry_after_seconds',
+        ]));
+        $fields = array_filter($fields, static fn (mixed $value): bool => is_scalar($value) || $value === null);
+        error_log(json_encode(['event' => $event, 'context' => $fields], JSON_THROW_ON_ERROR));
+    }, enableCooperativeCancellation: true))
     ->registerWorkflow('nexus.fixture.php.greeter', static function (WorkflowContext $context, string $name): array {
         if (str_starts_with($name, 'nexus-external:')) {
             $context->sleep(2);
@@ -53,5 +62,19 @@ $client = new Client('http://server:8080', namespace: 'shared', token: $input['t
             }
         }
         return ['language' => 'php', 'name' => $name, 'greeting' => "hello, {$name}"];
-    })
-    ->run();
+    });
+try {
+    $worker->run();
+} catch (Throwable $failure) {
+    error_log(json_encode([
+        'event' => 'service_worker_failed', 'exception_type' => $failure::class,
+        'status' => $failure instanceof ServerException ? $failure->status : null,
+        'reason' => $failure instanceof ServerException ? $failure->reason : null,
+        'message' => substr($failure->getMessage(), 0, 500),
+        'client_calls' => array_slice(array_values(array_map(
+            static fn (array $frame): string => $frame['function'],
+            array_filter($failure->getTrace(), static fn (array $frame): bool => ($frame['class'] ?? null) === Client::class),
+        )), 0, 6),
+    ], JSON_THROW_ON_ERROR));
+    throw $failure;
+}
