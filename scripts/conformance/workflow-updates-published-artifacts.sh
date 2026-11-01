@@ -127,7 +127,7 @@ cleanup_background_processes() {
   done
   local project
   for project in "${cleanup_compose_projects[@]}"; do
-    docker compose -p "$project" -f "$repo_root/docker-compose.published.yml" down -v >/dev/null 2>&1 || true
+    docker compose -p "$project" -f "$repo_root/docker-compose.php.yml" down -v >/dev/null 2>&1 || true
   done
 }
 trap cleanup_background_processes EXIT
@@ -2320,7 +2320,7 @@ capture_php_server_startup_diagnostics() {
       DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" \
       DW_SERVER_TAG="${DW_SERVER_VERSION}" \
       DW_AUTH_TOKEN="$auth_token" \
-      docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps --all 2>&1 || true
+      docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" ps --all 2>&1 || true
   } | head -c 32768 > "$result_dir/sdk-php-compose-ps.log"
 
   server_container_id="$(
@@ -2329,7 +2329,7 @@ capture_php_server_startup_diagnostics() {
         DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" \
         DW_SERVER_TAG="${DW_SERVER_VERSION}" \
         DW_AUTH_TOKEN="$auth_token" \
-        docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps -q server 2>/dev/null || true
+        docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" ps -q server 2>/dev/null || true
     } | head -n 1
   )"
   if [[ -n "$server_container_id" ]]; then
@@ -2345,7 +2345,7 @@ capture_php_server_startup_diagnostics() {
       DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" \
       DW_SERVER_TAG="${DW_SERVER_VERSION}" \
       DW_AUTH_TOKEN="$auth_token" \
-      docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" \
+      docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" \
         logs --no-color --tail 200 server 2>&1 || true
   } | tail -c 65536 > "$result_dir/sdk-php-server-container.log"
 }
@@ -2612,21 +2612,21 @@ run_php_package_shard() {
   server_url="http://${server_connect_host}:${server_port}"
   cleanup_compose_projects+=("$compose_project")
   if ! SERVER_PORT="$compose_server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d mysql redis \
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" up -d mysql redis \
       > "$result_dir/sdk-php-compose-dependencies.log" 2>&1; then
     capture_php_server_startup_diagnostics "$compose_project" "$compose_server_port" "$auth_token"
     write_php_package_shard_status runner_blocked "The published server dependencies could not start for the PHP SDK update shard." server_dependencies true
     return 0
   fi
   if ! SERVER_PORT="$compose_server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" run --rm bootstrap \
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" run --rm bootstrap \
       > "$result_dir/sdk-php-server-bootstrap.log" 2>&1; then
     capture_php_server_startup_diagnostics "$compose_project" "$compose_server_port" "$auth_token"
     write_php_package_shard_status fail "The exact public server image could not bootstrap for the PHP SDK update shard." server_bootstrap false
     return 0
   fi
   if ! SERVER_PORT="$compose_server_port" DW_SERVER_IMAGE="${DW_SERVER_IMAGE}" DW_SERVER_TAG="${DW_SERVER_VERSION}" DW_AUTH_TOKEN="$auth_token" \
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d --no-deps server scheduler \
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" up -d --no-deps server scheduler \
       > "$result_dir/sdk-php-server.log" 2>&1; then
     capture_php_server_startup_diagnostics "$compose_project" "$compose_server_port" "$auth_token"
     write_php_package_shard_status runner_blocked "The exact public server image could not start for the PHP SDK update shard." server_start true

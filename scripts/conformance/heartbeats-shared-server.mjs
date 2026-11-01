@@ -841,7 +841,7 @@ function validateState(value) {
   if (!value?.compose?.project || !value?.compose?.base_file || !value?.compose?.override_file) {
     throw new Error(`shared heartbeat server state at ${statePath} has no compose ownership`);
   }
-  if (value.compose.base_file !== 'docker-compose.published.yml'
+  if (value.compose.base_file !== 'docker-compose.php.yml'
     || path.basename(value.compose.override_file) !== value.compose.override_file
     || value.compose.network !== `${value.compose.project}_default`) {
     throw new Error(`shared heartbeat server state at ${statePath} has invalid compose paths`);
@@ -897,7 +897,7 @@ async function start() {
     throw new Error(`refusing to overwrite existing shared heartbeat server state: ${statePath}`);
   }
 
-  const baseFile = path.join(repoRoot, 'docker-compose.published.yml');
+  const baseFile = path.join(repoRoot, 'docker-compose.php.yml');
   if (!fs.existsSync(baseFile)) throw new Error(`published compose file not found: ${baseFile}`);
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   const suffix = digest(`${statePath}:${process.pid}:${Date.now()}`).slice(0, 12);

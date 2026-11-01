@@ -2175,12 +2175,12 @@ class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
                   PROJECT: smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
                   UNUSED_PORT: "0"
                 steps:
-                  - run: docker compose -p "$PROJECT" -f docker-compose.published.yml up -d
+                  - run: docker compose -p "$PROJECT" -f docker-compose.php.yml up -d
                   - if: always()
-                    run: docker compose -p "$PROJECT" -f docker-compose.published.yml down -v || true
+                    run: docker compose -p "$PROJECT" -f docker-compose.php.yml down -v || true
             """,
             {
-                "docker-compose.published.yml": """
+                "docker-compose.php.yml": """
                     services:
                       server:
                         ports:

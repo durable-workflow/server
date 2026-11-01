@@ -389,11 +389,11 @@ class ReplayConformanceRunnerContractTest extends TestCase
             );
         }
 
-        $this->assertStringNotContainsString('-f docker-compose.published.yml', $source);
-        $this->assertStringNotContainsString('published_compose_file="$repo_root/docker-compose.published.yml"', $source);
-        $this->assertStringNotContainsString('-f "$repo_root/docker-compose.published.yml"', $source);
-        $this->assertStringNotContainsString('-f "$run_root/docker-compose.published.yml"', $source);
-        $this->assertStringNotContainsString('-f "$result_dir/docker-compose.published.yml"', $source);
+        $this->assertStringNotContainsString('-f docker-compose.php.yml', $source);
+        $this->assertStringNotContainsString('published_compose_file="$repo_root/docker-compose.php.yml"', $source);
+        $this->assertStringNotContainsString('-f "$repo_root/docker-compose.php.yml"', $source);
+        $this->assertStringNotContainsString('-f "$run_root/docker-compose.php.yml"', $source);
+        $this->assertStringNotContainsString('-f "$result_dir/docker-compose.php.yml"', $source);
     }
 
     public function test_staged_runner_resolves_compose_file_from_server_checkout_not_caller_directory(): void
@@ -422,7 +422,7 @@ class ReplayConformanceRunnerContractTest extends TestCase
 
             copy($repoRoot.'/scripts/conformance/replay-published-artifacts.sh', $stagedScript);
             chmod($stagedScript, 0755);
-            copy($repoRoot.'/docker-compose.published.yml', $serverCheckout.'/docker-compose.published.yml');
+            copy($repoRoot.'/docker-compose.php.yml', $serverCheckout.'/docker-compose.php.yml');
 
             $realPython = trim((string) shell_exec('command -v python3 2>/dev/null'));
             if ($realPython === '') {
@@ -579,12 +579,12 @@ SH);
             $this->assertFileExists($dockerLog);
 
             $log = (string) file_get_contents($dockerLog);
-            $expectedComposeFile = $serverCheckout.'/docker-compose.published.yml';
+            $expectedComposeFile = $serverCheckout.'/docker-compose.php.yml';
             $this->assertStringContainsString('compose -p ', $log);
             $this->assertStringContainsString('-f '.$expectedComposeFile, $log);
-            $this->assertStringNotContainsString($workspace.'/.tmp/docker-compose.published.yml', $log);
-            $this->assertStringNotContainsString($cwd.'/docker-compose.published.yml', $log);
-            $this->assertStringNotContainsString($resultDir.'/docker-compose.published.yml', $log);
+            $this->assertStringNotContainsString($workspace.'/.tmp/docker-compose.php.yml', $log);
+            $this->assertStringNotContainsString($cwd.'/docker-compose.php.yml', $log);
+            $this->assertStringNotContainsString($resultDir.'/docker-compose.php.yml', $log);
             $this->assertStringNotContainsString(' config ', $log);
 
             preg_match_all('/compose [^\n]* -f ([^ ]+)/', $log, $matches);
@@ -642,7 +642,7 @@ SH);
                 $repoRoot.'/scripts/conformance/php_sdk_replay_scenarios.py',
                 dirname($stagedScript).'/php_sdk_replay_scenarios.py',
             );
-            copy($repoRoot.'/docker-compose.published.yml', $serverCheckout.'/docker-compose.published.yml');
+            copy($repoRoot.'/docker-compose.php.yml', $serverCheckout.'/docker-compose.php.yml');
 
             // The staged runner hands its venv to the patched-pip bootstrap;
             // record that hand-off instead of downloading pip.

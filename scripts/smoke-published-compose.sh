@@ -40,7 +40,9 @@ case "$PROFILE" in
     export DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-published-compose-root-password}"
     export DW_AUTH_DRIVER="${DW_AUTH_DRIVER:-token}"
     export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-false}"
-    export DW_AUTH_TOKEN="${DW_AUTH_TOKEN:-}"
+    # The native server requires a shared token and accepts it for every role,
+    # so the production profile sets a strong one; it must not be dev-token.
+    export DW_AUTH_TOKEN="${DW_AUTH_TOKEN:-published-compose-shared-token}"
     export DW_WORKER_TOKEN="$WORKER_AUTH_TOKEN"
     export DW_OPERATOR_TOKEN="${DW_OPERATOR_TOKEN:-published-compose-operator-token}"
     export DW_ADMIN_TOKEN="$AUTH_TOKEN"
@@ -93,17 +95,35 @@ trap cleanup EXIT
 echo "Published Compose smoke"
 echo "  project: $PROJECT"
 echo "  compose: $COMPOSE_FILE"
-echo "  image: ${DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-0.2}}"
+echo "  image: ${DW_SERVER_IMAGE:-default from the Compose file}"
 echo "  platform: ${DW_SERVER_PLATFORM:-docker-default}"
 echo "  profile: $PROFILE"
 echo "  port: $SERVER_PORT"
 echo "  endpoint: $ENDPOINT_MODE"
 
+# The native published file refuses to render without an explicit shared
+# token, and publishes the API on loopback only. The PHP 2.x file
+# (docker-compose.php.yml) keeps its own defaults.
+NATIVE_PUBLISHED=false
+if [ "$(basename "$COMPOSE_FILE")" = "docker-compose.published.yml" ]; then
+  NATIVE_PUBLISHED=true
+fi
+if [ "$NATIVE_PUBLISHED" = true ] && env -u DW_AUTH_TOKEN docker compose -p "$PROJECT" -f "$COMPOSE_FILE" config -q >/dev/null 2>&1; then
+  echo "Compose rendered without DW_AUTH_TOKEN; it must refuse an unset token" >&2
+  exit 1
+fi
+
 compose pull
 compose up -d --wait
 
 if [ "$ENDPOINT_MODE" = "host" ]; then
-  SERVER_PORT="$(compose port server 8080 | awk -F: 'END {print $NF}')"
+  published="$(compose port server 8080)"
+  # The default host binding is loopback only.
+  if [ "$NATIVE_PUBLISHED" = true ] && [ -z "${SERVER_BIND_ADDRESS:-}" ] && [ "${published%%:*}" != "127.0.0.1" ]; then
+    echo "server port is published on ${published}, not loopback" >&2
+    exit 1
+  fi
+  SERVER_PORT="$(printf '%s\n' "$published" | awk -F: 'END {print $NF}')"
   if [ -z "$SERVER_PORT" ]; then
     echo "Unable to discover the published server port for $PROJECT" >&2
     exit 1
@@ -143,5 +163,13 @@ assert cluster.get("version"), cluster
 assert worker.get("worker_id") == os.environ["DW_SMOKE_WORKER_ID"], worker
 assert worker.get("registered") is True, worker
 PY
+
+if [ "$PROFILE" = "production" ]; then
+  status="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer dev-token" "${BASE_URL}/api/cluster/info" || true)"
+  if [ "$status" != "401" ]; then
+    echo "production profile accepted dev-token (HTTP $status)" >&2
+    exit 1
+  fi
+fi
 
 echo "Published Compose smoke passed"

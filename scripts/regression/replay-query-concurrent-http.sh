@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-COMPOSE_FILE="${DW_REPLAY_QUERY_COMPOSE_FILE:-$ROOT_DIR/docker-compose.published.yml}"
+COMPOSE_FILE="${DW_REPLAY_QUERY_COMPOSE_FILE:-$ROOT_DIR/docker-compose.php.yml}"
 PROJECT_RAW="${DW_REPLAY_QUERY_COMPOSE_PROJECT:-dw-replay-query-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-replay-query}}"
 PROJECT="$(printf '%s' "$PROJECT_RAW" | tr -c '[:alnum:]_-' '-')"
 SERVER_PORT="${SERVER_PORT:-18082}"

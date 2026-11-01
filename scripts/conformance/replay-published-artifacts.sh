@@ -141,7 +141,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 canonical_server_repo_root() {
   local candidate="$1"
 
-  if [[ -n "$candidate" && -f "$candidate/docker-compose.published.yml" ]]; then
+  if [[ -n "$candidate" && -f "$candidate/docker-compose.php.yml" ]]; then
     cd "$candidate" && pwd -P
     return 0
   fi
@@ -175,7 +175,7 @@ resolve_server_repo_root() {
     candidate="$(dirname "$candidate")"
   done
 
-  printf '%s\n' 'could not locate server checkout containing docker-compose.published.yml' >&2
+  printf '%s\n' 'could not locate server checkout containing docker-compose.php.yml' >&2
   return 1
 }
 
@@ -184,12 +184,12 @@ resolve_published_compose_file() {
   local directory
 
   directory="$(cd "$root" && pwd -P)"
-  if [[ ! -f "$directory/docker-compose.published.yml" ]]; then
-    printf 'server checkout is missing docker-compose.published.yml: %s\n' "$directory" >&2
+  if [[ ! -f "$directory/docker-compose.php.yml" ]]; then
+    printf 'server checkout is missing docker-compose.php.yml: %s\n' "$directory" >&2
     return 1
   fi
 
-  printf '%s/docker-compose.published.yml\n' "$directory"
+  printf '%s/docker-compose.php.yml\n' "$directory"
 }
 
 repo_root="$(resolve_server_repo_root)"

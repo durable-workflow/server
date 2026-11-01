@@ -1,5 +1,8 @@
 # Repair a terminal history-size summary
 
+This procedure applies to the PHP 2.x Compose stack, `docker-compose.php.yml`.
+The published Compose file runs the native server from 3.0.0.
+
 [Server #479](https://github.com/durable-workflow/server/issues/479) tracks
 terminal summaries that undercount history bytes after Server adds the
 authenticated worker principal to a completed or failed workflow event. The
@@ -20,10 +23,10 @@ published Compose configuration:
 ```sh
 RUN_ID='replace-with-the-selected-run-id'
 
-docker compose -f docker-compose.published.yml exec server \
+docker compose -f docker-compose.php.yml exec server \
   php artisan workflow:v2:rebuild-projections --run-id="$RUN_ID" --dry-run --json
 
-docker compose -f docker-compose.published.yml exec server \
+docker compose -f docker-compose.php.yml exec server \
   php artisan workflow:v2:rebuild-projections --run-id="$RUN_ID" --json
 ```
 
