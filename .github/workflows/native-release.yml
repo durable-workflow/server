@@ -52,6 +52,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       dockerhub: ${{ steps.plan.outputs.dockerhub }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - name: Publish a release candidate to GHCR only
         id: plan
@@ -62,6 +63,7 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^native-[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
             || { echo 'tag must be native-X.Y.Z or native-X.Y.Z-rc.N' >&2; exit 1; }
           if [[ -n "${BASH_REMATCH[1]}" ]]; then echo dockerhub=false; else echo dockerhub=true; fi >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#native-}" >> "$GITHUB_OUTPUT"
 
   build-amd64:
     name: Build and smoke linux/amd64
@@ -128,6 +130,8 @@ jobs:
           platforms: linux/amd64
           pull: true
           provenance: false
+          build-args: |
+            DW_SERVER_VERSION=${{ needs.plan.outputs.version }}
           labels: |
             org.opencontainers.image.revision=${{ inputs.release_commit }}
             dev.durable-workflow.release.tag=${{ inputs.tag }}
@@ -219,6 +223,8 @@ jobs:
           platforms: linux/arm64
           pull: true
           provenance: false
+          build-args: |
+            DW_SERVER_VERSION=${{ needs.plan.outputs.version }}
           labels: |
             org.opencontainers.image.revision=${{ inputs.release_commit }}
             dev.durable-workflow.release.tag=${{ inputs.tag }}

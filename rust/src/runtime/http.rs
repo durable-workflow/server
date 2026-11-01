@@ -1061,8 +1061,11 @@ async fn cluster(
     // Runtime external payload discovery, as SDKs read it before an upload.
     let namespace = runtime.in_namespace(&discovery_namespace(&headers, &uri)).namespace_discovery().await?;
     let limits = super::payload_discovery::limits()?;
+    let structural_limits = runtime.cluster_structural_limits(&metrics_config(&runtime)).await?;
     Ok(Json(
-        json!({"version": env!("CARGO_PKG_VERSION"), "implementation": "rust", "development": true,
+        json!({"version": super::cluster_info::version(), "implementation": "rust", "development": true,
+        "capabilities": super::cluster_info::capabilities(), "structural_limits": structural_limits,
+        "discovery": super::cluster_info::discovery(), "native_unqualified": super::cluster_info::unqualified(),
         "server_id": super::payload_discovery::server_id(), "default_namespace": "default",
         "namespace": namespace, "limits": limits,
         "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},

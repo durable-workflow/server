@@ -1,0 +1,342 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "cluster-capabilities",
+  "review_state": "reviewed",
+  "contract": "The server's self-description in /api/cluster/info (published Server 2.11.7 HealthController::clusterInfo) and the activity result read that capabilities.workflow_activity_result_inspection advertises, over raw HTTP in a fresh namespace. Published PHP answers the recorded version shape, capabilities, structural limits and discovery paths, carries its SDK, client and topology manifests, and reads an activity result as pending, then available with its result envelope, and 404 activity_not_found for an activity the run does not have. Native answers the same, except the reviewed native_differences: it advertises no manifest it does not publish, no response compression, no diagnostics view and no external payload transaction limit, and names every member it leaves out in native_unqualified. Embedded applications have no HTTP cluster info.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "cluster capabilities λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "cluster capabilities λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "cluster_capabilities": {
+    "workflow_type": "parity.v1.cluster_capabilities",
+    "activity_type": "parity.v1.cluster_capabilities_activity",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "php_only_members": [
+      "supported_sdk_versions",
+      "client_compatibility",
+      "topology",
+      "platform_conformance_suite",
+      "platform_protocol_specs",
+      "surface_stability_contract",
+      "sdk_neutrality_contract",
+      "timer_runtime_contract"
+    ],
+    "expected": {
+      "applicable": true,
+      "version_is_release": true,
+      "capabilities": {
+        "workflow_tasks": true,
+        "activity_tasks": true,
+        "signals": true,
+        "queries": true,
+        "updates": true,
+        "schedules": true,
+        "schedule_jitter": true,
+        "schedule_max_runs": true,
+        "search_attributes": true,
+        "history_export": true,
+        "continue_as_new": true,
+        "child_workflows": true,
+        "namespace_runtime_contract": true,
+        "activity_timeouts": true,
+        "activity_retry_policy": true,
+        "activity_runtime_contract": true,
+        "child_workflow_retry_policy": true,
+        "child_workflow_timeouts": true,
+        "parent_close_policy": true,
+        "non_retryable_failures": true,
+        "worker_sessions": true,
+        "history_retention": true,
+        "payload_codec_envelope": true,
+        "payload_codec_envelope_responses": true,
+        "runtime_external_payload_transport": true,
+        "workflow_activity_result_inspection": true,
+        "bridge_adapter_outcome_contract": true,
+        "external_executor_config_contract": true,
+        "invocable_carrier_contract": true,
+        "service_catalog": true,
+        "service_execution": true,
+        "nexus": true,
+        "workflow_streams": true,
+        "message_streams": true,
+        "replay_verification_contract": true,
+        "search_attribute_runtime_contract": true,
+        "schedules_runtime_contract": true,
+        "single_region_failover_contract": true,
+        "timer_runtime_contract": true,
+        "child_workflow_runtime_contract": true,
+        "saga_runtime_contract": true,
+        "heartbeat_runtime_contract": true,
+        "principal_attribution_contract": true,
+        "php_sdk_conformance_contract": true,
+        "python_sdk_parity_contract": true,
+        "prerelease_readiness_contract": true,
+        "skew_refusal_matrix_contract": true,
+        "worker_versioning_runtime_contract": true,
+        "migration_runtime_contract": true,
+        "workflow_lifecycle_contract": true,
+        "workflow_update_runtime_contract": true,
+        "embedded_v2_import": true,
+        "waterline_v1_projection": true,
+        "payload_codecs": [
+          "avro"
+        ],
+        "avro_value_protocol": {
+          "schema": "durable_workflow.protocol.Value",
+          "fingerprint": "e2a33dff55802237",
+          "framing": "single_object",
+          "magic_hex": "c301"
+        },
+        "response_compression": [
+          "gzip",
+          "deflate"
+        ]
+      },
+      "structural_limits": {
+        "pending_activity_count": 2000,
+        "pending_child_count": 1000,
+        "pending_timer_count": 2000,
+        "pending_signal_count": 5000,
+        "pending_update_count": 500,
+        "command_batch_size": 1000,
+        "payload_size_bytes": 2097152,
+        "memo_size_bytes": 262144,
+        "search_attribute_size_bytes": 40960,
+        "history_transaction_size": 5000,
+        "history_transaction_bytes": 16777216,
+        "history_transaction_rows": 20000,
+        "external_payload_transaction_bytes": 16777216,
+        "warning_threshold_percent": 80
+      },
+      "discovery": {
+        "mode": "compatibility",
+        "diagnostics_query": "include=diagnostics",
+        "diagnostics_path": "/api/cluster/info?include=diagnostics",
+        "operator_metrics_path": "/api/system/operator-metrics",
+        "task_repair_path": "/api/system/repair"
+      },
+      "present": {
+        "supported_sdk_versions": true,
+        "client_compatibility": true,
+        "topology": true,
+        "platform_conformance_suite": true,
+        "platform_protocol_specs": true,
+        "surface_stability_contract": true,
+        "sdk_neutrality_contract": true,
+        "timer_runtime_contract": true
+      },
+      "native_unqualified": [],
+      "activity_result": {
+        "pending": {
+          "status": 200,
+          "response": {
+            "workflow_id": "{workflow}",
+            "run_id": "{run}",
+            "activity_id": "{activity}",
+            "history_sequence": 4,
+            "state": "pending",
+            "available": false,
+            "reason": "activity_result_pending"
+          }
+        },
+        "available": {
+          "status": 200,
+          "response": {
+            "workflow_id": "{workflow}",
+            "run_id": "{run}",
+            "activity_id": "{activity}",
+            "history_sequence": 5,
+            "state": "available",
+            "available": true,
+            "reason": null,
+            "result_envelope": {
+              "codec": "avro",
+              "blob": "wwHioz3/VYAiNwwA"
+            }
+          }
+        },
+        "unknown": {
+          "status": 404,
+          "response": {
+            "workflow_id": "{workflow}",
+            "run_id": "{run}",
+            "activity_id": "missing-activity",
+            "reason": "activity_not_found",
+            "message": "Activity not found in this run."
+          }
+        }
+      }
+    },
+    "native_differences": {
+      "capabilities.namespace_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.activity_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.bridge_adapter_outcome_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.external_executor_config_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.invocable_carrier_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.replay_verification_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.search_attribute_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.schedules_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.single_region_failover_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.timer_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.child_workflow_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.saga_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.heartbeat_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.php_sdk_conformance_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.python_sdk_parity_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.prerelease_readiness_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.skew_refusal_matrix_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.worker_versioning_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.migration_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.workflow_lifecycle_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.workflow_update_runtime_contract": {
+        "value": false,
+        "reason": "Native does not publish this manifest document, so it does not advertise the contract."
+      },
+      "capabilities.response_compression": {
+        "value": [],
+        "reason": "Native sends uncompressed responses."
+      },
+      "structural_limits.external_payload_transaction_bytes": {
+        "value": "{absent}",
+        "reason": "Native reads no DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES."
+      },
+      "discovery.diagnostics_query": {
+        "value": "{absent}",
+        "reason": "Native serves no include=diagnostics view."
+      },
+      "discovery.diagnostics_path": {
+        "value": "{absent}",
+        "reason": "Native serves no include=diagnostics view."
+      },
+      "present.supported_sdk_versions": {
+        "value": false,
+        "reason": "Native leaves this member out and names it in native_unqualified."
+      },
+      "present.client_compatibility": {
+        "value": false,
+        "reason": "Native leaves this member out and names it in native_unqualified."
+      },
+      "present.topology": {
+        "value": false,
+        "reason": "Native leaves this member out and names it in native_unqualified."
+      },
+      "present.platform_conformance_suite": {
+        "value": false,
+        "reason": "Native leaves this member out and names it in native_unqualified."
+      },
+      "present.platform_protocol_specs": {
+        "value": false,
+        "reason": "Native leaves this member out and names it in native_unqualified."
+      },
+      "present.surface_stability_contract": {
+        "value": false,
+        "reason": "Native leaves this member out and names it in native_unqualified."
+      },
+      "present.sdk_neutrality_contract": {
+        "value": false,
+        "reason": "Native leaves this member out and names it in native_unqualified."
+      },
+      "present.timer_runtime_contract": {
+        "value": false,
+        "reason": "Native leaves this member out and names it in native_unqualified."
+      },
+      "native_unqualified": {
+        "value": [
+          "client_compatibility",
+          "conformance_manifests",
+          "discovery.diagnostics_path",
+          "discovery.diagnostics_query",
+          "structural_limits.external_payload_transaction_bytes",
+          "supported_sdk_versions",
+          "topology"
+        ],
+        "reason": "Native names each member it leaves out."
+      }
+    }
+  }
+}

@@ -440,6 +440,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $childRetries = isset($fixture['child_retries']) ? finishHttpChildRetries($client, $fixture, $workflowId, $url) : null;
     $activityLateOutcomes = isset($fixture['activity_late_outcomes']) ? finishHttpActivityLateOutcomes($client, $fixture, $workflowId, $url) : null;
     $childVisibility = isset($fixture['child_visibility']) ? finishHttpChildVisibility($client, $fixture, $workflowId, $url) : null;
+    $clusterCapabilities = isset($fixture['cluster_capabilities']) ? finishHttpClusterCapabilities($client, $fixture, $workflowId, $url) : null;
     $deepJsonBodies = isset($fixture['deep_json_bodies']) ? finishHttpDeepJsonBodies($client, $fixture, $workflowId, $url) : null;
     $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
     $parallelCancellation = isset($fixture['parallel_cancellation']) ? finishHttpParallelCancellation($client, $fixture, $workflowId, $url) : null;
@@ -582,6 +583,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'child_retries' => $childRetries,
         'activity_late_outcomes' => $activityLateOutcomes,
         'child_visibility' => $childVisibility,
+        'cluster_capabilities' => $clusterCapabilities,
         'deep_json_bodies' => $deepJsonBodies,
         'retried_child_cancellation' => $retriedChildCancellation,
         'parallel_cancellation' => $parallelCancellation,
@@ -927,6 +929,7 @@ try {
     require __DIR__.'/child-retries-probe.php';
     require __DIR__.'/activity-late-outcomes-probe.php';
     require __DIR__.'/child-visibility-probe.php';
+    require __DIR__.'/cluster-capabilities-probe.php';
     require __DIR__.'/deep-json-bodies-probe.php';
     require __DIR__.'/retried-child-cancellation-probe.php';
     require __DIR__.'/parallel-cancellation-probe.php';
@@ -1143,6 +1146,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['child_visibility'])) {
         $observation['child_visibility'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['cluster_capabilities'])) {
+        $observation['cluster_capabilities'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_cluster_info'];
     }
     if ($mode === 'embedded' && isset($fixture['deep_json_bodies'])) {
         $observation['deep_json_bodies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_request_bodies'];
