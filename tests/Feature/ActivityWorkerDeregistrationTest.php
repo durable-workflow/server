@@ -190,7 +190,7 @@ class ActivityWorkerDeregistrationTest extends TestCase
 
     private function leaseActivity(int $maxAttempts): array
     {
-        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'deregister-original-activity');
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'deregister-original-activity', 'default');
         $start = $workflow->start('Ada');
         $this->runReadyWorkflowTask($start->runId());
         $execution = ActivityExecution::query()->where('workflow_run_id', $start->runId())->sole();
