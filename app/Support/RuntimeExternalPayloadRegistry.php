@@ -6,6 +6,7 @@ use App\Models\RuntimeExternalPayload;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Throwable;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Support\ExternalPayloadReference;
 
@@ -354,7 +355,7 @@ class RuntimeExternalPayloadRegistry
     public function deleteUriUnlessReferenced(
         string $namespace,
         string $uri,
-        RuntimeExternalPayloadStorageDriver $driver,
+        ExternalPayloadStorageDriver $driver,
         callable $isReferenced,
     ): bool {
         return $this->deleteRegisteredUri($this->namespace($namespace), $uri, $driver, $isReferenced) !== null;
@@ -418,7 +419,7 @@ class RuntimeExternalPayloadRegistry
     private function deleteRegisteredUri(
         string $namespace,
         string $uri,
-        ?RuntimeExternalPayloadStorageDriver $driver,
+        ?ExternalPayloadStorageDriver $driver,
         ?callable $isReferenced = null,
     ): ?int {
         try {
@@ -441,7 +442,7 @@ class RuntimeExternalPayloadRegistry
                         }
 
                         try {
-                            $driver->delete($uri);
+                            app(RuntimeExternalPayloadDeletions::class)->stage($namespace, $uri, $driver);
                         } catch (Throwable $exception) {
                             throw $this->unavailable('External payload storage could not complete namespace cleanup.', $exception);
                         }
@@ -456,7 +457,7 @@ class RuntimeExternalPayloadRegistry
                     }
 
                     try {
-                        $driver->delete($uri);
+                        app(RuntimeExternalPayloadDeletions::class)->stage($namespace, $uri, $driver);
                     } catch (Throwable $exception) {
                         throw $this->unavailable('External payload storage could not complete namespace cleanup.', $exception);
                     }

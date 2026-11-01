@@ -9,7 +9,6 @@ use App\Models\RuntimeExternalPayload;
 use App\Models\WorkflowInboundStream;
 use App\Models\WorkflowInboundStreamItem;
 use App\Models\WorkflowNamespace;
-use App\Support\ExternalPayloadRetentionCleanup;
 use App\Support\MessageStreamsContract;
 use App\Support\MessageStreamService;
 use App\Support\RuntimeExternalPayloadRegistry;
@@ -298,12 +297,9 @@ class MessageStreamsTest extends TestCase
         );
         $this->assertSame($nextRun->id, $item->fresh()->delivered_run_id);
 
-        $cleanup = app(ExternalPayloadRetentionCleanup::class)->deleteForNamespaceCleanup(
-            'default',
-            [$run->id, $nextRun->id],
-            ['wf-message-external'],
-        );
-        $this->assertSame(1, $cleanup['deleted']);
+        $this->deleteJson('/api/namespaces/default', [], $this->apiHeaders())
+            ->assertOk()->assertJsonPath('external_payload_cleanup.pending', 0);
+        $this->assertDatabaseMissing('workflow_inbound_stream_items', ['id' => $item->id]);
         $this->assertFileDoesNotExist($path);
         File::deleteDirectory($storageDirectory);
     }
