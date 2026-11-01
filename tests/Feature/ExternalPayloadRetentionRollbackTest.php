@@ -8,6 +8,7 @@ use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowNamespace;
 use App\Support\ExternalPayloadBackupHold;
+use App\Support\ExternalPayloadObjectMissing;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RuntimeExternalPayloadCleanup;
 use App\Support\RuntimeExternalPayloadDeletions;
@@ -26,6 +27,7 @@ use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSchedule;
 
 final class ExternalPayloadRetentionRollbackTest extends TestCase
 {
@@ -159,7 +161,10 @@ final class ExternalPayloadRetentionRollbackTest extends TestCase
     {
         $this->provider->unavailable = true;
         $this->deleteJson('/api/namespaces/default', [], $this->apiHeaders())
-            ->assertOk()->assertJsonPath('status', 'deleted');
+            ->assertStatus(207)->assertJsonPath('status', 'deleted')
+            ->assertJsonPath('external_payload_cleanup.pending', 2)
+            ->assertJsonPath('external_payload_cleanup.failed', 2)
+            ->assertJsonPath('external_payload_cleanup.blocked', 0);
         $this->assertDatabaseCount('runtime_external_payload_deletions', 2);
         $this->assertDatabaseMissing('workflow_namespaces', ['name' => 'default']);
         $this->assertSame(2, $this->readableObjects());
@@ -257,6 +262,39 @@ final class ExternalPayloadRetentionRollbackTest extends TestCase
         $this->assertDatabaseHas('workflow_durable_stream_items', ['stream_id' => $stream->id, 'payload_reference' => $uri]);
     }
 
+    public static function scheduleFields(): array
+    {
+        $fields = ['spec', 'action', 'memo', 'search_attributes', 'visibility_labels', 'recent_actions', 'buffered_actions'];
+
+        return array_combine($fields, array_map(static fn (string $field): array => [$field], $fields));
+    }
+
+    #[DataProvider('scheduleFields')]
+    public function test_pending_deletion_keeps_legacy_payloads_in_every_schedule_field(string $field): void
+    {
+        $this->provider->unavailable = true;
+        $this->prune()->assertOk()->assertJsonPath('external_payload_cleanup.pending', 2);
+        $uri = array_key_first($this->objects);
+        $schedule = WorkflowSchedule::query()->create([
+            'namespace' => 'default', 'schedule_id' => 'legacy-'.$field,
+            'spec' => ['interval_seconds' => 3600],
+            'action' => ['workflow_type' => 'synthetic.recovery'],
+            $field => ['payload' => [
+                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
+                'uri' => $uri, 'codec' => 'avro', 'size_bytes' => strlen($this->objects[$uri]),
+                'sha256' => hash('sha256', $this->objects[$uri]),
+            ]],
+        ]);
+        $this->assertDatabaseCount('runtime_external_payloads', 0);
+        $this->provider->unavailable = false;
+
+        app(RuntimeExternalPayloadDeletions::class)->retryPending('default', 10);
+        $this->assertSame($this->objects[$uri], $this->provider->get($uri));
+        $this->assertSame(1, $this->readableObjects());
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+        $this->assertNotNull($schedule->fresh());
+    }
+
     public function test_a_new_registration_in_another_namespace_cancels_the_old_deletion(): void
     {
         $this->provider->unavailable = true;
@@ -292,6 +330,64 @@ final class ExternalPayloadRetentionRollbackTest extends TestCase
         $this->assertSame(0, $this->readableObjects());
         app(RuntimeExternalPayloadDeletions::class)->retryPending('default', 10);
         $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+    }
+
+    public function test_custom_driver_replay_confirms_an_already_absent_object_after_lost_acknowledgement(): void
+    {
+        $state = (object) ['objects' => [], 'attempts' => 0];
+        $driver = new class($state) implements RuntimeExternalPayloadStorageDriver
+        {
+            public function __construct(private object $state) {}
+
+            public function put(string $data, string $sha256, string $codec): string
+            {
+                $uri = $this->uriFor($sha256, $codec);
+                $this->state->objects[$uri] = $data;
+
+                return $uri;
+            }
+
+            public function uriFor(string $sha256, string $codec): string
+            {
+                return 'custom://fixture/'.$sha256;
+            }
+
+            public function get(string $uri): string
+            {
+                return $this->state->objects[$uri] ?? throw new ExternalPayloadObjectMissing('Already absent');
+            }
+
+            public function delete(string $uri): void
+            {
+                $this->state->attempts++;
+                if (! array_key_exists($uri, $this->state->objects)) {
+                    throw new ExternalPayloadObjectMissing('Already absent');
+                }
+                unset($this->state->objects[$uri]);
+                throw new \RuntimeException('Synthetic lost custom-provider acknowledgement');
+            }
+        };
+        app()->instance(NamespaceExternalPayloadStorage::class, new class($driver) extends NamespaceExternalPayloadStorage
+        {
+            public function __construct(private RuntimeExternalPayloadStorageDriver $driver) {}
+
+            public function untrackedDriverForPolicy(array $policy, string $namespace): ?RuntimeExternalPayloadStorageDriver
+            {
+                return $this->driver;
+            }
+        });
+        $registry = app(RuntimeExternalPayloadRegistry::class);
+        $bytes = 'custom-provider payload';
+        $uri = $registry->storeRetained('default', $driver, $bytes, 'avro', hash('sha256', $bytes));
+        $registry->deleteUriUnlessReferenced('default', $uri, $driver, static fn (): bool => false);
+        $this->assertSame([], $state->objects);
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 1);
+        $this->assertDatabaseMissing('runtime_external_payloads', ['storage_uri' => $uri]);
+
+        app(RuntimeExternalPayloadDeletions::class)->retryPending('default', 10);
+        $this->assertSame(2, $state->attempts);
+        $this->assertDatabaseCount('runtime_external_payload_deletions', 0);
+        $this->assertDatabaseMissing('runtime_external_payloads', ['storage_uri' => $uri]);
     }
 
     private function prune(): TestResponse

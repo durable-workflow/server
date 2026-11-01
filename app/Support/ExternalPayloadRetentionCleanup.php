@@ -514,15 +514,7 @@ class ExternalPayloadRetentionCleanup
             $this->namespaceSource('workflow_schedule_history_events', ['payload'], [], [
                 'namespace' => [$namespace],
             ]),
-            $this->namespaceSource('workflow_schedules', [
-                'spec',
-                'action',
-                'memo',
-                'search_attributes',
-                'visibility_labels',
-                'recent_actions',
-                'buffered_actions',
-            ], [], [
+            $this->namespaceSource('workflow_schedules', $this->schedulePayloadColumns(), [], [
                 'namespace' => [$namespace],
             ]),
             $this->namespaceSource('workflow_durable_streams', ['metadata'], [], [
@@ -750,7 +742,7 @@ class ExternalPayloadRetentionCleanup
         }
 
         return [
-            [WorkflowSchedule::query(), 'action'],
+            ...array_map(static fn (string $column): array => [WorkflowSchedule::query(), $column], $this->schedulePayloadColumns()),
             [WorkflowRunSummary::query()->whereIn('id', $this->retainedRunIdsQuery($deletedRunIds)), 'visibility_labels'],
             [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'arguments'],
             [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'result'],
@@ -794,6 +786,12 @@ class ExternalPayloadRetentionCleanup
             [WorkflowSearchAttribute::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'value_string'],
             [WorkflowSearchAttribute::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'value_keyword'],
         ];
+    }
+
+    /** @return list<string> */
+    private function schedulePayloadColumns(): array
+    {
+        return ['spec', 'action', 'memo', 'search_attributes', 'visibility_labels', 'recent_actions', 'buffered_actions'];
     }
 
     /**

@@ -213,6 +213,24 @@ returns a nonzero status, while cleanup remains pending. Neither response
 reverses an already committed prune. Database and backup recovery must include
 the deletion-intention table along with the other runtime tables.
 
+Namespace deletion also includes `external_payload_cleanup` and returns HTTP
+207 while provider deletion is pending. Its `status: deleted` means the namespace
+catalog and workflow state were deleted. The cleanup counts distinguish that
+committed result from completion of provider-data removal.
+
+Custom storage adapters used by Server must implement replay-safe `delete()`:
+deleting an already-absent object succeeds. This requirement applies to every
+driver returned by the Server storage policy, including an adapter implementing
+the general Workflow storage-driver interface. The Server-specific
+`RuntimeExternalPayloadStorageDriver` contract states it explicitly. An adapter
+may report confirmed absence with `ExternalPayloadObjectMissing`, which the
+runtime treats as success. An arbitrary exception is not proof of absence and
+leaves the deletion pending. Existing custom adapters must preserve this rule
+when upgrading, because a provider effect can succeed before its acknowledgement
+is lost. Built-in local and filesystem adapters already support absent-object
+deletion. Custom policy factories must also reconstruct their driver from the
+saved policy when `untrackedDriverForPolicy()` is called during recovery.
+
 ## Coordinating online backups
 
 A database snapshot does not freeze external objects. Before taking an online

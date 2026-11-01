@@ -6,6 +6,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\NamespaceLifecycleCleanup;
+use App\Support\RuntimeExternalPayloadDeletions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -200,7 +201,9 @@ class NamespaceController
             return $this->namespaceNotFound($namespace);
         }
 
-        return ControlPlaneProtocol::json($payload);
+        $payload['external_payload_cleanup'] = app(RuntimeExternalPayloadDeletions::class)->status($normalized);
+
+        return ControlPlaneProtocol::json($payload, $payload['external_payload_cleanup']['pending'] > 0 ? 207 : 200);
     }
 
     private function namespaceNotFound(string $namespace): JsonResponse

@@ -147,7 +147,15 @@ final class RuntimeExternalPayloadDeletions
 
                 // Also fence custom drivers. The ordinary guarded driver
                 // re-enters the same hold in this transaction.
-                app(ExternalPayloadBackupHold::class)->deleting(fn () => $driver->delete($row->storage_uri));
+                app(ExternalPayloadBackupHold::class)->deleting(function () use ($driver, $row): void {
+                    try {
+                        $driver->delete($row->storage_uri);
+                    } catch (ExternalPayloadObjectMissing) {
+                        // A previous attempt may have removed the bytes before
+                        // losing its acknowledgement. Confirmed absence settles
+                        // that intention without restoring pruned references.
+                    }
+                });
                 DB::table(self::TABLE)->where('id', $id)->delete();
             });
         } catch (Throwable $exception) {
