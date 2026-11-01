@@ -21,6 +21,8 @@ mod schedules;
 
 #[path = "execution/visibility.rs"]
 mod visibility;
+#[path = "execution/visibility_collation.rs"]
+mod visibility_collation;
 
 #[path = "execution/memos.rs"]
 mod memos;

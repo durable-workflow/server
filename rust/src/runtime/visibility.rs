@@ -6,7 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::LazyLock;
 
 use super::{Result, RuntimeError, backend::Backend, refuse, search_attribute_upserts::Typed, store::Store};
 
@@ -146,6 +147,22 @@ SELECT *,rtrim(rtrim(CASE WHEN length(_dw_started_utc)=19 THEN _dw_started_utc||
 FROM runs ORDER BY _dw_started_order DESC,id DESC LIMIT $11 OFFSET $12
 "#;
 
+/// Text values whose MySQL collation keys one statement reads.
+const COLLATION_BATCH: usize = 64;
+
+/// One statement giving each bound text's comparison key under the published
+/// MySQL schema's `utf8mb4_unicode_ci`, which ignores case and accents and,
+/// as a PAD SPACE collation, trailing spaces: the collation weight of the
+/// value without trailing spaces. Unused positions are bound NULL.
+static COLLATION_KEYS: LazyLock<String> = LazyLock::new(|| {
+    (1..=COLLATION_BATCH)
+        .map(|position| {
+            format!("SELECT {position} AS position,HEX(WEIGHT_STRING(TRIM(TRAILING ' ' FROM CAST(${position} AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci))) AS collation_key")
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ")
+});
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -183,6 +200,32 @@ where
             .await?)
     }
 
+    /// Adds the MySQL collation key of each text not yet keyed. SQLite and
+    /// PostgreSQL compare text exactly, as PHP's queries there do, and need
+    /// no keys.
+    async fn collation_keys(&self, texts: Vec<String>, keys: &mut HashMap<String, String>) -> Result<()> {
+        if DB::NAME != "MySQL" {
+            return Ok(());
+        }
+        let mut missing: Vec<String> = texts.into_iter().filter(|text| !keys.contains_key(text)).collect();
+        missing.sort();
+        missing.dedup();
+        for chunk in missing.chunks(COLLATION_BATCH) {
+            let mut query = Self::query(COLLATION_KEYS.as_str());
+            for position in 0..COLLATION_BATCH {
+                query = query.bind(chunk.get(position).map(String::as_str));
+            }
+            for row in query.fetch_all(&self.pool).await? {
+                let position = DB::number(&row, "position")?;
+                let text = usize::try_from(position).ok().and_then(|position| chunk.get(position.checked_sub(1)?));
+                if let (Some(text), Some(key)) = (text, DB::optional_string(&row, "collation_key")?) {
+                    keys.insert(text.clone(), key);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The runs a structured query selects, in list order, until one past
     /// the requested page.
     async fn query_matches(
@@ -215,6 +258,17 @@ where
                 }
             }
         }
+        // Text compares under the backend's collation (`collation_keys`).
+        let mut keys = HashMap::new();
+        let mut texts = compiled.text_literals();
+        for values in attributes.values() {
+            for (attribute, value) in values {
+                if let (true, Typed::Keyword(text) | Typed::String(text)) = (compiled.compares_text(attribute), value) {
+                    texts.push(text.clone());
+                }
+            }
+        }
+        self.collation_keys(texts, &mut keys).await?;
         let wanted = (filter.offset.saturating_add(filter.limit).saturating_add(1)) as usize;
         let none = BTreeMap::new();
         let mut matches = Vec::new();
@@ -223,6 +277,7 @@ where
             let rows = self.visibility_page(filter, QUERY_SCAN_PAGE, scanned).await?;
             let exhausted = (rows.len() as i64) < QUERY_SCAN_PAGE;
             scanned += rows.len() as i64;
+            let mut page = Vec::with_capacity(rows.len());
             for row in rows {
                 let status = DB::string(&row, "status")?;
                 let run_id = DB::string(&row, "id")?;
@@ -237,7 +292,13 @@ where
                     status_bucket: status_bucket(&status)?.to_owned(),
                     status,
                 };
-                if compiled.matches(&fields, attributes.get(&run_id).unwrap_or(&none)) {
+                page.push((row, run_id, fields));
+            }
+            let texts = page.iter().flat_map(|(_, _, fields)| compiled.run_texts(fields)).collect();
+            self.collation_keys(texts, &mut keys).await?;
+            let key = |text: &str| keys.get(text).cloned().unwrap_or_else(|| text.to_owned());
+            for (row, run_id, fields) in page {
+                if compiled.matches(&fields, attributes.get(&run_id).unwrap_or(&none), &key) {
                     matches.push(row);
                     if matches.len() >= wanted {
                         return Ok(matches);

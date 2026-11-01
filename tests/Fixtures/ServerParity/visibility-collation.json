@@ -1,0 +1,268 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "visibility-collation",
+  "review_state": "reviewed",
+  "contract": "Text comparisons in structured list queries (published Server 2.11.7), over raw HTTP in a fresh namespace with a keyword and a text attribute. Five runs differ only by case, accents and trailing spaces in their workflow type and attribute values. SQLite and PostgreSQL compare text exactly; the published MySQL schema's utf8mb4_unicode_ci ignores case, accents and trailing spaces, for attributes and run columns alike. Text fields accept only =, != and IN. The observation names its collation, and `expected` holds each collation's answers. Embedded applications have no HTTP list queries.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "visibility collation λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "visibility collation λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "visibility_collation": {
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "definitions": [
+      [
+        "Region",
+        "keyword"
+      ],
+      [
+        "Note",
+        "text"
+      ]
+    ],
+    "runs": {
+      "r1": {
+        "workflow_type": "parity.v1.Alpha",
+        "search_attributes": {
+          "Region": "eu",
+          "Note": "Hello"
+        }
+      },
+      "r2": {
+        "workflow_type": "parity.v1.alpha",
+        "search_attributes": {
+          "Region": "EU",
+          "Note": "hello"
+        }
+      },
+      "r3": {
+        "workflow_type": "parity.v1.ALPHA",
+        "search_attributes": {
+          "Region": "éu",
+          "Note": "héllo"
+        }
+      },
+      "r4": {
+        "workflow_type": "parity.v1.Beta",
+        "search_attributes": {
+          "Region": "eu ",
+          "Note": "Hello "
+        }
+      },
+      "r5": {
+        "workflow_type": "parity.v1.beta",
+        "search_attributes": {
+          "Region": "Eu",
+          "Note": "b"
+        }
+      }
+    },
+    "queries": {
+      "keyword_equal": "Region = \"eu\"",
+      "keyword_equal_upper": "Region = \"EU\"",
+      "keyword_not_equal": "Region != \"eu\"",
+      "keyword_in": "Region IN (\"EU\")",
+      "keyword_ordered": "Region > \"eu\"",
+      "text_equal": "Note = \"hello\"",
+      "text_equal_upper": "Note = \"HELLO\"",
+      "text_not_equal": "Note != \"hello\"",
+      "type_equal": "WorkflowType = \"parity.v1.alpha\"",
+      "type_not_equal": "WorkflowType != \"parity.v1.Alpha\"",
+      "type_in": "WorkflowType IN (\"PARITY.V1.BETA\")",
+      "id_equal": "WorkflowId = \"{id}-VC-R1\""
+    },
+    "expected": {
+      "exact": {
+        "keyword_equal": {
+          "status": 200,
+          "runs": [
+            "r1",
+            "r4"
+          ]
+        },
+        "keyword_equal_upper": {
+          "status": 200,
+          "runs": [
+            "r2"
+          ]
+        },
+        "keyword_not_equal": {
+          "status": 200,
+          "runs": [
+            "r2",
+            "r3",
+            "r5"
+          ]
+        },
+        "keyword_in": {
+          "status": 200,
+          "runs": [
+            "r2"
+          ]
+        },
+        "keyword_ordered": {
+          "status": 422,
+          "reason": "validation_failed"
+        },
+        "text_equal": {
+          "status": 200,
+          "runs": [
+            "r2"
+          ]
+        },
+        "text_equal_upper": {
+          "status": 200,
+          "runs": []
+        },
+        "text_not_equal": {
+          "status": 200,
+          "runs": [
+            "r1",
+            "r3",
+            "r4",
+            "r5"
+          ]
+        },
+        "type_equal": {
+          "status": 200,
+          "runs": [
+            "r2"
+          ]
+        },
+        "type_not_equal": {
+          "status": 200,
+          "runs": [
+            "r2",
+            "r3",
+            "r4",
+            "r5"
+          ]
+        },
+        "type_in": {
+          "status": 200,
+          "runs": []
+        },
+        "id_equal": {
+          "status": 200,
+          "runs": []
+        }
+      },
+      "mysql": {
+        "keyword_equal": {
+          "status": 200,
+          "runs": [
+            "r1",
+            "r2",
+            "r3",
+            "r4",
+            "r5"
+          ]
+        },
+        "keyword_equal_upper": {
+          "status": 200,
+          "runs": [
+            "r1",
+            "r2",
+            "r3",
+            "r4",
+            "r5"
+          ]
+        },
+        "keyword_not_equal": {
+          "status": 200,
+          "runs": []
+        },
+        "keyword_in": {
+          "status": 200,
+          "runs": [
+            "r1",
+            "r2",
+            "r3",
+            "r4",
+            "r5"
+          ]
+        },
+        "keyword_ordered": {
+          "status": 422,
+          "reason": "validation_failed"
+        },
+        "text_equal": {
+          "status": 200,
+          "runs": [
+            "r1",
+            "r2",
+            "r3",
+            "r4"
+          ]
+        },
+        "text_equal_upper": {
+          "status": 200,
+          "runs": [
+            "r1",
+            "r2",
+            "r3",
+            "r4"
+          ]
+        },
+        "text_not_equal": {
+          "status": 200,
+          "runs": [
+            "r5"
+          ]
+        },
+        "type_equal": {
+          "status": 200,
+          "runs": [
+            "r1",
+            "r2",
+            "r3"
+          ]
+        },
+        "type_not_equal": {
+          "status": 200,
+          "runs": [
+            "r4",
+            "r5"
+          ]
+        },
+        "type_in": {
+          "status": 200,
+          "runs": [
+            "r4",
+            "r5"
+          ]
+        },
+        "id_equal": {
+          "status": 200,
+          "runs": [
+            "r1"
+          ]
+        }
+      }
+    }
+  }
+}

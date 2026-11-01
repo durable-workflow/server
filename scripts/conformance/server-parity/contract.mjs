@@ -23,6 +23,7 @@ import {checkChildRetries} from './child-retries-contract.mjs';
 import {checkActivityLateOutcomes} from './activity-late-outcomes-contract.mjs';
 import {checkChildVisibility} from './child-visibility-contract.mjs';
 import {checkDeepJsonBodies} from './deep-json-bodies-contract.mjs';
+import {checkVisibilityCollation} from './visibility-collation-contract.mjs';
 import {checkRetriedChildCancellation} from './retried-child-cancellation-contract.mjs';
 import {checkParallelCancellation} from './parallel-cancellation-contract.mjs';
 import {checkActivityResultRepeats} from './activity-result-repeats-contract.mjs';
@@ -194,6 +195,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const activityLateOutcomes = fixture.activity_late_outcomes ? checkActivityLateOutcomes(fixture, observation) : null;
   const childVisibility = fixture.child_visibility ? checkChildVisibility(fixture, observation) : null;
   const deepJsonBodies = fixture.deep_json_bodies ? checkDeepJsonBodies(fixture, observation) : null;
+  const visibilityCollation = fixture.visibility_collation ? checkVisibilityCollation(fixture, observation) : null;
   const retriedChildCancellation = fixture.retried_child_cancellation ? checkRetriedChildCancellation(fixture, observation) : null;
   const parallelCancellation = fixture.parallel_cancellation ? checkParallelCancellation(fixture, observation) : null;
   const activityResultRepeats = fixture.activity_result_repeats ? checkActivityResultRepeats(fixture, observation) : null;
@@ -783,6 +785,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(activityLateOutcomes ? {activity_late_outcomes: activityLateOutcomes} : {}),
     ...(childVisibility ? {child_visibility: childVisibility} : {}),
     ...(deepJsonBodies ? {deep_json_bodies: deepJsonBodies} : {}),
+    ...(visibilityCollation ? {visibility_collation: visibilityCollation} : {}),
     ...(retriedChildCancellation ? {retried_child_cancellation: retriedChildCancellation} : {}),
     ...(parallelCancellation ? {parallel_cancellation: parallelCancellation} : {}),
     ...(activityResultRepeats ? {activity_result_repeats: activityResultRepeats} : {}),
