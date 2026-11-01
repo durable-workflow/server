@@ -47,13 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      DW_SERVER_IMAGE: durableworkflow/server@sha256:1631181c266cc74d70713e16b0688ea08b579cf2ed0e28f0ef5a3f3d786bc3d6
-      DW_SERVER_VERSION: 2.9.1
-      DW_WORKFLOW_PHP_VERSION: 2.6.1
-      DW_PHP_SDK_VERSION: 2.5.0
-      DW_PYTHON_SDK_VERSION: 2.6.0
-      DW_CLI_VERSION: 2.3.0
-      DW_WATERLINE_VERSION: 2.11.2
+      DW_SERVER_IMAGE: durableworkflow/server:2.11.8@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd
+      DW_SERVER_VERSION: 2.11.8
+      DW_WORKFLOW_PHP_VERSION: 2.15.12
+      DW_PHP_SDK_VERSION: 3.6.1
+      DW_PYTHON_SDK_VERSION: 2.12.2
+      DW_CLI_VERSION: 2.3.3
+      DW_WATERLINE_VERSION: 2.13.0
       DW_NEXUS_EXTERNAL_PAYLOAD_PROBES: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -128,6 +128,11 @@ jobs:
                 uncaught_failure: row.uncaught_failure_qualified,
                 failure: row.failure, status: row.result?.status || row.caller_status, value: row.result?.external_result,
                 caller_failure: failureSummary(row.history), service_failure: failureSummary(row.linked_service_history),
+                caller_event_types: row.last_observed_caller_event_types || (row.history?.events || []).map(event => event.event_type),
+                service_event_types: row.last_observed_service_event_types || (row.linked_service_history?.events || []).map(event => event.event_type),
+                caller_status: row.caller_status,
+                worker_diagnostic_head: typeof row.worker_log === 'string' ? row.worker_log.slice(0, 1500) : row.worker_log?.head,
+                worker_diagnostic_tail: typeof row.worker_log === 'string' ? row.worker_log.slice(-1500) : row.worker_log?.tail,
                 elapsed: row.elapsed_seconds, replacement_exit: row.replacement_worker_exit_code,
                 observer_memory_limit: row.observer_memory_limit, observer_peak_bytes: row.observer_peak_bytes,
                 admin_refusal_status: row.admin_refusal_status,
