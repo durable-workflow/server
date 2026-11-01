@@ -682,11 +682,22 @@ contract fixture before its correction.
   published image with the native binary as its entrypoint waits out its
   timeout and kills the process. A native image must declare
   `STOPSIGNAL SIGTERM`.
-- **Visibility query evaluation.** Published PHP filters a structured list
-  `query` in SQL. Native reads the queried attribute keys once, then
-  evaluates candidate runs in list order, 500 at a time, until it has the
-  requested page. A query that matches few runs in a large namespace reads
-  every run of that namespace.
+- **Visibility query evaluation** (November 1, narrowed). Published PHP
+  filters a structured list `query` in SQL. Native now adds a narrowing to
+  its list statement that every matching run satisfies:
+  - status and status bucket;
+  - run type, workflow ID, run ID and queue equality or `IN`;
+  - a present attribute row for each queried key;
+  - keyword equality or `IN`;
+  - integer comparisons and `IN`.
+
+  Its matcher then decides each candidate as before, with only that page's
+  attribute rows. So a selective query in a large namespace reads about as
+  many runs as it selects. Each run is still decided by the matcher, so the
+  answers are unchanged. A group of comparisons that cannot narrow, for
+  example on start or close time alone, still reads candidates in list
+  order, 500 at a time
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-visibility-narrowing.md)).
 - **Visibility query text comparisons** (October 30, closed). PHP compares
   text in a structured list query with the database collation: exactly on
   SQLite and PostgreSQL, and under the published MySQL schema's
