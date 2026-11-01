@@ -131,7 +131,7 @@ case "$action" in
     timeout 60 docker run --rm --network host --entrypoint bash "$server_image" -c \
       "exec 3<>/dev/tcp/$DW_SMALL_TARGET_BIND/8080 && printf 'GET /api/ready HTTP/1.0\r\n\r\n' >&3 && head -n1 <&3 | grep -q ' 200 '" \
       || { log "ready did not answer on $DW_SMALL_TARGET_BIND:8080"; exit 1; }
-    log "ready on http://$DW_SMALL_TARGET_BIND:8080; run the driver now"
+    log "ready on $DW_SMALL_TARGET_BIND port 8080; run the driver now"
     ;;
   down)
     out=$(realpath "$2")

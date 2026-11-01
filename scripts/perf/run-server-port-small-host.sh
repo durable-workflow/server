@@ -19,7 +19,7 @@ out=$2
 target=${3%/}
 smoke=${4:-}
 case "$smoke" in ""|--smoke) ;; *) echo "Unknown option $smoke." >&2; exit 2 ;; esac
-[[ $target =~ ^https?://[^/]+$ ]] || { echo "TARGET_URL is http://<target private address>:8080" >&2; exit 2; }
+[[ $target =~ ^https?://[^/]+$ ]] || { echo "TARGET_URL is the scheme, the target private address and port 8080, with no path." >&2; exit 2; }
 : "${DW_PORT_SOURCE_ROOT:?Set the absolute source directory}"
 : "${DW_PORT_SDK_ROOT:?Set the normally installed SDK directory}"
 compose="$DW_PORT_SOURCE_ROOT/scripts/perf/small-host-driver.compose.yml"
