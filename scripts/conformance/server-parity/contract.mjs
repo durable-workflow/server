@@ -50,6 +50,7 @@ import {checkSystemMetrics} from './system-metrics-contract.mjs';
 import {checkOperatorDashboardTypes} from './operator-dashboard-types-contract.mjs';
 import {checkPrometheusMetrics} from './prometheus-metrics-contract.mjs';
 import {checkPayloadCleanup} from './payload-cleanup-contract.mjs';
+import {checkRetentionPayloads} from './retention-payloads-contract.mjs';
 import {checkClusterInfo} from './cluster-info-contract.mjs';
 import {checkRepairPass} from './repair-pass-contract.mjs';
 import {checkNamespaceDelete} from './namespace-delete-contract.mjs';
@@ -224,6 +225,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const operatorDashboardTypes = fixture.operator_dashboard_types ? checkOperatorDashboardTypes(fixture, observation, workflowId) : null;
   const prometheusMetrics = fixture.prometheus_metrics ? checkPrometheusMetrics(fixture, observation, workflowId) : null;
   const payloadCleanup = fixture.payload_cleanup ? checkPayloadCleanup(fixture, observation, workflowId) : null;
+  const retentionPayloads = fixture.retention_payloads ? checkRetentionPayloads(fixture, observation, workflowId) : null;
   const clusterInfo = fixture.cluster_info ? checkClusterInfo(fixture, observation, workflowId) : null;
   const repairPass = fixture.repair_pass ? checkRepairPass(fixture, observation, workflowId) : null;
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
@@ -814,6 +816,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(operatorDashboardTypes ? {operator_dashboard_types: operatorDashboardTypes} : {}),
     ...(prometheusMetrics ? {prometheus_metrics: prometheusMetrics} : {}),
     ...(payloadCleanup ? {payload_cleanup: payloadCleanup} : {}),
+    ...(retentionPayloads ? {retention_payloads: retentionPayloads} : {}),
     ...(clusterInfo ? {cluster_info: clusterInfo} : {}),
     ...(repairPass ? {repair_pass: repairPass} : {}),
     ...(namespaceDelete ? {namespace_delete: namespaceDelete} : {}),

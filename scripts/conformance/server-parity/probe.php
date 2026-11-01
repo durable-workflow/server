@@ -469,6 +469,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $operatorDashboardTypes = isset($fixture['operator_dashboard_types']) ? finishHttpOperatorDashboardTypes($client, $fixture, $workflowId, $url) : null;
     $prometheusMetrics = isset($fixture['prometheus_metrics']) ? finishHttpPrometheusMetrics($client, $fixture, $workflowId, $url) : null;
     $payloadCleanup = isset($fixture['payload_cleanup']) ? finishHttpPayloadCleanup($client, $fixture, $workflowId, $url) : null;
+    $retentionPayloads = isset($fixture['retention_payloads']) ? finishHttpRetentionPayloads($client, $fixture, $workflowId, $url) : null;
     $clusterInfo = isset($fixture['cluster_info']) ? finishHttpClusterInfo($client, $fixture, $workflowId, $url) : null;
     $repairPass = isset($fixture['repair_pass']) ? finishHttpRepairPass($client, $fixture, $workflowId, $url) : null;
     $namespaceDelete = isset($fixture['namespace_delete']) ? finishHttpNamespaceDelete($client, $fixture, $workflowId, $queue, $url) : null;
@@ -612,6 +613,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'operator_dashboard_types' => $operatorDashboardTypes,
         'prometheus_metrics' => $prometheusMetrics,
         'payload_cleanup' => $payloadCleanup,
+        'retention_payloads' => $retentionPayloads,
         'cluster_info' => $clusterInfo,
         'repair_pass' => $repairPass,
         'namespace_delete' => $namespaceDelete,
@@ -959,6 +961,7 @@ try {
     require __DIR__.'/operator-dashboard-types-probe.php';
     require __DIR__.'/prometheus-metrics-probe.php';
     require __DIR__.'/payload-cleanup-probe.php';
+    require __DIR__.'/retention-payloads-probe.php';
     require __DIR__.'/cluster-info-probe.php';
     require __DIR__.'/repair-pass-probe.php';
     require __DIR__.'/namespace-delete-probe.php';
@@ -1239,6 +1242,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['payload_cleanup'])) {
         $observation['payload_cleanup'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_system_routes'];
+    }
+    if ($mode === 'embedded' && isset($fixture['retention_payloads'])) {
+        $observation['retention_payloads'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_system_routes'];
     }
     if ($mode === 'embedded' && isset($fixture['repair_pass'])) {
         $observation['repair_pass'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_system_routes'];
