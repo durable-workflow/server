@@ -263,12 +263,14 @@ These are confirmed differences from the published PHP reference and open
 contract decisions found while qualifying native slices. Each one needs a
 contract fixture before its correction.
 
-- **History export waits and timeline.** Native keeps no full wait or
-  timeline projection, so its export bundle has empty `waits` and `timeline`
-  and names both sources `native_unavailable` in `selected_run`. Published
-  PHP fills them from `workflow_run_waits` and
-  `workflow_run_timeline_entries`. No SDK replayer or bundle verifier reads
-  either section.
+- **History export waits and timeline** (November 1, closed,
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-history-export-waits.md)).
+  Native's export now serves the run's stored waits with each kind's
+  `RunWaitView` fields, and a timeline mapped from history as
+  `HistoryTimeline` maps it, under the source name PHP gives a rebuilt
+  timeline. The `history-export-waits` fixture records seven run shapes
+  against published 2.11.7. A timeline command still carries no caller
+  context, and only PHP's built-in exception classes resolve.
 - **Cluster info, remaining fields** (November 1, narrowed). Native now
   answers `version` (the release version, built in from the `native-` tag),
   `capabilities`, `structural_limits` and `discovery`
@@ -1075,7 +1077,7 @@ October 21, history export:
     download succeed against native.
   - New `history_export` integration tests and unit tests pass, and the
     full native suite passes on SQLite, PostgreSQL and MySQL.
-- **Remaining.** Waits and timeline; see known gaps.
+- **Remaining.** None for waits and timeline since November 1; see known gaps.
 
 October 21, signal and update requests:
 

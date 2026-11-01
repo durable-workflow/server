@@ -14,6 +14,7 @@ import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkStorageTest} from './storage-test-contract.mjs';
 import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
 import {checkConcurrentWaits} from './concurrent-waits-contract.mjs';
+import {checkHistoryExportWaits} from './history-export-waits-contract.mjs';
 import {checkContinueTransfers} from './continue-transfers-contract.mjs';
 import {checkLargeCommandBatches} from './large-command-batches-contract.mjs';
 import {checkManyUpdates} from './many-updates-contract.mjs';
@@ -188,6 +189,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
   const concurrentWaits = fixture.concurrent_waits ? checkConcurrentWaits(fixture, observation) : null;
+  const historyExportWaits = fixture.history_export_waits ? checkHistoryExportWaits(fixture, observation) : null;
   const continueTransfers = fixture.continue_transfers ? checkContinueTransfers(fixture, observation) : null;
   const largeCommandBatches = fixture.large_command_batches ? checkLargeCommandBatches(fixture, observation) : null;
   const manyUpdates = fixture.many_updates ? checkManyUpdates(fixture, observation) : null;
@@ -780,6 +782,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(storageTest ? {storage_test: storageTest} : {}),
     ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
     ...(concurrentWaits ? {concurrent_waits: concurrentWaits} : {}),
+    ...(historyExportWaits ? {history_export_waits: historyExportWaits} : {}),
     ...(continueTransfers ? {continue_transfers: continueTransfers} : {}),
     ...(largeCommandBatches ? {large_command_batches: largeCommandBatches} : {}),
     ...(manyUpdates ? {many_updates: manyUpdates} : {}),

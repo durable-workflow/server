@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-fn project(value: Payload) -> Value {
+pub(super) fn project(value: Payload) -> Value {
     match value {
         Payload::Null => Value::Null,
         Payload::Boolean(value) => json!(value),
