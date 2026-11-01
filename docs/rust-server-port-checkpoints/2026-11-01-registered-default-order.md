@@ -72,7 +72,8 @@
     order, and descending integer keys are unencodable.
   - `query_contract_arguments.rs` execution test: the worker receives
     `{z, a}` in registered order, and `{"1": "y", "0": "x"}` answers
-    `query_default_unencodable`.
+    `query_default_unencodable`. On MySQL the test expects that database's
+    order instead: `{a, z}`, and the list `["x", "y"]`.
   - `json_order.rs` unit test.
   - Updated expectations give PHP's order for their inputs: the
     `search_attribute_upserts.rs` unit and execution tests (PHP's
