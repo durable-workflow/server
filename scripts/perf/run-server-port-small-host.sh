@@ -32,7 +32,7 @@ prefix=${DW_SMALL_PROJECT_PREFIX:-dw-small}
 [[ ! -e $out ]] || { echo "Refusing to overwrite $out." >&2; exit 2; }
 mkdir -p "$out"
 out=$(realpath "$out")
-j() { jq -r "$1" "$profile"; }
+j() { local filter=$1; jq -r "$filter" "$profile"; }
 log() { printf '%s %s\n' "$(date -u +%FT%T.%3NZ)" "$*" | tee -a "$out/run.log" >&2; }
 
 # Inputs must be the ones the profile names.
@@ -80,7 +80,10 @@ ntp_state() {
 ntp_state > "$out/clock-start.txt"
 cgroup_driver=$(docker info --format '{{.CgroupDriver}}')
 docker_socket=""
-case "${DOCKER_HOST:-unix:///var/run/docker.sock}" in unix://*) docker_socket=${DOCKER_HOST:-unix:///var/run/docker.sock}; docker_socket=${docker_socket#unix://} ;; esac
+case "${DOCKER_HOST:-unix:///var/run/docker.sock}" in
+  unix://*) docker_socket=${DOCKER_HOST:-unix:///var/run/docker.sock}; docker_socket=${docker_socket#unix://} ;;
+  *) docker_socket="" ;;
+esac
 jq -n --arg project "$project" --arg profile "$profile" --arg profile_sha "$(sha256sum "$profile" | cut -d ' ' -f1)" \
   --arg source "$(git -C "$DW_PORT_SOURCE_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)" --arg target "$target" \
   --arg smoke "$smoke" --arg kernel "$(uname -r)" --arg cpus "$(nproc)" \
@@ -108,8 +111,9 @@ cleanup() {
 trap cleanup EXIT
 
 cgroup_dir() {
-  if [[ $cgroup_driver == systemd ]]; then echo "/sys/fs/cgroup/system.slice/docker-$1.scope"
-  else echo "/sys/fs/cgroup/docker/$1"; fi
+  local id=$1
+  if [[ $cgroup_driver == systemd ]]; then echo "/sys/fs/cgroup/system.slice/docker-$id.scope"
+  else echo "/sys/fs/cgroup/docker/$id"; fi
 }
 
 # Driver-side load: host CPU and every client container, so a result can show
@@ -148,11 +152,11 @@ sample() {
   done >> "$out/driver-samples.tsv"
 }
 
-mark() { printf '%s\t%s\t%s\n' "$(date -u +%s.%N)" "$1" "$2" >> "$out/windows.tsv"; }
+mark() { local name=$1 edge=$2; printf '%s\t%s\t%s\n' "$(date -u +%s.%N)" "$name" "$edge" >> "$out/windows.tsv"; }
 
 # Probes and workers for one offered rate: each probe offers at most
 # max_rate_per_probe, and every probe brings sdk_workers_per_probe workers.
-probes_for() { awk -v r="$1" -v m="$per_probe" 'BEGIN {p = int(r / m); if (p * m < r) p++; if (p < 1) p = 1; print p}'; }
+probes_for() { local rate=$1; awk -v r="$rate" -v m="$per_probe" 'BEGIN {p = int(r / m); if (p * m < r) p++; if (p < 1) p = 1; print p}'; }
 workers_for() { local p=$1 w; w=$(( p * workers_per_probe )); (( w < min_workers )) && w=$min_workers; echo "$w"; }
 
 # One window: run every probe concurrently, each at its share of the rate,

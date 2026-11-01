@@ -14,13 +14,13 @@ services:
     environment:
       MYSQL_DATABASE: durable_workflow
       MYSQL_USER: workflow
-      MYSQL_PASSWORD: port-mysql
-      MYSQL_ROOT_PASSWORD: port-root
+      MYSQL_PASSWORD: "${DW_SMALL_DB_PASSWORD:?The target script sets a per-run database password}"
+      MYSQL_ROOT_PASSWORD: "${DW_SMALL_DB_ROOT_PASSWORD:?The target script sets a per-run root password}"
     command: ["--innodb-flush-log-at-trx-commit=1", "--sync-binlog=1"]
     volumes: [mysql-data:/var/lib/mysql]
     restart: "no"
     healthcheck:
-      test: [CMD-SHELL, "MYSQL_PWD=port-mysql mysqladmin ping --silent -h 127.0.0.1 -u workflow"]
+      test: [CMD-SHELL, "MYSQL_PWD=$$MYSQL_PASSWORD mysqladmin ping --silent -h 127.0.0.1 -u workflow"]
       interval: 2s
       timeout: 3s
       retries: 60
@@ -38,7 +38,7 @@ services:
       DB_HOST: mysql
       DB_DATABASE: durable_workflow
       DB_USERNAME: workflow
-      DB_PASSWORD: port-mysql
+      DB_PASSWORD: "${DW_SMALL_DB_PASSWORD:?The target script sets a per-run database password}"
     ports: ["${DW_SMALL_TARGET_BIND:?Set the private address of the target host}:8080:8080"]
     restart: "no"
     depends_on:
@@ -68,11 +68,11 @@ services:
     profiles: [php-mysql]
     image: redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c
     platform: linux/amd64
-    command: [redis-server, --appendonly, "yes", --appendfsync, everysec, --save, "", --requirepass, port-redis]
+    command: [redis-server, --appendonly, "yes", --appendfsync, everysec, --save, "", --requirepass, "${DW_SMALL_REDIS_PASSWORD:?The target script sets a per-run Redis password}"]
     volumes: [redis-data:/data]
     restart: "no"
     healthcheck:
-      test: [CMD, redis-cli, -a, port-redis, --no-auth-warning, ping]
+      test: [CMD-SHELL, "REDISCLI_AUTH=${DW_SMALL_REDIS_PASSWORD:?} redis-cli ping"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -100,11 +100,11 @@ services:
       DB_HOST: mysql
       DB_DATABASE: durable_workflow
       DB_USERNAME: workflow
-      DB_PASSWORD: port-mysql
+      DB_PASSWORD: "${DW_SMALL_DB_PASSWORD:?The target script sets a per-run database password}"
       CACHE_STORE: redis
       QUEUE_CONNECTION: redis
       REDIS_HOST: redis
-      REDIS_PASSWORD: port-redis
+      REDIS_PASSWORD: "${DW_SMALL_REDIS_PASSWORD:?The target script sets a per-run Redis password}"
     restart: "no"
     depends_on:
       mysql: {condition: service_healthy}

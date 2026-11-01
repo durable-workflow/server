@@ -162,77 +162,107 @@ def health(driver, start, end):
     return {"answers": answers, "non_200": failures, "slowest_seconds": round(slowest, 4)}
 
 
-def main():
-    driver, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-    samples = host_samples(target)
-    marks = windows(driver)
+def read_json(path):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def read_text(path):
+    return path.read_text() if path.exists() else None
+
+
+def last_json_line(path):
+    try:
+        return json.loads(path.read_text().strip().splitlines()[-1])
+    except (FileNotFoundError, IndexError, json.JSONDecodeError):
+        return None
+
+
+def ladder_rows(driver):
     ladder = {}
     for row in read_tsv(driver / "ladder.tsv")[1:]:
-        if len(row) >= 9:
-            ladder[row[0]] = {
-                "rate_per_second": float(row[1]), "probes": int(row[2]), "sdk_workers": int(row[3]),
-                "verdict": row[4], "planned": int(row[5]), "closed_in_window": int(row[6]),
-                "max_probe_p95_seconds": float(row[7]), "reasons": row[8],
-            }
-    steps = []
-    for name, step in ladder.items():
-        m = marks.get(name, {})
-        results = [r for r in probes(driver, name) if r]
-        p50s = [r["latency_p50_seconds"] for r in results if r.get("latency_p50_seconds") is not None]
-        p99s = [r["latency_p99_seconds"] for r in results if r.get("latency_p99_seconds") is not None]
-        steps.append({
-            "name": name, **step,
-            "accepted": sum(r.get("accepted_starts", 0) for r in results),
-            "completed_by_deadline": sum(r.get("completed_by_observation_deadline", 0) for r in results),
-            "errors": sum(len(r.get("errors", [])) for r in results),
-            "latency_p50_seconds_median_of_probes": sorted(p50s)[len(p50s) // 2] if p50s else None,
-            "latency_p99_seconds_max_of_probes": max(p99s) if p99s else None,
-            "target": target_window(samples, m["start"], m["end"]) if m else None,
-            "target_services": service_window(target, m["start"], m["end"]) if m else None,
-            "driver_cpu_busy_fraction": driver_cpu(driver, m["start"], m["end"]) if m else None,
-            "health": health(driver, m["start"], m["end"]) if m else None,
-        })
-    idle = []
-    for name, m in sorted(marks.items(), key=lambda item: item[1]["start"]):
-        if not name.startswith("idle-"):
+        if len(row) < 9:
             continue
-        path = driver / f"{name}.json"
-        try:
-            result = json.loads(path.read_text().strip().splitlines()[-1])
-        except (FileNotFoundError, IndexError, json.JSONDecodeError):
-            result = None
-        idle.append({"name": name, "probe": result, "target": target_window(samples, m["start"], m["end"]),
-                     "target_services": service_window(target, m["start"], m["end"]),
-                     "health": health(driver, m["start"], m["end"])})
-    whole = target_window(samples, samples[0]["unix_seconds"], samples[-1]["unix_seconds"]) if samples else None
+        ladder[row[0]] = {
+            "rate_per_second": float(row[1]), "probes": int(row[2]), "sdk_workers": int(row[3]),
+            "verdict": row[4], "planned": int(row[5]), "closed_in_window": int(row[6]),
+            "max_probe_p95_seconds": float(row[7]), "reasons": row[8],
+        }
+    return ladder
 
-    def read_json(path):
-        try:
-            return json.loads(path.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
-            return None
 
-    def read_text(path):
-        return path.read_text() if path.exists() else None
+def observed(driver, target, samples, mark):
+    """Target, per-service, driver and health observations for one window."""
+    if not mark:
+        return {"target": None, "target_services": None, "driver_cpu_busy_fraction": None, "health": None}
+    start, end = mark["start"], mark["end"]
+    return {
+        "target": target_window(samples, start, end),
+        "target_services": service_window(target, start, end),
+        "driver_cpu_busy_fraction": driver_cpu(driver, start, end),
+        "health": health(driver, start, end),
+    }
 
+
+def step_summary(driver, target, samples, marks, name, step):
+    results = [r for r in probes(driver, name) if r]
+    p50s = sorted(r["latency_p50_seconds"] for r in results if r.get("latency_p50_seconds") is not None)
+    p99s = [r["latency_p99_seconds"] for r in results if r.get("latency_p99_seconds") is not None]
+    return {
+        "name": name, **step,
+        "accepted": sum(r.get("accepted_starts", 0) for r in results),
+        "completed_by_deadline": sum(r.get("completed_by_observation_deadline", 0) for r in results),
+        "errors": sum(len(r.get("errors", [])) for r in results),
+        "latency_p50_seconds_median_of_probes": p50s[len(p50s) // 2] if p50s else None,
+        "latency_p99_seconds_max_of_probes": max(p99s) if p99s else None,
+        **observed(driver, target, samples, marks.get(name)),
+    }
+
+
+def idle_summaries(driver, target, samples, marks):
+    idle = []
+    for name, mark in sorted(marks.items(), key=lambda item: item[1]["start"]):
+        if name.startswith("idle-"):
+            window = observed(driver, target, samples, mark)
+            window.pop("driver_cpu_busy_fraction")
+            idle.append({"name": name, "probe": last_json_line(driver / f"{name}.json"), **window})
+    return idle
+
+
+def clock_records(driver, target):
     clock = {}
     for side, folder, files in (("driver", driver, ("clock-start.txt", "clock-end.txt")),
                                 ("target", target, ("clock-up.txt", "clock-down.txt"))):
         texts = [read_text(folder / f) or "" for f in files]
         clock[side] = {"ntp_synchronized_at_both_ends": all(re.search(r"NTPSynchronized=yes", t) for t in texts),
                        "records": texts}
+    return clock
+
+
+def lines(path):
+    return (read_text(path) or "").splitlines()
+
+
+def main():
+    driver, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+    samples = host_samples(target)
+    marks = windows(driver)
+    steps = [step_summary(driver, target, samples, marks, name, step) for name, step in ladder_rows(driver).items()]
+    whole = target_window(samples, samples[0]["unix_seconds"], samples[-1]["unix_seconds"]) if samples else None
     print(json.dumps({
         "schema": "durable-workflow.server-port-small-host-summary/v1",
         "driver": read_json(driver / "identity.json"),
         "target": read_json(target / "identity.json"),
         "capacity": read_json(driver / "capacity.json"),
         "steps": steps,
-        "idle": idle,
+        "idle": idle_summaries(driver, target, samples, marks),
         "target_whole_run": whole,
-        "target_container_states": (read_text(target / "container-states.txt") or "").splitlines(),
-        "target_database_audit": (read_text(target / "database-audit.tsv") or "").splitlines(),
+        "target_container_states": lines(target / "container-states.txt"),
+        "target_database_audit": lines(target / "database-audit.tsv"),
         "target_teardown": (read_text(target / "teardown.txt") or "").strip(),
-        "clock": clock,
+        "clock": clock_records(driver, target),
     }, indent=2))
 
 

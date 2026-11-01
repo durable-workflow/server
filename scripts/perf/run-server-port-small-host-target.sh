@@ -49,7 +49,10 @@ host_sampler() {
     total=$((user + nice + system + idle + iowait + irq + softirq + steal))
     mem=$(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} /^SwapTotal:/ {st=$2} /^SwapFree:/ {sf=$2} END {printf "%s\t%s\t%s\t%s", t, a, st, sf}' /proc/meminfo)
     vm=$(awk '/^pswpin / {i=$2} /^pswpout / {o=$2} /^oom_kill / {k=$2} END {printf "%s\t%s\t%s", i+0, o+0, k+0}' /proc/vmstat)
-    psi() { awk -v kind="$2" '$1 == kind {sub("total=", "", $5); print $5; f=1} END {if (!f) print ""}' "/proc/pressure/$1" 2>/dev/null || echo ""; }
+    psi() {
+      local resource=$1 kind=$2
+      awk -v kind="$kind" '$1 == kind {sub("total=", "", $5); print $5; f=1} END {if (!f) print ""}' "/proc/pressure/$resource" 2>/dev/null || echo ""
+    }
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "$total" "$idle" "$iowait" "$steal" "$mem" "$vm" \
       "$(psi cpu some)" "$(psi memory some)" "$(psi memory full)" "$(psi io some)" >> "$file"
     # Per service: cumulative CPU microseconds and current memory, read from
@@ -79,7 +82,13 @@ case "$action" in
     : "${DW_SMALL_TARGET_BIND:?Set DW_SMALL_TARGET_BIND to the private address of this host}"
     [[ ! -e $out ]] || { echo "Refusing to overwrite $out." >&2; exit 2; }
     mkdir -p "$out"; out=$(realpath "$out")
-    j() { jq -r "$1" "$profile"; }
+    j() { local filter=$1; jq -r "$filter" "$profile"; }
+    # Disposable per-run database and Redis passwords, never stored: the
+    # services read them from their own environment.
+    export DW_SMALL_DB_PASSWORD DW_SMALL_DB_ROOT_PASSWORD DW_SMALL_REDIS_PASSWORD
+    DW_SMALL_DB_PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    DW_SMALL_DB_ROOT_PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    DW_SMALL_REDIS_PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
     export DW_SMALL_NATIVE_IMAGE DW_SMALL_PHP_IMAGE
     DW_SMALL_NATIVE_IMAGE=$(j .artifacts.native_image) DW_SMALL_PHP_IMAGE=$(j .artifacts.php_server)
     [[ $DW_SMALL_NATIVE_IMAGE =~ @sha256:[0-9a-f]{64}$ && $DW_SMALL_PHP_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] \
@@ -89,6 +98,7 @@ case "$action" in
       native-mysql) services=(mysql native-mysql) ;;
       native-sqlite) services=(native-sqlite) ;;
       php-mysql) services=(mysql redis php-bootstrap php-server php-worker php-scheduler) ;;
+      *) echo "Unknown mode $mode." >&2; exit 2 ;;
     esac
     jq -n --arg mode "$mode" --arg project "$project" --arg profile_sha "$(sha256sum "$profile" | cut -d ' ' -f1)" \
       --arg native "$DW_SMALL_NATIVE_IMAGE" --arg php "$DW_SMALL_PHP_IMAGE" --arg kernel "$(uname -r)" --arg cpus "$(nproc)" \
@@ -131,6 +141,9 @@ case "$action" in
     dc() { docker compose -p "$project" "${compose_args[@]}" --profile native-mysql --profile native-sqlite --profile php-mysql "$@"; }
     mode=$(jq -r .mode "$out/identity.json")
     export DW_SMALL_TARGET_BIND DW_SMALL_NATIVE_IMAGE DW_SMALL_PHP_IMAGE
+    # Teardown only interpolates the Compose file; the running services keep
+    # the passwords they started with.
+    export DW_SMALL_DB_PASSWORD=unused DW_SMALL_DB_ROOT_PASSWORD=unused DW_SMALL_REDIS_PASSWORD=unused
     DW_SMALL_TARGET_BIND=$(jq -r .bind_address "$out/identity.json")
     DW_SMALL_NATIVE_IMAGE=$(jq -r .server_image "$out/identity.json") DW_SMALL_PHP_IMAGE=$DW_SMALL_NATIVE_IMAGE
     if [[ $mode != native-sqlite ]]; then

@@ -20,6 +20,9 @@ capacity claim. The 4 vCPU comparison host instead runs the matched profile
     server.
   - `php-mysql`: published PHP 2.11.8 HTTP, queue worker and scheduler with
     MySQL 8.4 and Redis.
+- **Credentials.** The target script generates disposable MySQL and Redis
+  passwords for each run and never writes them to disk. The server token is
+  the fixed benchmark token the driver uses.
 - **Capacity ladder.** After a 30-second warmup, the driver offers each rate
   in `ladder.rates_per_second` (0.5 to 32 workflows/s) for 60 seconds. It runs
   one probe process per 4 workflows/s and two SDK workers per probe, so the
