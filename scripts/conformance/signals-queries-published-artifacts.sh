@@ -1533,7 +1533,7 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
     if not command_available("docker"):
         raise RuntimeError("docker is required to start the published server")
 
-    compose = Path(os.environ.get("REPO_ROOT", os.getcwd())) / "docker-compose.published.yml"
+    compose = Path(os.environ.get("REPO_ROOT", os.getcwd())) / "docker-compose.php.yml"
     if not compose.is_file():
         raise RuntimeError(f"published compose file not found: {compose}")
 

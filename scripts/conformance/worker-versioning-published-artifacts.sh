@@ -668,7 +668,7 @@ waterline_container=""
 docker_compose() {
   local compose_args=(
     -p "$compose_project"
-    -f "$repo_root/docker-compose.published.yml"
+    -f "$repo_root/docker-compose.php.yml"
   )
 
   if [[ -f "$run_root/waterline-compose.yml" ]]; then

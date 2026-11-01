@@ -89,16 +89,16 @@ which also requires writable Laravel and Apache runtime paths.
 
 ### Official Image + Compose
 
-Use this path when you want a source-free multi-container stack backed by MySQL
-and Redis. The same Compose file supports local development and single-node
+Use this path when you want a source-free stack: the native server backed by
+MySQL. The same Compose file supports local development and single-node
 production; the difference is the environment you provide and the operational
 care around persistence, backups, and upgrades.
 
 Image selection:
 
-- The checked-in Compose file defaults to the exact Server image from its
-  stable release metadata.
-- `DW_SERVER_TAG=<server-version>` selects an exact Docker Hub image.
+- The checked-in Compose file defaults to the current native image: the
+  release candidate by digest until 3.0.0 is published, then the exact
+  release.
 - `DW_SERVER_IMAGE=ghcr.io/durable-workflow/server:<server-version>`
   selects the same release line from GitHub Container Registry.
 - `DW_SERVER_IMAGE=durableworkflow/server@sha256:...` pins an exact image
@@ -107,8 +107,12 @@ Image selection:
 #### Local Development Compose
 
 This recipe is for one developer machine or internal non-production testing. It
-uses the default MySQL/Redis volumes, exposes only the API port, and allows the
-single `DW_AUTH_TOKEN` compatibility token for quick verification.
+runs the native server with MySQL in named volumes, publishes only the API port
+and only on `127.0.0.1`, and uses the shared `DW_AUTH_TOKEN` for quick
+verification. Compose refuses to start until `DW_AUTH_TOKEN` is set. The PHP 2.x stack
+(server, queue worker, scheduler, bootstrap job and Redis) is
+`docker-compose.php.yml`; the PHP-specific procedures below that run `artisan`
+commands apply to it.
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docker-compose.published.yml
@@ -137,19 +141,17 @@ curl -X POST http://localhost:8080/api/worker/register \
 #### Single-Node Production Compose
 
 This recipe is for a small self-hosted deployment on one Docker host. It keeps
-MySQL and Redis in named volumes, exposes only the API port, and expects
-role-scoped credentials plus an exact image tag or digest. The Compose file
-does not persist server-local payload files. For external payloads, configure
-[shared S3-compatible storage](contracts/external-payload-storage.md#self-hosted-backing-storage)
-reachable by every Server process.
+MySQL in a named volume, persists the native server's local payload storage in
+`server_storage`, exposes only the API port, and expects a strong shared token,
+role-scoped credentials and an exact image tag or digest.
 
 Create a production env file outside source control:
 
 ```env
 DW_SERVER_IMAGE=durableworkflow/server:<server-version>
 SERVER_PORT=8080
-APP_ENV=production
-APP_DEBUG=false
+# Loopback by default. Use a protected private interface for the reverse proxy.
+SERVER_BIND_ADDRESS=127.0.0.1
 
 DB_DATABASE=durable_workflow
 DB_USERNAME=workflow
@@ -157,7 +159,8 @@ DB_PASSWORD=replace-with-random-password
 DB_ROOT_PASSWORD=replace-with-random-root-password
 
 DW_AUTH_DRIVER=token
-DW_AUTH_BACKWARD_COMPATIBLE=false
+# Native requires a shared token and accepts it for every role; keep it secret.
+DW_AUTH_TOKEN=replace-with-random-shared-token
 DW_WORKER_TOKEN=replace-with-worker-token
 DW_OPERATOR_TOKEN=replace-with-operator-token
 DW_ADMIN_TOKEN=replace-with-admin-token
@@ -180,18 +183,18 @@ Register SDK workers with `DW_WORKER_TOKEN` and send operator traffic with
 `/api/worker/register` for diagnostic worker registration, while heartbeats,
 task polling, task completion, and orderly self-deregistration remain
 worker-token endpoints. Put TLS, request logging, and public routing in a
-reverse proxy in front of the API container; do not expose the MySQL or Redis
-services.
+reverse proxy in front of the API container; do not expose the MySQL
+service.
 
 Persistence and backups:
 
 - `mysql_data` is the durable workflow state. Back it up before every image
   upgrade and on a regular schedule.
-- `redis_data` contains queue/cache state. Preserve it for graceful restarts;
-  MySQL remains the source of truth for workflow history.
+- `server_storage` holds the native server's local external payload objects.
+  Back it up with `mysql_data`; a recovery point needs both.
 - Keep a copy of the exact env file and image reference with each backup so a
   restore uses the same auth, database, and image contract.
-- External payload bytes are outside the MySQL and Redis volumes. Follow the
+- External payload bytes stored outside the server (S3) are outside these volumes. Follow the
   [online backup coordination procedure](contracts/external-payload-storage.md#coordinating-online-backups)
   and verify a copy of the referenced objects before accepting a recovery point.
 
@@ -225,13 +228,14 @@ for the backup hold, object manifest, recovery-point boundary and verification.
 Upgrade order:
 
 1. Back up MySQL and record the current image reference.
-2. Change only `DW_SERVER_IMAGE` or `DW_SERVER_TAG` in the env file.
+2. Change only `DW_SERVER_IMAGE` in the env file.
 3. Run `docker compose --env-file durable-workflow.prod.env -f docker-compose.published.yml pull`.
 4. Run `docker compose --env-file durable-workflow.prod.env -f docker-compose.published.yml up -d --wait`.
 5. Confirm `/api/ready`, `/api/cluster/info`, and worker registration before
    shifting external traffic.
 
-The release that introduces `SignalRejected` requires a stop-first upgrade.
+For the PHP 2.x stack (`docker-compose.php.yml`): the release that introduces
+`SignalRejected` requires a stop-first upgrade.
 Older Core readers cannot decode this persisted history event. After pulling
 the new image, pause admission, drain external workers and stop the existing
 `server`, `worker` and `scheduler` services before starting their replacements.
@@ -1552,11 +1556,11 @@ docker run --rm --name durable-workflow-matching \
 
 For Compose deployments, layer the
 [`docker-compose.dedicated-matching.yml`](../docker-compose.dedicated-matching.yml)
-override on top of `docker-compose.published.yml` to enable the same shape:
+override on top of the PHP 2.x `docker-compose.php.yml` to enable the same shape:
 
 ```bash
 docker compose \
-  -f docker-compose.published.yml \
+  -f docker-compose.php.yml \
   -f docker-compose.dedicated-matching.yml \
   up
 ```

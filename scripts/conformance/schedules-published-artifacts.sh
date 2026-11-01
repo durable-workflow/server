@@ -106,7 +106,7 @@ Environment overrides:
   DW_SCHEDULES_CLI_EXECUTABLE       Existing official dw executable to use instead
                                     of installing via the release install script.
   DW_SCHEDULES_SERVER_URL           Existing published server URL to probe instead
-                                    of starting docker-compose.published.yml.
+                                    of starting docker-compose.php.yml.
   DW_SERVER_IMAGE                   Exact published server image/tag/digest to test.
   DW_SCHEDULES_SERVER_PORT          Host port for the published server. Defaults
                                     to a free port.

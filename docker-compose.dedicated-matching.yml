@@ -1,14 +1,14 @@
 name: durable-workflow-server
 
 # Compose override that enables the dedicated matching-role daemon shape on
-# top of `docker-compose.published.yml`. The default shape runs the in-worker
+# top of `docker-compose.php.yml`. The default shape runs the in-worker
 # matching-role wake on every Looping event and an unscoped scheduler repair
 # pass for remote SDK queues. Larger deployments can opt execution-only workers
 # out of the wake and let a single dedicated daemon own the broad sweep.
 #
 # Usage:
 #   docker compose \
-#     -f docker-compose.published.yml \
+#     -f docker-compose.php.yml \
 #     -f docker-compose.dedicated-matching.yml \
 #     up
 #

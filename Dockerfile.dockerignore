@@ -14,6 +14,7 @@
 !composer.lock
 !docker-compose.yml
 !docker-compose.published.yml
+!docker-compose.php.yml
 !docker-compose.small-cluster.yml
 !docker-compose.dedicated-matching.yml
 !docker-compose.failover-rehearsal.yml
