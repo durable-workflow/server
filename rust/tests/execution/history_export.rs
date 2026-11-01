@@ -2,10 +2,24 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 /// `json-recursive-ksort-v1` over the bundle without its integrity block.
+/// The value with every object's keys sorted, as PHP's recursive `ksort`
+/// leaves this ASCII bundle.
+fn ksorted(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|left, right| left.0.cmp(right.0));
+            Value::Object(entries.into_iter().map(|(key, value)| (key.clone(), ksorted(value))).collect())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(ksorted).collect()),
+        other => other.clone(),
+    }
+}
+
 fn checksum(bundle: &Value) -> String {
     let mut unsigned = bundle.clone();
     unsigned.as_object_mut().unwrap().remove("integrity");
-    let digest = Sha256::digest(serde_json::to_string(&unsigned).unwrap().as_bytes());
+    let digest = Sha256::digest(serde_json::to_string(&ksorted(&unsigned)).unwrap().as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

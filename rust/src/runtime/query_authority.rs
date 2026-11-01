@@ -220,9 +220,10 @@ pub(super) fn operation(body: &Value, failed: bool) -> Result<String> {
     } else {
         json!({"result":body["result"],"result_envelope":body["result_envelope"]})
     };
-    // serde_json's ordered maps preserve object/list and scalar distinctions.
-    // This fingerprint is private native cache state, never a wire primitive.
-    let bytes = serde_json::to_vec(&json!([if failed { "fail" } else { "complete" }, payload]))?;
+    // Sorted keys keep the fingerprint independent of the order a retry sends
+    // them in, and preserve object/list and scalar distinctions. This
+    // fingerprint is private native cache state, never a wire primitive.
+    let bytes = serde_json::to_vec(&super::json_order::sorted_keys(&json!([if failed { "fail" } else { "complete" }, payload])))?;
     Ok(Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))

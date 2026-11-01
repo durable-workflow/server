@@ -99,13 +99,14 @@ async fn invalid_upserts_are_refused_without_history() {
     let started = start(&app, "refused-upserts").await;
     let task = poll(&app, "typed-worker", "workflow").await;
     let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
-    // The registered schema refuses an unregistered key and a wrong type.
+    // The registered schema refuses an unregistered key and a wrong type, in
+    // the order the command lists them.
     let refused = finish_task(&app, &task, json!([
         {"type":"upsert_search_attributes","attributes":{"SearchCount":"3","Other":1}}])).await;
     assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
     assert_eq!(refused.1["errors"]["commands.0.attributes"], json!([
-        "Search attribute [Other] is not registered for this namespace.",
         "Search attribute [SearchCount] is registered as int and must be an integer.",
+        "Search attribute [Other] is not registered for this namespace.",
     ]));
     // Declared types need the worker protocol and capability that carry them.
     let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());

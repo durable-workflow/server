@@ -21,6 +21,21 @@ test('an unencodable default pins only the 500 status, so a server may explain i
   assert.deepStrictEqual(checkQueryContractArguments(fixture, raw), {scope: 'query_contract_arguments', cases});
 });
 
+test('defaults keep the key order the database stores', () => {
+  // SQLite and Postgres keep the registered order. A MySQL json column orders
+  // keys by length, then bytes, so the second default arrives as the first,
+  // and the descending integer keys arrive as a list.
+  assert.notStrictEqual(expected.registered_order_default.query_arguments.blob, expected.stored_order_default.query_arguments.blob);
+  assert.deepStrictEqual(expected.descending_default, {leased: false, query_arguments: null, client: {status: 500, reason: null}});
+  const mysql = observation();
+  mysql.query_contract_arguments.stored_order_default = structuredClone(expected.registered_order_default);
+  mysql.query_contract_arguments.descending_default = structuredClone(expected.list_default);
+  assert.deepStrictEqual(checkQueryContractArguments(fixture, mysql), {scope: 'query_contract_arguments', cases});
+  const explained = observation();
+  explained.query_contract_arguments.descending_default.client.reason = 'query_default_unencodable';
+  assert.deepStrictEqual(checkQueryContractArguments(fixture, explained), {scope: 'query_contract_arguments', cases});
+});
+
 test('embedded applications have no worker protocol', () => {
   assert.deepStrictEqual(checkQueryContractArguments(fixture,
     {mode: 'embedded', query_contract_arguments: {applicable: false, reason: 'embedded_has_no_worker_protocol'}}),
@@ -78,6 +93,21 @@ for (const [name, mutate] of [
     state.gap_default = {status: 422, reason: 'invalid_query_arguments', message: 'x', validation_errors: {value: ['x']}};
   }],
   ['a list default sent as a JSON array', state => { state.sent_defaults.listdef = '["x","y"]'; }],
+  ['a map default in sorted key order', state => {
+    state.registered_order_default.query_arguments.blob = expected.stored_order_default.query_arguments.blob;
+  }],
+  ['a kept order with descending integer keys routed as a list', state => {
+    state.descending_default = structuredClone(expected.list_default);
+  }],
+  ['a reordered database with descending integer keys refused', state => {
+    state.stored_order_default = structuredClone(expected.registered_order_default);
+  }],
+  ['a stored-order default routed in neither order', state => {
+    state.stored_order_default.query_arguments.blob = expected.list_default.query_arguments.blob;
+  }],
+  ['descending integer keys refused as invalid arguments', state => {
+    state.descending_default = {leased: false, query_arguments: null, client: {status: 422, reason: 'invalid_query_arguments'}};
+  }],
   ['an unexpected case', state => { state.extra = {}; }],
 ]) test(`the contract rejects ${name}`, () => {
   const raw = observation(); mutate(raw.query_contract_arguments);

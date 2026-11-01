@@ -6,8 +6,40 @@ import assert from 'node:assert/strict';
 // the contract's positional order, a default fills a missing argument, the
 // worker receives the normalized list encoded again, and each violation is
 // refused with PHP's per-argument messages. A registered JSON default takes
-// PHP's array shape; `sent_defaults` pins that those defaults were sent as
-// JSON objects. The fixture's `expected` holds the whole observation.
+// PHP's array shape in the key order the server's database keeps;
+// `sent_defaults` pins that those defaults were sent as JSON objects. The
+// fixture's `expected` holds the whole observation, recorded on SQLite.
+//
+// A MySQL `json` column keeps an object's keys by length, then bytes, for
+// both servers; SQLite text and a Postgres `json` column keep the registered
+// order. `{"b": 2, "aa": 1}` is in that order already, so every backend
+// routes it unchanged, and sorted keys fail it. `{"aa": 1, "b": 2}` shows
+// which order the database kept: unchanged, or as the first default.
+// `{"1": "y", "0": "x"}` is then refused as PHP's encoder refuses an integer
+// key outside a list, or, where the database reordered it into a list,
+// routed as the `{"0": "x", "1": "y"}` default is.
+const KEPT_ORDER_CASES = new Set(['stored_order_default', 'descending_default']);
+
+function checkKeptOrder(definition, state) {
+  const expected = definition.expected;
+  const sameBlob = (run, other) => state[run]?.query_arguments?.blob === expected[other].query_arguments.blob;
+  const reordered = sameBlob('stored_order_default', 'registered_order_default');
+  assert.ok(reordered || sameBlob('stored_order_default', 'stored_order_default'),
+    'query contract arguments stored_order_default keeps the registered or the database order');
+  const stored = reordered ? expected.registered_order_default : expected.stored_order_default;
+  assert.deepStrictEqual(state.stored_order_default, stored, 'query contract arguments stored_order_default');
+  if (reordered) {
+    assert.deepStrictEqual(state.descending_default, expected.list_default,
+      'query contract arguments descending_default routed as a reordered list');
+    return;
+  }
+  const refused = expected.descending_default;
+  assert.equal(refused.client.status, 500, 'recorded descending_default is refused');
+  // Only the status is pinned, as for the other unencodable defaults.
+  assert.deepStrictEqual({...state.descending_default, client: {status: state.descending_default?.client?.status}},
+    {...refused, client: {status: 500}}, 'query contract arguments descending_default refused');
+}
+
 export function checkQueryContractArguments(fixture, observation) {
   const definition = fixture.query_contract_arguments;
   const state = observation.query_contract_arguments;
@@ -19,8 +51,12 @@ export function checkQueryContractArguments(fixture, observation) {
     return projection;
   }
   assert.equal(state.applicable, true, 'HTTP targets record query contract arguments');
+  checkKeptOrder(definition, state);
   for (const [run, steps] of Object.entries(definition.expected)) {
     assert.ok(state[run] && typeof state[run] === 'object', `query contract arguments ${run} recorded`);
+    if (KEPT_ORDER_CASES.has(run)) {
+      continue;
+    }
     // Published PHP answers an unencodable registered default with an
     // uncaught 500 and a generic body; only the status is pinned, so a
     // server may say what failed.

@@ -350,13 +350,10 @@ fn normalized_call(attributes: &Map<String, Value>) -> std::result::Result<BTree
     Ok(normalized)
 }
 
-/// The order PHP visits a decoded object's keys in: integer-like keys
-/// first, as PHP reports them. Native compares the remaining keys sorted,
-/// not in request order.
+/// The order PHP visits a decoded object's keys in: the order the request
+/// wrote them, integer-like keys included.
 fn php_order(map: &Map<String, Value>) -> impl Iterator<Item = (&String, &Value)> {
     map.iter()
-        .filter(|(key, _)| php_integer_key(key))
-        .chain(map.iter().filter(|(key, _)| !php_integer_key(key)))
 }
 
 /// PHP's `trim`: spaces, tabs, newlines, carriage returns, NUL and vertical tabs.
@@ -863,10 +860,10 @@ mod tests {
             messages,
             [
                 "Declared search attribute types must name keys present in the attribute update.",
-                "Search attribute keys must be non-empty strings.",
-                "Search attribute key [1bad] must start with a letter and contain only letters, numbers, and underscores.",
                 "Search attribute [Count] declares type [keyword] but is registered as [int].",
+                "Search attribute key [1bad] must start with a letter and contain only letters, numbers, and underscores.",
                 "Search attribute [Other] is not registered for this namespace.",
+                "Search attribute keys must be non-empty strings.",
             ]
         );
         let declared = validate(

@@ -26,10 +26,9 @@
 //! create. Native answers the second create 409 and orders the delete.
 //!
 //! Differences:
-//! - Native JSON documents don't keep object key order. An update that only
-//!   reorders a document's keys changes nothing in native, where PHP's strict
-//!   comparison writes it and moves `updated_at`. A stored object whose
-//!   integer keys are out of order reads back as a list.
+//! - Native compares JSON documents without regard to key order. An update
+//!   that only reorders a document's keys changes nothing in native, where
+//!   PHP's strict comparison writes it and moves `updated_at`.
 //! - Laravel also reads input from the query string. Native reads a ruled
 //!   field from it when the body lacks that field, by exact name only
 //!   (`metadata[a]=1` style keys are not read).

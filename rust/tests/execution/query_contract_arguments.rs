@@ -1,4 +1,5 @@
 use super::*;
+use durable_workflow_server::codec::OrderedValue;
 
 // Published Server 2.11.5 with Workflow 2.15.1
 // (`WorkflowQueryContract::validatedArgumentsForRun`): a declared query's
@@ -18,11 +19,18 @@ async fn contract_worker(app: &Router) {
     };
     let (status, body) = request(app, "POST", "/api/worker/register", json!({"worker_id":"contract-worker","task_queue":"test",
         "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[],"capabilities":["query_tasks"],
-        "workflow_command_contracts":{"echo":{"signals":[],"updates":[],"queries":["state","greet","plain","listdef","gapdef"],"query_contracts":[
+        "workflow_command_contracts":{"echo":{"signals":[],"updates":[],"queries":["state","greet","plain","listdef","gapdef","orderdef","descdef"],"query_contracts":[
             {"name":"state","parameters":[parameter(true, None)]},{"name":"greet","parameters":[parameter(false, Some("dflt"))]},
             {"name":"listdef","parameters":[json_default(json!({"0":"x","1":"y"}))]},
-            {"name":"gapdef","parameters":[json_default(json!({"1":"x"}))]}]}}})).await;
+            {"name":"gapdef","parameters":[json_default(json!({"1":"x"}))]},
+            {"name":"orderdef","parameters":[json_default(registered(r#"{"z":20,"a":10}"#))]},
+            {"name":"descdef","parameters":[json_default(registered(r#"{"1":"y","0":"x"}"#))]}]}}})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// A JSON object in the key order a worker registers it.
+fn registered(text: &str) -> Value {
+    serde_json::from_str(text).unwrap()
 }
 
 /// An optional `mixed` parameter whose registered default is raw JSON.
@@ -101,9 +109,10 @@ async fn query_contract_violations_are_refused_with_phps_messages() {
     database.remove().await;
 }
 
-// A registered JSON default takes PHP's array shape: a list is an Avro array.
-// An integer key outside a list fails PHP's encoder with an uncaught 500;
-// native keeps the status and names the default.
+// A registered JSON default takes PHP's array shape, in its registered key
+// order: a list is an Avro array and a map keeps its order. An integer key
+// outside a list fails PHP's encoder with an uncaught 500; native keeps the
+// status and names the default.
 #[tokio::test]
 async fn a_registered_json_default_takes_phps_array_shape() {
     let database = TestDatabase::new().await;
@@ -112,10 +121,28 @@ async fn a_registered_json_default_takes_phps_array_shape() {
     contract_worker(&app).await;
     start(&app, "contract-query").await;
     let list = Payload::Array(vec![Payload::String("x".into()), Payload::String("y".into())]);
-    assert_eq!(routed(&app, "listdef", envelope(Payload::Array(vec![]))).await, envelope(Payload::Array(vec![list])));
-    let (status, body) = request(&app, "POST", "/api/workflows/contract-query/query/gapdef",
-        json!({"input": envelope(Payload::Array(vec![]))})).await;
-    assert_eq!((status, body["reason"].clone()), (StatusCode::INTERNAL_SERVER_ERROR, json!("query_default_unencodable")), "{body}");
+    assert_eq!(routed(&app, "listdef", envelope(Payload::Array(vec![]))).await, envelope(Payload::Array(vec![list.clone()])));
+    // A map default reaches the worker in the key order the database keeps:
+    // the registered order, except that a MySQL json column orders keys by
+    // length, then bytes, for PHP as for native. MariaDB's json is text.
+    let version = text_rows(&database, "SELECT 'version', sqlite_version()", "SELECT 'version'::text, version()",
+        "SELECT 'version', VERSION()").await;
+    let mysql = matches!(database, TestDatabase::MySql { .. }) && !version[0].1.contains("MariaDB");
+    let (z, a) = (("z".to_owned(), OrderedValue::Long(20)), ("a".to_owned(), OrderedValue::Long(10)));
+    let ordered = OrderedValue::Array(vec![OrderedValue::Map(if mysql { vec![a, z] } else { vec![z, a] })]);
+    assert_eq!(routed(&app, "orderdef", envelope(Payload::Array(vec![]))).await,
+        json!({"codec": "avro", "blob": ValueCodec::new().unwrap().encode_ordered_value(&ordered).unwrap()}));
+    // Keys 0 to n-1 out of order are not a list, so PHP's encoder fails.
+    // MySQL stores them in order, which makes them a list.
+    if mysql {
+        assert_eq!(routed(&app, "descdef", envelope(Payload::Array(vec![]))).await, envelope(Payload::Array(vec![list.clone()])));
+    }
+    for query in if mysql { vec!["gapdef"] } else { vec!["gapdef", "descdef"] } {
+        let (status, body) = request(&app, "POST", &format!("/api/workflows/contract-query/query/{query}"),
+            json!({"input": envelope(Payload::Array(vec![]))})).await;
+        assert_eq!((status, body["reason"].clone()), (StatusCode::INTERNAL_SERVER_ERROR, json!("query_default_unencodable")),
+            "{query}: {body}");
+    }
     runtime.close().await;
     database.remove().await;
 }

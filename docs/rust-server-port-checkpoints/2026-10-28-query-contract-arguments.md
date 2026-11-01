@@ -85,7 +85,8 @@
     registered order: native's JSON objects do not preserve order
     (`serde_json` without `preserve_order`). The same limit makes
     `{"1": "a", "0": "b"}` a list on native, where PHP's array is not a list
-    and fails to encode.
+    and fails to encode. Closed on November 1
+    ([checkpoint](2026-11-01-registered-default-order.md)).
   - `callable` matches nothing here: PHP's `is_callable` also accepts
     strings naming functions, which a native server cannot resolve.
   - A class name that a published PHP server can load (a real class) would
