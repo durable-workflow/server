@@ -10,16 +10,18 @@ name: Native release candidate
 # the release tag in both registries as one index, verifies it, and attests
 # its build provenance. The PHP image and its Release workflow are unchanged.
 #
-# Its credentials are its own: the dockerhub-native Environment and the
-# NATIVE_DOCKERHUB_* secret names. It can never resolve the PHP release's
-# Environment or repository credentials.
+# It publishes to the same repositories as the PHP release,
+# durableworkflow/server and ghcr.io/durable-workflow/server (operator
+# decision, November 1), with the repository's Docker Hub credentials. A
+# native version is a major version above every PHP release, and the
+# publish job refuses a tag either registry already has, so it never
+# replaces a PHP image. It moves no rolling tag such as latest. It runs
+# only from main, in the dockerhub-native Environment.
 #
-# A release candidate (a version with a -rc.N suffix) publishes to GHCR only,
-# so candidates can be qualified before Docker Hub credentials exist
+# A release candidate (a version with a -rc.N suffix) publishes to GHCR only
 # (operator decision, October 30). Any other version publishes to both
 # registries: each job then signs in to Docker Hub before it builds anything,
-# so while the credentials are absent a dispatch stops there and pushes
-# nothing.
+# so a dispatch that cannot sign in stops there and pushes nothing.
 
 run-name: Native ${{ inputs.tag }} at ${{ inputs.release_commit }}
 
@@ -41,8 +43,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DOCKERHUB_IMAGE: durableworkflow/server-native
-  GHCR_IMAGE: ghcr.io/durable-workflow/server-native
+  DOCKERHUB_IMAGE: durableworkflow/server
+  GHCR_IMAGE: ghcr.io/durable-workflow/server
 
 jobs:
   plan:
@@ -110,8 +112,8 @@ jobs:
         if: needs.plan.outputs.dockerhub == 'true'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
         with:
-          username: ${{ secrets.NATIVE_DOCKERHUB_USERNAME }}
-          password: ${{ secrets.NATIVE_DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
@@ -203,8 +205,8 @@ jobs:
         if: needs.plan.outputs.dockerhub == 'true'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
         with:
-          username: ${{ secrets.NATIVE_DOCKERHUB_USERNAME }}
-          password: ${{ secrets.NATIVE_DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
@@ -276,8 +278,8 @@ jobs:
         if: needs.plan.outputs.dockerhub == 'true'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
         with:
-          username: ${{ secrets.NATIVE_DOCKERHUB_USERNAME }}
-          password: ${{ secrets.NATIVE_DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GHCR
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
