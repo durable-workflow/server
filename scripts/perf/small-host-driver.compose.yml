@@ -1,0 +1,34 @@
+# Small-host driver (Server #325): SDK workers and load probes, on a separate
+# host in the target's private network. Nothing here runs on the target.
+# The client runtime is the matched profile's PHP image, used only as a PHP
+# engine for the pinned SDK, so client cost stays comparable with rc1.
+services:
+  sdk-worker:
+    stop_signal: SIGTERM
+    image: &client_image durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549
+    platform: linux/amd64
+    user: "1000:1000"
+    entrypoint: [php]
+    working_dir: /source
+    command: [benchmarks/capacity/v1/bindings/php/capacity_adapter.php, worker]
+    environment: &sdk_environment
+      DURABLE_WORKFLOW_RUNTIME_URL: "${DW_SMALL_TARGET_URL:?Set the target URL}"
+      DURABLE_WORKFLOW_NAMESPACE: default
+      DURABLE_WORKFLOW_TASK_QUEUE: server-port-small-host
+      DURABLE_WORKFLOW_TOKEN: port-test-token
+      DURABLE_WORKFLOW_CAPACITY_CELL: one-activity
+      DURABLE_WORKFLOW_WORKER_CONCURRENCY: "1"
+    volumes: &sdk_volumes
+      - "${DW_PORT_SOURCE_ROOT:?Set the absolute source directory}:/source:ro"
+      - "${DW_PORT_SDK_ROOT:?Set the normally installed SDK directory}/vendor:/source/benchmarks/capacity/v1/bindings/php/vendor:ro"
+    restart: "no"
+
+  probe:
+    image: *client_image
+    platform: linux/amd64
+    user: "1000:1000"
+    entrypoint: [php]
+    working_dir: /source
+    environment: *sdk_environment
+    volumes: *sdk_volumes
+    restart: "no"
