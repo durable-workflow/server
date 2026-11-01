@@ -23,6 +23,17 @@ compose_args=(-f "$compose")
 prefix=${DW_SMALL_PROJECT_PREFIX:-dw-small}
 log() { printf '%s %s\n' "$(date -u +%FT%T.%3NZ)" "$*" | tee -a "$out/target.log" >&2; }
 
+# A measured run accepts only a private (RFC 1918) IPv4 address for the target.
+# Loopback is accepted only in an explicit local stand-in (DW_SMALL_STAND_IN=1).
+private_ipv4() {
+  local ip=$1 a b octet
+  [[ $ip =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  for octet in "${BASH_REMATCH[@]:1}"; do (( 10#$octet <= 255 )) || return 1; done
+  a=$((10#${BASH_REMATCH[1]})) b=$((10#${BASH_REMATCH[2]}))
+  if (( a == 10 )) || (( a == 172 && b >= 16 && b <= 31 )) || (( a == 192 && b == 168 )); then return 0; fi
+  [[ ${DW_SMALL_STAND_IN:-} == 1 ]] && (( a == 127 ))
+}
+
 ntp_state() {
   # Latencies compare the driver's clock with the server's closed_at, so both
   # hosts must be NTP-synchronized. Record what each time service reports.
@@ -80,11 +91,14 @@ case "$action" in
     profile=$(realpath "$2") out=$3 mode=$4
     case "$mode" in native-mysql|native-sqlite|php-mysql) ;; *) echo "Choose native-mysql, native-sqlite or php-mysql." >&2; exit 2 ;; esac
     : "${DW_SMALL_TARGET_BIND:?Set DW_SMALL_TARGET_BIND to the private address of this host}"
+    private_ipv4 "$DW_SMALL_TARGET_BIND" \
+      || { echo "DW_SMALL_TARGET_BIND must be this host's private (RFC 1918) IPv4 address, not a wildcard or public one." >&2; exit 2; }
     [[ ! -e $out ]] || { echo "Refusing to overwrite $out." >&2; exit 2; }
     mkdir -p "$out"; out=$(realpath "$out")
     j() { local filter=$1; jq -r "$filter" "$profile"; }
-    # Disposable per-run database and Redis passwords, never stored: the
-    # services read them from their own environment.
+    # Disposable per-run database and Redis passwords. They are kept out of
+    # the result files; Docker holds them in the containers' configuration
+    # until teardown removes the project.
     export DW_SMALL_DB_PASSWORD DW_SMALL_DB_ROOT_PASSWORD DW_SMALL_REDIS_PASSWORD
     DW_SMALL_DB_PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
     DW_SMALL_DB_ROOT_PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
