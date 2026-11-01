@@ -800,8 +800,7 @@ async fn namespace_delete_removes_only_what_the_namespace_owns() {
     // attribute definition.
     assert_eq!(body, json!({"name":"doomed","status":"deleted","deleted":{
         "workflow_commands":1,"workflow_history_events":2,"workflow_tasks":1,
-        "search_attribute_definitions":1,"workflow_run_summaries":1,"workflow_runs":1,"workflow_instances":1},
-        "external_payload_cleanup":{"pending":0,"failed":0,"blocked":0}}));
+        "search_attribute_definitions":1,"workflow_run_summaries":1,"workflow_runs":1,"workflow_instances":1}}));
     for (method, uri) in [("GET", "/api/namespaces/doomed"), ("DELETE", "/api/namespaces/doomed")] {
         let (status, body) = scoped(&app, "default", method, uri, Value::Null).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}: {body}");

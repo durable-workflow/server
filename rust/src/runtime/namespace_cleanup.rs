@@ -10,8 +10,8 @@
 //! `RuntimeExternalPayloadRegistry::deleteForNamespace` release them
 //! (`delete_namespace_payloads`). Their provider deletions are recorded in the
 //! delete's transaction and run only after it commits (`payload_deletions`),
-//! so a failed delete keeps every object. The answer carries
-//! `external_payload_cleanup`, and is 207 while a deletion is still pending.
+//! so a failed delete keeps every object. While a deletion is still pending
+//! the answer carries `external_payload_cleanup` and is 207.
 //! A namespace holding a reference native cannot settle (PHP's stored
 //! format, an envelope, or one on a stream) refuses before changing anything,
 //! with PHP's answer for unavailable external payload storage.
@@ -280,8 +280,11 @@ store_methods! {
         // The delete has committed; only now may provider objects go. A
         // deletion left pending answers 207 with its counts.
         self.settle_payload_deletions(&staged).await;
-        let cleanup = self.payload_deletion_status(&name).await?;
-        Ok(json!({"name": name, "status": "deleted", "deleted": deleted, "external_payload_cleanup": cleanup}))
+        let mut body = json!({"name": name, "status": "deleted", "deleted": deleted});
+        if let Some(cleanup) = self.reported_payload_deletions(&name).await? {
+            body["external_payload_cleanup"] = cleanup;
+        }
+        Ok(body)
     }
 
     /// The namespace's external payloads, inside its delete's transaction:

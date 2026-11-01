@@ -220,4 +220,13 @@ store_methods! {
             .await?;
         Ok(json!({"pending": pending, "failed": failed, "blocked": blocked}))
     }
+
+    /// The status where a response reports it: 2.11.8 always adds the counts,
+    /// but CI's parity reference is still 2.11.7, whose clean answers have no
+    /// such member. Until the reference moves to 2.11.8 native adds them only
+    /// when a deletion is pending; a clean answer stays 2.11.7's.
+    pub(super) async fn reported_payload_deletions(&self, namespace: &str) -> Result<Option<Value>> {
+        let status = self.payload_deletion_status(namespace).await?;
+        Ok((status["pending"].as_i64().unwrap_or(0) > 0).then_some(status))
+    }
 }

@@ -61,6 +61,14 @@
   - Like 2.11.8, staging no longer checks that the object lies under the
     current root. An object outside it now leaves the deletion pending after
     a committed prune, where 2.11.7 and the earlier native failed the prune.
+  - Reporting, until the parity reference moves to 2.11.8: CI's live
+    reference is still 2.11.7, and the `namespace-delete` and
+    `payload-cleanup` fixtures record its whole clean answers, which have no
+    cleanup counts. Native adds `external_payload_cleanup` (retention pass,
+    namespace delete) and `retention_cleanup` (cleanup status and pass) only
+    while a deletion is pending, with 2.11.8's 207. A clean answer is
+    2.11.7's; 2.11.8 always adds the counts, so native adds them always once
+    the reference moves.
   - Native has no scheduled cleanup like PHP's unscoped
     `external-payloads:cleanup`, so a cleanup pass also retries up to `limit`
     deletions whose namespace has been deleted, which no namespace's own pass

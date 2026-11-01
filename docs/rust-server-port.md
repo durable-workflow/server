@@ -495,9 +495,12 @@ contract fixture before its correction.
   the prune records the deletion in `dw_external_payload_deletions` (schema
   version 8), so a prune that fails later keeps the run, its registrations
   and every object. A provider failure after the commit leaves the deletion
-  pending, reported as `external_payload_cleanup` on the retention pass and
-  `retention_cleanup` on the payload cleanup routes, and retried by the next
-  pass. An online-backup hold still fails the prune before it commits. The
+  pending, retried by the next pass. While one is pending the retention pass
+  reports `external_payload_cleanup`, the payload cleanup routes report
+  `retention_cleanup` (the pass answering 207), and namespace delete reports
+  `external_payload_cleanup` with 207; 2.11.8 adds those counts to clean
+  answers too, which native will do once CI's parity reference moves from
+  2.11.7, whose clean answers lack them. An online-backup hold still fails the prune before it commits. The
   `retention-external-payloads` fixture records it against published 2.11.7
   and passes unchanged against 2.11.8.
   A run holding a reference native cannot settle (PHP's stored format from a

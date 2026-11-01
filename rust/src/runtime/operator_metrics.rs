@@ -1256,7 +1256,9 @@ where
         let failed = report["failed"].as_i64().is_some_and(|failed| failed > 0);
         let mut fields = policy.fields(self.namespace.as_ref());
         fields.extend(report);
-        fields.insert("external_payload_cleanup".into(), self.payload_deletion_status(self.namespace.as_ref()).await?);
+        if let Some(cleanup) = self.reported_payload_deletions(self.namespace.as_ref()).await? {
+            fields.insert("external_payload_cleanup".into(), cleanup);
+        }
         Ok((Value::Object(fields), failed))
     }
 
