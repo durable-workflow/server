@@ -757,15 +757,30 @@ contract fixture before its correction.
   retry. The `child-visibility` fixture records it against published
   2.11.7
   ([checkpoint](rust-server-port-checkpoints/2026-10-29-child-visibility.md)).
-- **Search attribute datetime forms.** `Carbon::parse` accepts relative and
-  free-form dates. Native accepts RFC 3339, and a date or date and time
-  without an offset read as UTC, and refuses other forms as PHP refuses an
-  unparsable one.
-- **Search attribute datetimes with an offset.** Published PHP stores a
-  typed datetime written with an offset, such as `2026-10-08T12:34:56+02:00`,
-  as that wall-clock time in UTC (`12:34:56Z`), which is a different
-  instant ([workflow#898](https://github.com/durable-workflow/workflow/issues/898)).
-  Native stores the instant written (`10:34:56Z`).
+- **Search attribute datetime forms** (November 1, narrowed by decision;
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-search-attribute-datetimes.md)).
+  `Carbon::parse` reads a registered datetime on a start, an upsert and a
+  visibility query literal. Native now reads every deterministic form it
+  accepts: an ISO 8601 date, or date and time with `T`, `t` or a space,
+  minutes with optional seconds and fraction, and an offset written `Z`,
+  `+HH:MM`, `+HHMM` or `+HH` or none (UTC); and an RFC 2822 date. Fractional
+  seconds are truncated to microseconds, as PHP stores them, and an empty
+  value stores nothing. The `search-attribute-datetimes` fixture records
+  each form on a start and an upsert, and a filter by one instant, against
+  published 2.11.7. Decided: native refuses, as an unparsable value, the
+  forms that depend on the clock, a timezone database or PHP's date overflow.
+  Published 2.11.7 stores `tomorrow` as the next midnight at write time,
+  `@1700000000` as that Unix time, `2026-02-30` as March 2, `24:00` as the
+  next day and `Europe/Paris` by its zone rules. No published SDK sends them:
+  the Rust SDK validates RFC 3339 before sending, the Python SDK writes
+  `isoformat()`, and the PHP SDK sends the string it is given.
+- **Search attribute datetimes with an offset** (November 1, closed).
+  Published Server 2.11.5 (Core 2.15.1) fixed
+  [workflow#898](https://github.com/durable-workflow/workflow/issues/898):
+  2.11.7 stores `2026-10-08T12:34:56+02:00` as the instant it names
+  (`10:34:56Z`), as native does. The `search-attribute-datetimes` fixture
+  records positive, negative and microsecond offsets, and a visibility filter
+  by the stored instant.
 - **Workflow task command fields.** Native checks a completion with PHP's
   transport rules, then its payload and normalizer rules
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-completion-rules.md)).
@@ -776,10 +791,18 @@ contract fixture before its correction.
   - A timer delay, retry backoff, child timeout or wait timeout too large
     for a timestamp is refused on native. PHP accepts it, and wraps a
     timer's fire time into the past, so the timer fires at once.
-- **Search attribute limits.** Over 100 attributes or 64 KB per run, PHP
-  raises an uncaught `InvalidArgumentException` while applying the command.
-  Native refuses the completion with `422 search_attribute_limit_exceeded`
-  and PHP's message, and records nothing.
+- **Search attribute limits** (November 1, closed). Over 100 attributes or
+  65,536 value bytes per run, published 2.11.7's `validateAttributeSet`
+  exception reaches the worker completion's catch, which rejects the
+  completion `422 invalid_workflow_stream_command` with the message as
+  `error` and records nothing, or `workflow_memo_validation_failed` when the
+  completion also upserts a memo. Native answers the same; it answered
+  `search_attribute_limit_exceeded` before. The `search-attribute-datetimes`
+  fixture records upserts at exactly 100 attributes and exactly 65,536 bytes
+  as accepted; a start over a limit is refused `validation_failed` (the
+  `start-search-attributes` fixture). How the limits are documented and
+  configured is
+  [workflow#853](https://github.com/durable-workflow/workflow/issues/853).
 - **Cooperative cancellation boundaries.** Published PHP delivers a run's
   cancellation at an activity, local activity, timer, condition, signal,
   child, parallel or selection-handle boundary. Native delivers it at an

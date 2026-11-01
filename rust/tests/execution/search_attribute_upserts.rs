@@ -230,3 +230,44 @@ async fn an_upsert_needs_the_typed_capability_like_php() {
     assert_eq!(body["capability"], "typed_search_attributes", "{body}");
     assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, before);
 }
+
+#[tokio::test]
+async fn an_upsert_over_the_run_limits_is_rejected_as_php_rejects_it() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"limit-worker",
+        "task_queue":"test","runtime":"rust","supported_workflow_types":["echo"],"supported_activity_types":[],
+        "capabilities":["typed_search_attributes","memo_upserts"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let started = start(&app, "limit-upserts").await;
+    let task = poll(&app, "limit-worker", "workflow").await;
+    let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let many = |count: usize| Value::Object((0..count).map(|index| (format!("Attr{index:03}"), json!(index))).collect());
+    // `validateAttributeSet`'s exception reaches the completion's catch.
+    let refused = finish_task(&app, &task, json!([
+        {"type":"upsert_search_attributes","attributes":many(101)}])).await;
+    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
+    assert_eq!((&refused.1["reason"], &refused.1["outcome"], &refused.1["recorded"], &refused.1["error"]),
+        (&json!("invalid_workflow_stream_command"), &json!("rejected"), &json!(false),
+            &json!("Search attributes count exceeds maximum (101 > 100)")));
+    assert_eq!(refused.1["task_id"], task["task_id"]);
+    let large = Value::Object((0..33).map(|index| (format!("Attr{index:03}"), json!("v".repeat(2048)))).collect());
+    let refused = finish_task(&app, &task, json!([{"type":"upsert_search_attributes","attributes":large}])).await;
+    assert_eq!(refused.1["error"], "Total search attributes size exceeds maximum (67584 > 65536 bytes)", "{}", refused.1);
+    // A completion that also upserts a memo answers the memo failure reason.
+    let refused = finish_task(&app, &task, json!([
+        {"type":"upsert_memo","entries":envelope(Payload::Map(std::collections::BTreeMap::from([("note".into(), Payload::Long(1))])))},
+        {"type":"upsert_search_attributes","attributes":many(101)}])).await;
+    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "workflow_memo_validation_failed", "{}", refused.1);
+    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, before);
+    // Exactly at the limit is accepted.
+    let accepted = finish_task(&app, &task, json!([
+        {"type":"upsert_search_attributes","attributes":many(100)},
+        {"type":"open_signal_wait","signal_name":"finish"}])).await;
+    assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+    assert_eq!(described(&app, "limit-upserts").await.as_object().unwrap().len(), 100);
+    runtime.close().await;
+    database.remove().await;
+}
