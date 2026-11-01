@@ -150,8 +150,25 @@ where
             return Ok(ChildParentResume::New);
         }
         if Self::cancellation_request(parent)?.is_none() {
-            // The resolution gets its own resume task, as activity and timer
-            // resolutions do. Published PHP reuses an open task instead.
+            // `dispatchParentResumeTasks`: a ready workflow task already
+            // replays the parent with this resolution in its history, so it
+            // serves as the resume and its payload stays as it is. An update
+            // task does not replay the workflow. A leased task's worker may
+            // have read history before this resolution, and published PHP
+            // then leaves the parent without a task until repair; native
+            // gives the resolution its own resume task in both cases.
+            for task in &tasks {
+                if DB::string(task, "status")? == "ready"
+                    && DB::document_row(task, "payload")?["workflow_update_id"]
+                        .as_str()
+                        .is_none()
+                {
+                    return Ok(ChildParentResume::Existing {
+                        id: DB::string(task, "id")?,
+                        status: "ready".into(),
+                    });
+                }
+            }
             return Ok(ChildParentResume::New);
         }
         if tasks.len() > 1000 {
