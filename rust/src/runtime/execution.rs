@@ -386,6 +386,7 @@ impl Runtime {
     delegate!(list_namespaces() -> Result<Value>);
     delegate!(describe_namespace(name: &str) -> Result<Value>);
     delegate!(operator_metrics(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
+    delegate!(cluster_structural_limits(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
     delegate!(system_health(config: &super::operator_metrics::MetricsConfig) -> Result<(bool, Value)>);
     delegate!(operator_dashboard(config: &super::operator_metrics::MetricsConfig, bounded: bool, types: Option<&[String]>) -> Result<Value>);
     delegate!(repair_status() -> Result<Value>);
