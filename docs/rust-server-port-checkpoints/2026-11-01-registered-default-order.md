@@ -14,8 +14,9 @@
   - Integer keys make a list only when they are 0 to n-1 in that order
     (`array_is_list`). Otherwise the encoder fails with `invalid_map_key`
     and an uncaught 500.
-  - The order the database returns depends on the column. SQLite text and
-    a Postgres `json` column keep the text the server wrote. A MySQL `json`
+  - The order the database returns depends on the column. SQLite text,
+    a Postgres `json` column and MariaDB's `json` (text with a validity
+    check) keep the text the server wrote. A MySQL `json`
     column orders keys by length, then bytes, for both servers. On MySQL,
     `{"aa": 1, "b": 2}` therefore reads back as `{b, aa}`, and
     `{"1": "y", "0": "x"}` reads back as a list.
@@ -73,7 +74,8 @@
   - `query_contract_arguments.rs` execution test: the worker receives
     `{z, a}` in registered order, and `{"1": "y", "0": "x"}` answers
     `query_default_unencodable`. On MySQL the test expects that database's
-    order instead: `{a, z}`, and the list `["x", "y"]`.
+    order instead: `{a, z}`, and the list `["x", "y"]`. MariaDB keeps the
+    registered order.
   - `json_order.rs` unit test.
   - Updated expectations give PHP's order for their inputs: the
     `search_attribute_upserts.rs` unit and execution tests (PHP's

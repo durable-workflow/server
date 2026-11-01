@@ -124,8 +124,10 @@ async fn a_registered_json_default_takes_phps_array_shape() {
     assert_eq!(routed(&app, "listdef", envelope(Payload::Array(vec![]))).await, envelope(Payload::Array(vec![list.clone()])));
     // A map default reaches the worker in the key order the database keeps:
     // the registered order, except that a MySQL json column orders keys by
-    // length, then bytes, for PHP as for native.
-    let mysql = matches!(database, TestDatabase::MySql { .. });
+    // length, then bytes, for PHP as for native. MariaDB's json is text.
+    let version = text_rows(&database, "SELECT 'version', sqlite_version()", "SELECT 'version'::text, version()",
+        "SELECT 'version', VERSION()").await;
+    let mysql = matches!(database, TestDatabase::MySql { .. }) && !version[0].1.contains("MariaDB");
     let (z, a) = (("z".to_owned(), OrderedValue::Long(20)), ("a".to_owned(), OrderedValue::Long(10)));
     let ordered = OrderedValue::Array(vec![OrderedValue::Map(if mysql { vec![a, z] } else { vec![z, a] })]);
     assert_eq!(routed(&app, "orderdef", envelope(Payload::Array(vec![]))).await,

@@ -801,9 +801,9 @@ contract fixture before its correction.
   `{"1": "a", "0": "b"}` is not a list and fails PHP's encoder with a 500.
   Native's JSON objects now keep document order (`serde_json` with
   `preserve_order`), and a default is a list only when its keys are 0 to n-1
-  in stored order. SQLite and a Postgres `json` column keep the registered
-  order; a MySQL `json` column orders keys by length, then bytes, for both
-  servers. The `query-contract-arguments` fixture records three more cases
+  in stored order. SQLite, a Postgres `json` column and MariaDB keep the
+  registered order; a MySQL `json` column orders keys by length, then bytes,
+  for both servers. The `query-contract-arguments` fixture records three more cases
   against published 2.11.7, with a contract that holds on every backend
   ([checkpoint](rust-server-port-checkpoints/2026-11-01-registered-default-order.md)).
 
