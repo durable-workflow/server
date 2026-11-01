@@ -362,6 +362,8 @@ mod child_retries;
 mod deep_json_bodies;
 #[path = "execution/activity_result_repeats.rs"]
 mod activity_result_repeats;
+#[path = "execution/task_fairness.rs"]
+mod task_fairness;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),

@@ -6,7 +6,9 @@
 //! PHP keeps those scores in `InMemoryTaskFairnessState`, which starts empty
 //! on every request of its Apache server. So each class reports a score of 0,
 //! and the fairness reorder never moves a poll's first candidate: a poll takes
-//! the oldest ready task of the most urgent tier, as native's poll does.
+//! the oldest ready task of the most urgent tier, as native's poll does. The
+//! reorder still decides which candidate a poll tries next when an earlier
+//! one cannot be claimed: [`fairness_order`] is that reorder.
 use super::{Result, backend::Backend, schedule_cron::php_compare, store::Store};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
@@ -15,6 +17,62 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 const DEFAULT_PRIORITY: i64 = 5;
 /// `TaskFairnessKey::DEFAULT_CLASS`.
 const DEFAULT_CLASS: &str = "__default__";
+
+/// How many candidates PHP's poll reorders at a time: its candidate limit,
+/// `max(10, server.polling.max_tasks_per_poll * 10)`, at the default of one.
+pub(super) const FAIRNESS_BATCH: usize = 10;
+
+/// `TaskFairnessScheduler::reorder` with an empty fairness state, as each
+/// request of published PHP runs it. Takes each candidate's priority,
+/// fairness key and weight in candidate order (priority, then
+/// availability), and returns the candidates' indexes in the order a poll
+/// tries them. Tiers keep their priority order. Within a tier, classes take
+/// turns: the next candidate comes from the class with the fewest of this
+/// batch's picks per unit of weight, the earliest-seen class winning a tie,
+/// and each class keeps its own candidates' order. A candidate without a
+/// fairness key belongs to the shared default class.
+pub(super) fn fairness_order(candidates: &[(Option<i64>, Option<String>, Option<i64>)]) -> Vec<usize> {
+    let mut tiers: Vec<(i64, Vec<usize>)> = Vec::new();
+    for (index, (priority, _, _)) in candidates.iter().enumerate() {
+        let priority = priority.unwrap_or(DEFAULT_PRIORITY);
+        match tiers.iter_mut().find(|(tier, _)| *tier == priority) {
+            Some((_, members)) => members.push(index),
+            None => tiers.push((priority, vec![index])),
+        }
+    }
+    tiers.sort_by_key(|(priority, _)| *priority);
+    let mut order = Vec::with_capacity(candidates.len());
+    for (_, members) in tiers {
+        // Each class: its key, its weight (its first candidate's), its
+        // remaining candidates and the picks it has had in this batch.
+        let mut classes: Vec<(String, i64, std::collections::VecDeque<usize>, i64)> = Vec::new();
+        for index in members {
+            let (_, key, weight) = &candidates[index];
+            let class = key.clone().filter(|key| !key.is_empty()).unwrap_or_else(|| DEFAULT_CLASS.to_owned());
+            match classes.iter_mut().find(|(name, ..)| *name == class) {
+                Some((_, _, queue, _)) => queue.push_back(index),
+                None => classes.push((class, weight.filter(|weight| *weight >= 1).unwrap_or(1), [index].into(), 0)),
+            }
+        }
+        loop {
+            let mut best: Option<(usize, f64)> = None;
+            for (position, (_, weight, queue, picks)) in classes.iter().enumerate() {
+                if queue.is_empty() {
+                    continue;
+                }
+                let score = *picks as f64 / (*weight).max(1) as f64;
+                if best.is_none_or(|(_, best_score)| score < best_score) {
+                    best = Some((position, score));
+                }
+            }
+            let Some((position, _)) = best else { break };
+            let (_, _, queue, picks) = &mut classes[position];
+            order.extend(queue.pop_front());
+            *picks += 1;
+        }
+    }
+    order
+}
 
 /// One fairness class in a priority tier.
 struct Class {
@@ -101,6 +159,23 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_poll_tries_its_candidates_in_the_published_fairness_order() {
+        let task = |priority: i64, key: Option<&str>, weight: i64| (Some(priority), key.map(str::to_owned), Some(weight));
+        // A skipped default-class task, another default-class task, then a
+        // keyed task: the keyed class is tried before the second default task.
+        assert_eq!(fairness_order(&[task(5, None, 1), task(5, None, 1), task(5, Some("a"), 1)]), [0, 2, 1]);
+        // Two classes alternate; a heavier class takes proportionally more turns.
+        assert_eq!(fairness_order(&[task(5, Some("a"), 1), task(5, Some("a"), 1), task(5, Some("b"), 1), task(5, Some("b"), 1)]), [0, 2, 1, 3]);
+        assert_eq!(fairness_order(&[task(5, Some("a"), 2), task(5, Some("a"), 2), task(5, Some("a"), 2), task(5, Some("b"), 1), task(5, Some("b"), 1)]),
+            [0, 3, 1, 2, 4]);
+        // Tiers never mix: every priority-1 task comes before priority 5.
+        assert_eq!(fairness_order(&[task(1, Some("a"), 1), task(1, Some("a"), 1), task(5, Some("b"), 1), task(1, Some("b"), 1)]), [0, 3, 1, 2]);
+        // One class, or one candidate, keeps its order.
+        assert_eq!(fairness_order(&[task(5, Some("a"), 1), task(5, Some("a"), 1)]), [0, 1]);
+        assert_eq!(fairness_order(&[]), Vec::<usize>::new());
+    }
+
     use super::*;
 
     #[test]
