@@ -137,6 +137,13 @@ pub(super) trait Backend: Database {
     // commands carry no identity: no request id for a signal, the raw key
     // ($8) for an update.
     const BRIDGE_COMMAND: &str = "SELECT workflow_run_id,resolved_workflow_run_id FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND status='accepted' AND context->'server'->'metadata'->>'adapter'=$3 AND context->'server'->'metadata'->>'action'=$4 AND context->'server'->'metadata'->>'idempotency_key'=$5 AND context->'server'->'metadata'->>$6=$7 AND (request_id IS NULL OR request_id=$8) ORDER BY accepted_at DESC,command_sequence DESC LIMIT 1";
+    // The online-backup hold (Server #949). Its decisions use the database's
+    // clock, as PHP's `ExternalPayloadBackupHold` does, so every process
+    // agrees on expiry. PostgreSQL keeps `owner` as a uuid.
+    // `clock_timestamp()` advances within a transaction, unlike `now()`.
+    const BACKUP_HOLD_CLOCK: &str = "SELECT clock_timestamp() AT TIME ZONE 'UTC' AS database_time";
+    const BACKUP_HOLD_ROW: &str = "SELECT owner::text AS owner,acquired_at,expires_at FROM runtime_external_payload_backup_hold WHERE id=1";
+    const BACKUP_HOLD_SAVE: &str = "UPDATE runtime_external_payload_backup_hold SET owner=CAST($1 AS uuid),acquired_at=$2,expires_at=$3 WHERE id=1";
     fn statement(sql: &'static str) -> Cow<'static, str> {
         Cow::Borrowed(sql)
     }
@@ -202,6 +209,9 @@ impl Backend for Sqlite {
     }
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT sequence,event_type,CASE WHEN projection_bytes<=8388608 THEN payload ELSE NULL END AS payload,workflow_task_id,recorded_at,projection_count FROM (SELECT sequence,event_type,payload,workflow_task_id,recorded_at,COUNT(*) OVER () AS projection_count,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS projection_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') ORDER BY sequence LIMIT 10001) AS page ORDER BY sequence";
     const PHP_CONNECTION: &str = "sqlite";
+    const BACKUP_HOLD_CLOCK: &str = "SELECT strftime('%Y-%m-%d %H:%M:%f','now') AS database_time";
+    const BACKUP_HOLD_ROW: &str = "SELECT owner,acquired_at,expires_at FROM runtime_external_payload_backup_hold WHERE id=1";
+    const BACKUP_HOLD_SAVE: &str = "UPDATE runtime_external_payload_backup_hold SET owner=$1,acquired_at=$2,expires_at=$3 WHERE id=1";
     // Carbon's millisecond comparison rounds at half a millisecond. Parse only
     // whole UTC seconds with SQLite's clock functions and round integer
     // microseconds explicitly; SQLite's fractional-date rounding differs at ties.
@@ -492,6 +502,10 @@ impl Backend for Postgres {
 
 impl Backend for MySql {
     type EncodedInteger = Option<i64>;
+    // MariaDB's Laravel driver may store the owner as its uuid type.
+    const BACKUP_HOLD_CLOCK: &str = "SELECT UTC_TIMESTAMP(6) AS database_time";
+    const BACKUP_HOLD_ROW: &str = "SELECT CAST(owner AS CHAR(36)) AS owner,acquired_at,expires_at FROM runtime_external_payload_backup_hold WHERE id=1";
+    const BACKUP_HOLD_SAVE: &str = "UPDATE runtime_external_payload_backup_hold SET owner=$1,acquired_at=$2,expires_at=$3 WHERE id=1";
     type EncodedFloat = Option<f64>;
     type EncodedFlag = Option<bool>;
     fn optional_integer(value: Option<i64>) -> Option<i64> {

@@ -405,6 +405,8 @@ impl Runtime {
             Storage::MySql(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
         }
     }
+    delegate!(change_backup_hold(action: super::backup_hold::Action, request: &super::backup_hold::Request) -> Result<Value>);
+    delegate!(backup_hold_status(owner: Option<&str>) -> Result<Value>);
     delegate!(retention_status(limit: i64) -> Result<Value>);
     delegate!(retention_pass(limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(activity_timeout_status(limit: i64) -> Result<Value>);
