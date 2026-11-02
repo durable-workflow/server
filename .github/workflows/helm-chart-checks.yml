@@ -9,7 +9,7 @@ permissions:
 
 env:
   CHART_PATH: k8s/helm/durable-workflow
-  PYTHON_VERSION: 3.12.11
+  PYTHON_VERSION: 3.12.16
   HELM_VERSION: v3.16.2
   CHART_TESTING_VERSION: 3.14.0
   YAMLLINT_VERSION: 1.33.0
