@@ -28,7 +28,7 @@ matches() {
   [[ $tag =~ ^${regex}$ ]]
 }
 for pattern in "${patterns[@]}"; do
-  for tag in native-2.12.0-rc.1 native-2.11.4 native-3.0.0; do
+  for tag in native-2.12.0-rc.1 native-2.11.4 native-3.0.0 3.0.2 3.1.0-rc.1 10.0.0; do
     if matches "$pattern" "$tag"; then fail "release.yml tag pattern $pattern matches $tag."; fi
   done
 done
@@ -56,7 +56,10 @@ expect "may only be empty or native-" RELEASE_TAG=x-2.12.0 RELEASE_TAG_PREFIX=x-
 
 publish=scripts/ci/native-release-publish.sh
 images=(GHCR_IMAGE=ghcr.io/example/native DOCKERHUB_IMAGE=example/native)
-expect "must be native-<exact release version>" RELEASE_TAG=2.12.0-rc.1 "${images[@]}" PUBLISH_DOCKERHUB=true bash "$publish"
+expect "must be a native release version" RELEASE_TAG=2.12.0-rc.1 "${images[@]}" PUBLISH_DOCKERHUB=true bash "$publish"
+expect "must be a native release version" RELEASE_TAG=2.11.9 "${images[@]}" PUBLISH_DOCKERHUB=true bash "$publish"
+# A plain tag from major 3 passes the tag check and stops at the digests.
+expect "exact smoked digest" RELEASE_TAG=3.0.2 "${images[@]}" PUBLISH_DOCKERHUB=true bash "$publish"
 # No digests stops the publisher right after the tag and registries are accepted.
 expect "exact smoked digest" RELEASE_TAG=native-2.12.0-rc.1 "${images[@]}" PUBLISH_DOCKERHUB=true bash "$publish"
 expect "exact smoked digest" RELEASE_TAG=native-2.12.0-rc.1 "${images[@]}" PUBLISH_DOCKERHUB=false bash "$publish"
@@ -96,6 +99,10 @@ rolling() { # known tags, release tag [, alias state [, exact digest]] -> moved 
 }
 want() { test "$2" = "$3" || fail "$1: expected rolling tags '$3', got '$2'."; }
 want "first final" "$(rolling $'2.11.8\nnative-3.0.0-rc.2' native-3.0.0)" "3.0 3 latest"
+# Plain tags from major 3 are native; plain tags below 3 stay PHP releases.
+want "first plain final" "$(rolling $'2.11.8\nnative-3.0.0\nnative-3.0.1' 3.0.2)" "3.0 3 latest"
+want "plain behind a plain" "$(rolling $'2.11.8\nnative-3.0.1\n3.0.3' 3.0.2)" ""
+want "plain candidate" "$(rolling $'2.11.8\nnative-3.0.1' 3.1.0-rc.1)" ""
 want "candidate" "$(rolling $'2.11.8' native-3.0.1-rc.1)" ""
 want "backport below a newer minor" "$(rolling $'native-3.0.0\nnative-3.1.0' native-3.0.1)" "3.0"
 want "older patch" "$(rolling $'native-3.0.0\nnative-3.0.2' native-3.0.1)" ""
@@ -123,10 +130,13 @@ expect "INDEX_DIGEST must be the verified index digest" RELEASE_TAG=native-3.0.0
 # only when its server reports exactly that version.
 identity=scripts/ci/native-release-identity.sh
 test "$(bash "$identity" expect native-3.0.0)" = 3.0.0 || fail "native-3.0.0 must admit 3.0.0."
+test "$(bash "$identity" expect 3.0.2)" = 3.0.2 || fail "3.0.2 must admit 3.0.2."
+test "$(bash "$identity" expect 3.1.0-rc.1)" = 3.1.0-rc.1 || fail "3.1.0-rc.1 must admit 3.1.0-rc.1."
+if bash "$identity" expect 2.11.9 >/dev/null 2>&1; then fail "a plain 2.x tag is a PHP release, not native."; fi
 test "$(bash "$identity" expect native-3.0.0-rc.3)" = 3.0.0-rc.3 || fail "native-3.0.0-rc.3 must admit 3.0.0-rc.3."
 test -z "$(bash "$identity" expect '')" || fail "an unlabelled image is a development image."
 test -z "$(bash "$identity" expect '<no value>')" || fail "an unlabelled image is a development image."
-for label in 3.0.0 native-3.0 native-3.0.0-beta native-3.0.0x 'native-3.0.0 '; do
+for label in 2.11.9 3.0 3.0.0-beta native-3.0 native-3.0.0-beta native-3.0.0x 'native-3.0.0 '; do
   if bash "$identity" expect "$label" >/dev/null 2>&1; then fail "label '$label' must be refused."; fi
 done
 bash "$identity" check native-3.0.0 3.0.0 || fail "a matching release version must pass."
@@ -223,10 +233,13 @@ ok_dispatch=(RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commi
 expect "dispatch from refs/tags/native-3.0.2, not refs/heads/main" "${ok_dispatch[@]}" DISPATCH_REF=refs/heads/main bash "$dispatch"
 expect "dispatch from refs/tags/native-3.0.2, not refs/tags/native-3.0.1" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.1 bash "$dispatch"
 expect "is not RELEASE_COMMIT" RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$other DISPATCH_REF=refs/tags/native-3.0.2 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" bash "$dispatch"
-expect "must be native-X.Y.Z" "${ok_dispatch[@]}" RELEASE_TAG=3.0.2 DISPATCH_REF=refs/tags/3.0.2 bash "$dispatch"
+expect "must be X.Y.Z or X.Y.Z-rc.N from major 3" "${ok_dispatch[@]}" RELEASE_TAG=2.0.2 DISPATCH_REF=refs/tags/2.0.2 bash "$dispatch"
 for status in behind diverged; do
   expect "is not on main (compare status: $status)" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch"
 done
+plain_dispatch=(RELEASE_TAG=3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/3.0.2 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh")
+env -i PATH="$PATH" "${plain_dispatch[@]}" bash "$dispatch" >/dev/null || fail "the dispatch verifier must accept a plain 3.x tag."
+expect "must be X.Y.Z or X.Y.Z-rc.N from major 3" RELEASE_TAG=2.11.9 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/2.11.9 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" bash "$dispatch"
 for status in ahead identical; do
   env -i PATH="$PATH" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch" >/dev/null \
     || fail "the dispatch verifier must accept a release commit main contains ($status)."
@@ -246,7 +259,8 @@ expected_conditions="plan=none
 build-amd64=$tag_gate
 build-arm64=$tag_gate
 publish=$tag_gate
-aliases=$tag_gate && needs.plan.outputs.dockerhub == 'true'"
+aliases=$tag_gate && needs.plan.outputs.dockerhub == 'true'
+release=$tag_gate"
 test "$job_conditions" = "$expected_conditions" \
   || fail "native-release.yml job conditions changed; expected:
 $expected_conditions
@@ -254,4 +268,10 @@ got:
 $job_conditions"
 grep -q 'run: scripts/ci/verify-native-release-dispatch.sh' .github/workflows/native-release.yml \
   || fail "the plan job must run the dispatch verifier."
+# The PHP Release workflow refuses a native tag, pushed or dispatched, and only
+# the native Release job may write releases.
+grep -q 'name: Refuse a native release tag' .github/workflows/release.yml \
+  || fail "release.yml must refuse a 3.x or native- tag."
+test "$(grep -c '      contents: write' .github/workflows/native-release.yml)" = 1 \
+  || fail "only the native Release job may hold contents: write."
 printf 'Native release tags: %d release.yml pattern(s) checked; verifier, publisher and rolling tags behave as intended.\n' "${#patterns[@]}"

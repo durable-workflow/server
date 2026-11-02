@@ -15,8 +15,9 @@ dispatch_ref="${DISPATCH_REF:-}"
 dispatch_sha="${DISPATCH_SHA:-}"
 repository="${GITHUB_REPOSITORY:-}"
 gh_cli="${GH_CLI:-gh}"
-[[ "$release_tag" =~ ^native-[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
-    || fail "RELEASE_TAG must be native-X.Y.Z or native-X.Y.Z-rc.N."
+# Plain X.Y.Z(-rc.N) from major 3, or a native- tag published before plain ones.
+[[ "$release_tag" =~ ^(native-[0-9]+|[3-9]|[1-9][0-9]+)\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
+    || fail "RELEASE_TAG must be X.Y.Z or X.Y.Z-rc.N from major 3, or native-X.Y.Z(-rc.N)."
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] \
     || fail "RELEASE_COMMIT must be a full lowercase Git commit SHA."
 [ "$dispatch_ref" = "refs/tags/$release_tag" ] \

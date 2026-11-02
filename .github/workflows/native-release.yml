@@ -1,9 +1,12 @@
 name: Native release candidate
 
-# Publishes the native (Rust) server image for an existing immutable native
-# Git tag, native-<version> (Server #325). A native- tag never matches the PHP
-# Release workflow's tag filter, so it starts no PHP release; the image tag is
-# the version without the prefix. Each architecture builds on its own runner and pushes by
+# Publishes the native (Rust) server image for an existing immutable Git tag:
+# a plain X.Y.Z (or X.Y.Z-rc.N) from major 3, or a native-<version> tag from
+# before plain tags (Server #325). PHP Server releases are 2.x and earlier, and
+# the PHP Release workflow refuses any other tag, so a native tag never starts
+# a PHP release; the image tag is the version without any native- prefix.
+# After both registries publish and a final release's aliases move, the
+# Release job creates the GitHub Release (a candidate as a prerelease). Each architecture builds on its own runner and pushes by
 # digest only; that exact digest is pulled back and smoke-tested there, so a
 # failed smoke leaves no tag. The publish job then refuses tags that already
 # exist, gives both smoked digests
@@ -41,7 +44,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing immutable native Git tag, native-<version> (for example native-2.12.0-rc.1); the image tag drops native-'
+        description: 'Existing immutable native Git tag: X.Y.Z or X.Y.Z-rc.N from major 3 (for example 3.0.2), or a historical native-<version>; the image tag drops native-'
         required: true
       release_commit:
         description: 'Full source commit of that tag'
@@ -68,6 +71,7 @@ jobs:
     outputs:
       dockerhub: ${{ steps.plan.outputs.dockerhub }}
       version: ${{ steps.plan.outputs.version }}
+      tag_prefix: ${{ steps.plan.outputs.tag_prefix }}
     steps:
       - name: Check out trusted release tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -90,10 +94,14 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^native-[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
-            || { echo 'tag must be native-X.Y.Z or native-X.Y.Z-rc.N' >&2; exit 1; }
+          # Plain X.Y.Z from major 3, above every PHP release; native- names
+          # the releases tagged before plain tags.
+          [[ "$RELEASE_TAG" =~ ^(native-[0-9]+|[3-9]|[1-9][0-9]+)\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
+            || { echo 'tag must be X.Y.Z or X.Y.Z-rc.N from major 3, or native-X.Y.Z(-rc.N)' >&2; exit 1; }
           echo dockerhub=true >> "$GITHUB_OUTPUT"
           echo "version=${RELEASE_TAG#native-}" >> "$GITHUB_OUTPUT"
+          if [[ "$RELEASE_TAG" == native-* ]]; then prefix=native-; else prefix=; fi
+          echo "tag_prefix=$prefix" >> "$GITHUB_OUTPUT"
 
   build-amd64:
     name: Build and smoke linux/amd64
@@ -126,7 +134,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_TAG_PREFIX: native-
+          RELEASE_TAG_PREFIX: ${{ needs.plan.outputs.tag_prefix }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
           set -euo pipefail
@@ -219,7 +227,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_TAG_PREFIX: native-
+          RELEASE_TAG_PREFIX: ${{ needs.plan.outputs.tag_prefix }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
         run: |
           set -euo pipefail
@@ -390,3 +398,37 @@ jobs:
           INDEX_DIGEST: ${{ needs.publish.outputs.digest }}
           RELEASE_IMAGE_TAG_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
         run: bash scripts/ci/native-release-rolling-tags.sh
+
+  release:
+    name: Create the GitHub Release
+    # Only after both registries publish and a final release's aliases move:
+    # the release page then never runs ahead of the images.
+    needs: [plan, publish, aliases]
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create or confirm the release for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          INDEX_DIGEST: ${{ needs.publish.outputs.digest }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; left unchanged."
+            exit 0
+          fi
+          notes=$(printf 'Durable Workflow Server %s.\n\n| | |\n| --- | --- |\n| Git tag | `%s` → `%s` |\n| Image index | `%s` in `durableworkflow/server` and `ghcr.io/durable-workflow/server` |\n| Release run | %s |\n' \
+            "$VERSION" "$RELEASE_TAG" "$RELEASE_COMMIT" "$INDEX_DIGEST" "$RUN_URL")
+          if [[ "$VERSION" == *-rc.* ]]; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "$VERSION" --notes "$notes" --prerelease --latest=false
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --title "$VERSION" --notes "$notes" --latest
+          fi
