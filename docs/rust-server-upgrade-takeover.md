@@ -55,8 +55,9 @@ The native image carries every command below. Native releases from 3.0.0
 publish to the same repositories as PHP, `ghcr.io/durable-workflow/server`
 and `durableworkflow/server` on Docker Hub, as major version 3. A final
 release moves `3.Y`, `3` and `latest` forward to itself; a PHP 2.x release
-after it moves only `2` and `2.Y`. Release candidates (`X.Y.Z-rc.N`) are
-published to GHCR only and move no rolling tag. The first two candidates were published as
+after it moves only `2` and `2.Y`. Release candidates (`X.Y.Z-rc.N`) move no
+rolling tag. From `3.0.0-rc.3` they are published to both registries; the
+first two candidates were GHCR-only and published as
 `ghcr.io/durable-workflow/server-native`; the current one is `3.0.0-rc.2`,
 index
 `sha256:f54e89d775dbf7c6074f37836c6bb0b25f94869d23711b0706e9547c3edecb29`. It

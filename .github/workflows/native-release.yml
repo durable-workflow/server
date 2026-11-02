@@ -20,10 +20,15 @@ name: Native release candidate
 # none, and the PHP Release workflow leaves latest to a newer native
 # release. It runs only from main, in the dockerhub-native Environment.
 #
-# A release candidate (a version with a -rc.N suffix) publishes to GHCR only
-# (operator decision, October 30). Any other version publishes to both
-# registries: each job then signs in to Docker Hub before it builds anything,
-# so a dispatch that cannot sign in stops there and pushes nothing.
+# Every version, release candidates included, publishes to both registries.
+# Candidates 1 and 2 went to GHCR only. That was the porting agent's
+# suggestion, which the operator OK'd on October 30, to keep unqualified
+# builds off Docker Hub while 3.x tags could still be picked up by scripts
+# that chose "the newest durableworkflow/server". #907 restricted that
+# automatic selection to 2.x, and a candidate moves no rolling tag, so from
+# 3.0.0-rc.3 candidates also go to Docker Hub (operator, November 2). Each job
+# signs in to Docker Hub before it builds anything, so a dispatch that cannot
+# sign in stops there and pushes nothing.
 
 run-name: Native ${{ inputs.tag }} at ${{ inputs.release_commit }}
 
@@ -58,7 +63,7 @@ jobs:
       dockerhub: ${{ steps.plan.outputs.dockerhub }}
       version: ${{ steps.plan.outputs.version }}
     steps:
-      - name: Publish a release candidate to GHCR only
+      - name: Publish to both registries
         id: plan
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -66,7 +71,7 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^native-[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] \
             || { echo 'tag must be native-X.Y.Z or native-X.Y.Z-rc.N' >&2; exit 1; }
-          if [[ -n "${BASH_REMATCH[1]}" ]]; then echo dockerhub=false; else echo dockerhub=true; fi >> "$GITHUB_OUTPUT"
+          echo dockerhub=true >> "$GITHUB_OUTPUT"
           echo "version=${RELEASE_TAG#native-}" >> "$GITHUB_OUTPUT"
 
   build-amd64:
