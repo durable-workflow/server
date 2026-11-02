@@ -40,6 +40,10 @@ Resources at the native-mysql sustained rate: about 52% host CPU busy on both
 plan, about 379 MiB on `vc2`, and about 1 MiB on the 2 GB plan. Two
 gigabytes removes swapping but does not add throughput: one vCPU is the limit.
 
+After overload, `vc2-1c-1gb` native-mysql did not recover: its low-rate
+drift check after the ladder failed (27/30 in the window, p95 51 s). Every
+other native run passed that check.
+
 The `vhp-1c-1gb` native-sqlite result of 8 against 4 on `vhp-1c-2gb` is
 within the ladder's 4→8 doubling. Repeat before treating the difference as
 real.
@@ -73,6 +77,10 @@ jitter to stay within 5 ms in every start and end capture.
 - All other `vhp` runs: reliable, with all offsets and jitter under about
   1.3 ms.
 
+The capacity verdicts do not depend on the clock: every passing step's p95
+is at most 1.26 s, far below the 2 s bound, including in the runs whose
+cross-host timing is marked unreliable.
+
 ## Four vCPU comparison (`matched-4c.json`)
 
 On the `vhp-4c-8gb-amd` driver host, one PHP run and then one native-image
@@ -81,8 +89,9 @@ repeat with p50 0.37 s and p95 0.48 s. Runtime CPU was 0.26 core-s per
 workflow, MySQL 0.52, and runtime memory about 8 MiB. PHP 2.11.8 closed 41,
 40 and 17 of 120 in the window, with p50 89–111 s. Its runtime CPU was
 2.2–6.9 core-s per workflow, MySQL 0.78–2.4, and memory about 210 MiB. This
-reproduces the rc.1 result in [../rc1/](../rc1/) on the October 20 host
-type, against the current final PHP release.
+is consistent with the rc.1 result in [../rc1/](../rc1/), now against the
+current final PHP release. That rc.1 run was not on this host type; this run
+used a disposable `vhp-4c-8gb-amd`.
 
 ## Cleanup
 
