@@ -67,6 +67,17 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 0.3.9 / Server 2.11.8
+
+No change for existing installs: the default Server stays 2.11.8 and values
+keep their shape. The chart now refuses, at render time, an `image.tag` of a
+native 3.x Server: a 3.x version such as `3.0.0`, or the rolling tags `3`,
+`3.0` and `latest`, which now point at native. This
+chart's queue worker, scheduler and migration job need the PHP 2.x image, and
+the native image would fail at runtime. For native 3.x, use
+`docker-compose.published.yml` until the chart gains a native mode
+([server#946](https://github.com/durable-workflow/server/issues/946)).
+
 ### Chart 0.3.0 / Server 2.11
 
 This chart advances the default Server minor version. Existing values retain

@@ -9,7 +9,7 @@ permissions:
 
 env:
   CHART_PATH: k8s/helm/durable-workflow
-  PYTHON_VERSION: 3.12.11
+  PYTHON_VERSION: 3.12.16
   HELM_VERSION: v3.16.2
   CHART_TESTING_VERSION: 3.14.0
   YAMLLINT_VERSION: 1.33.0
@@ -72,6 +72,9 @@ jobs:
         run: |
           python -I -m pip install --only-binary :all: PyYAML==6.0.2
           python scripts/ci/test_database_tls_chart.py
+
+      - name: Check that native 3.x images are refused
+        run: python scripts/ci/test_helm_native_image_guard.py
 
       - name: Render every CI fixture
         run: |
