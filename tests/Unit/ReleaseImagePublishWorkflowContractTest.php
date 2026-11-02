@@ -257,7 +257,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $verifyOffset = strpos($dockerfile, 'git -C /workflow rev-parse HEAD');
         $cleanOffset = strpos($dockerfile, 'git -C /workflow diff --quiet HEAD --');
         $provenanceOffset = strpos($dockerfile, '> /workflow/.package-provenance');
-        $metadataOffset = strpos($dockerfile, 'RUN php scripts/ci/prepare-release-workflow-composer-metadata.php');
+        $metadataOffset = strpos($dockerfile, "    php scripts/ci/prepare-release-workflow-composer-metadata.php; \\\n");
         $composerUpdateOffset = strpos($dockerfile, 'composer update durable-workflow/workflow');
         $copyApplicationOffset = strpos($dockerfile, "COPY . .\n");
         $compareInstalledProvenanceOffset = strpos(
