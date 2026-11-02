@@ -1,7 +1,7 @@
 {
   "schema": "durable-workflow.server-port-performance-profile/v1",
   "profile_version": "3.0.0",
-  "profile_id": "server-port-development-matched-amd64-v3-rc2-php2118",
+  "profile_id": "server-port-development-matched-amd64-v3-rc3-php2118",
   "evidence_class": "development_comparison",
   "publishable_capacity_claim": false,
   "status": "prospective_inputs",
@@ -24,7 +24,7 @@
     "redis_version": "7.2.16",
     "native_image": "ghcr.io/durable-workflow/server@sha256:899b404b02f856cb582c5e77a95882a3f9928781083d1e7a3fe569f3ff978d6b",
     "native_version": "3.0.0-rc.3",
-    "native_image_source": "6caf527ab5c85d6f33b63274847080c97a8d4336",
+    "native_image_source": "04cad60ed661db2c9e961d85e7a132d82ee62e46",
     "client_runtime_image": "durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549"
   },
   "hardware": {
@@ -117,7 +117,7 @@
     "cleanup_of_databases_objects_dependencies_compiler_and_task_resources"
   ],
   "limitations": [
-    "Prospective inputs, not a measured result or published native artifact.",
+    "Prospective inputs, not a measured result. The native image is the published 3.0.0-rc.3 artifact.",
     "The original v1 PHP measurements remain historical; both implementations need fresh matched observations.",
     "This single-client 120-second development workload does not qualify the standard capacity topology or maximum sustained capacity.",
     "Equal aggregate runtime limits include PHP HTTP, queue, scheduler and Redis, or the replacement native process; MySQL is additional and identical.",

@@ -1,14 +1,14 @@
 {
   "schema": "durable-workflow.server-port-performance-profile/v1",
   "profile_version": "1.0.0",
-  "profile_id": "server-port-small-host-split-amd64-v1",
+  "profile_id": "server-port-small-host-split-amd64-v1-rc3",
   "evidence_class": "development_comparison",
   "publishable_capacity_claim": false,
   "status": "prospective_inputs",
   "artifacts": {
     "native_image": "ghcr.io/durable-workflow/server@sha256:899b404b02f856cb582c5e77a95882a3f9928781083d1e7a3fe569f3ff978d6b",
     "native_version": "3.0.0-rc.3",
-    "native_source": "6caf527ab5c85d6f33b63274847080c97a8d4336",
+    "native_source": "04cad60ed661db2c9e961d85e7a132d82ee62e46",
     "php_server": "durableworkflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd",
     "php_server_version": "2.11.8",
     "php_workflow_version": "2.15.12",
@@ -55,7 +55,7 @@
       "vultr vhp-1c-2gb-amd"
     ],
     "driver": "a separate host in the same VPC with at least 4 vCPU, so client processes are never the limit",
-    "comparison": "vultr vhp-4c-8gb-amd runs the rc1 matched profile, unchanged, for continuity with October 20 and 30"
+    "comparison": "vultr vhp-4c-8gb-amd runs the sibling rc3/matched-4c.json profile, with the same workload as the October 20 and 30 matched runs"
   },
   "workload": {
     "authority": "benchmarks/capacity/v1/suite.json",
