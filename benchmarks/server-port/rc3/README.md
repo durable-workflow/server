@@ -30,3 +30,11 @@ The originals stay as they are because the November 2 observations in
 the same scripts and instructions as the
 [small-host README](../small-host/README.md), passing this directory's file
 as the profile.
+
+## Results
+
+The November 2 rc.3 performance qualification is in
+[observations-2026-11-02.md](observations-2026-11-02.md), with one summary per
+run (`summary-<plan>-<mode>[-r2]-2026-11-02.json`) and the matched four-vCPU
+tables (`summary-matched-4c-*-2026-11-02.md`).
+
