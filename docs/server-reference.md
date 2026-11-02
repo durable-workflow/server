@@ -96,9 +96,8 @@ care around persistence, backups, and upgrades.
 
 Image selection:
 
-- The checked-in Compose file defaults to the current native image: the
-  release candidate by digest until 3.0.0 is published, then the exact
-  release.
+- The checked-in Compose file defaults to the native 3.0.0 release,
+  `durableworkflow/server:3.0.0`.
 - `DW_SERVER_IMAGE=ghcr.io/durable-workflow/server:<server-version>`
   selects the same release line from GitHub Container Registry.
 - `DW_SERVER_IMAGE=durableworkflow/server@sha256:...` pins an exact image
