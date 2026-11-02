@@ -1029,6 +1029,20 @@ support is not evidence of multi-node safety.
 
 ## Decisions
 
+- **November 2: explicit activity cancellation policies follow Core (#958).**
+  Native 3.0.x refused `cancellation_policy` on `schedule_activity` and
+  treated every activity as `try_cancel` on whole-run cooperative delivery.
+  Native now accepts it as published PHP Server with Core 2.15 does:
+  - any explicit value needs protocol 1.20 and a cooperative claim (409
+    `activity_cancellation_policy_not_supported`);
+  - `abandon` needs an integer `schedule_to_close_timeout` of at least one
+    second (422);
+  - the policy is kept in the activity's options and its `ActivityScheduled`
+    snapshot.
+  On delivery, `wait_cancellation_completed` holds until the live attempt's
+  worker acknowledges the stop, and the acknowledgement resumes the run
+  (`ActivityCancellationWait`). `abandon` delivers without cancelling.
+
 - **November 2: schedules follow Core 2.15.13's daylight-saving rule, not
   PHP 2.11.8 (#938).** General fixed daily cron schedules admitting twice
   when clocks go back in the embedded engine (Workflow #882, Core 2.15.13).
