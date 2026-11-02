@@ -152,11 +152,11 @@ RUN --mount=type=bind,from=dwf_composer_trust,target=/dwf-composer-trust,readonl
         DW_CI_CA_SHA256; \
       echo "Composer trust hook: source ${DW_SERVER_SOURCE_COMMIT} dockerfile ${DW_SERVER_DOCKERFILE_SHA256}"; \
       php /dwf-composer-trust/verify.php /usr/bin/composer "$PWD"; \
-    fi; \
-    composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress; \
-    cp composer.json /tmp/release-composer.json; \
-    cp composer.lock /tmp/release-composer.lock; \
-    test -f /workflow/.package-provenance
+    fi \
+    && composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \
+    && cp composer.json /tmp/release-composer.json \
+    && cp composer.lock /tmp/release-composer.lock \
+    && test -f /workflow/.package-provenance
 
 COPY . .
 # dump-autoload can run Composer scripts and plugins, and the previous RUN's

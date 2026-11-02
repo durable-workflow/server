@@ -187,7 +187,7 @@
     },
     {
       "path": "Dockerfile",
-      "line": "composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress; \\",
+      "line": "&& composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \\",
       "count": 1,
       "confinement": "Runs in the pinned Composer 2.10.3 build stage; PinnedComposerImageTest checks its CA store. With DW_CI_CA_SHA256 set, the same RUN first runs the central verifier against the authenticated bundle (.github#237).",
       "guards": [
