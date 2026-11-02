@@ -211,11 +211,21 @@ fn validate_auth_configuration() -> Result<(), Box<dyn Error>> {
     auth_value("DW_AUTH_BACKWARD_COMPATIBLE")?;
     auth_value("WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE")?;
     if let Some(driver) = auth_setting("DW_AUTH_DRIVER", "WORKFLOW_SERVER_AUTH_DRIVER")? {
-        if driver != "token" && driver != "none" {
-            return Err("unsupported development authentication configuration".into());
-        }
+        auth_driver_allowed(&driver, release_build())?;
     }
     Ok(())
+}
+
+/// The token driver always; the `none` driver, which admits every request as
+/// an administrator, only in a development build. A release build refuses it
+/// under either name before storage opens or the listener binds.
+fn auth_driver_allowed(driver: &str, release: bool) -> Result<(), &'static str> {
+    match driver {
+        "token" => Ok(()),
+        "none" if !release => Ok(()),
+        "none" => Err("DW_AUTH_DRIVER=none is refused in a release build; it admits every request as an administrator"),
+        _ => Err("unsupported development authentication configuration"),
+    }
 }
 
 /// Stack for each runtime thread, workers and blocking threads alike. A
@@ -235,9 +245,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         .block_on(run())
 }
 
+/// A release build carries the version of its `native-` tag, built in as
+/// `DW_SERVER_VERSION`, and starts without the opt-in. A development build
+/// (no release version) still requires `DW_RUST_EXPERIMENTAL=1`, so an
+/// untagged source build is never mistaken for a qualified release.
+fn release_build() -> bool {
+    option_env!("DW_SERVER_VERSION").is_some_and(|version| !version.is_empty())
+}
+
 async fn run() -> Result<(), Box<dyn Error>> {
-    if env::var("DW_RUST_EXPERIMENTAL").as_deref() != Ok("1") {
-        return Err("Rust development runtime requires DW_RUST_EXPERIMENTAL=1; it is not a qualified replacement".into());
+    if !release_build() && env::var("DW_RUST_EXPERIMENTAL").as_deref() != Ok("1") {
+        return Err("Rust development build requires DW_RUST_EXPERIMENTAL=1; release builds do not".into());
     }
     if let Some(command) = env::args().nth(1) {
         if env::args().count() != 2
@@ -636,6 +654,16 @@ mod startup_tests {
         ))));
         assert!(!unreachable(&RuntimeError::Database(sqlx::Error::RowNotFound)));
         assert!(!unreachable(&RuntimeError::Io(refused())));
+    }
+
+    #[test]
+    fn a_release_build_refuses_the_none_driver() {
+        assert_eq!(auth_driver_allowed("token", true), Ok(()));
+        assert_eq!(auth_driver_allowed("token", false), Ok(()));
+        assert_eq!(auth_driver_allowed("none", false), Ok(()));
+        assert!(auth_driver_allowed("none", true).unwrap_err().contains("refused in a release build"));
+        assert!(auth_driver_allowed("signature", true).is_err());
+        assert!(auth_driver_allowed("signature", false).is_err());
     }
 }
 

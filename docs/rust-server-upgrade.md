@@ -28,7 +28,8 @@ Stop writers before inspection; the mount check does not prove that another
 process cannot write through a different mount or certify that writers stopped.
 
 With the development binary and existing connection environment configured,
-run `DW_RUST_EXPERIMENTAL=1 durable-workflow-server upgrade-inspect`.
+run `DW_RUST_EXPERIMENTAL=1 durable-workflow-server upgrade-inspect`
+(a published image needs no `DW_RUST_EXPERIMENTAL`).
 For SQLite, set `DB_CONNECTION=sqlite` and `DB_DATABASE` to the existing file
 inside a read-only mount. Network databases use the existing `DB_HOST`,
 `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` and TLS settings. Use a

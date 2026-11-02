@@ -59,9 +59,18 @@ collect_release_tags() {
     printf '%s\n' "$raw_tags" | normalize_tag_lines
 }
 
+# Native final releases (native-X.Y.Z git tags, Server #325) own latest once
+# one is above this PHP release; a PHP release then keeps its own X and X.Y
+# aliases and leaves latest alone, so latest never moves back to PHP.
+native_final_owns_latest() {
+    native_latest="$(printf '%s\n' "$release_inventory" | sed -n 's/^native-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' | sort -u -V | tail -n 1)"
+    [ -n "$native_latest" ] || return 1
+    [ "$(printf '%s\n%s\n' "$native_latest" "$release_tag" | sort -V | tail -n 1)" != "$release_tag" ]
+}
+
 latest_known_stable_tag() {
     {
-        collect_release_tags
+        printf '%s\n' "$release_inventory"
         printf '%s\n' "$release_tag"
     } | while IFS= read -r candidate; do
         if is_stable_semver_tag "$candidate"; then
@@ -93,16 +102,34 @@ minor="${minor_patch%%.*}"
 minor_alias="${major}.${minor}"
 major_alias="$major"
 
-if [ -n "${RELEASE_IMAGE_KNOWN_TAGS:-}" ] || [ -n "$tag_source_url" ]; then
-    latest_tag="$(latest_known_stable_tag)"
+# One tag inventory decides both the PHP ordering and whether a native
+# release owns latest. The release workflow passes the resolver's inventory
+# (taken once, under the shared rolling-alias lock) as
+# RELEASE_IMAGE_KNOWN_TAGS, so nothing is read again here. Without an
+# inventory, or when a lookup fails, nothing is written.
+if [ -z "${RELEASE_IMAGE_KNOWN_TAGS:-}" ] && [ -z "$tag_source_url" ]; then
+    fail "Release tag inventory required" "Rolling aliases need the release tag inventory (RELEASE_IMAGE_KNOWN_TAGS or RELEASE_IMAGE_TAG_SOURCE_URL); no alias was changed."
+fi
+if ! release_inventory="$(collect_release_tags)"; then
+    exit 1
+fi
+if [ -z "$release_inventory" ]; then
+    fail "Release tag inventory empty" "The release tag inventory is empty; no alias was changed."
+fi
 
-    if [ "$latest_tag" != "$release_tag" ]; then
-        write_output "rolling_should_promote" "false"
-        write_output "artifact_status" "superseded"
-        write_output "superseded_by" "$latest_tag"
-        printf 'Release image tag %s was superseded by %s before alias promotion; rolling aliases were not changed.\n' "$release_tag" "$latest_tag"
-        exit 0
-    fi
+latest_tag="$(latest_known_stable_tag)"
+
+if [ "$latest_tag" != "$release_tag" ]; then
+    write_output "rolling_should_promote" "false"
+    write_output "artifact_status" "superseded"
+    write_output "superseded_by" "$latest_tag"
+    printf 'Release image tag %s was superseded by %s before alias promotion; rolling aliases were not changed.\n' "$release_tag" "$latest_tag"
+    exit 0
+fi
+
+latest_alias="true"
+if native_final_owns_latest; then
+    latest_alias="false"
 fi
 
 promote_image() {
@@ -112,11 +139,18 @@ promote_image() {
         source_ref="${image}@${verified_image_digest}"
     fi
 
-    "$docker_bin" buildx imagetools create \
-        --tag "${image}:${minor_alias}" \
-        --tag "${image}:${major_alias}" \
-        --tag "${image}:latest" \
-        "$source_ref"
+    if [ "$latest_alias" = "true" ]; then
+        "$docker_bin" buildx imagetools create \
+            --tag "${image}:${minor_alias}" \
+            --tag "${image}:${major_alias}" \
+            --tag "${image}:latest" \
+            "$source_ref"
+    else
+        "$docker_bin" buildx imagetools create \
+            --tag "${image}:${minor_alias}" \
+            --tag "${image}:${major_alias}" \
+            "$source_ref"
+    fi
 }
 
 promote_image "$dockerhub_image"
@@ -125,6 +159,12 @@ promote_image "$ghcr_image"
 write_output "rolling_should_promote" "true"
 write_output "artifact_status" "current"
 write_output "superseded_by" ""
+write_output "latest_alias" "$latest_alias"
 
-printf 'Promoted rolling image aliases %s, %s, and latest from exact tag %s for %s and %s.\n' \
-    "$minor_alias" "$major_alias" "$release_tag" "$dockerhub_image" "$ghcr_image"
+if [ "$latest_alias" = "true" ]; then
+    printf 'Promoted rolling image aliases %s, %s, and latest from exact tag %s for %s and %s.\n' \
+        "$minor_alias" "$major_alias" "$release_tag" "$dockerhub_image" "$ghcr_image"
+else
+    printf 'Promoted rolling image aliases %s and %s from exact tag %s for %s and %s; native release %s owns latest.\n' \
+        "$minor_alias" "$major_alias" "$release_tag" "$dockerhub_image" "$ghcr_image" "$native_latest"
+fi

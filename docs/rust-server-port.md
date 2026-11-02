@@ -1,11 +1,14 @@
 # Rust Server port
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
-rewrite and its acceptance evidence. PHP remains the default published runtime.
-The unpublished crate in [`rust/`](../rust/README.md) is an opt-in development
-runtime (`DW_RUST_EXPERIMENTAL=1`) with official Avro encoding and SQLite,
-PostgreSQL and MySQL/MariaDB storage. Full runtime parity, the backup-first
-in-place upgrade, performance qualification and cutover remain open.
+rewrite and its acceptance evidence. The crate in [`rust/`](../rust/README.md)
+is the native server, with official Avro encoding and SQLite, PostgreSQL and
+MySQL/MariaDB storage. Its release candidates are published to GHCR; the
+final 3.0.0 replaces PHP as `durableworkflow/server` 3.x and `latest`
+(operator decision, November 1). Release builds need no opt-in; a
+development build without a release version requires
+`DW_RUST_EXPERIMENTAL=1`. What remains before 3.0.0 is listed under
+"Remaining for the final release" below.
 
 Read this log top to bottom: current state and next action, the surface
 inventory, design decisions, then the detailed checkpoint history. Each
@@ -89,26 +92,33 @@ Updated October 27, 2026.
   through the native router, and the ones still answering
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
-- **Remaining for the release candidate:**
-  - (Takeover of the latest published PHP release, 2.11.8, is covered,
-    with its pending external payload deletions carried over;
-    [checkpoint](rust-server-port-checkpoints/2026-11-01-php-2118-takeover.md).)
-  - the scope question with the operator: prepared local activities,
-    workflow-bound Nexus handlers and external payload takeover;
-  - publishing a final native release to Docker Hub. From November 1, native
-    releases publish to the PHP image's own repositories,
-    `durableworkflow/server` and `ghcr.io/durable-workflow/server`, as major
-    version 3 (operator decision). Candidates 1 and 2 are on GHCR as
-    `ghcr.io/durable-workflow/server-native:3.0.0-rc.1` and `3.0.0-rc.2`.
-    Before the first final native tag reaches Docker Hub, the
-    published-artifact conformance scripts that default to the newest
-    `durableworkflow/server` tag (namespaces, principal attribution, Python,
-    replay, sagas and migration) must either run native or pin PHP;
-  - differential qualification of the published image. (Matched
-    performance against the recorded PHP baseline is met on one host for
-    release candidate 1: throughput, memory and idle long polls, with about a
-    twelfth of PHP's runtime CPU per workflow;
-    [observations](../benchmarks/server-port/rc1/observations-2026-10-30.md).)
+- **Remaining for the final release** (November 1):
+  - **Scope (operator decision, November 1).** 3.0.0 ships without prepared
+    local activities, workflow-bound Nexus handlers and external payload
+    takeover. Native refuses each one explicitly (the local-activity routes
+    with PHP's refusal for a bridge without the prepared role, the Nexus
+    handler kinds with 501, takeover of external payload storage with its
+    refusal), and each is a documented 3.x gap.
+  - **Publication (operator decisions, November 1).** A final native release
+    publishes to `durableworkflow/server` and
+    `ghcr.io/durable-workflow/server`, and moves `3.Y`, `3` and `latest`
+    forward to itself. A PHP 2.x release after it moves only `2` and `2.Y`.
+    Docker Compose and the Helm chart follow native.
+  - native schema upgrades between native versions (schema 7 to 8 after
+    #914);
+  - takeover of a published 2.11.8 database, with its pending
+    external-payload deletions, is covered
+    ([checkpoint](rust-server-port-checkpoints/2026-11-01-php-2118-takeover.md));
+  - moving the parity reference to published 2.11.8, then reporting the
+    cleanup counts always;
+  - Security acceptance of the post-commit external-payload deletion
+    (#914);
+  - Compose and Helm defaults switched to native;
+  - release candidate 3 from main, then its qualification: Security
+    installed acceptance, published-image parity and performance. Matched
+    performance was met for release candidate 1
+    ([observations](../benchmarks/server-port/rc1/observations-2026-10-30.md));
+    the small-host profile adds 1 vCPU plan sizes.
 
 ## API surface still missing
 

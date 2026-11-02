@@ -2549,6 +2549,7 @@ SH);
         try {
             $result = $this->runScript('scripts/ci/promote-release-image-rolling-tags.sh', [
                 'RELEASE_TAG' => '0.2.178',
+                'RELEASE_IMAGE_KNOWN_TAGS' => "0.2.177\n0.2.178",
                 'DOCKER' => $dockerBin,
             ]);
 

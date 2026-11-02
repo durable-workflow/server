@@ -81,6 +81,15 @@ collect_release_tags() {
     printf '%s\n' "$raw_tags" | normalize_tag_lines
 }
 
+# Native final releases (native-X.Y.Z git tags, Server #325) own latest once
+# one is above this PHP release; a PHP release then keeps its own X and X.Y
+# aliases and leaves latest alone, so latest never moves back to PHP.
+native_final_owns_latest() {
+    native_latest="$(printf '%s\n' "$release_inventory" | sed -n 's/^native-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' | sort -u -V | tail -n 1)"
+    [ -n "$native_latest" ] || return 1
+    [ "$(printf '%s\n%s\n' "$native_latest" "$release_tag" | sort -V | tail -n 1)" != "$release_tag" ]
+}
+
 if [ -z "$release_tag" ]; then
     fail "Release tag required" "Cannot resolve rolling image aliases without RELEASE_TAG."
 fi
@@ -100,9 +109,15 @@ minor="${minor_patch%%.*}"
 minor_alias="${major}.${minor}"
 major_alias="$major"
 
+# One tag inventory, read once with its status checked, decides both the PHP
+# ordering and whether a native release owns latest.
+if ! release_inventory="$(collect_release_tags)"; then
+    exit 1
+fi
+
 stable_tags="$(
     {
-        collect_release_tags
+        printf '%s\n' "$release_inventory"
         printf '%s\n' "$release_tag"
     } | while IFS= read -r candidate; do
         if is_stable_semver_tag "$candidate"; then
@@ -117,15 +132,29 @@ if [ -z "$latest_tag" ]; then
     fail "Release tag source unavailable" "No stable semver release tags were found while resolving rolling image aliases."
 fi
 
-rolling_refs="$(printf '%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s' \
-    "$dockerhub_image" "$minor_alias" \
-    "$dockerhub_image" "$major_alias" \
-    "$dockerhub_image" "latest" \
-    "$ghcr_image" "$minor_alias" \
-    "$ghcr_image" "$major_alias" \
-    "$ghcr_image" "latest")"
+if native_final_owns_latest; then
+    latest_alias="false"
+    rolling_refs="$(printf '%s:%s\n%s:%s\n%s:%s\n%s:%s' \
+        "$dockerhub_image" "$minor_alias" \
+        "$dockerhub_image" "$major_alias" \
+        "$ghcr_image" "$minor_alias" \
+        "$ghcr_image" "$major_alias")"
+    printf 'Native release %s is above %s and owns latest; this release leaves latest unchanged.\n' "$native_latest" "$release_tag"
+else
+    latest_alias="true"
+    rolling_refs="$(printf '%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s\n%s:%s' \
+        "$dockerhub_image" "$minor_alias" \
+        "$dockerhub_image" "$major_alias" \
+        "$dockerhub_image" "latest" \
+        "$ghcr_image" "$minor_alias" \
+        "$ghcr_image" "$major_alias" \
+        "$ghcr_image" "latest")"
+fi
 
 write_output "rolling_eligible" "true"
+write_output "latest_alias" "$latest_alias"
+# The promoter decides from this same inventory instead of reading tags again.
+write_multiline_output "release_inventory" "$release_inventory"
 write_output "major_alias" "$major_alias"
 write_output "minor_alias" "$minor_alias"
 write_multiline_output "rolling_refs" "$rolling_refs"
