@@ -3129,6 +3129,11 @@ where
             if !Self::claim_supports_cancellation(&task)? {
                 unavailable.push("worker_claim_capability");
             }
+            // Native has no post-run authority for an abandoned activity yet:
+            // its task would be stranded once the run closes (Server #971).
+            if commands.iter().any(|command| command["type"] == "schedule_activity" && command["cancellation_policy"] == "abandon") {
+                unavailable.push("installed_runtime_activity_policy");
+            }
             if !unavailable.is_empty() {
                 return Err(super::RuntimeError::Protocol {
                     status: StatusCode::CONFLICT,
@@ -3138,20 +3143,6 @@ where
                         "minimum_protocol_version": "1.20", "requested_version": protocol, "unavailable": unavailable,
                         "remediation": "Use a runtime with remote activity cancellation policies and a cooperative worker claim on protocol 1.20 or newer."}),
                 });
-            }
-            // The normalizer: a remote activity abandoned on cancellation
-            // needs its own finite schedule-to-close lifetime.
-            let mut errors = vec![];
-            for (index, command) in commands.iter().enumerate() {
-                if command["type"] == "schedule_activity" && command["cancellation_policy"] == "abandon"
-                    && !command["schedule_to_close_timeout"].as_i64().is_some_and(|timeout| timeout >= 1)
-                {
-                    errors.push((format!("commands.{index}.schedule_to_close_timeout"),
-                        vec!["An abandoned remote activity requires a finite schedule_to_close_timeout.".to_owned()]));
-                }
-            }
-            if let Some(error) = super::laravel_validation::failure_messages(errors) {
-                return Err(error);
             }
         }
         // `guardPortableWorkerAffinityCompletion`, then the normalizer's

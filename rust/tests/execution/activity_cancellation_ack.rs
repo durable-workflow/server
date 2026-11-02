@@ -267,24 +267,11 @@ async fn a_waiting_activity_holds_the_run_delivery_until_its_stop_is_acknowledge
     database.remove().await;
 }
 
-// `abandon` delivers at once and leaves the activity running; it needs the
-// activity's finite schedule-to-close deadline (ActivityAbandonment).
+// Native refuses an explicit `abandon` until abandoned activities can
+// outlive their run (Server #971), with PHP's refusal for a runtime that
+// lacks the policy. An explicit policy on protocol 1.19 is refused too.
 #[tokio::test]
-async fn an_abandoned_activity_keeps_running_and_needs_a_schedule_to_close_deadline() {
-    let database = TestDatabase::new().await;
-    let runtime = database.open().await.unwrap();
-    let app = router(runtime.clone());
-    let (_, activity, request_id) = cancel_with_policy(&app, "abandon-ok",
-        json!({"cancellation_policy":"abandon","schedule_to_close_timeout":600})).await;
-    let task = cooperative_poll(&app, "workflow").await;
-    let (status, delivered) = deliver(&app, &task, &request_id).await;
-    assert_eq!((status, delivered["delivered"].clone()), (StatusCode::OK, json!(true)), "{delivered}");
-    assert!(task_has_status(&database, &activity["task_id"], "leased").await, "the abandoned activity keeps its lease");
-    runtime.close().await;
-    database.remove().await;
-
-    // Without a finite schedule_to_close_timeout the command itself is
-    // refused, as Core's normalizer refuses it, and nothing is scheduled.
+async fn an_explicit_abandon_or_a_pre_1_20_policy_is_refused_at_scheduling() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -293,18 +280,16 @@ async fn an_abandoned_activity_keeps_running_and_needs_a_schedule_to_close_deadl
             "supported_workflow_types":["echo"],"supported_activity_types":["stop-activity"],
             "capabilities":["cooperative_cancellation"]}), "1.20").await;
     assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
-    start(&app, "abandon-unbounded").await;
+    start(&app, "abandon-refused").await;
     let task = cooperative_poll(&app, "workflow").await;
     let refused = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
         completion(&task, json!([{"type":"schedule_activity","activity_type":"stop-activity","arguments":envelope(Payload::Array(vec![])),
-            "start_to_close_timeout":300,"cancellation_policy":"abandon"}])), "1.20").await;
-    assert_eq!((refused.0, refused.1["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("validation_failed")), "{}", refused.1);
-    assert_eq!(refused.1["errors"]["commands.0.schedule_to_close_timeout"],
-        json!(["An abandoned remote activity requires a finite schedule_to_close_timeout."]));
-    // An explicit policy on protocol 1.19 is refused before anything else.
+            "start_to_close_timeout":300,"schedule_to_close_timeout":600,"cancellation_policy":"abandon"}])), "1.20").await;
+    assert_eq!((refused.0, refused.1["reason"].clone(), refused.1["unavailable"].clone()),
+        (StatusCode::CONFLICT, json!("activity_cancellation_policy_not_supported"), json!(["installed_runtime_activity_policy"])), "{}", refused.1);
     let old = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"stop-activity",
         "arguments":envelope(Payload::Array(vec![])),"cancellation_policy":"try_cancel"}])).await;
-    assert_eq!((old.0, old.1["reason"].clone()), (StatusCode::CONFLICT, json!("activity_cancellation_policy_not_supported")), "{}", old.1);
+    assert_eq!((old.0, old.1["unavailable"].clone()), (StatusCode::CONFLICT, json!(["request_protocol"])), "{}", old.1);
     runtime.close().await;
     database.remove().await;
 }
