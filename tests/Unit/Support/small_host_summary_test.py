@@ -106,7 +106,31 @@ class PublicSummaryTest(unittest.TestCase):
         self.assertEqual(summary["target"]["provider_plan"], "vhp-1c-1gb-amd")
         self.assertTrue(summary["clock"]["driver"]["ntp_synchronized_at_both_ends"])
         self.assertAlmostEqual(summary["clock"]["target"]["max_abs_offset_seconds"], 0.00025)
+        self.assertTrue(summary["clock"]["cross_host_timing_trusted"])
         self.assertEqual(summary["steps"][0]["errors"], 1)
+        self.assertEqual(summary["steps"][0]["cross_clock_negative_first_stages"], 0)
+
+    def test_a_drifting_target_clock_makes_cross_host_timing_untrusted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver, target = synthetic_run(pathlib.Path(directory))
+            drifting = ("unix_seconds=1.0\nNTP=yes\nNTPSynchronized=yes\n"
+                        "       Server: 10.99.0.1 (synthetic-private-ntp)\n"
+                        "  Offset: +39.366ms\n  Jitter: 62.124ms\n")
+            for name in ("clock-up.txt", "clock-down.txt"):
+                write(target / name, drifting)
+            probe = json.loads((driver / "rate-4-probe-1.json").read_text())
+            probe["cross_clock"] = {"stage": "client_start_to_workflow_started", "min_seconds": -0.031,
+                                    "negative_count": 12}
+            write(driver / "rate-4-probe-1.json", json.dumps(probe) + "\n")
+            output = subprocess.run([sys.executable, "-I", str(SUMMARIZER), str(driver), str(target)],
+                                    check=True, capture_output=True, text=True).stdout
+        summary = json.loads(output)
+        self.assertTrue(summary["clock"]["target"]["ntp_synchronized_at_both_ends"])
+        self.assertAlmostEqual(summary["clock"]["target"]["max_abs_offset_seconds"], 0.039366)
+        self.assertAlmostEqual(summary["clock"]["target"]["max_jitter_seconds"], 0.062124)
+        self.assertFalse(summary["clock"]["cross_host_timing_trusted"])
+        self.assertEqual(summary["steps"][0]["cross_clock_negative_first_stages"], 12)
+        self.assertNotIn("synthetic-private-ntp", output)
         self.assertEqual(summary["idle"][0]["probe"]["cleanup_errors"], 1)
         self.assertEqual(summary["target_teardown"], "containers=0 volumes=0")
 

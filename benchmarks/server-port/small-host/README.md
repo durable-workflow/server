@@ -59,9 +59,17 @@ capacity claim. The 4 vCPU comparison host instead runs the matched profile
   the payloads are synthetic and the network is source-restricted. The
   firewall must allow 8080 only from the driver's private address, and the
   private run receipt records that rule.
-- Clock: latency compares the driver's start time with the server's
-  `closed_at`, so both hosts must report `NTPSynchronized=yes`. Each run
-  records the NTP state; check it before trusting a run.
+- Clock: latency and the first history stage
+  (`client_start_to_workflow_started`) compare the driver's clock with the
+  server's, so both hosts must report `NTPSynchronized=yes`. Synchronized is
+  not enough on its own: a 1 vCPU kvm-clock plan measured +39 ms offset and
+  62 ms jitter while synchronized. Each run records offset and jitter, and the
+  summary's `clock.cross_host_timing_trusted` is true only when each host's
+  offset plus jitter is within 5 ms. When it is false, read capacity, resource
+  use and the server-clock history stages, but not latency or the first stage.
+  History order is verified on the server's clock alone, so an offset never
+  fails a probe; each probe's `cross_clock` reports the first stage's minimum
+  and how many were negative.
 - Software on both hosts: Docker Engine with the Compose plugin, `git`,
   `jq` and `curl`, plus `python3` on whichever host summarizes. Check out the
   same Server commit on both hosts, the one that merges this profile.
