@@ -1,0 +1,840 @@
+{
+  "schema": "durable-workflow.server-port-small-host-summary/v1",
+  "driver": {
+    "profile_sha256": "d9ce6b1b59438d04b3f4f6e46524ec740c563bb5aa340fccb6ddc82fa7116702",
+    "source_revision": "147a71ea24b206778585cb802caea61af9b839a6",
+    "provider_plan": "vhp-4c-8gb-amd",
+    "smoke": false,
+    "machine": {
+      "kernel": "6.8.0-146-generic",
+      "logical_cpus": 4,
+      "physical_memory_bytes": 8320528384,
+      "cpu_model": "AMD EPYC-Rome Processor",
+      "docker": "29.1.3",
+      "cgroup_driver": "systemd"
+    },
+    "target_server": {
+      "version": "2.11.8",
+      "implementation": null
+    }
+  },
+  "target": {
+    "mode": "php-mysql",
+    "database": "mysql",
+    "server_image": "durableworkflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd",
+    "profile_sha256": "d9ce6b1b59438d04b3f4f6e46524ec740c563bb5aa340fccb6ddc82fa7116702",
+    "provider_plan": "vc2-1c-1gb",
+    "container_limits": "none; the plan is the limit",
+    "machine": {
+      "kernel": "6.8.0-146-generic",
+      "logical_cpus": 1,
+      "physical_memory_bytes": 1001873408,
+      "swap_bytes": 2516578304,
+      "cpu_model": "Intel Core Processor (Broadwell, no TSX, IBRS)",
+      "docker": "29.1.3",
+      "compose": "2.40.3+ds1-0ubuntu1~24.04.1",
+      "cgroup_driver": "systemd",
+      "docker_storage_driver": "overlayfs"
+    }
+  },
+  "capacity": {
+    "sustained_rate_per_second": null,
+    "bounds": {
+      "latency_p95_seconds": 2.0,
+      "min_in_window_completion_fraction": 0.9
+    }
+  },
+  "steps": [
+    {
+      "name": "setup",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "fail",
+      "planned": 3,
+      "closed_in_window": 0,
+      "max_probe_p95_seconds": 14.771559953689575,
+      "reasons": "in-window completion 0/3; p95 14.771559953689575s over 2.0s",
+      "accepted": 3,
+      "completed_by_deadline": 3,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 0,
+      "latency_p50_seconds_median_of_probes": 14.486778020858765,
+      "latency_p99_seconds_max_of_probes": 14.771559953689575,
+      "target": {
+        "samples": 18,
+        "cpu_busy_fraction": 0.9924,
+        "cpu_iowait_fraction": 0.002,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 725.4,
+        "memory_available_min_mib": 230.1,
+        "swap_used_max_mib": 433.6,
+        "swap_in_pages": 7587.0,
+        "swap_out_pages": 3416.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.9738,
+        "pressure_memory_some_fraction": 0.036,
+        "pressure_memory_full_fraction": 0.0059,
+        "pressure_io_some_fraction": 0.0674
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.1956,
+          "memory_max_mib": 215.6
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.1409,
+          "memory_max_mib": 52.1
+        },
+        "php-server": {
+          "cpu_cores_average": 0.4707,
+          "memory_max_mib": 144.2
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0096,
+          "memory_max_mib": 49.1
+        },
+        "redis": {
+          "cpu_cores_average": 0.0297,
+          "memory_max_mib": 9.3
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0458,
+      "health": {
+        "answers": 12,
+        "non_200": 4,
+        "slowest_seconds": 2.0029
+      }
+    },
+    {
+      "name": "warmup",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "fail",
+      "planned": 15,
+      "closed_in_window": 1,
+      "max_probe_p95_seconds": 57.12792491912842,
+      "reasons": "a probe reported errors, late or skipped offers, or pending work; in-window completion 1/15; p95 57.12792491912842s over 2.0s",
+      "accepted": 15,
+      "completed_by_deadline": 15,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 0,
+      "latency_p50_seconds_median_of_probes": 52.02142000198364,
+      "latency_p99_seconds_max_of_probes": 57.12792491912842,
+      "target": {
+        "samples": 74,
+        "cpu_busy_fraction": 1.0,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.002,
+        "memory_used_max_mib": 766.3,
+        "memory_available_min_mib": 189.1,
+        "swap_used_max_mib": 421.1,
+        "swap_in_pages": 8254.0,
+        "swap_out_pages": 6366.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.9998,
+        "pressure_memory_some_fraction": 0.0057,
+        "pressure_memory_full_fraction": 0.0009,
+        "pressure_io_some_fraction": 0.0347
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.2094,
+          "memory_max_mib": 236.1
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.1618,
+          "memory_max_mib": 62.5
+        },
+        "php-server": {
+          "cpu_cores_average": 0.4547,
+          "memory_max_mib": 140.2
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0101,
+          "memory_max_mib": 49.7
+        },
+        "redis": {
+          "cpu_cores_average": 0.0303,
+          "memory_max_mib": 11.6
+        }
+      },
+      "driver_cpu_busy_fraction": 0.036,
+      "health": {
+        "answers": 50,
+        "non_200": 21,
+        "slowest_seconds": 2.0044
+      }
+    },
+    {
+      "name": "rate-0.5",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "fail",
+      "planned": 30,
+      "closed_in_window": 6,
+      "max_probe_p95_seconds": 86.33608293533325,
+      "reasons": "a probe reported errors, late or skipped offers, or pending work; in-window completion 6/30; p95 86.33608293533325s over 2.0s",
+      "accepted": 30,
+      "completed_by_deadline": 13,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 0,
+      "latency_p50_seconds_median_of_probes": 50.4947829246521,
+      "latency_p99_seconds_max_of_probes": 86.33608293533325,
+      "target": {
+        "samples": 107,
+        "cpu_busy_fraction": 1.0,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 765.8,
+        "memory_available_min_mib": 189.7,
+        "swap_used_max_mib": 429.4,
+        "swap_in_pages": 3060.0,
+        "swap_out_pages": 5011.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.9999,
+        "pressure_memory_some_fraction": 0.0009,
+        "pressure_memory_full_fraction": 0.0003,
+        "pressure_io_some_fraction": 0.0305
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.2168,
+          "memory_max_mib": 249.6
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.158,
+          "memory_max_mib": 64.2
+        },
+        "php-server": {
+          "cpu_cores_average": 0.4553,
+          "memory_max_mib": 143.3
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0099,
+          "memory_max_mib": 39.2
+        },
+        "redis": {
+          "cpu_cores_average": 0.0306,
+          "memory_max_mib": 12.6
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0359,
+      "health": {
+        "answers": 72,
+        "non_200": 29,
+        "slowest_seconds": 2.0032
+      }
+    },
+    {
+      "name": "rate-0.5-confirm",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "fail",
+      "planned": 30,
+      "closed_in_window": 0,
+      "max_probe_p95_seconds": 101.79426193237305,
+      "reasons": "a probe reported errors, late or skipped offers, or pending work; in-window completion 0/30; p95 101.79426193237305s over 2.0s",
+      "accepted": 30,
+      "completed_by_deadline": 2,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 0,
+      "latency_p50_seconds_median_of_probes": 91.28386902809143,
+      "latency_p99_seconds_max_of_probes": 101.79426193237305,
+      "target": {
+        "samples": 105,
+        "cpu_busy_fraction": 1.0,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.001,
+        "memory_used_max_mib": 771.8,
+        "memory_available_min_mib": 183.7,
+        "swap_used_max_mib": 440.0,
+        "swap_in_pages": 2342.0,
+        "swap_out_pages": 4287.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 1.0,
+        "pressure_memory_some_fraction": 0.0014,
+        "pressure_memory_full_fraction": 0.0003,
+        "pressure_io_some_fraction": 0.0371
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.223,
+          "memory_max_mib": 270.0
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.152,
+          "memory_max_mib": 64.5
+        },
+        "php-server": {
+          "cpu_cores_average": 0.456,
+          "memory_max_mib": 143.7
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0099,
+          "memory_max_mib": 26.4
+        },
+        "redis": {
+          "cpu_cores_average": 0.0311,
+          "memory_max_mib": 12.6
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0361,
+      "health": {
+        "answers": 73,
+        "non_200": 29,
+        "slowest_seconds": 2.0032
+      }
+    },
+    {
+      "name": "low-after",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "fail",
+      "planned": 30,
+      "closed_in_window": 0,
+      "max_probe_p95_seconds": 1000000000.0,
+      "reasons": "a probe reported errors, late or skipped offers, or pending work; in-window completion 0/30; p95 1E+9s over 2.0s",
+      "accepted": 30,
+      "completed_by_deadline": 0,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 0,
+      "latency_p50_seconds_median_of_probes": null,
+      "latency_p99_seconds_max_of_probes": null,
+      "target": {
+        "samples": 104,
+        "cpu_busy_fraction": 1.0,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 770.0,
+        "memory_available_min_mib": 185.5,
+        "swap_used_max_mib": 449.8,
+        "swap_in_pages": 3148.0,
+        "swap_out_pages": 4584.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.9999,
+        "pressure_memory_some_fraction": 0.0052,
+        "pressure_memory_full_fraction": 0.0005,
+        "pressure_io_some_fraction": 0.0334
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.2233,
+          "memory_max_mib": 286.1
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.1554,
+          "memory_max_mib": 63.0
+        },
+        "php-server": {
+          "cpu_cores_average": 0.4507,
+          "memory_max_mib": 139.6
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0104,
+          "memory_max_mib": 20.4
+        },
+        "redis": {
+          "cpu_cores_average": 0.031,
+          "memory_max_mib": 11.9
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0349,
+      "health": {
+        "answers": 70,
+        "non_200": 29,
+        "slowest_seconds": 2.0031
+      }
+    }
+  ],
+  "idle": [
+    {
+      "name": "idle-6-1",
+      "probe": {
+        "requested_polls": 6,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "empty": 3,
+          "task": 2,
+          "backpressure": 1
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "empty": 2
+          },
+          "activity": {
+            "task": 2
+          },
+          "query": {
+            "empty": 1,
+            "backpressure": 1
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 12,
+        "cpu_busy_fraction": 0.9646,
+        "cpu_iowait_fraction": 0.0008,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 766.9,
+        "memory_available_min_mib": 188.6,
+        "swap_used_max_mib": 449.6,
+        "swap_in_pages": 161.0,
+        "swap_out_pages": 259.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.9324,
+        "pressure_memory_some_fraction": 0.0061,
+        "pressure_memory_full_fraction": 0.0017,
+        "pressure_io_some_fraction": 0.0218
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.2286,
+          "memory_max_mib": 289.0
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.1388,
+          "memory_max_mib": 61.7
+        },
+        "php-server": {
+          "cpu_cores_average": 0.4353,
+          "memory_max_mib": 127.1
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0084,
+          "memory_max_mib": 17.3
+        },
+        "redis": {
+          "cpu_cores_average": 0.0309,
+          "memory_max_mib": 8.9
+        }
+      },
+      "health": {
+        "answers": 9,
+        "non_200": 1,
+        "slowest_seconds": 2.0031
+      }
+    },
+    {
+      "name": "idle-6-2",
+      "probe": {
+        "requested_polls": 6,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "backpressure": 3,
+          "empty": 3
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "backpressure": 2
+          },
+          "activity": {
+            "empty": 2
+          },
+          "query": {
+            "backpressure": 1,
+            "empty": 1
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 10,
+        "cpu_busy_fraction": 0.959,
+        "cpu_iowait_fraction": 0.0047,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 755.9,
+        "memory_available_min_mib": 199.5,
+        "swap_used_max_mib": 449.6,
+        "swap_in_pages": 100.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.7781,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0365
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.1638,
+          "memory_max_mib": 281.6
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.2975,
+          "memory_max_mib": 61.7
+        },
+        "php-server": {
+          "cpu_cores_average": 0.3166,
+          "memory_max_mib": 112.5
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0105,
+          "memory_max_mib": 18.7
+        },
+        "redis": {
+          "cpu_cores_average": 0.0356,
+          "memory_max_mib": 8.6
+        }
+      },
+      "health": {
+        "answers": 8,
+        "non_200": 1,
+        "slowest_seconds": 2.0033
+      }
+    },
+    {
+      "name": "idle-12-1",
+      "probe": {
+        "requested_polls": 12,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "backpressure": 9,
+          "empty": 3
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "backpressure": 4
+          },
+          "activity": {
+            "empty": 2,
+            "backpressure": 2
+          },
+          "query": {
+            "backpressure": 3,
+            "empty": 1
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 13,
+        "cpu_busy_fraction": 0.8621,
+        "cpu_iowait_fraction": 0.0015,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 801.3,
+        "memory_available_min_mib": 154.1,
+        "swap_used_max_mib": 456.3,
+        "swap_in_pages": 184.0,
+        "swap_out_pages": 1872.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.7849,
+        "pressure_memory_some_fraction": 0.0096,
+        "pressure_memory_full_fraction": 0.002,
+        "pressure_io_some_fraction": 0.0469
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.1907,
+          "memory_max_mib": 292.4
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.1399,
+          "memory_max_mib": 61.7
+        },
+        "php-server": {
+          "cpu_cores_average": 0.3621,
+          "memory_max_mib": 140.9
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0088,
+          "memory_max_mib": 16.7
+        },
+        "redis": {
+          "cpu_cores_average": 0.0322,
+          "memory_max_mib": 11.3
+        }
+      },
+      "health": {
+        "answers": 11,
+        "non_200": 3,
+        "slowest_seconds": 2.0026
+      }
+    },
+    {
+      "name": "idle-12-2",
+      "probe": {
+        "requested_polls": 12,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "backpressure": 9,
+          "empty": 3
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "backpressure": 4
+          },
+          "activity": {
+            "empty": 2,
+            "backpressure": 2
+          },
+          "query": {
+            "backpressure": 3,
+            "empty": 1
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 13,
+        "cpu_busy_fraction": 0.905,
+        "cpu_iowait_fraction": 0.0036,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 788.8,
+        "memory_available_min_mib": 166.6,
+        "swap_used_max_mib": 456.1,
+        "swap_in_pages": 163.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.8117,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0291
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.1993,
+          "memory_max_mib": 295.8
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.1472,
+          "memory_max_mib": 61.7
+        },
+        "php-server": {
+          "cpu_cores_average": 0.3961,
+          "memory_max_mib": 142.7
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0091,
+          "memory_max_mib": 14.4
+        },
+        "redis": {
+          "cpu_cores_average": 0.037,
+          "memory_max_mib": 8.2
+        }
+      },
+      "health": {
+        "answers": 10,
+        "non_200": 2,
+        "slowest_seconds": 2.0024
+      }
+    },
+    {
+      "name": "idle-24-1",
+      "probe": {
+        "requested_polls": 24,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "backpressure": 19,
+          "empty": 5
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "backpressure": 6,
+            "empty": 2
+          },
+          "activity": {
+            "empty": 2,
+            "backpressure": 6
+          },
+          "query": {
+            "backpressure": 7,
+            "empty": 1
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 24,
+        "cpu_busy_fraction": 0.9537,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 809.5,
+        "memory_available_min_mib": 145.9,
+        "swap_used_max_mib": 460.6,
+        "swap_in_pages": 299.0,
+        "swap_out_pages": 1463.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.9239,
+        "pressure_memory_some_fraction": 0.0042,
+        "pressure_memory_full_fraction": 0.0015,
+        "pressure_io_some_fraction": 0.0267
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.2216,
+          "memory_max_mib": 298.9
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.1548,
+          "memory_max_mib": 61.7
+        },
+        "php-server": {
+          "cpu_cores_average": 0.4067,
+          "memory_max_mib": 143.7
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.0105,
+          "memory_max_mib": 14.4
+        },
+        "redis": {
+          "cpu_cores_average": 0.0315,
+          "memory_max_mib": 11.0
+        }
+      },
+      "health": {
+        "answers": 18,
+        "non_200": 4,
+        "slowest_seconds": 2.0029
+      }
+    },
+    {
+      "name": "idle-24-2",
+      "probe": {
+        "requested_polls": 24,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "backpressure": 18,
+          "empty": 6
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "backpressure": 6,
+            "empty": 2
+          },
+          "activity": {
+            "empty": 2,
+            "backpressure": 6
+          },
+          "query": {
+            "empty": 2,
+            "backpressure": 6
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 27,
+        "cpu_busy_fraction": 0.9408,
+        "cpu_iowait_fraction": 0.0007,
+        "cpu_steal_fraction": 0.0007,
+        "memory_used_max_mib": 804.9,
+        "memory_available_min_mib": 150.6,
+        "swap_used_max_mib": 468.9,
+        "swap_in_pages": 229.0,
+        "swap_out_pages": 2357.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.9049,
+        "pressure_memory_some_fraction": 0.0017,
+        "pressure_memory_full_fraction": 0.0005,
+        "pressure_io_some_fraction": 0.023
+      },
+      "target_services": {
+        "mysql": {
+          "cpu_cores_average": 0.2216,
+          "memory_max_mib": 297.6
+        },
+        "php-scheduler": {
+          "cpu_cores_average": 0.1447,
+          "memory_max_mib": 61.6
+        },
+        "php-server": {
+          "cpu_cores_average": 0.3983,
+          "memory_max_mib": 150.6
+        },
+        "php-worker": {
+          "cpu_cores_average": 0.011,
+          "memory_max_mib": 13.4
+        },
+        "redis": {
+          "cpu_cores_average": 0.0333,
+          "memory_max_mib": 10.3
+        }
+      },
+      "health": {
+        "answers": 16,
+        "non_200": 5,
+        "slowest_seconds": 2.003
+      }
+    }
+  ],
+  "target_whole_run": {
+    "samples": 570,
+    "cpu_busy_fraction": 0.9568,
+    "cpu_iowait_fraction": 0.001,
+    "cpu_steal_fraction": 0.0006,
+    "memory_used_max_mib": 809.5,
+    "memory_available_min_mib": 145.9,
+    "swap_used_max_mib": 468.9,
+    "swap_in_pages": 27570.0,
+    "swap_out_pages": 37719.0,
+    "oom_kills": 0.0,
+    "pressure_cpu_some_fraction": 0.9191,
+    "pressure_memory_some_fraction": 0.0042,
+    "pressure_memory_full_fraction": 0.0008,
+    "pressure_io_some_fraction": 0.0328
+  },
+  "target_container_states": [
+    "mysql restarts=0 oom=false exit=0 status=running",
+    "php-bootstrap restarts=0 oom=false exit=0 status=exited",
+    "php-scheduler restarts=0 oom=false exit=0 status=running",
+    "php-server restarts=0 oom=false exit=0 status=running",
+    "php-worker restarts=0 oom=false exit=0 status=running",
+    "redis restarts=0 oom=false exit=0 status=running"
+  ],
+  "target_database_audit": [
+    "runs\tstatus\tCOUNT(*)",
+    "runs\tcompleted\t78",
+    "runs\tpending\t15",
+    "runs\twaiting\t15",
+    "tasks\ttask_type\tstatus\tCOUNT(*)",
+    "tasks\tworkflow\tcompleted\t171",
+    "tasks\tactivity\tcompleted\t91",
+    "tasks\tworkflow\tready\t30",
+    "tasks\tactivity\tcancelled\t2",
+    "activities\tstatus\tCOUNT(*)",
+    "activities\tcompleted\t91",
+    "activities\tfailed\t2",
+    "registrations\tCOUNT(*)",
+    "registrations\t0"
+  ],
+  "target_teardown": "containers=0 volumes=0",
+  "clock": {
+    "driver": {
+      "ntp_synchronized_at_both_ends": true,
+      "offset_and_jitter_in_every_capture": true,
+      "max_abs_offset_seconds": 0.000904,
+      "max_jitter_seconds": 0.000701
+    },
+    "target": {
+      "ntp_synchronized_at_both_ends": true,
+      "offset_and_jitter_in_every_capture": true,
+      "max_abs_offset_seconds": 0.002391,
+      "max_jitter_seconds": 0.033841
+    },
+    "cross_host_tolerance_seconds": 0.005,
+    "cross_host_timing_reliable": false
+  }
+}
