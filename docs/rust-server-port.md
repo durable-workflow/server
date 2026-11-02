@@ -1009,6 +1009,17 @@ support is not evidence of multi-node safety.
 
 ## Decisions
 
+- **November 2: schedules follow Core 2.15.13's daylight-saving rule, not
+  PHP 2.11.8 (#938).** General fixed daily cron schedules admitting twice
+  when clocks go back in the embedded engine (Workflow #882, Core 2.15.13).
+  There is no further PHP Server release, so PHP 2.11.8 keeps the old
+  behavior. Native follows the published embedded contract, as #325's
+  contract-first rule asks, and this is a recorded difference from the PHP
+  reference. A time repeated by a backward change fires once, at its first
+  instant, when the hour field names specific hours. Every-hour forms keep
+  both passes, and a skipped time fires once, shifted by the gap.
+  ([checkpoint](rust-server-port-checkpoints/2026-11-02-schedule-daylight-saving.md))
+
 - **October 22: the parity reference moves from published Server 2.5.14 to 2.11.1.**
   Published PHP has moved on, and the Sample App and current consumers resolve
   2.10 or later.
