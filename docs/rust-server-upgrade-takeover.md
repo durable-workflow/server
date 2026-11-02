@@ -18,8 +18,8 @@ investment beyond what 3.0.0 ships and is planned for deprecation in the 3.1.x
 line (operator decision, November 1, 2026, recorded on
 [#325](https://github.com/durable-workflow/server/issues/325)). Upgrade from
 PHP while running 3.0.x; the release that deprecates takeover will say so in
-its release notes. New installations, including Durable Workflow Cloud cells,
-start on a fresh native database and never take over a PHP one.
+its release notes. New installations start on a fresh native database and
+never take over a PHP one.
 
 ## Shape
 
