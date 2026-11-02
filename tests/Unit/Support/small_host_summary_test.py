@@ -106,13 +106,13 @@ class PublicSummaryTest(unittest.TestCase):
         self.assertEqual(summary["target"]["provider_plan"], "vhp-1c-1gb-amd")
         self.assertTrue(summary["clock"]["driver"]["ntp_synchronized_at_both_ends"])
         self.assertAlmostEqual(summary["clock"]["target"]["max_abs_offset_seconds"], 0.00025)
-        self.assertTrue(summary["clock"]["cross_host_timing_trusted"])
+        self.assertTrue(summary["clock"]["cross_host_timing_reliable"])
         self.assertEqual(summary["steps"][0]["errors"], 1)
         self.assertEqual(summary["steps"][0]["cross_clock_negative_first_stages"], 0)
         self.assertEqual(summary["idle"][0]["probe"]["cleanup_errors"], 1)
         self.assertEqual(summary["target_teardown"], "containers=0 volumes=0")
 
-    def test_a_drifting_target_clock_makes_cross_host_timing_untrusted(self):
+    def test_a_drifting_target_clock_makes_cross_host_timing_unreliable(self):
         with tempfile.TemporaryDirectory() as directory:
             driver, target = synthetic_run(pathlib.Path(directory))
             drifting = ("unix_seconds=1.0\nNTP=yes\nNTPSynchronized=yes\n"
@@ -130,7 +130,7 @@ class PublicSummaryTest(unittest.TestCase):
         self.assertTrue(summary["clock"]["target"]["ntp_synchronized_at_both_ends"])
         self.assertAlmostEqual(summary["clock"]["target"]["max_abs_offset_seconds"], 0.039366)
         self.assertAlmostEqual(summary["clock"]["target"]["max_jitter_seconds"], 0.062124)
-        self.assertFalse(summary["clock"]["cross_host_timing_trusted"])
+        self.assertFalse(summary["clock"]["cross_host_timing_reliable"])
         self.assertEqual(summary["steps"][0]["cross_clock_negative_first_stages"], 12)
         self.assertNotIn("synthetic-private-ntp", output)
 
@@ -145,12 +145,12 @@ class PublicSummaryTest(unittest.TestCase):
 
     SYNCED = "unix_seconds=1.0\nNTP=yes\nNTPSynchronized=yes\n"
 
-    def test_missing_jitter_at_both_ends_is_untrusted(self):
+    def test_missing_jitter_at_both_ends_is_unreliable(self):
         no_jitter = self.SYNCED + "  Offset: -120us\n"
         clock = self.summarize_with_target_clocks(no_jitter, no_jitter)
         self.assertIsNone(clock["target"]["max_jitter_seconds"])
         self.assertFalse(clock["target"]["offset_and_jitter_in_every_capture"])
-        self.assertFalse(clock["cross_host_timing_trusted"])
+        self.assertFalse(clock["cross_host_timing_reliable"])
 
     def test_missing_jitter_at_one_end_is_not_covered_by_the_other(self):
         complete = self.SYNCED + "  Offset: -120us\n  Jitter: 200us\n"
@@ -158,21 +158,21 @@ class PublicSummaryTest(unittest.TestCase):
         clock = self.summarize_with_target_clocks(complete, no_jitter)
         self.assertAlmostEqual(clock["target"]["max_jitter_seconds"], 0.0002)
         self.assertFalse(clock["target"]["offset_and_jitter_in_every_capture"])
-        self.assertFalse(clock["cross_host_timing_trusted"])
+        self.assertFalse(clock["cross_host_timing_reliable"])
 
-    def test_a_missing_offset_while_synchronized_is_untrusted(self):
+    def test_a_missing_offset_while_synchronized_is_unreliable(self):
         complete = self.SYNCED + "  Offset: -120us\n  Jitter: 200us\n"
         no_offset = self.SYNCED + "  Jitter: 200us\n"
         clock = self.summarize_with_target_clocks(complete, no_offset)
         self.assertTrue(clock["target"]["ntp_synchronized_at_both_ends"])
         self.assertFalse(clock["target"]["offset_and_jitter_in_every_capture"])
-        self.assertFalse(clock["cross_host_timing_trusted"])
+        self.assertFalse(clock["cross_host_timing_reliable"])
 
-    def test_complete_small_captures_are_trusted(self):
+    def test_complete_small_captures_are_reliable(self):
         complete = self.SYNCED + "  Offset: -120us\n  Jitter: 200us\n"
         clock = self.summarize_with_target_clocks(complete, complete)
         self.assertTrue(clock["target"]["offset_and_jitter_in_every_capture"])
-        self.assertTrue(clock["cross_host_timing_trusted"])
+        self.assertTrue(clock["cross_host_timing_reliable"])
 
 
 class TargetAddressTest(unittest.TestCase):

@@ -261,7 +261,7 @@ def clock_jitters(text):
 
 # Driver-relative latency and the probe's first history stage compare the
 # driver's clock with the target's. Each host's offset plus jitter must stay
-# within this for those figures to be trusted; a 1 vCPU kvm-clock host was
+# within this for those figures to be reliable; a 1 vCPU kvm-clock host was
 # measured at +39 ms offset and 62 ms jitter while NTP-synchronized.
 CROSS_HOST_TOLERANCE_SECONDS = 0.005
 
@@ -269,7 +269,7 @@ CROSS_HOST_TOLERANCE_SECONDS = 0.005
 def clock_records(driver, target):
     """Synchronization state and numeric offsets only, never the raw text."""
     clock = {}
-    trusted = True
+    reliable = True
     for side, folder, files in (("driver", driver, ("clock-start.txt", "clock-end.txt")),
                                 ("target", target, ("clock-up.txt", "clock-down.txt"))):
         texts = [read_text(folder / f) or "" for f in files]
@@ -287,10 +287,10 @@ def clock_records(driver, target):
             "max_abs_offset_seconds": max_offset,
             "max_jitter_seconds": max_jitter,
         }
-        trusted = trusted and synchronized and measured \
+        reliable = reliable and synchronized and measured \
             and max_offset + max_jitter <= CROSS_HOST_TOLERANCE_SECONDS
     clock["cross_host_tolerance_seconds"] = CROSS_HOST_TOLERANCE_SECONDS
-    clock["cross_host_timing_trusted"] = trusted
+    clock["cross_host_timing_reliable"] = reliable
     return clock
 
 
