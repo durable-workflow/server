@@ -234,6 +234,10 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/system/prometheus-metrics", get(prometheus_metrics))
         .route("/api/system/external-payload-cleanup", get(payload_cleanup_status))
         .route("/api/system/external-payload-cleanup/pass", post(payload_cleanup_pass))
+        .route("/api/system/external-payload-backup-hold", get(backup_hold_status))
+        .route("/api/system/external-payload-backup-hold/acquire", post(acquire_backup_hold))
+        .route("/api/system/external-payload-backup-hold/renew", post(renew_backup_hold))
+        .route("/api/system/external-payload-backup-hold/release", post(release_backup_hold))
         .route("/api/system/operator-dashboard", get(operator_dashboard))
         .route("/api/system/operator-dashboard/bounded", get(bounded_operator_dashboard))
         .route(
@@ -805,6 +809,9 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         | "/api/system/operator-dashboard/bounded/workflow-types"
         | "/api/system/prometheus-metrics"
         | "/api/system/external-payload-cleanup"
+        // The online-backup hold is server-wide; like every system route it
+        // needs an admin, which native never binds to a tenant.
+        | "/api/system/external-payload-backup-hold"
         // Retention reads and prunes the namespace's own runs; the activity
         // timeout scan spans namespaces in PHP too.
         | "/api/system/retention"
@@ -815,7 +822,10 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         "/api/system/retention/pass"
         | "/api/system/activity-timeouts/pass"
         | "/api/system/repair/pass"
-        | "/api/system/external-payload-cleanup/pass" => WRITE,
+        | "/api/system/external-payload-cleanup/pass"
+        | "/api/system/external-payload-backup-hold/acquire"
+        | "/api/system/external-payload-backup-hold/renew"
+        | "/api/system/external-payload-backup-hold/release" => WRITE,
         _ => return None,
     })
 }
@@ -1948,6 +1958,32 @@ async fn payload_cleanup_pass(Extension(runtime): Extension<Runtime>, body: axum
     let blocked = report["blocked"].as_i64().is_some_and(|blocked| blocked > 0)
         || report["retention_cleanup"]["pending"].as_i64().is_some_and(|pending| pending > 0);
     Ok(pass_response((json!({"namespace": runtime.namespace(), "cleanup": report}), blocked)))
+}
+
+/// `external-payloads:backup-hold status`, scoped to `owner` when given.
+async fn backup_hold_status(
+    Extension(runtime): Extension<Runtime>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>> {
+    let owner = super::backup_hold::status_owner(query.get("owner").map(String::as_str))?;
+    Ok(Json(runtime.backup_hold_status(owner.as_deref()).await?))
+}
+
+async fn change_backup_hold(runtime: &Runtime, action: super::backup_hold::Action, body: &[u8]) -> Result<Json<Value>> {
+    let request = super::backup_hold::request(&request_json(body)?, action)?;
+    Ok(Json(runtime.change_backup_hold(action, &request).await?))
+}
+
+async fn acquire_backup_hold(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Json<Value>> {
+    change_backup_hold(&runtime, super::backup_hold::Action::Acquire, &body).await
+}
+
+async fn renew_backup_hold(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Json<Value>> {
+    change_backup_hold(&runtime, super::backup_hold::Action::Renew, &body).await
+}
+
+async fn release_backup_hold(Extension(runtime): Extension<Runtime>, body: axum::body::Bytes) -> Result<Json<Value>> {
+    change_backup_hold(&runtime, super::backup_hold::Action::Release, &body).await
 }
 
 /// PHP answers 503 while a check reports an error.

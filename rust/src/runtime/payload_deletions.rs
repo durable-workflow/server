@@ -133,7 +133,8 @@ store_methods! {
             let policy: Value = serde_json::from_str(&DB::string(&row, "storage_policy")?).unwrap_or(Value::Null);
             let failure = match local_for(&policy, &namespace).await {
                 Ok(Some(local)) => {
-                    if Self::backup_hold_active(&mut tx).await? {
+                    // Locked through the delete, as PHP's `deleting()` holds it.
+                    if Self::locked_backup_hold(&mut tx).await?.active() {
                         Some(BACKUP_HOLD)
                     } else if local.delete_uri(&uri).await.is_err() {
                         Some(STORAGE_UNAVAILABLE)

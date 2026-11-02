@@ -99,8 +99,9 @@ async fn cleanup_respects_its_limit_a_backup_hold_and_a_disabled_policy() {
     assert_eq!(code, StatusCode::OK, "{body}");
     assert_eq!(body["cleanup"], report([1, 1, 1, 0, 0, 0, 0], 1, 1, true));
 
-    // An unexpired online-backup hold pauses deletion: 207, object kept.
-    database.execute("INSERT INTO runtime_external_payload_backup_hold(id,owner,acquired_at,expires_at) VALUES (1,'7f1c3a1e-0000-4000-8000-000000000001','2026-01-01 00:00:00','2037-01-01 00:00:00')").await;
+    // An unexpired online-backup hold pauses deletion: 207, object kept. The
+    // first pass's deletion created the hold row it locked.
+    database.execute("UPDATE runtime_external_payload_backup_hold SET owner='7f1c3a1e-0000-4000-8000-000000000001',acquired_at='2026-01-01 00:00:00',expires_at='2037-01-01 00:00:00' WHERE id=1").await;
     let (code, body) = pass(&router, json!({})).await;
     assert_eq!(code, StatusCode::MULTI_STATUS, "{body}");
     assert_eq!(body["cleanup"], report([1, 0, 0, 0, 0, 1, 0], 1, 100, false));
