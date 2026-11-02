@@ -78,7 +78,7 @@ for target in server rust; do
   test "$ready" = 1
 done
 docker run -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
-  --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
+  --user=1000:1000 --cpus=1 --memory=256m --memory-swap=256m --entrypoint sh \
   -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -e DB_SQLITE_BUSY_TIMEOUT=30000 \
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
   "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done' >/dev/null
