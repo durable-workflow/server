@@ -204,6 +204,7 @@ jobs:
           printf 'name=native-debug-build-%s-%s\nattempt=%s\n' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - name: Restore native Cargo dependencies from trusted main
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -270,6 +271,7 @@ jobs:
         id: adapter_key
         run: bash scripts/ci/sdk-adapter-cache-key.sh
       - name: Restore the adapters' Cargo registry and build tree
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         id: adapter_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -591,6 +593,7 @@ jobs:
       # Exact dependency keys include the actual compiler pin, Cargo configuration
       # and vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -1333,6 +1336,7 @@ jobs:
       # Exact dependency keys include the actual compiler pin, Cargo configuration
       # and vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -2115,6 +2119,7 @@ jobs:
       # Exact dependency keys include the actual compiler pin, Cargo configuration
       # and vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         id: native_cargo
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
