@@ -91,6 +91,11 @@ externalDatabase:
 auth:
   existingSecret: durable-workflow-app-credentials
 
+native:
+  storage:
+    # ReadWriteMany. Required for more than one replica.
+    existingClaim: durable-workflow-payloads
+
 server:
   replicaCount: 3
   ingress:
@@ -129,21 +134,34 @@ Driver, or any GitOps secret bridge that produces a Kubernetes `Secret`.
 * Native keeps external payload objects on local disk at `/app/storage`.
   Without `native.storage.existingClaim` the chart mounts an `emptyDir`, and
   the objects are lost when a pod is replaced. Set a claim before any
-  namespace enables external payload storage. With more than one replica the
-  claim must be `ReadWriteMany` so every pod reads the same objects.
-* On `SIGTERM` the native Server holds open worker polls for up to
-  `DW_WORKER_POLL_TIMEOUT` (30 seconds by default) before it exits.
-  `native.terminationGracePeriodSeconds` (default 45) must stay above it. The
-  chart refuses a grace period at or below a `DW_WORKER_POLL_TIMEOUT` set in
-  `config.extraEnv`.
+  namespace enables external payload storage.
+* A native install runs one replica by default. One pod cannot read a payload
+  object another pod accepted, so the chart refuses `server.replicaCount`
+  above 1 or `server.autoscaling.enabled` unless `native.storage.existingClaim`
+  is set, and that claim must be `ReadWriteMany`. The PodDisruptionBudget
+  renders only when more than one pod can run, because `minAvailable: 1` on a
+  single pod would block every node drain.
+* On `SIGTERM` the native Server holds open worker polls until they end. A
+  poll waits `DW_WORKER_POLL_TIMEOUT` (30 seconds by default) unless it asks
+  for up to 60. `native.terminationGracePeriodSeconds` defaults to 65 so a
+  rollout drains every allowed poll. The chart refuses a grace period at or
+  below a `DW_WORKER_POLL_TIMEOUT` set in `config.extraEnv`.
+* Native liveness probes the listener (`native.livenessProbe`, a TCP check on
+  the `http` port), not `/api/health`. `/api/health` reports database
+  liveness, so probing it would restart every pod during a database outage,
+  while the connection pool recovers on its own. Readiness stays on
+  `/api/ready` and takes a pod out of service when its database, schema or
+  maintenance loop fails. `server.livenessProbe` applies to PHP mode only.
 * Native pods set an ephemeral-storage request and limit from
   `native.ephemeralStorage` (128Mi and 2Gi) unless `server.resources` names
   one. The payload `emptyDir` counts toward that limit. They also mount no
   service account token, because the native Server never calls the
   Kubernetes API. Set `native.automountServiceAccountToken: true` only for a
   sidecar that needs one.
-* The chart supports MySQL, MariaDB and PostgreSQL. It does not run the
-  native Server on SQLite.
+* The chart supports MySQL, MariaDB and PostgreSQL. It refuses SQLite in
+  either runtime: native SQLite needs exactly one replica on a ReadWriteOnce
+  volume at `/app/database`, which this chart does not provision yet. Use
+  `docker-compose.published.yml` for SQLite.
 
 ### PHP 2.x installations
 
@@ -169,11 +187,11 @@ AUTH. See `examples/` for complete PHP values files.
 
 | Resource | Runtime | Purpose | Disabled when |
 | --- | --- | --- | --- |
-| `Deployment` (`*-server`) | both | API replicas. Liveness on `/api/health`, readiness on `/api/ready`. In native mode the image's own process runs maintenance, and the Deployment carries the `workflows.durable-workflow.dev/runtime: native` annotation. | `server.enabled: false` |
-| `Job` (`*-schema-upgrade`) | native | `pre-upgrade` hook that runs the image's `schema-upgrade` command. Opt-in, see [Native schema upgrades](#native-schema-upgrades). | `native.schemaUpgrade.enabled: false` (default) |
+| `Deployment` (`*-server`) | both | API replicas, readiness on `/api/ready`. Liveness is a TCP check in native mode and `/api/health` in PHP mode. In native mode the image's own process runs maintenance, and the Deployment carries the `workflows.durable-workflow.dev/runtime: native` annotation. | `server.enabled: false` |
+| `Job` (`*-schema-upgrade`) | native | `pre-upgrade` hook that runs the image's `schema-upgrade` command. Opt-in, and rendered only during `helm upgrade` once live state proves every Server is stopped. See [Native schema upgrades](#native-schema-upgrades). | `native.schemaUpgrade.enabled: false` (default) |
 | `Job` (`*-migrate`) | php | Runs `server-bootstrap` (migrations, namespace bootstrap) before workloads accept traffic. Helm hook by default; sync-wave annotation for Argo CD. | `bootstrap.enabled: false` |
 | `Service` (`*-server`) | both | ClusterIP in front of the API. | `server.enabled: false` |
-| `PodDisruptionBudget` (`*-server`) | both | Default `minAvailable: 1`. | `server.pdb.enabled: false` |
+| `PodDisruptionBudget` (`*-server`) | both | Default `minAvailable: 1`. In native mode only when more than one pod can run. | `server.pdb.enabled: false` |
 | `Ingress` (`*-server`) | both | Optional. | `server.ingress.enabled: false` (default) |
 | `HorizontalPodAutoscaler` (`*-server`) | both | Optional. | `server.autoscaling.enabled: false` (default) |
 | `Deployment` (`*-worker`) | php | Worker pool. Independent scale axis. | `worker.enabled: false` |
@@ -263,7 +281,8 @@ override-with-care in `values.yaml`:
   decisions on `/api/health` would route traffic to a node whose database had
   failed over. Keep `/api/ready` out of the liveness probe: in native mode a
   stalled maintenance tick fails readiness on every pod, and a liveness probe
-  on it would restart them all.
+  on it would restart them all. Native liveness is a TCP check for the same
+  reason: `/api/health` fails while the database is unreachable.
 * **Bootstrap job runs before workloads (PHP mode).** Helm hooks default to
   `pre-install,pre-upgrade`. For Argo CD/Flux users who don't honour Helm
   hooks, sync-wave / depends-on annotations enforce the same ordering.
@@ -283,18 +302,23 @@ override-with-care in `values.yaml`:
 
 Patch releases within a native minor line keep the schema, so changing
 `image.tag` is enough. A release whose notes announce a schema change needs
-`schema-upgrade`, which requires every native Server stopped and a database
-backup first:
+the image's `schema-upgrade` command, which requires every native Server
+stopped and a database backup first. Use the in-cluster hook with
+`helm upgrade`, or the manual path with GitOps or any other client that
+renders without the cluster.
 
-1. Scale the Server to zero and wait for its pods to exit:
+### With helm upgrade
+
+1. Scale the Server to zero with autoscaling off, and wait for its pods to
+   exit:
 
    ```bash
    helm upgrade durable-workflow <chart> -f my-values.yaml \
      --set server.replicaCount=0 --set server.autoscaling.enabled=false --wait
    ```
 2. Back up the database with your usual procedure.
-3. Upgrade to the new image with the hook enabled and your usual replica
-   count:
+3. Upgrade to the new image with the hook enabled, your usual replica count
+   and autoscaling still off:
 
    ```bash
    helm upgrade durable-workflow <chart> -f my-values.yaml \
@@ -304,14 +328,65 @@ backup first:
 
    The `pre-upgrade` hook runs `schema-upgrade` before the new pods start.
    On a database that is already current it only verifies the schema.
-4. Leave `native.schemaUpgrade.enabled` false for later upgrades.
+4. Turn `native.schemaUpgrade.enabled` off again, and autoscaling back on if
+   you use it, in your next upgrade.
 
-The chart refuses to render the hook while the live server Deployment has
-replicas or a server pod is still running, because `schema-upgrade` must not
-run under a live Server. That check reads the cluster through Helm's `lookup`,
-so it does not run under `helm template`, a client-side dry run, or a GitOps
-controller that renders with `helm template`. Scale to zero yourself in those
-setups. Restore the backup to go back: there is no schema downgrade.
+The chart renders the hook only during `helm upgrade` against the cluster,
+and only when Helm's `lookup` proves every Server is stopped: the release's
+server Deployment is visible and carries the native runtime annotation, its
+`replicas` is exactly 0, `server.autoscaling.enabled` is off and no
+HorizontalPodAutoscaler targets it, and no server pod of the release is still
+running. Otherwise it refuses. An install, `helm template`, a client-side dry
+run or a GitOps render with the option enabled is always refused, because a
+Job applied without Helm's hook ordering could run beside a live Server.
+
+### Manual path (GitOps and helm template)
+
+1. Set `server.replicaCount: 0` with autoscaling off, sync, and wait until no
+   server pod of the release remains.
+2. Back up the database.
+3. Run `schema-upgrade` once with the new image, the release's database
+   settings and its database Secret, then wait for it to complete:
+
+   ```yaml
+   apiVersion: batch/v1
+   kind: Job
+   metadata:
+     name: durable-workflow-schema-upgrade
+   spec:
+     backoffLimit: 0
+     template:
+       spec:
+         restartPolicy: Never
+         automountServiceAccountToken: false
+         securityContext: {runAsNonRoot: true, runAsUser: 1000}
+         containers:
+           - name: schema-upgrade
+             image: docker.io/durableworkflow/server:<new native release>
+             args: ["schema-upgrade"]
+             envFrom:
+               - configMapRef: {name: durable-workflow-config}
+             env:
+               - name: DB_USERNAME
+                 valueFrom: {secretKeyRef: {name: durable-workflow-database, key: DB_USERNAME}}
+               - name: DB_PASSWORD
+                 valueFrom: {secretKeyRef: {name: durable-workflow-database, key: DB_PASSWORD}}
+   ```
+
+   ```bash
+   kubectl -n durable-workflow apply -f schema-upgrade-job.yaml
+   kubectl -n durable-workflow wait --for=condition=complete \
+     job/durable-workflow-schema-upgrade --timeout=30m
+   kubectl -n durable-workflow logs job/durable-workflow-schema-upgrade
+   ```
+
+   Use your `externalDatabase.existingSecret` and its keys if you set one,
+   and mount the database CA Secret at
+   `/etc/durable-workflow/database-tls/ca.pem` when you use database TLS. Keep
+   this Job out of the GitOps application so it never runs again on its own.
+4. Set `image.tag` to the new release and restore `server.replicaCount`.
+
+Restore the backup to go back: there is no schema downgrade.
 
 ## GitOps notes
 

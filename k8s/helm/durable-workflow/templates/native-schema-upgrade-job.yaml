@@ -3,14 +3,17 @@ Explicit native schema upgrade. A native Server never upgrades its schema at
 startup: on an older schema it refuses with native_schema_upgrade_required.
 The image's schema-upgrade command moves a database to the image's schema,
 and needs every native Server stopped and a database backup taken first.
-This pre-upgrade hook runs it only when native.schemaUpgrade.enabled is set,
-and the chart refuses to render it while a native Server pod can still run.
-It never runs on install, where the Server bootstraps an empty database.
+This pre-upgrade hook renders only during helm upgrade with
+native.schemaUpgrade.enabled, and only when live cluster state proves every
+native Server is stopped (validateNativeSchemaUpgradeAuthority). Installs,
+helm template and GitOps renders are refused instead of emitting an unchecked
+Job; they use the manual path in the chart README.
 */ -}}
 {{- $native := default (dict) .Values.native }}
 {{- $upgrade := default (dict) (get $native "schemaUpgrade") }}
 {{- if and (include "durable-workflow.isNative" .) (get $upgrade "enabled") }}
-{{- include "durable-workflow.validateNativeSchemaUpgradeQuiescence" . }}
+{{- include "durable-workflow.validateNativeSchemaUpgradeAuthority" . }}
+{{- if .Release.IsUpgrade }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -82,4 +85,5 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}
 {{- end }}

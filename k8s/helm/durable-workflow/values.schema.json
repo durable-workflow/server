@@ -14,6 +14,7 @@
       "type": "object",
       "properties": {
         "terminationGracePeriodSeconds": { "type": "integer", "minimum": 1 },
+        "livenessProbe": { "type": "object" },
         "automountServiceAccountToken": { "type": "boolean" },
         "ephemeralStorage": {
           "type": "object",
@@ -59,7 +60,7 @@
       "type": "object",
       "required": ["connection", "database"],
       "properties": {
-        "connection": { "type": "string", "enum": ["mysql", "mariadb", "pgsql"] },
+        "connection": { "type": "string", "enum": ["mysql", "mariadb", "pgsql", "sqlite"], "description": "sqlite is listed only so the chart can refuse it with an explanation; neither runtime runs on SQLite in this chart." },
         "host":       { "type": "string" },
         "port":       { "type": ["integer", "string"] },
         "database":   { "type": "string", "minLength": 1 },
@@ -114,6 +115,18 @@
         "operatorToken":  { "type": "string" },
         "adminToken":     { "type": "string" },
         "extra":          { "type": "object" }
+      }
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "replicaCount": {
+          "anyOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "pattern": "^([0-9]+)?$" },
+            { "type": "null" }
+          ]
+        }
       }
     },
     "scheduler": {

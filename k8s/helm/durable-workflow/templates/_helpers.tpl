@@ -456,6 +456,9 @@ The chart deliberately refuses to render if these are missing — bundling a
 default in-cluster database would silently break the externals-first contract.
 */}}
 {{- define "durable-workflow.validateExternalPersistence" -}}
+{{- if and (include "durable-workflow.isPhp" .) (eq (toString .Values.externalDatabase.connection) "sqlite") -}}
+{{- fail "PHP mode does not run on SQLite. Use MySQL, MariaDB or PostgreSQL." -}}
+{{- end -}}
 {{- if not .Values.externalDatabase.host -}}
 {{- fail "externalDatabase.host is required. The chart does not bundle a database; point this at your managed MySQL/PostgreSQL endpoint. See k8s/helm/durable-workflow/README.md." -}}
 {{- end -}}
@@ -718,7 +721,15 @@ behavior it mirrors.
 {{- fail "The server-storage volume and the /app/storage mount path are reserved for native payload storage. Use native.storage.existingClaim." -}}
 {{- end -}}
 {{- end -}}
-{{- $grace := int (default 45 (get $native "terminationGracePeriodSeconds")) -}}
+{{- $connection := toString .Values.externalDatabase.connection -}}
+{{- $extra := default (dict) .Values.config.extraEnv -}}
+{{- if or (eq $connection "sqlite") (eq (toString (get $extra "DB_CONNECTION")) "sqlite") (hasPrefix "sqlite" (toString (get $extra "DB_URL"))) -}}
+{{- fail "The chart does not run the native Server on SQLite yet: that needs exactly one replica on a ReadWriteOnce volume at /app/database, which this chart does not provision. Use MySQL, MariaDB or PostgreSQL, or run SQLite with docker-compose.published.yml." -}}
+{{- end -}}
+{{- if and (not (get (default (dict) (get $native "storage")) "existingClaim")) (or .Values.server.autoscaling.enabled (gt (int (include "durable-workflow.serverReplicas" .)) 1)) -}}
+{{- fail "More than one native Server replica (server.replicaCount above 1 or server.autoscaling.enabled) needs native.storage.existingClaim: native keeps external payload objects on pod-local disk, so one pod cannot read an upload another pod accepted. Set a ReadWriteMany claim, or run one replica." -}}
+{{- end -}}
+{{- $grace := int (default 65 (get $native "terminationGracePeriodSeconds")) -}}
 {{- $poll := get (default (dict) .Values.config.extraEnv) "DW_WORKER_POLL_TIMEOUT" -}}
 {{- if and $poll (le $grace (int $poll)) -}}
 {{- fail (printf "native.terminationGracePeriodSeconds (%d) must exceed DW_WORKER_POLL_TIMEOUT (%v): the native Server holds open worker polls for up to that long while it drains on SIGTERM." $grace $poll) -}}
@@ -726,23 +737,42 @@ behavior it mirrors.
 {{- end -}}
 
 {{/*
-Refuse native.schemaUpgrade while any native Server can still write. The
-schema-upgrade command requires every native node stopped and a database
-backup taken first (rust/README.md, Native schema upgrades). The check reads
-the live Deployment and pods, as the memo transition guard does, and never
-treats desired state as proof that an old pod has stopped.
+Authorize the native schema-upgrade hook. schema-upgrade mutates the database
+and needs every native Server stopped and a backup taken first
+(rust/README.md, Native schema upgrades). The hook therefore renders only in a
+real helm upgrade, and only when live cluster state proves the stop: the
+release's server Deployment is visible, carries the native runtime marker,
+has exactly zero replicas, has no HorizontalPodAutoscaler that could scale it
+back up, and no server pod of the release is still running. Anything lookup
+cannot prove, such as an install, helm template, a GitOps render or a
+client-side dry run, is refused rather than emitting an unchecked Job.
 */}}
-{{- define "durable-workflow.validateNativeSchemaUpgradeQuiescence" -}}
-{{- if .Release.IsUpgrade -}}
-{{- $namespace := .Release.Namespace -}}
-{{- $server := lookup "apps/v1" "Deployment" $namespace (include "durable-workflow.serverDeploymentName" .) -}}
-{{- if $server -}}
-{{- $replicas := 1 -}}
-{{- if hasKey $server.spec "replicas" -}}
-{{- $replicas = int (get $server.spec "replicas") -}}
+{{- define "durable-workflow.validateNativeSchemaUpgradeAuthority" -}}
+{{- $manual := "Use the manual schema upgrade in the chart README (Native schema upgrades) instead: scale the Server to zero, back up the database, run schema-upgrade once as your own Job, then start the Server." -}}
+{{- if not .Release.IsUpgrade -}}
+{{- fail (printf "native.schemaUpgrade.enabled renders the schema-upgrade hook only during helm upgrade of a live native release, where the chart can check that every Server is stopped. This render is an install, helm template or GitOps render. %s" $manual) -}}
 {{- end -}}
-{{- if gt $replicas 0 -}}
-{{- fail (printf "native.schemaUpgrade.enabled runs schema-upgrade, which needs every native Server stopped and a database backup first, but Deployment %s has %d replicas. Scale it to zero (server.replicaCount=0 with server.autoscaling.enabled=false), wait for its pods to exit, back up the database, then upgrade again with native.schemaUpgrade.enabled=true. Leave native.schemaUpgrade.enabled=false for upgrades that keep the schema." $server.metadata.name $replicas) -}}
+{{- $namespace := .Release.Namespace -}}
+{{- $name := include "durable-workflow.serverDeploymentName" . -}}
+{{- $server := lookup "apps/v1" "Deployment" $namespace $name -}}
+{{- if not $server -}}
+{{- fail (printf "native.schemaUpgrade.enabled needs to see the live Deployment %s to prove every Server is stopped, but it is not visible (for example under a client-side dry run). Run helm upgrade against the cluster, or %s" $name $manual) -}}
+{{- end -}}
+{{- $marker := default "" (get (default (dict) $server.metadata.annotations) "workflows.durable-workflow.dev/runtime") -}}
+{{- if ne $marker "native" -}}
+{{- fail (printf "native.schemaUpgrade.enabled upgrades a native schema, but Deployment %s does not carry the native runtime marker, so this release does not run native. A PHP database moves to native through the takeover runbook, never schema-upgrade." $name) -}}
+{{- end -}}
+{{- if or (not (hasKey $server.spec "replicas")) (ne (int (get $server.spec "replicas")) 0) -}}
+{{- fail (printf "native.schemaUpgrade.enabled needs every native Server stopped and a database backup first, but Deployment %s has %v replicas. Scale it to zero (server.replicaCount=0 with server.autoscaling.enabled=false), wait for its pods to exit, back up the database, then upgrade with native.schemaUpgrade.enabled=true." $name (default "unset" (get $server.spec "replicas"))) -}}
+{{- end -}}
+{{- if .Values.server.autoscaling.enabled -}}
+{{- fail "native.schemaUpgrade.enabled cannot run with server.autoscaling.enabled: the autoscaler could start a Server during the upgrade. Disable autoscaling for the schema upgrade and enable it again afterwards." -}}
+{{- end -}}
+{{- $autoscalers := lookup "autoscaling/v2" "HorizontalPodAutoscaler" $namespace "" -}}
+{{- range $hpa := default (list) $autoscalers.items -}}
+{{- $target := default (dict) $hpa.spec.scaleTargetRef -}}
+{{- if and (eq (default "" $target.kind) "Deployment") (eq (default "" $target.name) $name) -}}
+{{- fail (printf "native.schemaUpgrade.enabled needs every native Server stopped, but HorizontalPodAutoscaler %s targets Deployment %s and could start one. Remove it (server.autoscaling.enabled=false) before the schema upgrade." $hpa.metadata.name $name) -}}
 {{- end -}}
 {{- end -}}
 {{- $pods := lookup "v1" "Pod" $namespace "" -}}
@@ -751,7 +781,6 @@ treats desired state as proof that an old pod has stopped.
 {{- $phase := default "Unknown" (get (default (dict) $pod.status) "phase") -}}
 {{- if and (eq (default "" (get $labels "app.kubernetes.io/instance")) $.Release.Name) (eq (default "" (get $labels "app.kubernetes.io/component")) "server") (not (has $phase (list "Succeeded" "Failed"))) -}}
 {{- fail (printf "native.schemaUpgrade.enabled needs every native Server stopped, but server pod %s is still in phase %s. Wait for it to exit before retrying." $pod.metadata.name $phase) -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -820,4 +849,18 @@ ephemeral storage, so the limit also bounds it.
 {{- end -}}
 {{- end -}}
 {{- toYaml $resources -}}
+{{- end -}}
+
+{{/*
+The server replica count. Empty takes the runtime's default: one native pod,
+because more than one needs a shared payload claim, or two PHP pods as in
+chart 0.x. An explicit value, including 0, is used as given.
+*/}}
+{{- define "durable-workflow.serverReplicas" -}}
+{{- $replicas := .Values.server.replicaCount -}}
+{{- if or (kindIs "invalid" $replicas) (eq (toString $replicas) "") -}}
+{{- if include "durable-workflow.isNative" . -}}1{{- else -}}2{{- end -}}
+{{- else -}}
+{{- int $replicas -}}
+{{- end -}}
 {{- end -}}

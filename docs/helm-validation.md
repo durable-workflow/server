@@ -165,8 +165,11 @@ touches `k8s/helm/**` or the chart smoke script. The harness has two jobs:
      `helm test`;
    - asserts that no worker, scheduler, migration Job or Redis Secret exists;
    - upgrades with an empty `runtime` and confirms the release stays native;
-   - confirms that the schema-upgrade hook refuses while a Server pod runs,
-     then scales to zero and runs the hook, which verifies the current schema;
+   - confirms that the schema-upgrade hook refuses unless live state proves
+     every Server stopped (replicas above zero, a client-side render,
+     autoscaling in the values, a live autoscaler, a live server pod, an
+     unmarked or PHP-marked predecessor), then renders and runs it, and the
+     hook verifies the current schema;
    - confirms that an upgrade of a release whose server Deployment lacks the
      native runtime marker refuses an empty `runtime`;
    - runs `helm uninstall` and asserts no chart-owned resources remain.
@@ -180,7 +183,7 @@ The CI fixtures intentionally cover six shapes:
 | `ci/ingress-and-hpa-values.yaml` | Optional templates: Ingress, HPA, NetworkPolicy, server + worker PDB. |
 | `ci/database-tls-values.yaml` | External CA Secret, canonical TLS settings and read-only mounts. Renders native by default. The TLS test also renders it in PHP mode. |
 | `ci/native-inline-secrets-values.yaml` | Native Server with inline secrets: one Deployment, no PHP roles. |
-| `ci/native-ingress-and-hpa-values.yaml` | Native with Ingress, HPA, NetworkPolicy, PDB, a payload claim and the schema-upgrade hook. |
+| `ci/native-ingress-and-hpa-values.yaml` | Native with Ingress, HPA, NetworkPolicy, PDB and the shared payload claim that more than one replica needs. |
 
 The first three fixtures pin `runtime: php`. A chart change that affects
 rendered manifests must keep every fixture green, and both kind smokes must

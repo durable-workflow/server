@@ -6,8 +6,9 @@
 #   1. install, wait for the single server Deployment, run helm test and an
 #      authenticated API call; assert that no PHP role or Redis Secret exists
 #   2. upgrade with an empty runtime and confirm the release stays native
-#   3. confirm the schema-upgrade hook refuses while a Server pod runs, scale
-#      to zero, then run the hook (schema-upgrade verifies a current schema)
+#   3. confirm the schema-upgrade hook refuses unless live state proves every
+#      Server stopped (replicas, client-side render, autoscaling values, a live
+#      autoscaler, a live pod), then run it (it verifies a current schema)
 #   4. confirm an upgrade of a release without the native runtime marker,
 #      as chart 0.x left every PHP release, refuses an empty runtime
 #   5. uninstall cleanly
@@ -178,21 +179,82 @@ port_forward_pid=""
   --wait --timeout 5m
 echo "PASS allowed: upgrade with an empty runtime stays native"
 
-# 4. The schema-upgrade hook refuses while a Server pod runs, then runs once
-#    the Server is scaled to zero.
-expect_refusal "schema upgrade while the Server runs" "needs every native Server stopped" \
-  "${helm_bin}" upgrade "${release}" "${chart_dir}" --namespace "${namespace}" \
-  -f "${values}" "${image_options[@]}" --set native.schemaUpgrade.enabled=true --dry-run=server
+# 4. The schema-upgrade hook renders only when live state proves every native
+#    Server is stopped: a visible, native-marked Deployment at zero replicas,
+#    no autoscaler and no running server pod. Each counterfactual is refused.
+schema_upgrade() {
+  local target="$1"
+  shift
+  "${helm_bin}" upgrade "${target}" "${chart_dir}" --namespace "${namespace}" \
+    -f "${values}" "${image_options[@]}" --set native.schemaUpgrade.enabled=true "$@"
+}
+server_deployment="${release}-durable-workflow-server"
+
+expect_refusal "schema upgrade while the Server runs" "has 1 replicas" \
+  schema_upgrade "${release}" --dry-run=server
 
 "${helm_bin}" upgrade "${release}" "${chart_dir}" --namespace "${namespace}" \
   -f "${values}" "${image_options[@]}" --set server.replicaCount=0 --wait --timeout 5m
 "${kubectl_bin}" -n "${namespace}" wait --for=delete pod \
   -l "app.kubernetes.io/instance=${release},app.kubernetes.io/component=server" --timeout=120s
 
-"${helm_bin}" upgrade "${release}" "${chart_dir}" --namespace "${namespace}" \
-  -f "${values}" "${image_options[@]}" --set native.schemaUpgrade.enabled=true --wait --timeout 5m
-"${kubectl_bin}" -n "${namespace}" rollout status "deploy/${release}-durable-workflow-server" --timeout=180s
-echo "PASS allowed: schema-upgrade hook with every Server stopped"
+# An explicit runtime keeps the runtime selection, which also needs the live
+# Deployment, from refusing first.
+expect_refusal "schema upgrade without a cluster view" "needs to see the live Deployment" \
+  schema_upgrade "${release}" --dry-run=client --set runtime=native
+expect_refusal "schema upgrade with autoscaling in the values" "cannot run with server.autoscaling.enabled" \
+  schema_upgrade "${release}" --dry-run=server --set server.autoscaling.enabled=true \
+  --set-string native.storage.existingClaim=unused-claim
+
+cat >"${work_dir}/stray-autoscaler.yaml" <<YAML
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: stray-autoscaler
+  namespace: ${namespace}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ${server_deployment}
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+YAML
+# An autoscaler leaves a Deployment at zero replicas alone, so this one only
+# proves the guard sees it.
+"${kubectl_bin}" apply -f "${work_dir}/stray-autoscaler.yaml" >/dev/null
+expect_refusal "schema upgrade with a live autoscaler" "HorizontalPodAutoscaler stray-autoscaler" \
+  schema_upgrade "${release}" --dry-run=server
+"${kubectl_bin}" -n "${namespace}" delete hpa stray-autoscaler --wait >/dev/null
+
+"${kubectl_bin}" -n "${namespace}" run stray-server --image=registry.k8s.io/pause:3.9 --restart=Never \
+  --labels="app.kubernetes.io/instance=${release},app.kubernetes.io/component=server" >/dev/null
+expect_refusal "schema upgrade with a live server pod" "server pod stray-server is still" \
+  schema_upgrade "${release}" --dry-run=server
+"${kubectl_bin}" -n "${namespace}" delete pod stray-server --grace-period=0 --force --wait >/dev/null 2>&1
+
+# The positive render: the hook Job runs schema-upgrade with the database CA.
+schema_upgrade "${release}" --dry-run=server --set-string externalDatabase.sslMode=verify-full \
+  --set-string externalDatabase.tls.existingSecret=smoke-database-ca >"${work_dir}/hook.yaml"
+for expected in '"helm.sh/hook": pre-upgrade' 'args: ["schema-upgrade"]' 'automountServiceAccountToken: false' \
+  'name: DB_SSLROOTCERT' 'secretName: "smoke-database-ca"'; do
+  grep -qF "${expected}" "${work_dir}/hook.yaml" || {
+    printf 'the authorized schema-upgrade render lacks %s\n' "${expected}" >&2
+    exit 1
+  }
+done
+echo "PASS allowed: schema-upgrade hook renders once every Server is stopped"
+
+schema_upgrade "${release}" --wait --timeout 5m
+"${kubectl_bin}" -n "${namespace}" rollout status "deploy/${server_deployment}" --timeout=180s
+echo "PASS allowed: schema-upgrade hook ran with every Server stopped"
 
 # 5. A release whose server Deployment lacks the native marker, as every PHP
 #    release from chart 0.x does, must choose a runtime explicitly.
@@ -232,6 +294,14 @@ expect_refusal "upgrade of a PHP release with an empty runtime" "runs the PHP 2.
 "${helm_bin}" upgrade "${stub_release}" "${chart_dir}" --namespace "${namespace}" \
   -f "${values}" "${image_options[@]}" --set runtime=native --dry-run=server >/dev/null
 echo "PASS allowed: an explicit runtime renders against the PHP release"
+# A stopped PHP predecessor is not a native schema: schema-upgrade must never
+# run against it, marked or not.
+expect_refusal "schema upgrade of an unmarked predecessor" "does not carry the native runtime marker" \
+  schema_upgrade "${stub_release}" --set runtime=native --dry-run=server
+"${kubectl_bin}" -n "${namespace}" annotate deploy "${stub_release}-durable-workflow-server" \
+  workflows.durable-workflow.dev/runtime=php >/dev/null
+expect_refusal "schema upgrade of a PHP-marked predecessor" "does not carry the native runtime marker" \
+  schema_upgrade "${stub_release}" --set runtime=native --dry-run=server
 "${helm_bin}" uninstall "${stub_release}" --namespace "${namespace}" --wait --timeout 2m
 
 # 6. Uninstall leaves only the externally managed database behind.

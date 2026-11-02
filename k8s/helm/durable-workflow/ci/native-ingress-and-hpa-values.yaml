@@ -1,5 +1,7 @@
 # CI fixture: the native Server with PostgreSQL, existing Secrets, ingress,
-# autoscaling, a shared payload claim and the opt-in schema-upgrade hook.
+# autoscaling and the shared payload claim that more than one replica needs.
+# The schema-upgrade hook renders only during a live helm upgrade, so the kind
+# smoke covers it instead of this fixture.
 runtime: native
 
 externalDatabase:
@@ -15,8 +17,6 @@ auth:
 native:
   storage:
     existingClaim: durable-workflow-payloads
-  schemaUpgrade:
-    enabled: true
 
 server:
   replicaCount: 3

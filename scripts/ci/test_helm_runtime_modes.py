@@ -57,7 +57,10 @@ class NativeModeTest(unittest.TestCase):
         workloads = [item for item in resources if item["kind"] in {"Deployment", "Job", "CronJob"}]
         self.assertEqual([item["metadata"]["name"] for item in workloads], ["runtime-check-durable-workflow-server"])
         self.assertFalse({component(item) for item in resources} & PHP_ONLY_COMPONENTS)
-        self.assertNotIn("HorizontalPodAutoscaler", {item["kind"] for item in resources})
+        # One pod by default: more than one needs a shared payload claim. A
+        # budget of minAvailable 1 on one pod would block every drain.
+        self.assertEqual(workloads[0]["spec"]["replicas"], 1)
+        self.assertFalse({"HorizontalPodAutoscaler", "PodDisruptionBudget"} & {item["kind"] for item in resources})
 
         server = workloads[0]
         self.assertEqual(server["metadata"]["annotations"]["workflows.durable-workflow.dev/runtime"], "native")
@@ -67,9 +70,13 @@ class NativeModeTest(unittest.TestCase):
         self.assertNotIn("command", container)
         self.assertNotIn("args", container)
         self.assertEqual(container["ports"], [{"name": "http", "containerPort": 8080, "protocol": "TCP"}])
-        self.assertEqual(container["livenessProbe"]["httpGet"]["path"], "/api/health")
+        # /api/health fails during a database outage, so liveness probes the
+        # listener and only readiness checks the database.
+        self.assertEqual(container["livenessProbe"]["tcpSocket"], {"port": "http"})
+        self.assertNotIn("httpGet", container["livenessProbe"])
         self.assertEqual(container["readinessProbe"]["httpGet"]["path"], "/api/ready")
-        self.assertGreater(pod["terminationGracePeriodSeconds"], 30)
+        # A worker poll may ask to be held for up to 60 seconds.
+        self.assertEqual(pod["terminationGracePeriodSeconds"], 65)
         self.assertEqual(pod["securityContext"]["runAsUser"], 1000)
         self.assertEqual(pod["securityContext"]["fsGroup"], 1000)
         self.assertIn({"name": "server-storage", "mountPath": "/app/storage"}, container["volumeMounts"])
@@ -96,24 +103,28 @@ class NativeModeTest(unittest.TestCase):
         self.assertLessEqual({"Ingress", "HorizontalPodAutoscaler", "PodDisruptionBudget", "NetworkPolicy", "Service"}, kinds)
         server = named(resources, "Deployment", "-server")
         self.assertNotIn("replicas", server["spec"])
+        self.assertNotIn("Job", {item["kind"] for item in resources})
         volume = next(item for item in server["spec"]["template"]["spec"]["volumes"] if item["name"] == "server-storage")
         self.assertEqual(volume, {"name": "server-storage", "persistentVolumeClaim": {"claimName": "durable-workflow-payloads"}})
 
-    def test_schema_upgrade_is_an_explicit_pre_upgrade_hook(self):
+    def test_schema_upgrade_hook_is_never_rendered_unchecked(self):
+        """The hook needs live proof that every Server is stopped.
+
+        helm template has no cluster, so an install render and an upgrade
+        render whose predecessor cannot be seen must both refuse. The live
+        refusals and the positive render are in
+        scripts/helm-chart-native-kind-smoke.sh.
+        """
         self.assertNotIn("Job", {item["kind"] for item in render()})
 
-        job = named(render("--set", "native.schemaUpgrade.enabled=true"), "Job", "-schema-upgrade")
-        self.assertEqual(job["metadata"]["annotations"]["helm.sh/hook"], "pre-upgrade")
-        container = job["spec"]["template"]["spec"]["containers"][0]
-        self.assertEqual(container["args"], ["schema-upgrade"])
-        self.assertNotIn("command", container)
-        environment = {item["name"]: item for item in container["env"]}
-        self.assertEqual(environment["DB_CONNECTION"]["value"], "mysql")
-        self.assertEqual(environment["DB_HOST"]["value"], "db.example.internal")
-        self.assertIn("DB_PASSWORD", environment)
-        self.assertNotIn("DW_AUTH_TOKEN", environment)
-        self.assertIs(job["spec"]["template"]["spec"]["automountServiceAccountToken"], False)
-        self.assertIn("ephemeral-storage", container["resources"]["limits"])
+        install = helm("--set", "native.schemaUpgrade.enabled=true")
+        self.assertNotEqual(install.returncode, 0, install.stdout[:200])
+        self.assertIn("renders the schema-upgrade hook only during helm upgrade", install.stderr)
+        self.assertIn("manual schema upgrade in the chart README", install.stderr)
+
+        invisible = helm("--is-upgrade", "--set", "native.schemaUpgrade.enabled=true")
+        self.assertNotEqual(invisible.returncode, 0, invisible.stdout[:200])
+        self.assertIn("needs to see the live Deployment runtime-check-durable-workflow-server", invisible.stderr)
 
     def test_explicit_ephemeral_storage_and_token_settings_win(self):
         server = named(render(
@@ -130,7 +141,17 @@ class NativeModeTest(unittest.TestCase):
             "auth.principalTokens is not supported": ["--set-string", "auth.principalTokens=[]"],
             'config.auth.driver "none" is not supported': ["--set-string", "config.auth.driver=none"],
             "must exceed DW_WORKER_POLL_TIMEOUT": [
-                "--set-string", "config.extraEnv.DW_WORKER_POLL_TIMEOUT=60",
+                "--set-string", "config.extraEnv.DW_WORKER_POLL_TIMEOUT=70",
+            ],
+            "More than one native Server replica": ["--set", "server.replicaCount=2"],
+            "native.storage.existingClaim: native keeps external payload objects": [
+                "--set", "server.autoscaling.enabled=true",
+            ],
+            "does not run the native Server on SQLite": [
+                "--set-string", "externalDatabase.connection=sqlite",
+            ],
+            "does not run the native Server on SQLite yet": [
+                "--set-string", "config.extraEnv.DB_URL=sqlite:///app/database/database.sqlite",
             ],
             "reserved for native payload storage": [
                 "--set-json", 'server.extraVolumes=[{"name":"server-storage","emptyDir":{}}]',
@@ -143,11 +164,21 @@ class NativeModeTest(unittest.TestCase):
                 self.assertIn(message, result.stderr)
 
         accepted = render(
-            "--set-string", "config.extraEnv.DW_WORKER_POLL_TIMEOUT=60",
+            "--set-string", "config.extraEnv.DW_WORKER_POLL_TIMEOUT=70",
             "--set", "native.terminationGracePeriodSeconds=75",
         )
         server = named(accepted, "Deployment", "-server")
         self.assertEqual(server["spec"]["template"]["spec"]["terminationGracePeriodSeconds"], 75)
+
+    def test_a_shared_payload_claim_allows_more_than_one_replica(self):
+        resources = render(
+            "--set", "server.replicaCount=3",
+            "--set-string", "native.storage.existingClaim=shared-payloads",
+        )
+        self.assertEqual(named(resources, "Deployment", "-server")["spec"]["replicas"], 3)
+        self.assertIn("PodDisruptionBudget", {item["kind"] for item in resources})
+        stopped = render("--set", "server.replicaCount=0")
+        self.assertEqual(named(stopped, "Deployment", "-server")["spec"]["replicas"], 0)
 
     def test_existing_secret_satisfies_the_token_requirement(self):
         render("--set-string", "auth.authToken=", "--set-string", "auth.existingSecret=app-credentials")
@@ -172,6 +203,19 @@ class PhpModeTest(unittest.TestCase):
             values=PHP,
         )
         self.assertNotIn("APP_VERSION", named(resources, "ConfigMap", "-config")["data"])
+
+    def test_php_default_replicas_and_probes_are_unchanged(self):
+        resources = render(values=PHP)
+        server = named(resources, "Deployment", "-server")
+        self.assertEqual(server["spec"]["replicas"], 2)
+        self.assertEqual(server["spec"]["template"]["spec"]["containers"][0]["livenessProbe"]["httpGet"]["path"], "/api/health")
+        self.assertNotIn("terminationGracePeriodSeconds", server["spec"]["template"]["spec"])
+        self.assertIn("PodDisruptionBudget", {item["kind"] for item in resources})
+
+    def test_php_mode_refuses_sqlite(self):
+        result = helm("--set-string", "externalDatabase.connection=sqlite", values=PHP)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PHP mode does not run on SQLite", result.stderr)
 
     def test_php_mode_ignores_native_settings(self):
         resources = render("--set", "native.schemaUpgrade.enabled=true", values=PHP)

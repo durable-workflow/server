@@ -206,30 +206,51 @@ native:
     request: 128Mi
     limit: 2Gi
 
-  # On SIGTERM the native Server holds open worker polls for up to
-  # DW_WORKER_POLL_TIMEOUT (30 seconds unless config.extraEnv changes it).
-  # Keep this above that timeout so a rollout drains polls instead of cutting
-  # them off.
-  terminationGracePeriodSeconds: 45
+  # On SIGTERM the native Server holds open worker polls until they end. A
+  # poll waits DW_WORKER_POLL_TIMEOUT (30 seconds) unless it asks for up to 60,
+  # so keep this above 60 for a rollout to drain polls instead of cutting them
+  # off. The chart refuses a value at or below a DW_WORKER_POLL_TIMEOUT set in
+  # config.extraEnv.
+  terminationGracePeriodSeconds: 65
+
+  # Liveness for native pods. /api/health reports database liveness, so
+  # probing it would restart every pod during a database outage while the
+  # connection pool would have recovered on its own. Native probes the
+  # listener instead; readiness (server.readinessProbe on /api/ready) still
+  # takes a pod out of service when its database, schema or maintenance loop
+  # fails. server.livenessProbe applies to PHP mode only.
+  livenessProbe:
+    tcpSocket:
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
 
   # Native keeps external payload objects on local disk at /app/storage.
   # Without a claim the chart mounts an emptyDir, which is lost with the pod.
   # Set a PersistentVolumeClaim before any namespace enables external payload
-  # storage. With more than one replica the claim must be ReadWriteMany so
-  # every pod reads the same objects.
+  # storage. More than one replica (server.replicaCount above 1 or
+  # autoscaling) requires a claim, and it must be ReadWriteMany so every pod
+  # reads the same objects. The chart refuses more than one replica without
+  # one.
   storage:
     existingClaim: ""
 
   # Explicit schema upgrade between native releases. A native Server never
   # upgrades its schema at startup: on an older schema it refuses with
   # native_schema_upgrade_required and stays unready. Patch releases within a
-  # minor line keep the schema. When a release notes a schema change:
+  # minor line keep the schema. When a release notes a schema change, with
+  # helm upgrade against the cluster:
   #   1. scale the Server to zero (server.replicaCount=0, autoscaling off),
   #   2. back up the database,
   #   3. upgrade to the new image with schemaUpgrade.enabled=true and your
-  #      usual replica count,
+  #      usual replica count (autoscaling still off),
   #   4. set schemaUpgrade.enabled=false again for later upgrades.
-  # The chart refuses to render this hook while a Server pod still runs.
+  # The hook renders only in helm upgrade, and only when the live native
+  # Deployment has zero replicas, no autoscaler and no running pod. An
+  # install, helm template or GitOps render with this enabled is refused; use
+  # the manual path in the chart README instead.
   schemaUpgrade:
     enabled: false
     backoffLimit: 0
@@ -280,7 +301,9 @@ bootstrap:
 
 server:
   enabled: true
-  replicaCount: 2
+  # Empty takes the runtime default: 1 native pod (more than one needs
+  # native.storage.existingClaim) or 2 PHP pods. 0 stops the Server.
+  replicaCount: ""
 
   # Strategy controls. Default RollingUpdate with maxUnavailable=0 enforces
   # the rolling-upgrade contract (https://durable-workflow.github.io/docs/2.0/rolling-upgrades).

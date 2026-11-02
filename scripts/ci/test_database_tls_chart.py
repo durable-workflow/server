@@ -60,8 +60,10 @@ class DatabaseTlsChartTest(unittest.TestCase):
                         self.assertEqual(environment["DB_SSLROOTCERT"], CA_PATH)
                 self.assertEqual(roles, {"server", "worker", "migrate", "scheduler"})
 
-    def test_ca_reaches_the_native_server_and_schema_upgrade_hook(self):
-        resources = render("--set", "native.schemaUpgrade.enabled=true")
+    def test_ca_reaches_the_native_server(self):
+        # The schema-upgrade hook renders only against a live release; the
+        # native kind smoke checks its CA wiring.
+        resources = render()
         config = next(item for item in resources if item["kind"] == "ConfigMap")["data"]
         self.assertEqual(config["DB_SSLMODE"], "verify-full")
         self.assertEqual(config["DB_SSLROOTCERT"], CA_PATH)
@@ -80,7 +82,7 @@ class DatabaseTlsChartTest(unittest.TestCase):
                 environment = {item["name"]: item.get("value") for item in container["env"]}
                 self.assertEqual(environment["DB_SSLMODE"], "verify-full")
                 self.assertEqual(environment["DB_SSLROOTCERT"], CA_PATH)
-        self.assertEqual(roles, {"server", "schema-upgrade"})
+        self.assertEqual(roles, {"server"})
 
     def test_existing_volumes_and_mounts_survive_with_or_without_ca(self):
         for ca in ["database-ca", ""]:

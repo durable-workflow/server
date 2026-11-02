@@ -26,7 +26,7 @@ metadata:
     {{- end }}
 spec:
   {{- if not .Values.server.autoscaling.enabled }}
-  replicas: {{ .Values.server.replicaCount }}
+  replicas: {{ include "durable-workflow.serverReplicas" . }}
   {{- end }}
   revisionHistoryLimit: {{ .Values.server.revisionHistoryLimit }}
   progressDeadlineSeconds: {{ .Values.server.progressDeadlineSeconds }}
@@ -66,9 +66,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- /* On SIGTERM native stops accepting work and holds open worker
-      polls for up to DW_WORKER_POLL_TIMEOUT (30 seconds by default), so the
-      grace period must outlast it. */}}
-      terminationGracePeriodSeconds: {{ default 45 (get $native "terminationGracePeriodSeconds") }}
+      polls until they end. A poll may ask for up to 60 seconds, so the grace
+      period must outlast that. */}}
+      terminationGracePeriodSeconds: {{ default 65 (get $native "terminationGracePeriodSeconds") }}
       containers:
         - name: server
           image: {{ include "durable-workflow.image" . | quote }}
@@ -84,7 +84,11 @@ spec:
             {{- with .Values.server.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with .Values.server.livenessProbe }}
+          {{- /* /api/health reports database liveness, so a liveness probe on
+          it would restart every pod during a database outage. Native mode
+          probes the listener instead and leaves database checks to
+          readiness. */}}
+          {{- with (get $native "livenessProbe") }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}

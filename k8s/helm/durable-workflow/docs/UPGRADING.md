@@ -170,8 +170,11 @@ not set `runtime: native` before the takeover completes.
    ```bash
    helm upgrade durable-workflow <chart> -f my-values.yaml \
      --set runtime=native --set image.tag=3.0.1 \
-     --set server.replicaCount=2 --wait
+     --set server.replicaCount=1 --wait
    ```
+
+   More than one native replica needs `native.storage.existingClaim` on a
+   ReadWriteMany volume.
 
    Helm removes the worker Deployment, scheduler CronJob, migration Job hook
    and Redis Secret and updates the server Deployment in place. PHP-only
@@ -182,14 +185,24 @@ not set `runtime: native` before the takeover completes.
 cannot see the live release, so an empty `runtime` always renders native for
 them. Set `runtime` explicitly in GitOps values before you move to chart 1.x.
 
-**Native settings.** `native.terminationGracePeriodSeconds` (default 45)
-stays above the native worker poll timeout so pods drain open polls on
-shutdown. `native.storage.existingClaim` keeps external payload objects
-across pod restarts. `native.schemaUpgrade.enabled` runs the image's
-`schema-upgrade` command as an opt-in `pre-upgrade` hook, see
-[Native schema upgrades](../README.md#native-schema-upgrades). Native ignores
-`config.auth.backwardCompatible` and the metrics and application name
-settings, and accepts only the token auth driver.
+**Native settings.**
+- A native install runs one replica by default. More than one replica, or
+  autoscaling, needs `native.storage.existingClaim` on a ReadWriteMany
+  volume, because payload objects are pod-local. The chart refuses it without
+  one.
+- `native.terminationGracePeriodSeconds` (default 65) outlasts the longest
+  worker poll a client may request (60 seconds), so pods drain open polls on
+  shutdown.
+- Liveness is a TCP check on the `http` port (`native.livenessProbe`), because
+  `/api/health` fails during a database outage. Readiness stays on
+  `/api/ready`.
+- `native.schemaUpgrade.enabled` runs the image's `schema-upgrade` command as
+  an opt-in `pre-upgrade` hook during `helm upgrade` only, once live state
+  proves every Server is stopped. GitOps and `helm template` users follow the
+  manual path. See [Native schema upgrades](../README.md#native-schema-upgrades).
+- The chart refuses SQLite in both runtimes.
+- Native ignores `config.auth.backwardCompatible` and the metrics and
+  application name settings, and accepts only the token auth driver.
 
 ### Chart 0.3.9 / Server 2.11.8
 
