@@ -252,3 +252,35 @@ async fn thousands_of_retained_receipts_leave_queries_unaffected() {
     runtime.close().await;
     database.remove().await;
 }
+
+// The cutover never lists a 3.0.1 row that can no longer be answered (Server
+// #964): an expired row is deleted, and a pending row past its query
+// deadline closes first. Otherwise 128 such rows would fill the namespace's
+// open set and refuse the live queries below as query_task_queue_full.
+#[tokio::test]
+async fn the_cutover_lists_only_answerable_rows() {
+    let (database, runtime, app, path) = queryable("stale-cutover").await;
+    let now = chrono::Utc::now();
+    let wire = |time: chrono::DateTime<chrono::Utc>| time.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
+    let row = |expiration: i64| {
+        let id = ulid::Ulid::new().to_string();
+        let task = format!(
+            "{{\"query_task_id\":\"{id}\",\"namespace\":\"default\",\"task_queue\":\"test\",\"status\":\"pending\",\"query_admitted_at\":\"{}\",\"query_deadline_at\":\"{}\",\"receipt_expires_at\":\"{}\"}}",
+            wire(now - chrono::Duration::seconds(600)), wire(now - chrono::Duration::seconds(300)), wire(now + chrono::Duration::seconds(3600)));
+        format!("('dw-native-query:{id}','{task}',{expiration})")
+    };
+    let mut rows: Vec<String> = (0..64).map(|_| row(now.timestamp() - 30)).collect();
+    rows.extend((0..64).map(|_| row(now.timestamp() + 3600)));
+    database.execute(sqlx::AssertSqlSafe(format!("INSERT INTO dw_query_cache VALUES {}", rows.join(",")))).await;
+    for index in 0..3 {
+        let caller = admit_query(&app, &path);
+        let (claimed, _) = poll_waiting(&app, &format!("stale-{index}"), 5).await;
+        let task = claimed["task"].clone();
+        assert!(task.is_object(), "query {index} was not claimed: {claimed}");
+        finish_query(&app, &task).await;
+        let (status, answer) = caller.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "query {index}: {answer}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}

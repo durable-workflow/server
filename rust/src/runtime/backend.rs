@@ -51,7 +51,6 @@ pub(super) trait Backend: Database {
     const WORKER_REGISTRATION_SQL: &str = super::store::WORKER_REGISTRATION_SQL;
     const TASK_CANDIDATES_SQL: &str = super::store::TASK_CANDIDATES_SQL;
     const POLL_WAKE_TASKS_SQL: &str = super::cross_kind_poll::TASKS_SQL;
-    const POLL_WAKE_QUERIES_SQL: &str = "SELECT \"key\" AS id FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$1 AND CAST(value AS jsonb)->>'namespace'=$2 AND CAST(value AS jsonb)->>'task_queue'=$3 AND CAST(value AS jsonb)->>'query_deadline_at'>$4 AND (CAST(value AS jsonb)->>'status'='pending' OR (CAST(value AS jsonb)->>'status'='leased' AND CAST(value AS jsonb)->>'lease_expires_at'<=$5)) ORDER BY \"key\" LIMIT 65";
     const POLL_RECEIPT_CLEANUP_SQL: &str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &str;
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled' AND payload->>'timer_id'=$2 ORDER BY sequence DESC LIMIT 1";
@@ -229,7 +228,6 @@ SELECT id,ordinal FROM ordinals WHERE position IS NOT ordinal ORDER BY ordinal L
     const ACTIVITY_RESULT_EVENT_SQL: &str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (json_extract(payload,'$.activity_execution_id') COLLATE BINARY=$2 OR json_extract(payload,'$.activity.id') COLLATE BINARY=$3) ORDER BY sequence DESC LIMIT 1";
     const QUERY_CACHE_SCAN: &str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND json_extract(value,'$.namespace')=$1 ORDER BY \"key\" LIMIT 65";
     const SESSION_RUNNING_ATTEMPTS: &str = "SELECT COUNT(*) FROM activity_attempts p JOIN activity_executions e ON e.id=p.activity_execution_id JOIN workflow_tasks t ON t.id=p.workflow_task_id WHERE t.namespace=$1 AND p.status='running' AND p.lease_expires_at>$2 AND p.lease_owner=$3 AND json_extract(e.activity_options,'$.worker_session.session_id')=$4 AND p.workflow_task_id<>$5";
-    const POLL_WAKE_QUERIES_SQL: &str = "SELECT \"key\" AS id FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND expiration>$1 AND json_extract(value,'$.namespace')=$2 AND json_extract(value,'$.task_queue')=$3 AND json_extract(value,'$.query_deadline_at')>$4 AND (json_extract(value,'$.status')='pending' OR (json_extract(value,'$.status')='leased' AND json_extract(value,'$.lease_expires_at')<=$5)) ORDER BY \"key\" LIMIT 65";
     const POLL_WAKE_TASKS_SQL: &str = r#"
 WITH utc_tasks AS (
     SELECT t.id,t.namespace,t.queue,t.workflow_run_id,t.status,t.available_at,
@@ -541,7 +539,6 @@ impl Backend for MySql {
     }
     const ACTIVITY_RESULT_EVENT_SQL: &str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE CAST(workflow_run_id AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id')) AS BINARY)=CAST(? AS BINARY) OR CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity.id')) AS BINARY)=CAST(? AS BINARY)) ORDER BY sequence DESC LIMIT 1";
     const QUERY_CACHE_SCAN: &str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND BINARY JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace'))=BINARY ? ORDER BY `key` LIMIT 65";
-    const POLL_WAKE_QUERIES_SQL: &str = "SELECT `key` AS id FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND expiration>? AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.task_queue')) AS BINARY)=CAST(? AS BINARY) AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.query_deadline_at')) AS BINARY)>CAST(? AS BINARY) AND (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='pending' OR (JSON_UNQUOTE(JSON_EXTRACT(value,'$.status'))='leased' AND CAST(JSON_UNQUOTE(JSON_EXTRACT(value,'$.lease_expires_at')) AS BINARY)<=CAST(? AS BINARY))) ORDER BY `key` LIMIT 65";
     const EXTERNAL_PAYLOAD_BYTES: &str = "SELECT CAST(COALESCE(SUM(size_bytes),0) AS SIGNED) FROM runtime_external_payloads WHERE namespace=$1";
     const MEMO_UPSERT: &str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9) ON DUPLICATE KEY UPDATE value=VALUES(value),upserted_at_sequence=VALUES(upserted_at_sequence),inherited_from_parent=false,updated_at=VALUES(updated_at),portable_value=VALUES(portable_value),portable_value_sequence=VALUES(portable_value_sequence)";
     const MEMO_DELETE: &str =
@@ -603,7 +600,6 @@ impl Backend for MySql {
             || sql == Self::LOCAL_ACTIVITY_ATTEMPTS
             || sql == Self::ACTIVITY_RESULT_EVENT_SQL
             || sql == Self::OBSERVATION_FAILURE_EVENT
-            || sql == Self::POLL_WAKE_QUERIES_SQL
             || sql == Self::QUERY_CACHE_SCAN
             || sql == Self::SESSION_RUNNING_ATTEMPTS
         {

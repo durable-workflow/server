@@ -80,6 +80,21 @@ fn poll_result(task: Option<Value>, status: &str) -> Value {
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
+/// An open set's ids: unique canonical ULIDs, at most `MAX_ENTRIES`, and
+/// none from a row that names another namespace.
+fn listed_ids(set: &Value, namespace: &str) -> Vec<String> {
+    if set["namespace"] != namespace {
+        return vec![];
+    }
+    let mut ids: Vec<String> = vec![];
+    for id in set["ids"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if ids.len() < MAX_ENTRIES && canonical_id(id) && !ids.iter().any(|seen| seen == id) {
+            ids.push(id.to_owned());
+        }
+    }
+    ids
+}
+
 /// A query task id as native writes it: a ULID in its canonical text.
 fn canonical_id(id: &str) -> bool {
     id.parse::<ulid::Ulid>().is_ok_and(|parsed| parsed.to_string() == id)
@@ -378,16 +393,45 @@ where
         let Some(set) = Self::cache_document(tx, &Self::open_set_key(namespace)).await? else {
             return Ok(vec![]);
         };
-        if set["namespace"] != namespace {
+        Ok(listed_ids(&set, namespace))
+    }
+
+    /// Open tasks of this namespace on `queue` a poll could claim now: read
+    /// lock-free from the namespace's open set, every row by key (Server
+    /// #964). Only a readiness hint; the claim decides under the lock.
+    pub(super) async fn ready_query_keys(&self, queue: &str) -> Result<Vec<String>> {
+        let namespace = self.namespace.as_ref();
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(Self::open_set_key(namespace)).fetch_optional(&self.pool).await? else {
             return Ok(vec![]);
-        }
-        let mut ids: Vec<String> = vec![];
-        for id in set["ids"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-            if ids.len() < MAX_ENTRIES && canonical_id(id) && !ids.iter().any(|seen| seen == id) {
-                ids.push(id.to_owned());
+        };
+        let set: Value = serde_json::from_str(&DB::string(&row, "value")?).unwrap_or(Value::Null);
+        let at = super::store::now();
+        let wire_now = authority::wire(at);
+        let mut ready = vec![];
+        for id in listed_ids(&set, namespace) {
+            let key = key(&id)?;
+            let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&self.pool).await? else {
+                continue;
+            };
+            if DB::number(&row, "expiration")? <= at.timestamp() {
+                continue;
+            }
+            let Ok(task) = serde_json::from_str::<Value>(&DB::string(&row, "value")?) else {
+                continue;
+            };
+            let after = |field: &str| task[field].as_str().is_some_and(|time| time > wire_now.as_str());
+            let claimable = match task["status"].as_str() {
+                Some("pending") => true,
+                Some("leased") => !after("lease_expires_at"),
+                _ => false,
+            };
+            if task["query_task_id"] == id.as_str() && task["namespace"] == namespace && task["task_queue"] == queue
+                && after("query_deadline_at") && claimable
+            {
+                ready.push(key);
             }
         }
-        Ok(ids)
+        Ok(ready)
     }
 
     async fn write_open_set(tx: &mut Transaction<'_, DB>, namespace: &str, ids: &[String]) -> Result<()> {
@@ -534,17 +578,30 @@ where
             let Some(id) = key.strip_prefix("dw-native-query:") else {
                 continue;
             };
-            Self::file_expiry(tx, &key, DB::number(row, "expiration")?).await?;
-            let Ok(task) = serde_json::from_str::<Value>(&DB::string(row, "value")?) else {
+            let expiration = DB::number(row, "expiration")?;
+            // An expired row is deleted here and never listed.
+            Self::file_expiry(tx, &key, expiration).await?;
+            if expiration <= now() {
+                continue;
+            }
+            let Ok(mut task) = serde_json::from_str::<Value>(&DB::string(row, "value")?) else {
                 continue;
             };
+            // A task past its deadline closes before it could take a slot.
+            if authority::expire(&mut task, authority::now())? {
+                Self::put_query(tx, &key, &task, authority::expiration(&task)?).await?;
+            }
             if task["query_task_id"] == id
                 && canonical_id(id)
                 && matches!(task["status"].as_str(), Some("pending" | "leased"))
                 && let Some(namespace) = task["namespace"].as_str()
             {
-                // A full set leaves the rest to time out by their deadlines.
-                let _ = Self::list_open(tx, namespace, id).await;
+                match Self::list_open(tx, namespace, id).await {
+                    // A full set leaves this task to its deadline; nothing
+                    // else may pass silently, so the page rolls back.
+                    Err(super::RuntimeError::Refused { reason: "query_task_queue_full", .. }) => {}
+                    other => other?,
+                }
             }
         }
         let done = rows.len() < 64;
@@ -1032,16 +1089,7 @@ where
         {
             return Ok(true);
         }
-        let at = super::store::now();
-        let query_now = authority::wire(at);
-        let candidates = Self::query(DB::POLL_WAKE_QUERIES_SQL)
-            .bind(at.timestamp())
-            .bind(self.namespace.as_ref())
-            .bind(text(body, "task_queue")?)
-            .bind(query_now.clone())
-            .bind(query_now)
-            .fetch_all(&self.pool)
-            .await?;
+        let candidates = self.ready_query_keys(text(body, "task_queue")?).await?;
         if candidates.is_empty() {
             return Ok(false);
         }
@@ -1051,7 +1099,7 @@ where
         let mut ready = false;
         for candidate in candidates {
             let Some(row) = Self::query(DB::QUERY_CACHE_GET)
-                .bind(DB::string(&candidate, "id")?)
+                .bind(&candidate)
                 .fetch_optional(&mut *read)
                 .await?
             else {
