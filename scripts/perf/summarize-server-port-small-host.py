@@ -221,6 +221,7 @@ def step_summary(driver, target, samples, marks, name, step):
         "accepted": sum(r.get("accepted_starts", 0) for r in results),
         "completed_by_deadline": sum(r.get("completed_by_observation_deadline", 0) for r in results),
         "errors": sum(len(r.get("errors", [])) for r in results),
+        "cross_clock_negative_first_stages": sum((r.get("cross_clock") or {}).get("negative_count", 0) for r in results),
         "latency_p50_seconds_median_of_probes": p50s[len(p50s) // 2] if p50s else None,
         "latency_p99_seconds_max_of_probes": max(p99s) if p99s else None,
         **observed(driver, target, samples, marks.get(name)),
@@ -250,17 +251,46 @@ def clock_offsets(text):
     return offsets
 
 
+def clock_jitters(text):
+    """Jitter in seconds from timedatectl timesync-status and chronyc's RMS offset."""
+    jitters = [float(value) * OFFSET_UNITS[unit]
+               for value, unit in re.findall(r"^\s*Jitter:\s*([0-9.]+)(ns|us|ms|s)\b", text, re.MULTILINE)]
+    jitters += [float(value) for value in re.findall(r"RMS offset\s*:\s*([0-9.]+) seconds", text)]
+    return jitters
+
+
+# Driver-relative latency and the probe's first history stage compare the
+# driver's clock with the target's. Each host's offset plus jitter must stay
+# within this for those figures to be reliable; a 1 vCPU kvm-clock host was
+# measured at +39 ms offset and 62 ms jitter while NTP-synchronized.
+CROSS_HOST_TOLERANCE_SECONDS = 0.005
+
+
 def clock_records(driver, target):
     """Synchronization state and numeric offsets only, never the raw text."""
     clock = {}
+    reliable = True
     for side, folder, files in (("driver", driver, ("clock-start.txt", "clock-end.txt")),
                                 ("target", target, ("clock-up.txt", "clock-down.txt"))):
         texts = [read_text(folder / f) or "" for f in files]
-        offsets = [offset for text in texts for offset in clock_offsets(text)]
+        offsets = [clock_offsets(text) for text in texts]
+        jitters = [clock_jitters(text) for text in texts]
+        synchronized = all(re.search(r"NTPSynchronized=yes", t) for t in texts)
+        # Every capture, start and end, must carry its own offset and jitter;
+        # one capture's numbers never stand in for another's missing ones.
+        measured = all(offsets) and all(jitters)
+        max_offset = max((abs(o) for capture in offsets for o in capture), default=None)
+        max_jitter = max((j for capture in jitters for j in capture), default=None)
         clock[side] = {
-            "ntp_synchronized_at_both_ends": all(re.search(r"NTPSynchronized=yes", t) for t in texts),
-            "max_abs_offset_seconds": max((abs(o) for o in offsets), default=None),
+            "ntp_synchronized_at_both_ends": synchronized,
+            "offset_and_jitter_in_every_capture": measured,
+            "max_abs_offset_seconds": max_offset,
+            "max_jitter_seconds": max_jitter,
         }
+        reliable = reliable and synchronized and measured \
+            and max_offset + max_jitter <= CROSS_HOST_TOLERANCE_SECONDS
+    clock["cross_host_tolerance_seconds"] = CROSS_HOST_TOLERANCE_SECONDS
+    clock["cross_host_timing_reliable"] = reliable
     return clock
 
 

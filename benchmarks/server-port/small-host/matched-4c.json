@@ -76,7 +76,7 @@
     "adapter": "benchmarks/capacity/v1/bindings/php/capacity_adapter.php",
     "adapter_sha256": "0ad9fd714f325970c18d32cfedf754895cec621bd048593ac04fd8b9a247b926",
     "command": "scripts/perf/standard-workflow-offered.php",
-    "command_sha256": "cac36195aa9d0867516dff7bcb09f7d9df5fc65b9c0a0b7f49f8d7852def055f",
+    "command_sha256": "c0352bbab781df2d3f86f7c96e7b749606e62c19770bdbe85e6c75ef25c58e66",
     "warmup_seconds": 60,
     "offer_seconds": 120,
     "drain_limit_seconds": 120,

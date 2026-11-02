@@ -139,6 +139,7 @@ while (($next < $planned || $pending !== []) && hrtime(true) < $deadlineNs) {
     }
 }
 
+$negativeFirstStages = 0;
 $lastObservationNs = hrtime(true);
 $lastObservationWall = microtime(true);
 foreach ($completed as $id => $sample) {
@@ -160,15 +161,22 @@ foreach ($completed as $id => $sample) {
                 $eventTimes[$type] = (float) (new DateTimeImmutable($timestamp))->format('U.u');
             }
         }
-        $previousTime = $started[$id]['wall'];
+        // History order is checked on the Server's clock only. The first stage
+        // starts on the driver's clock, so a driver/target offset larger than
+        // that stage (a few ms) can make it negative; it is recorded, not
+        // treated as a history defect.
+        $previousTime = null;
         $intervals = [];
         foreach ($stageNames as $eventType => $stage) {
             $eventTime = $eventTimes[$eventType] ?? null;
-            if ($eventTime === null || $eventTime < $previousTime) {
+            if ($eventTime === null || ($previousTime !== null && $eventTime < $previousTime)) {
                 throw new RuntimeException('Standard history timestamps are missing or out of order: '.$eventType);
             }
-            $intervals[$stage] = $eventTime - $previousTime;
+            $intervals[$stage] = $eventTime - ($previousTime ?? $started[$id]['wall']);
             $previousTime = $eventTime;
+        }
+        if ($intervals[$stageNames['WorkflowStarted']] < 0) {
+            $negativeFirstStages++;
         }
         foreach ($intervals as $stage => $interval) {
             $stageSamples[$stage][] = $interval;
@@ -221,7 +229,12 @@ $result = [
     'closed_during_offer_window' => $closedInWindow,
     'offer_window_completions_per_second' => $closedInWindow / $duration,
     'observation_seconds_excluding_history_verification' => ($lastObservationNs - $beganNs) / 1_000_000_000,
-    'latency_boundary' => 'Client start request beginning to Server closed_at; shared host clock, SDK describe collection delay excluded.',
+    'latency_boundary' => 'Client start request beginning (driver clock) to Server closed_at (Server clock); SDK describe collection delay excluded. Across hosts it includes their clock offset.',
+    'cross_clock' => [
+        'stage' => $stageNames['WorkflowStarted'],
+        'min_seconds' => ($stageSamples[$stageNames['WorkflowStarted']] ?? []) === [] ? null : min($stageSamples[$stageNames['WorkflowStarted']]),
+        'negative_count' => $negativeFirstStages,
+    ],
     'latency_p50_seconds' => $percentile($latencies, 0.50),
     'latency_p95_seconds' => $percentile($latencies, 0.95),
     'latency_p99_seconds' => $percentile($latencies, 0.99),

@@ -8,6 +8,11 @@ workload, limits, probe, SDK lock and the PHP reference (published Server
 2.6.2, the recorded baseline) are unchanged. Its SHA-256 is the
 `profile_sha256` in every summary.
 
+This profile is frozen with those summaries. It still pins the probe as it was
+on October 30, before #933 moved history verification to the server clock, so
+re-run it from commit `a0f7af002a6af96b219125c54d1ceb1a2be165e5`. On later
+commits the runner refuses it because the probe's hash differs.
+
 The [October 30 observations](observations-2026-10-30.md) are three
 alternating PHP/native-image pairs on one host, run with
 `scripts/perf/run-server-port-matched.sh` and summarized with
