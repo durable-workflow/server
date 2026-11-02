@@ -78,7 +78,7 @@ mod memo_limits;
 mod history_meter;
 mod standalone_activities;
 mod archive;
-pub(crate) mod backup_hold;
+pub mod backup_hold;
 mod command_payloads;
 mod completion_rules;
 mod deployments;

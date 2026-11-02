@@ -187,6 +187,89 @@ fn sql_time(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// One offline `backup-hold` invocation, as PHP's
+/// `external-payloads:backup-hold {action} --owner= --ttl=900` takes it
+/// (Server #973): a restore releases the restored hold before any Server
+/// process starts.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Command {
+    /// `None` is `status`.
+    action: Option<Action>,
+    owner: Option<String>,
+    ttl: i64,
+}
+
+/// Parse the arguments after `backup-hold`: an action (`acquire`, `renew`,
+/// `release` or `status`), then `--owner` and `--ttl`, each as `--name=value`
+/// or `--name value` and at most once. The TTL must be an integer whatever
+/// the action, as PHP's command checks it first.
+pub fn command(args: &[String]) -> Result<Command> {
+    let invalid = || super::refuse(StatusCode::BAD_REQUEST, "backup_hold_command_invalid");
+    let mut args = args.iter();
+    let action = match args.next().map(String::as_str) {
+        Some("acquire") => Some(Action::Acquire),
+        Some("renew") => Some(Action::Renew),
+        Some("release") => Some(Action::Release),
+        Some("status") => None,
+        _ => return Err(super::refuse(StatusCode::BAD_REQUEST, "backup_hold_action_invalid")),
+    };
+    let (mut owner, mut ttl) = (None, None);
+    while let Some(arg) = args.next() {
+        let (name, value) = match arg.split_once('=') {
+            Some((name, value)) => (name, value.to_owned()),
+            None => (arg.as_str(), args.next().ok_or_else(invalid)?.clone()),
+        };
+        let slot = match name {
+            "--owner" => &mut owner,
+            "--ttl" => &mut ttl,
+            _ => return Err(invalid()),
+        };
+        if slot.replace(value).is_some() {
+            return Err(invalid());
+        }
+    }
+    let ttl = match ttl {
+        None => DEFAULT_TTL_SECONDS,
+        Some(text) => super::laravel_validation::integer(&json!(text))
+            .ok_or_else(|| super::refuse(StatusCode::BAD_REQUEST, "backup_hold_ttl_invalid"))?,
+    };
+    Ok(Command { action, owner, ttl })
+}
+
+/// `backup-hold` against a native SQLite database that already exists.
+pub async fn console_sqlite(database: &str, command: &Command) -> Result<Value> {
+    let store = super::store::Store::new(super::sqlite::open_initialized(database).await?);
+    store.run_backup_hold_command(command).await
+}
+
+/// `backup-hold` against an initialized native PostgreSQL database; an empty
+/// or foreign database is refused before the writable pool opens.
+pub async fn console_postgres(options: sqlx::postgres::PgConnectOptions, command: &Command) -> Result<Value> {
+    super::postgres::PostgresStorage::check(options.clone()).await?;
+    let store = super::store::Store::new(super::postgres::PostgresStorage::open(options).await?.into_pool());
+    store.run_backup_hold_command(command).await
+}
+
+/// `backup-hold` against an initialized native MySQL or MariaDB database.
+pub async fn console_mysql(options: sqlx::mysql::MySqlConnectOptions, command: &Command) -> Result<Value> {
+    super::mysql::MySqlStorage::check(options.clone()).await?;
+    let store = super::store::Store::new(super::mysql::MySqlStorage::open(options).await?.into_pool());
+    store.run_backup_hold_command(command).await
+}
+
+/// The line the command prints on failure: the refusal reason, or the
+/// validation messages of an invalid owner or TTL.
+pub fn console_failure(error: &super::RuntimeError) -> String {
+    match error {
+        super::RuntimeError::Refused { reason, .. } => (*reason).to_owned(),
+        super::RuntimeError::Protocol { response, .. } => response["message"]
+            .as_str()
+            .unwrap_or("backup_hold_request_invalid")
+            .to_owned(),
+        _ => "storage_unavailable".to_owned(),
+    }
+}
+
 store_methods! {
     /// The hold row and the database's clock, without a lock: the preflight
     /// PHP's `assertReclamationAllowed` makes before a prune stages its
@@ -244,6 +327,23 @@ store_methods! {
             .await?;
         tx.commit().await?;
         Ok(next.report())
+    }
+
+    /// The offline command's report, from the same methods #953's endpoints
+    /// call. The pool closes whatever the outcome.
+    async fn run_backup_hold_command(&self, command: &Command) -> Result<Value> {
+        let result = match command.action {
+            None => match status_owner(command.owner.as_deref()) {
+                Ok(owner) => self.backup_hold_status(owner.as_deref()).await,
+                Err(error) => Err(error),
+            },
+            Some(action) => match request(&json!({ "owner": command.owner, "ttl": command.ttl }), action) {
+                Ok(request) => self.change_backup_hold(action, &request).await,
+                Err(error) => Err(error),
+            },
+        };
+        self.close().await;
+        result
     }
 
     /// `status`: the hold as it stands, refused when a scoped owner no longer

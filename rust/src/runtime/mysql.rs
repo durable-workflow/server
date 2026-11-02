@@ -817,6 +817,11 @@ impl MySqlStorage {
             configure(&mut connection).await?;
             let flavor = Flavor::detect(&mut connection).await?;
             let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
+            // As on PostgreSQL: a database without the native marker is not
+            // initialized, rather than unreadable.
+            if !scope(&mut tx).await?.iter().any(|table| table == "dw_server_schema") {
+                return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
+            }
             verify(&mut tx, flavor).await?;
             tx.rollback().await?;
             Ok::<_, super::RuntimeError>(())

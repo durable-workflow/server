@@ -26,6 +26,35 @@ pub(super) async fn open(database: &str) -> Result<SqlitePool> {
     unreachable!("the final startup attempt always returns")
 }
 
+/// Open a database that is already native, for an offline console command:
+/// a missing, empty or foreign file is refused before any write, so the
+/// command never bootstraps a schema.
+pub(super) async fn open_initialized(database: &str) -> Result<SqlitePool> {
+    if database.is_empty() || database.contains('?') || database.contains(':') {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_development_configuration",
+        ));
+    }
+    let path = Path::new(database);
+    if !path.exists() {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
+    }
+    let mut preflight = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(path)
+            .read_only(true)
+            .foreign_keys(false),
+    )
+    .await?;
+    let initialized = inspect(&mut preflight).await;
+    preflight.close().await?;
+    if !initialized? {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
+    }
+    open(database).await
+}
+
 async fn open_once(database: &str) -> Result<SqlitePool> {
     if database.is_empty() || database.contains('?') || database.contains(':') {
         return Err(refuse(
