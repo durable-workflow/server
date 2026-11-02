@@ -22,11 +22,7 @@ async fn a_retried_activity_acknowledges_on_its_live_task() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    let registered = request_protocol(&app, "POST", "/api/worker/register",
-        json!({"worker_id":"cleanup-worker","task_queue":"test","runtime":"php",
-            "supported_workflow_types":["echo"],"supported_activity_types":["stop-activity"],
-            "capabilities":["cooperative_cancellation"]}), "1.20").await;
-    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    register_cooperative(&app).await;
     let started = start(&app, "retried-ack").await;
     let task = cooperative_poll(&app, "workflow").await;
     let scheduled = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"stop-activity",
@@ -97,11 +93,7 @@ pub(super) async fn deliver_at(app: &Router, task: &Value, request_id: &Value, s
 /// timer at sequence 2 is still pending, with the request's workflow task
 /// claimed. Returns the run, the claimed task and the request id.
 async fn resolved_activity_then_timer(app: &Router, workflow: &str) -> (Value, Value, Value) {
-    let registered = request_protocol(app, "POST", "/api/worker/register",
-        json!({"worker_id":"cleanup-worker","task_queue":"test","runtime":"php",
-            "supported_workflow_types":["echo"],"supported_activity_types":["stop-activity"],
-            "capabilities":["cooperative_cancellation"]}), "1.20").await;
-    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    register_cooperative(app).await;
     let started = start(app, workflow).await;
     let task = cooperative_poll(app, "workflow").await;
     let scheduled = finish_task(app, &task, json!([{"type":"schedule_activity","activity_type":"stop-activity",
@@ -195,15 +187,20 @@ async fn an_activity_delivery_at_the_next_sequence_needs_no_authored_activity() 
     database.remove().await;
 }
 
-/// Starts a run whose first command schedules `stop-activity` with `options`,
-/// leases the activity and requests the run's cancellation. Returns the run,
-/// the leased activity task and the request id.
-async fn cancel_with_policy(app: &Router, workflow: &str, options: Value) -> (Value, Value, Value) {
+/// Registers the cooperative `cleanup-worker` on protocol 1.20.
+async fn register_cooperative(app: &Router) {
     let registered = request_protocol(app, "POST", "/api/worker/register",
         json!({"worker_id":"cleanup-worker","task_queue":"test","runtime":"php",
             "supported_workflow_types":["echo"],"supported_activity_types":["stop-activity"],
             "capabilities":["cooperative_cancellation"]}), "1.20").await;
     assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+}
+
+/// Starts a run whose first command schedules `stop-activity` with `options`,
+/// leases the activity and requests the run's cancellation. Returns the run,
+/// the leased activity task and the request id.
+async fn cancel_with_policy(app: &Router, workflow: &str, options: Value) -> (Value, Value, Value) {
+    register_cooperative(app).await;
     let started = start(app, workflow).await;
     let task = cooperative_poll(app, "workflow").await;
     let mut command = json!({"type":"schedule_activity","activity_type":"stop-activity",
@@ -275,11 +272,7 @@ async fn an_explicit_abandon_or_a_pre_1_20_policy_is_refused_at_scheduling() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    let registered = request_protocol(&app, "POST", "/api/worker/register",
-        json!({"worker_id":"cleanup-worker","task_queue":"test","runtime":"php",
-            "supported_workflow_types":["echo"],"supported_activity_types":["stop-activity"],
-            "capabilities":["cooperative_cancellation"]}), "1.20").await;
-    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    register_cooperative(&app).await;
     start(&app, "abandon-refused").await;
     let task = cooperative_poll(&app, "workflow").await;
     let refused = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),

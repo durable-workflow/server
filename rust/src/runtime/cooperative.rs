@@ -222,6 +222,46 @@ where
             "history_refresh_page_token":"MA=="})))
     }
 
+    /// The completion guard for an explicit child or activity cancellation
+    /// policy: protocol 1.20 (strictly `1.N` for an activity) and a
+    /// cooperative claim, else PHP's 409 naming what is unavailable.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn cancellation_policy_guard(
+        task: &DB::Row,
+        task_id: &str,
+        body: &Value,
+        protocol: Option<&str>,
+        strict_minor: bool,
+        runtime_gap: Option<&'static str>,
+        reason: &'static str,
+        remediation: &'static str,
+    ) -> Result<()> {
+        let mut unavailable = Vec::new();
+        if !protocol
+            .and_then(|version| version.strip_prefix("1."))
+            .filter(|minor| !strict_minor || !minor.contains('.'))
+            .and_then(|minor| minor.parse::<u32>().ok())
+            .is_some_and(|minor| minor >= 20)
+        {
+            unavailable.push("request_protocol");
+        }
+        if !Self::claim_supports_cancellation(task)? {
+            unavailable.push("worker_claim_capability");
+        }
+        unavailable.extend(runtime_gap);
+        if unavailable.is_empty() {
+            return Ok(());
+        }
+        Err(RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
+                "worker_id": DB::optional_string(task, "lease_owner")?, "outcome": "rejected", "recorded": false,
+                "reason": reason, "required_capability": "cooperative_cancellation",
+                "minimum_protocol_version": "1.20", "requested_version": protocol, "unavailable": unavailable,
+                "remediation": remediation}),
+        })
+    }
+
     pub(super) fn claim_supports_cancellation(task: &DB::Row) -> Result<bool> {
         let payload = DB::document_row(task, "payload")?;
         let claim = &payload[CLAIM_KEY];
