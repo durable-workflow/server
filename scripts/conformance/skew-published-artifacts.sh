@@ -275,7 +275,7 @@ cleanup() {
   fi
 
   if [[ "$server_started" == "1" || "$compose_cleanup_needed" == "1" ]]; then
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" down -v >/dev/null 2>&1 || true
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" down -v >/dev/null 2>&1 || true
   fi
 
   if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
@@ -398,7 +398,7 @@ if [[ -z "$server_url" ]]; then
     DW_SERVER_IMAGE="$server_image" \
     DW_SERVER_TAG="${DW_SERVER_VERSION:-}" \
     DW_AUTH_TOKEN="${DW_SKEW_AUTH_TOKEN:-dev-token}" \
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d server worker >"$result_dir/docker-compose-up.log" 2>&1; then
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" up -d server worker >"$result_dir/docker-compose-up.log" 2>&1; then
     write_blocked_result "published server failed to start from ${server_image}; see docker-compose-up.log"
     exit 0
   fi
@@ -411,7 +411,7 @@ if [[ -z "$server_url" ]]; then
 
   server_queue_worker_id=""
   for _ in {1..30}; do
-    server_queue_worker_id="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps -q worker 2>/dev/null || true)"
+    server_queue_worker_id="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" ps -q worker 2>/dev/null || true)"
     if [[ -n "$server_queue_worker_id" ]] \
       && [[ "$(docker inspect -f '{{.State.Running}}' "$server_queue_worker_id" 2>/dev/null || true)" == "true" ]]; then
       break
@@ -422,7 +422,7 @@ if [[ -z "$server_url" ]]; then
   done
 
   if [[ -z "$server_queue_worker_id" ]]; then
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" logs worker >"$result_dir/server-queue-worker.log" 2>&1 || true
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.php.yml" logs worker >"$result_dir/server-queue-worker.log" 2>&1 || true
     write_blocked_result "published server queue worker failed to start; sdk-php compatible skew evidence requires queue-backed workflow task fixture polling; see server-queue-worker.log"
     exit 0
   fi

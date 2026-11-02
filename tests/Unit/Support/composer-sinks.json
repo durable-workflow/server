@@ -19,7 +19,7 @@
     },
     {
       "path": ".github/workflows/phpunit-feature.yml",
-      "line": "-lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; php scripts/ci/prepare-release-workflow-composer-metadata.php; composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify \"$CORPUS_BASE_REF^{commit}\"; php scripts/ci/check-worker-openapi-evolution.php \"$CORPUS_BASE_REF\"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php tests/Unit/OpenApiDocumentEvolutionTest.php tests/Unit/NamespaceConformanceRunnerContractTest.php tests/Unit/NamespaceRuntimeContractTest.php tests/Unit/SchedulesConformanceRunnerContractTest.php tests/Unit/SchedulesRuntimeContractTest.php tests/Unit/ServerParitySdkDirectionResponseSummaryTest.php tests/Unit/ServerParitySdkQueryTransportTest.php tests/Unit/ServerParitySdkUpdateTransportTest.php tests/Unit/ServerParityLockPressureRetryTest.php tests/Unit/ServerParityManyUpdatesRetryTest.php --no-progress --colors=never; vendor/bin/phpunit tests/Unit/ReleaseImageContinuationTest.php tests/Unit/ReleaseImageImmutabilityGuardTest.php --no-progress --colors=never; vendor/bin/phpunit tests/Unit/ReleaseImagePublishWorkflowContractTest.php --filter test_php_security_audits_fail_before_release_publication --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref \"$CORPUS_BASE_REF\" --verify-counterfactual'",
+      "line": "-lc 'set -eu; tar --no-same-owner -xf - -C /app; cp -a /app/workflow-package /workflow; php scripts/ci/prepare-release-workflow-composer-metadata.php; composer update durable-workflow/workflow --with-dependencies --minimal-changes --no-install --no-scripts --no-autoloader --no-interaction --no-progress --prefer-dist; composer install --no-interaction --no-progress --prefer-dist; git --version; vendor/bin/phpunit --version; git rev-parse --verify \"$CORPUS_BASE_REF^{commit}\"; php scripts/ci/check-worker-openapi-evolution.php \"$CORPUS_BASE_REF\"; vendor/bin/phpunit tests/Feature tests/Unit/NexusContractTest.php tests/Unit/NativePublishedComposeContractTest.php tests/Unit/PublishedServerAutoSelectionTest.php tests/Unit/CodecRegressionCorpusTest.php tests/Unit/PhpunitFeatureWorkflowContractTest.php tests/Unit/OpenApiDocumentEvolutionTest.php tests/Unit/NamespaceConformanceRunnerContractTest.php tests/Unit/NamespaceRuntimeContractTest.php tests/Unit/SchedulesConformanceRunnerContractTest.php tests/Unit/SchedulesRuntimeContractTest.php tests/Unit/ServerParitySdkDirectionResponseSummaryTest.php tests/Unit/ServerParitySdkQueryTransportTest.php tests/Unit/ServerParitySdkUpdateTransportTest.php tests/Unit/ServerParityLockPressureRetryTest.php tests/Unit/ServerParityManyUpdatesRetryTest.php --no-progress --colors=never; vendor/bin/phpunit tests/Unit/ReleaseImageContinuationTest.php tests/Unit/ReleaseImageImmutabilityGuardTest.php --no-progress --colors=never; vendor/bin/phpunit tests/Unit/ReleaseImagePublishWorkflowContractTest.php --filter test_php_security_audits_fail_before_release_publication --no-progress --colors=never; python3 scripts/ci/validate-regression-corpus.py --base-ref \"$CORPUS_BASE_REF\" --verify-counterfactual'",
       "count": 2,
       "confinement": "Runs in the source-free corpus tool image. The feature step checks its system bundle, hashed directory and Composer selection before fresh source and dependency installation, on cold builds and cache hits.",
       "guards": [
@@ -260,6 +260,17 @@
           "type": "pinned-reference",
           "line": null,
           "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/server-port/small-host/README.md",
+      "line": "bash scripts/ci/run-composer.sh --rm -v \"$DW_PORT_SDK_ROOT:/app\" -w /app -- \\",
+      "count": 1,
+      "confinement": "Documentation of the run-composer.sh recipe.",
+      "guards": [
+        {
+          "type": "documentation"
         }
       ]
     },

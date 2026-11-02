@@ -180,7 +180,7 @@ const consumers = [
     },
   })),
   ...[
-    ['docker-compose.published.yml', 2],
+    ['docker-compose.php.yml', 2],
     ['docker-compose.dedicated-matching.yml', 2],
   ].map(([path, count]) => ({
     path,

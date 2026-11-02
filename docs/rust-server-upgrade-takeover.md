@@ -137,6 +137,17 @@ byte copy of the prepared file, fingerprinted like the source.
 Rollback is restoring the verified backup into a new database for a PHP
 installation. There is no in-place rollback after step 4.
 
+## Later native releases
+
+Takeover runs once, from PHP. A database that native already owns moves to a
+release with a newer native schema through `schema-upgrade` instead: stop
+every native node, back up the database, run the new image once with
+`schema-upgrade` and the same `DB_*` settings, then start the new release. A
+node never upgrades at startup; it refuses an older schema with
+`native_schema_upgrade_required` and a newer one with
+`native_schema_newer_than_binary`. Restore the backup to go back. Details are
+in [schema upgrades](../rust/README.md#native-schema-upgrades).
+
 ## Fingerprint
 
 The digest covers every relation in the database, not only the ones PHP
@@ -291,7 +302,10 @@ with a recorded recipe:
   dispatch outbox and stream reclaim deadlines. The layout READMEs under
   `rust/upgrade/` and the port checkpoints describe each one. Published
   2.11.4, 2.11.5 and 2.11.7 add no migration, so their databases have the
-  2.11.3 layouts and the same recipe.
+  2.11.3 layouts and the same recipe. 2.11.8 adds pending external payload
+  deletions, which takeover carries over to native's own table without
+  deleting any object, refusing one native could never finish (a saved policy native cannot
+  execute, or an unknown failure).
 
 A release whose layout has no recipe is refused by step 1.
 

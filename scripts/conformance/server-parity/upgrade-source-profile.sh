@@ -134,9 +134,11 @@ snapshot() {
 }
 snapshot > "$evidence/before.json"
 inspect_source > "$evidence/inspection.json" 2> "$evidence/inspection.stderr"
-# PHP 2.11.3 adds one table, the service-call dispatch outbox.
+# PHP 2.11.3 adds one table, the service-call dispatch outbox, and 2.11.8
+# another, its pending external payload deletions.
 tables=50
 if [[ $layout == php-2.11.3* ]]; then tables=51; fi
+if [[ $layout == php-2.11.8* ]]; then tables=52; fi
 jq -e --arg layout "$layout" --argjson tables "$tables" '.status=="inspected" and .source_layout==$layout and (.table_rows|length)==$tables and .table_rows.workflow_runs==4
   and .table_rows.activity_executions==1 and .catalog_visibility=="configured_role"
   and .source_mutated==false and .takeover_allowed==false and .backup_verified==false

@@ -47,13 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      DW_SERVER_IMAGE: durableworkflow/server@sha256:1631181c266cc74d70713e16b0688ea08b579cf2ed0e28f0ef5a3f3d786bc3d6
-      DW_SERVER_VERSION: 2.9.1
-      DW_WORKFLOW_PHP_VERSION: 2.6.1
-      DW_PHP_SDK_VERSION: 2.5.0
-      DW_PYTHON_SDK_VERSION: 2.6.0
-      DW_CLI_VERSION: 2.3.0
-      DW_WATERLINE_VERSION: 2.11.2
+      DW_SERVER_IMAGE: durableworkflow/server:2.11.8@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd
+      DW_SERVER_VERSION: 2.11.8
+      DW_WORKFLOW_PHP_VERSION: 2.15.12
+      DW_PHP_SDK_VERSION: 3.6.1
+      DW_PYTHON_SDK_VERSION: 2.12.2
+      DW_CLI_VERSION: 2.3.3
+      DW_WATERLINE_VERSION: 2.13.0
       DW_NEXUS_EXTERNAL_PAYLOAD_PROBES: '1'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -94,6 +94,8 @@ jobs:
           NEXUS_EXTERNAL_SDK_PROBES="$DW_NEXUS_RESULT_DIR/nexus-external-sdk-probes.json" \
             NEXUS_AUTHORED_AUTHORIZATION_PROBES="$DW_NEXUS_RESULT_DIR/nexus-authored-authorization-probes.json" \
             node --test tests/Unit/NexusExternalSdkEvidenceTest.mjs
+          node -e 'const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (report.outcome !== "pass") throw new Error("Aggregate Nexus conformance: " + report.outcome);' \
+            "$DW_NEXUS_RESULT_DIR/nexus-conformance-result.json"
       - name: Summarize actual outcomes and bound retained diagnostics
         if: always()
         env:
@@ -112,6 +114,27 @@ jobs:
             const message = JSON.stringify(value).replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
             console.log('::notice title=Nexus SDK outcomes::' + message);
           };
+          const conformancePath = path.join(root, 'nexus-conformance-result.json');
+          if (fs.existsSync(conformancePath)) {
+            const report = JSON.parse(fs.readFileSync(conformancePath, 'utf8'));
+            const findings = report.findings || [];
+            summary.conformance = {
+              outcome: report.outcome,
+              scenario_statuses: (report.scenario_results || []).map(row => ({scenario_id: row.scenario_id, status: row.status,
+                ...(row.observed_outputs?.authored_caller_workflow_observations
+                  ? {caller_workflows: row.observed_outputs.authored_caller_workflow_observations} : {})})),
+              finding_count: findings.length,
+              findings_truncated: findings.length > 64,
+              findings: findings.slice(0, 64).map(finding => Object.fromEntries([
+                'scenario_id', 'type', 'finding_type', 'owning_surface', 'finding_url', 'issue_url',
+                'observed_behavior', 'expected_behavior', 'next_acceptance_criterion',
+              ].filter(key => typeof finding[key] === 'string').map(key => [key, finding[key].slice(0, 1500)]))),
+            };
+            emitOutcome({kind: 'conformance', outcome: report.outcome,
+              scenario_statuses: summary.conformance.scenario_statuses, finding_count: findings.length});
+          } else {
+            summary.conformance = {missing: true};
+          }
           for (const [kind, name] of [['external', 'nexus-external-sdk-probes.json'],
             ['authorization', 'nexus-authored-authorization-probes.json'],
             ['uncaught', 'nexus-uncaught-failure-probes.json']]) {
@@ -128,6 +151,11 @@ jobs:
                 uncaught_failure: row.uncaught_failure_qualified,
                 failure: row.failure, status: row.result?.status || row.caller_status, value: row.result?.external_result,
                 caller_failure: failureSummary(row.history), service_failure: failureSummary(row.linked_service_history),
+                caller_event_types: row.last_observed_caller_event_types || (row.history?.events || []).map(event => event.event_type),
+                service_event_types: row.last_observed_service_event_types || (row.linked_service_history?.events || []).map(event => event.event_type),
+                caller_status: row.caller_status,
+                worker_diagnostic_head: typeof row.worker_log === 'string' ? row.worker_log.slice(0, 1500) : row.worker_log?.head,
+                worker_diagnostic_tail: typeof row.worker_log === 'string' ? row.worker_log.slice(-1500) : row.worker_log?.tail,
                 elapsed: row.elapsed_seconds, replacement_exit: row.replacement_worker_exit_code,
                 observer_memory_limit: row.observer_memory_limit, observer_peak_bytes: row.observer_peak_bytes,
                 admin_refusal_status: row.admin_refusal_status,
@@ -159,7 +187,7 @@ jobs:
             if (retainedBytes + bytes > 2 * 1024 * 1024) { omittedReports.push({name, bytes}); continue; }
             fs.copyFileSync(file, path.join(retained, name)); retainedBytes += bytes;
           }
-          for (const name of fs.readdirSync(root).filter(name => /-(external|authorization)\.log$|-uncaught-failure-probe\.log$/.test(name))) {
+          for (const name of fs.readdirSync(root).filter(name => /-(external|authorization)\.log$|-uncaught-failure-probe\.log$|-service-worker\.log$/.test(name))) {
             const bytes = fs.readFileSync(path.join(root, name));
             fs.writeFileSync(path.join(retained, name), Buffer.concat([bytes.subarray(0, 1200),
               Buffer.from('\n[bounded diagnostic tail]\n'), bytes.subarray(Math.max(1200, bytes.length - 4000))]));

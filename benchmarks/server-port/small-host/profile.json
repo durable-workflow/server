@@ -1,0 +1,104 @@
+{
+  "schema": "durable-workflow.server-port-performance-profile/v1",
+  "profile_version": "1.0.0",
+  "profile_id": "server-port-small-host-split-amd64-v1",
+  "evidence_class": "development_comparison",
+  "publishable_capacity_claim": false,
+  "status": "prospective_inputs",
+  "artifacts": {
+    "native_image": "ghcr.io/durable-workflow/server-native@sha256:f54e89d775dbf7c6074f37836c6bb0b25f94869d23711b0706e9547c3edecb29",
+    "native_version": "3.0.0-rc.2",
+    "native_source": "6caf527ab5c85d6f33b63274847080c97a8d4336",
+    "php_server": "durableworkflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd",
+    "php_server_version": "2.11.8",
+    "php_workflow_version": "2.15.12",
+    "client_runtime_image": "durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549",
+    "sdk_php_version": "2.3.9",
+    "sdk_php_source": "7decd1a9fc39704f48b10c9209a23db8668ae7f2",
+    "sdk_php_lock": "scripts/conformance/server-parity/corrected-markers/php/composer.lock",
+    "sdk_php_lock_sha256": "42e814ee38813d3dafcf2e4cc371327d661536adda653e6cf1518a91a46087ca",
+    "mysql": "mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6",
+    "mysql_version": "8.4.5",
+    "redis": "redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c",
+    "redis_version": "7.2.16"
+  },
+  "topology": {
+    "target_compose": "scripts/perf/small-host-target.compose.yml",
+    "driver_compose": "scripts/perf/small-host-driver.compose.yml",
+    "target_runs": "only the server and its database; no container CPU or memory limits, so the plan size is the limit",
+    "target_modes": {
+      "native-mysql": ["mysql", "native-mysql"],
+      "native-sqlite": ["native-sqlite"],
+      "php-mysql": ["mysql", "redis", "php-bootstrap", "php-server", "php-worker", "php-scheduler"]
+    },
+    "driver_runs": "SDK workers, load probes, health observer and driver samplers, on a separate host in the target's private network",
+    "network": "target publishes 8080 only on its private (VPC) address",
+    "clock": "both hosts NTP-synchronized; latency compares the driver's start time with the server's closed_at",
+    "implementations_never_run_concurrently": true
+  },
+  "planned_hosts": {
+    "targets": ["vultr vhp-1c-1gb-amd", "vultr vc2-1c-1gb", "vultr vhp-1c-2gb-amd"],
+    "driver": "a separate host in the same VPC with at least 4 vCPU, so client processes are never the limit",
+    "comparison": "vultr vhp-4c-8gb-amd runs the rc1 matched profile, unchanged, for continuity with October 20 and 30"
+  },
+  "workload": {
+    "authority": "benchmarks/capacity/v1/suite.json",
+    "cell": "one-activity",
+    "workflow_type": "capacity.v1.one_activity",
+    "activity_type": "capacity.v1.echo",
+    "payload_bytes_each_direction": 1024,
+    "codec": "avro",
+    "adapter": "benchmarks/capacity/v1/bindings/php/capacity_adapter.php",
+    "adapter_sha256": "0ad9fd714f325970c18d32cfedf754895cec621bd048593ac04fd8b9a247b926",
+    "command": "scripts/perf/standard-workflow-offered.php",
+    "command_sha256": "cac36195aa9d0867516dff7bcb09f7d9df5fc65b9c0a0b7f49f8d7852def055f"
+  },
+  "ladder": {
+    "warmup_seconds": 30,
+    "offer_seconds": 60,
+    "drain_limit_seconds": 60,
+    "describe_interval_ms": 100,
+    "rates_per_second": [0.5, 1, 2, 4, 8, 12, 16, 24, 32],
+    "max_rate_per_probe": 4,
+    "sdk_workers_per_probe": 2,
+    "min_sdk_workers": 2,
+    "bounds": {
+      "latency_p95_seconds": 2.0,
+      "min_in_window_completion_fraction": 0.9
+    },
+    "stop_rule": "a rate passes when every probe exits 0 (no errors, late or skipped offers, pending work or poll errors), at least 90% of planned workflows close inside the offer window, and the slowest probe's p95 is at most 2 s; a failed rate is repeated once, and two failures end the ladder",
+    "sustained_capacity": "the highest passing rate",
+    "drift_check": "the lowest rate again after the ladder"
+  },
+  "idle": {
+    "command": "scripts/perf/idle-poll-probe.php",
+    "command_sha256": "e25704097dcd2138914b2dde9b81ea50ec47baa19764c2930823699f709f16cc",
+    "outcome_classifier": "scripts/perf/idle-poll-outcome.php",
+    "outcome_classifier_sha256": "df85f993c7fcec89b40986dd7643094b87da2b444f740368198b295bea1d9338",
+    "kind": "mixed",
+    "counts": [6, 12, 24],
+    "requested_timeout_seconds": 10,
+    "repeats": 2,
+    "queue_condition": "no_tasks_or_active_workflows; SDK workers stopped"
+  },
+  "required_evidence": [
+    "target and driver identity, plan, machine facts and NTP state at both ends",
+    "per-step offered, accepted, in-window, completed and verified counts, latencies, errors and verdict",
+    "target host CPU (busy, iowait, steal), memory used and available, swap use and traffic, OOM kills and pressure per window",
+    "driver host CPU per window, showing the driver was not the limit",
+    "ordinary health and ready answers during work and idle waits",
+    "target container restarts and OOM kills, database audit and complete teardown"
+  ],
+  "limitations": [
+    "A development comparison on disposable hosts, not a publishable capacity claim.",
+    "One workload cell (one activity, 1 KiB each way); other shapes can saturate differently.",
+    "The p95 per step is the slowest probe's p95, not a merged percentile.",
+    "Latency crosses two hosts' clocks; NTP offsets of a few milliseconds are small against these latencies but are not removed.",
+    "Native rc.2 uses schema 7; it starts from an empty database on every run."
+  ],
+  "driver": {
+    "target_script": "scripts/perf/run-server-port-small-host-target.sh",
+    "driver_script": "scripts/perf/run-server-port-small-host.sh",
+    "summarizer": "scripts/perf/summarize-server-port-small-host.py"
+  }
+}

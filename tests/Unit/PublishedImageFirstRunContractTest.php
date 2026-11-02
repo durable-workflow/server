@@ -62,7 +62,7 @@ final class PublishedImageFirstRunContractTest extends TestCase
 
     public function test_published_compose_keeps_automatic_bootstrap_dependency(): void
     {
-        $compose = Yaml::parse($this->read('docker-compose.published.yml'));
+        $compose = Yaml::parse($this->read('docker-compose.php.yml'));
 
         $this->assertSame(
             ['server-bootstrap'],
@@ -94,7 +94,7 @@ final class PublishedImageFirstRunContractTest extends TestCase
                 'worker' => 'worker',
                 'scheduler' => 'scheduler',
             ],
-            'docker-compose.published.yml' => [
+            'docker-compose.php.yml' => [
                 'worker' => 'worker',
                 'scheduler' => 'scheduler',
             ],
@@ -130,7 +130,7 @@ final class PublishedImageFirstRunContractTest extends TestCase
 
     public function test_published_compose_restarts_the_queue_worker_after_backend_loss(): void
     {
-        $compose = Yaml::parse($this->read('docker-compose.published.yml'));
+        $compose = Yaml::parse($this->read('docker-compose.php.yml'));
 
         $this->assertSame('unless-stopped', $compose['services']['worker']['restart'] ?? null);
     }

@@ -20,11 +20,13 @@ import {checkLargeCommandBatches} from './large-command-batches-contract.mjs';
 import {checkManyUpdates} from './many-updates-contract.mjs';
 import {checkWorkerErrorBodies} from './worker-error-bodies-contract.mjs';
 import {checkChildDescriptions} from './child-descriptions-contract.mjs';
+import {checkChildOpenParentTask} from './child-open-parent-task-contract.mjs';
 import {checkChildRetries} from './child-retries-contract.mjs';
 import {checkActivityLateOutcomes} from './activity-late-outcomes-contract.mjs';
 import {checkChildVisibility} from './child-visibility-contract.mjs';
 import {checkClusterCapabilities} from './cluster-capabilities-contract.mjs';
 import {checkDeepJsonBodies} from './deep-json-bodies-contract.mjs';
+import {checkKeyOrder} from './key-order-contract.mjs';
 import {checkVisibilityCollation} from './visibility-collation-contract.mjs';
 import {checkSearchAttributeDatetimes} from './search-attribute-datetimes-contract.mjs';
 import {checkRetriedChildCancellation} from './retried-child-cancellation-contract.mjs';
@@ -197,11 +199,13 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const manyUpdates = fixture.many_updates ? checkManyUpdates(fixture, observation) : null;
   const workerErrorBodies = fixture.worker_error_bodies ? checkWorkerErrorBodies(fixture, observation) : null;
   const childDescriptions = fixture.child_descriptions ? checkChildDescriptions(fixture, observation) : null;
+  const childOpenParentTask = fixture.child_open_parent_task ? checkChildOpenParentTask(fixture, observation) : null;
   const childRetries = fixture.child_retries ? checkChildRetries(fixture, observation) : null;
   const activityLateOutcomes = fixture.activity_late_outcomes ? checkActivityLateOutcomes(fixture, observation) : null;
   const childVisibility = fixture.child_visibility ? checkChildVisibility(fixture, observation) : null;
   const clusterCapabilities = fixture.cluster_capabilities ? checkClusterCapabilities(fixture, observation) : null;
   const deepJsonBodies = fixture.deep_json_bodies ? checkDeepJsonBodies(fixture, observation) : null;
+  const keyOrder = fixture.key_order ? checkKeyOrder(fixture, observation) : null;
   const visibilityCollation = fixture.visibility_collation ? checkVisibilityCollation(fixture, observation) : null;
   const searchAttributeDatetimes = fixture.search_attribute_datetimes ? checkSearchAttributeDatetimes(fixture, observation) : null;
   const retriedChildCancellation = fixture.retried_child_cancellation ? checkRetriedChildCancellation(fixture, observation) : null;
@@ -792,11 +796,13 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
     ...(manyUpdates ? {many_updates: manyUpdates} : {}),
     ...(workerErrorBodies ? {worker_error_bodies: workerErrorBodies} : {}),
     ...(childDescriptions ? {child_descriptions: childDescriptions} : {}),
+    ...(childOpenParentTask ? {child_open_parent_task: childOpenParentTask} : {}),
     ...(childRetries ? {child_retries: childRetries} : {}),
     ...(activityLateOutcomes ? {activity_late_outcomes: activityLateOutcomes} : {}),
     ...(childVisibility ? {child_visibility: childVisibility} : {}),
     ...(clusterCapabilities ? {cluster_capabilities: clusterCapabilities} : {}),
     ...(deepJsonBodies ? {deep_json_bodies: deepJsonBodies} : {}),
+    ...(keyOrder ? {key_order: keyOrder} : {}),
     ...(visibilityCollation ? {visibility_collation: visibilityCollation} : {}),
     ...(searchAttributeDatetimes ? {search_attribute_datetimes: searchAttributeDatetimes} : {}),
     ...(retriedChildCancellation ? {retried_child_cancellation: retriedChildCancellation} : {}),

@@ -53,6 +53,46 @@ pub(super) fn migration() -> &'static Migration {
     migrator().iter().next().expect("one native PostgreSQL migration")
 }
 
+/// The cumulative bootstrap an earlier native version recorded, byte for
+/// byte, with the catalog captured from PostgreSQL for that version.
+fn earlier_migration(version: i64) -> Option<(&'static Migration, &'static str)> {
+    static V7: OnceLock<Migration> = OnceLock::new();
+    match version {
+        7 => Some((
+            V7.get_or_init(|| {
+                Migration::new(
+                    7,
+                    "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters".into(),
+                    MigrationType::Simple,
+                    concat!(
+                        include_str!("../../migrations/postgres/0003_full_schema.sql"),
+                        "\n",
+                        include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+                        "\n",
+                        include_str!("../../migrations/postgres/0005_worker_session_holders.sql"),
+                        "\n",
+                        include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
+                        "\n",
+                        include_str!("../../migrations/postgres/0007_service_calls.sql")
+                    )
+                    .into_sql_str(),
+                    false,
+                )
+            }),
+            include_str!("../../migrations/postgres/0007_catalog.json"),
+        )),
+        _ => None,
+    }
+}
+
+/// The step file that moves a native database from `version` to the next.
+fn step(version: i64) -> Option<&'static str> {
+    match version {
+        7 => Some(include_str!("../../migrations/postgres/0008_external_payload_deletions.sql")),
+        _ => None,
+    }
+}
+
 /// The native relations, indexes and ownership marker that a fresh
 /// bootstrap adds after the frozen PHP layout. Takeover applies them to a
 /// converted PHP database instead of running the whole migration.
@@ -125,6 +165,8 @@ pub(super) async fn php_source_catalog(connection: &mut PgConnection) -> Result<
             include_str!("../../upgrade/php-2.11.1-from-2.9.7/postgres.json"),
             include_str!("../../upgrade/php-2.11.3/postgres.json"),
             include_str!("../../upgrade/php-2.11.3-from-2.9.7/postgres.json"),
+            include_str!("../../upgrade/php-2.11.8/postgres.json"),
+            include_str!("../../upgrade/php-2.11.8-from-2.9.7/postgres.json"),
         ],
         |row| (row.0.clone(), row.1.clone()),
     )?;
@@ -175,7 +217,10 @@ pub(super) async fn verify_history(connection: &mut PgConnection) -> Result<()> 
             .fetch_all(&mut *connection)
             .await?;
     if markers != [("rust-development".into(), VERSION)] {
-        return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+        return Err(match markers.as_slice() {
+            [(engine, version)] => super::schema_upgrade::marker_refusal(engine, *version, VERSION),
+            _ => refuse(StatusCode::CONFLICT, "unsupported_rust_schema"),
+        });
     }
     let applied: Vec<(i64, bool, Vec<u8>)> = sqlx::query_as(
         "SELECT version,success,checksum FROM public._sqlx_migrations ORDER BY version",
@@ -225,6 +270,62 @@ async fn preflight(connection: &mut PgConnection) -> Result<()> {
             "existing_database_requires_qualified_takeover",
         ))
     }
+}
+
+async fn upgrade_marked(connection: &mut PgConnection) -> Result<i64> {
+    use super::schema_upgrade::{DEVELOPMENT_ENGINE, marker_refusal};
+    let markers: Vec<(String, i64)> =
+        sqlx::query_as("SELECT engine,version FROM public.dw_server_schema")
+            .fetch_all(&mut *connection)
+            .await?;
+    let [(engine, from)] = markers.as_slice() else {
+        return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
+    };
+    let from = *from;
+    if engine == DEVELOPMENT_ENGINE && from == VERSION {
+        verify(connection).await?;
+        return Ok(from);
+    }
+    let Some((earlier, earlier_catalog)) =
+        earlier_migration(from).filter(|_| engine == DEVELOPMENT_ENGINE)
+    else {
+        return Err(marker_refusal(engine, from, VERSION));
+    };
+    let applied: Vec<(i64, bool, Vec<u8>)> = sqlx::query_as(
+        "SELECT version,success,checksum FROM public._sqlx_migrations ORDER BY version",
+    )
+    .fetch_all(&mut *connection)
+    .await?;
+    if applied != [(from, true, earlier.checksum.to_vec())] {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "native_migration_history_mismatch",
+        ));
+    }
+    let expected: Catalog = serde_json::from_str(earlier_catalog)?;
+    if catalog(connection).await? != expected {
+        return Err(refuse(
+            StatusCode::CONFLICT,
+            "native_schema_catalog_mismatch",
+        ));
+    }
+    for version in from..VERSION {
+        let sql = step(version).ok_or(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"))?;
+        sqlx::raw_sql(sql).execute(&mut *connection).await?;
+    }
+    let migration = self::migration();
+    sqlx::query("DELETE FROM public._sqlx_migrations WHERE version=$1")
+        .bind(from)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("INSERT INTO public._sqlx_migrations(version,description,success,checksum,execution_time) VALUES ($1,$2,TRUE,$3,0)")
+        .bind(migration.version)
+        .bind(migration.description.as_ref())
+        .bind(migration.checksum.as_ref())
+        .execute(&mut *connection)
+        .await?;
+    verify(connection).await?;
+    Ok(from)
 }
 
 /// Prepared native PostgreSQL storage, with a bounded connection pool.
@@ -287,6 +388,32 @@ impl PostgresStorage {
             return Err(error);
         }
         Ok(Self { pool })
+    }
+
+    /// Upgrade an earlier native schema version to this one, in one
+    /// transaction under the bootstrap advisory lock. Returns the version
+    /// found; a current database is only verified.
+    pub(super) async fn upgrade(connect_options: PgConnectOptions) -> Result<i64> {
+        let mut connection = PgConnection::connect_with(&options(connect_options)).await?;
+        let result = async {
+            let mut tx = connection.begin().await?;
+            sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676162)")
+                .execute(&mut *tx)
+                .await?;
+            verify_scope(&mut tx).await?;
+            if !marked(&mut tx).await? {
+                return Err(refuse(
+                    StatusCode::CONFLICT,
+                    "native_schema_not_initialized",
+                ));
+            }
+            let from = upgrade_marked(&mut tx).await?;
+            tx.commit().await?;
+            Ok::<_, super::RuntimeError>(from)
+        }
+        .await;
+        connection.close().await?;
+        result
     }
 
     /// Read-only inspection of an already initialized native database.
@@ -641,7 +768,7 @@ mod tests {
         for (mutation, reason) in [
             (
                 "UPDATE dw_server_schema SET version=99",
-                "unsupported_rust_schema",
+                "native_schema_newer_than_binary",
             ),
             (
                 "UPDATE dw_server_schema SET version=2",
@@ -864,6 +991,12 @@ mod tests {
          ALTER TABLE workflow_durable_streams ADD COLUMN reclaim_at timestamp(6) without time zone;
          CREATE INDEX wf_durable_streams_ns_reclaim_idx ON workflow_durable_streams (namespace, reclaim_at, id);";
 
+    /// PHP 2.11.8's pending external payload deletions, as a published 2.11.8
+    /// bootstrap creates them on PostgreSQL.
+    const RELEASE_2118: &str = "CREATE TABLE runtime_external_payload_deletions (id varchar(26) NOT NULL, namespace varchar(191) NOT NULL, storage_uri text NOT NULL, storage_uri_sha256 varchar(64) NOT NULL, storage_policy json NOT NULL, attempts integer NOT NULL DEFAULT '0', failure_code varchar(255), created_at timestamp(0) without time zone, updated_at timestamp(0) without time zone, PRIMARY KEY (id));
+         ALTER TABLE runtime_external_payload_deletions ADD CONSTRAINT runtime_payload_deletions_namespace_uri_unique UNIQUE (namespace, storage_uri_sha256);
+         CREATE INDEX runtime_payload_deletions_namespace_created_index ON runtime_external_payload_deletions (namespace, created_at);";
+
     /// The frozen PHP layout with a release's changes applied in order.
     async fn php_release(db: &Database, changes: &[&'static str]) -> PgConnection {
         let frozen = include_str!("../../migrations/postgres/0003_full_schema.sql");
@@ -975,6 +1108,47 @@ mod tests {
             connection.close().await.unwrap();
             let storage = PostgresStorage::open(db.options.clone()).await.unwrap();
             storage.close().await;
+            PostgresStorage::check(db.options.clone()).await.unwrap();
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_takeover_carries_php_2118_pending_deletions_over() {
+        for (release, changes) in [
+            ("php-2.11.8", [PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113, RELEASE_2118]),
+            ("php-2.11.8-from-2.9.7", [PHP_280_CHANGES, QUEUE_DELIVERY, TRACE_CARRIERS, RELEASE_2113, RELEASE_2118]),
+        ] {
+            let db = Database::new().await;
+            let mut connection = php_release(&db, &changes).await;
+            for statement in [
+                "INSERT INTO workflow_worker_registrations(worker_id,namespace,task_queue,runtime,registration_token,created_at,updated_at) VALUES ('current','default','q','php','0123456789abcdef0123456789abcdef','2026-10-20 09:00:00','2026-10-20 09:00:00')",
+                "INSERT INTO workflow_worker_registration_incarnations VALUES ('0123456789abcdef0123456789abcdef','default','current','active',0,NULL,'2026-10-20 09:00:00','2026-10-20 09:00:00')",
+                r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel1','default','file:///payloads/default/a','aaaa','{"driver":"local","enabled":true}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#,
+                r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel2','gone','file:///payloads/gone/b','bbbb','{"driver":"local"}',3,'backup_hold','2026-11-01 09:00:00','2026-11-01 09:30:00')"#,
+            ] {
+                sqlx::raw_sql(statement).execute(&mut connection).await.unwrap();
+            }
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let report = takeover::take_over_postgres(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+                .await
+                .unwrap();
+            assert_eq!(report["status"], "taken_over", "{report}");
+            assert_eq!(report["source_layout"], release);
+            assert_eq!(report["converted"]["external_payload_deletions_copied"], 2, "{report}");
+            let mut connection = db.connection().await;
+            let copied: Vec<(String, i64, Option<String>, String, String)> = sqlx::query_as("SELECT id,attempts,failure_code,storage_policy,to_char(updated_at,'YYYY-MM-DD HH24:MI:SS') FROM dw_external_payload_deletions ORDER BY id")
+                .fetch_all(&mut connection).await.unwrap();
+            assert_eq!(copied.len(), 2, "{release}");
+            assert_eq!((copied[0].1, copied[0].2.as_deref()), (0, None));
+            assert_eq!(serde_json::from_str::<Value>(&copied[0].3).unwrap(), serde_json::json!({"driver":"local","enabled":true}));
+            assert_eq!((copied[1].1, copied[1].2.as_deref(), copied[1].4.as_str()), (3, Some("backup_hold"), "2026-11-01 09:30:00"));
+            let left: bool = sqlx::query_scalar("SELECT to_regclass('public.runtime_external_payload_deletions') IS NOT NULL")
+                .fetch_one(&mut connection).await.unwrap();
+            assert!(!left, "{release}: PHP's table is gone");
+            connection.close().await.unwrap();
             PostgresStorage::check(db.options.clone()).await.unwrap();
             db.remove().await;
         }
@@ -1251,5 +1425,93 @@ mod tests {
         assert_eq!(report["status"], "taken_over", "{report}");
         PostgresStorage::check(db.options.clone()).await.unwrap();
         db.remove().await;
+    }
+
+    #[test]
+    fn released_step_files_keep_the_checksum_their_release_recorded() {
+        // Release candidates 1 and 2 recorded this checksum for version 7.
+        let hex: String = earlier_migration(7)
+            .unwrap()
+            .0
+            .checksum
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(hex, include_str!("../../migrations/postgres/0007_checksum.txt").trim());
+    }
+
+    /// A database exactly as release candidates 1 and 2 bootstrapped it, with
+    /// its catalog checked against the one captured for version 7.
+    async fn version_7_database(db: &Database) {
+        let (earlier, earlier_catalog) = earlier_migration(7).unwrap();
+        let mut connection = db.connection().await;
+        let mut tx = connection.begin().await.unwrap();
+        let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
+        migrator.set_locking(false);
+        migrator.run(&mut *tx).await.unwrap();
+        let expected: Catalog = serde_json::from_str(earlier_catalog).unwrap();
+        assert_eq!(catalog(&mut tx).await.unwrap(), expected);
+        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 7')")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        connection.close().await.unwrap();
+    }
+
+    fn upgrade_refused(result: Result<i64>, expected: &str) {
+        match result {
+            Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
+            Err(error) => panic!("unexpected upgrade error: {error}"),
+            Ok(found) => panic!("upgrade accepted version {found}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_schema_upgrade_moves_version_7_to_the_current_schema() {
+        let db = Database::new().await;
+        version_7_database(&db).await;
+        refused(PostgresStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+        assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), 7);
+        PostgresStorage::check(db.options.clone()).await.unwrap();
+        let storage = PostgresStorage::open(db.options.clone()).await.unwrap();
+        storage.close().await;
+        let mut connection = db.connection().await;
+        let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(kept, "seeded at version 7");
+        connection.close().await.unwrap();
+        assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), VERSION);
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_schema_upgrade_refuses_without_writing_what_it_cannot_recognise() {
+        for (mutation, reason) in [
+            ("ALTER TABLE workflow_namespaces ADD COLUMN unexpected text", "native_schema_catalog_mismatch"),
+            ("UPDATE _sqlx_migrations SET checksum=decode('00','hex')", "native_migration_history_mismatch"),
+            ("UPDATE dw_server_schema SET version=9", "native_schema_newer_than_binary"),
+            ("UPDATE dw_server_schema SET version=5", "unsupported_rust_schema"),
+        ] {
+            let db = Database::new().await;
+            version_7_database(&db).await;
+            let mut connection = db.connection().await;
+            sqlx::raw_sql(mutation.into_sql_str()).execute(&mut connection).await.unwrap();
+            upgrade_refused(PostgresStorage::upgrade(db.options.clone()).await, reason);
+            let added: bool = sqlx::query_scalar("SELECT to_regclass('public.dw_external_payload_deletions') IS NOT NULL")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            assert!(!added, "{mutation}");
+            connection.close().await.unwrap();
+            db.remove().await;
+        }
+        let empty = Database::new().await;
+        upgrade_refused(PostgresStorage::upgrade(empty.options.clone()).await, "native_schema_not_initialized");
+        empty.remove().await;
     }
 }

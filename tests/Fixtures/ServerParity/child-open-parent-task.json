@@ -1,0 +1,88 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "child-open-parent-task",
+  "review_state": "reviewed",
+  "contract": "A child's resolution while its parent has a ready workflow task (published Server 2.11.7 with Workflow 2.15.7 WorkflowExecutor::dispatchParentResumeTasks), over raw worker HTTP on protocol 1.20 in a fresh namespace. The parent's first task starts a child on its own queue and schedules an activity; the activity's result leaves the parent a ready resume task; then the child completes. The resolution is recorded and the ready task, unchanged, is the parent's only resume: a worker can claim exactly one parent task, with no update id, whose history carries ChildRunCompleted, and completing it closes the run. Embedded applications have no worker protocol.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "continue transfers λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "continue transfers λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "child_open_parent_task": {
+    "workflow_type": "parity.v1.child_open_parent_task",
+    "child_type": "parity.v1.child_open_parent_task_child",
+    "activity_type": "parity.v1.child_open_parent_task_activity",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "described_fields": [
+      "status",
+      "status_bucket",
+      "is_terminal",
+      "wait_kind",
+      "wait_reason"
+    ],
+    "expected": {
+      "ready": {
+        "opened": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "activity_completed": 200,
+        "child_completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed"
+        },
+        "described_after_child": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "wait_kind": "workflow-task",
+          "wait_reason": "Workflow task ready"
+        },
+        "claimable_parent_tasks": [
+          {
+            "workflow_update_id": null,
+            "replays_child_result": true
+          }
+        ],
+        "closed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed"
+        },
+        "described_after_close": {
+          "status": "completed",
+          "status_bucket": "completed",
+          "is_terminal": true,
+          "wait_kind": null,
+          "wait_reason": null
+        }
+      }
+    }
+  }
+}

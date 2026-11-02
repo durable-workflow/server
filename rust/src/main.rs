@@ -263,6 +263,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 command.as_str(),
                 "schema-bootstrap"
                     | "schema-check"
+                    | "schema-upgrade"
                     | "upgrade-inspect"
                     | "upgrade-queue-inspect"
                     | "upgrade-payload-inspect"
@@ -274,6 +275,36 @@ async fn run() -> Result<(), Box<dyn Error>> {
             return Err("unknown development command".into());
         }
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
+        if command == "schema-upgrade" {
+            use durable_workflow_server::runtime::schema_upgrade;
+            let result = match backend.as_str() {
+                "sqlite" => {
+                    let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+                    schema_upgrade::upgrade_sqlite(&path).await
+                }
+                "pgsql" => schema_upgrade::upgrade_postgres(postgres_options()?).await,
+                "mysql" | "mariadb" => schema_upgrade::upgrade_mysql(mysql_options()?).await,
+                _ => {
+                    return Err(
+                        "schema-upgrade requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb".into(),
+                    );
+                }
+            };
+            return match result {
+                Ok(report) => {
+                    println!("{report}");
+                    Ok(())
+                }
+                Err(error) => {
+                    let reason = match error {
+                        RuntimeError::Refused { reason, .. } => reason,
+                        _ => "storage_unavailable",
+                    };
+                    eprintln!("{reason}");
+                    Err("native schema upgrade refused".into())
+                }
+            };
+        }
         if command == "upgrade-prepare-sqlite" {
             if backend != "sqlite" {
                 return Err("upgrade-prepare-sqlite requires DB_CONNECTION=sqlite".into());

@@ -1,0 +1,23 @@
+{
+    "remove": [],
+    "add": [
+        [
+            "index",
+            "runtime_payload_deletions_namespace_created_index",
+            "runtime_external_payload_deletions",
+            "CREATE INDEX \"runtime_payload_deletions_namespace_created_index\" on \"runtime_external_payload_deletions\" (\"namespace\", \"created_at\")"
+        ],
+        [
+            "index",
+            "runtime_payload_deletions_namespace_uri_unique",
+            "runtime_external_payload_deletions",
+            "CREATE UNIQUE INDEX \"runtime_payload_deletions_namespace_uri_unique\" on \"runtime_external_payload_deletions\" (\"namespace\", \"storage_uri_sha256\")"
+        ],
+        [
+            "table",
+            "runtime_external_payload_deletions",
+            "runtime_external_payload_deletions",
+            "CREATE TABLE \"runtime_external_payload_deletions\" (\"id\" varchar not null, \"namespace\" varchar not null, \"storage_uri\" text not null, \"storage_uri_sha256\" varchar not null, \"storage_policy\" text not null, \"attempts\" integer not null default '0', \"failure_code\" varchar, \"created_at\" datetime, \"updated_at\" datetime, primary key (\"id\"))"
+        ]
+    ]
+}

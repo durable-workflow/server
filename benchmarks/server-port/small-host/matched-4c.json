@@ -1,0 +1,133 @@
+{
+  "schema": "durable-workflow.server-port-performance-profile/v1",
+  "profile_version": "3.0.0",
+  "profile_id": "server-port-development-matched-amd64-v3-rc2-php2118",
+  "evidence_class": "development_comparison",
+  "publishable_capacity_claim": false,
+  "status": "prospective_inputs",
+  "artifacts": {
+    "php_server": "durableworkflow/server@sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd",
+    "php_server_version": "2.11.8",
+    "php_workflow_version": "2.15.12",
+    "native_source": "e5bf7e2bf4e73c512a80cc7c3cd9ebb406927615",
+    "native_build_runner_revision": "e5bf7e2bf4e73c512a80cc7c3cd9ebb406927615",
+    "native_rust_tree": "2b0c5198e46a4b3bc4fd5b50d5b0e8b7034a92c6",
+    "native_build": "cargo build --release --locked --bin durable-workflow-server",
+    "native_binary_sha256": "cf18b714dca3c47c95c60df348e0893bfa6625d4f5b097ec8618600211407ca1",
+    "sdk_php_version": "2.3.9",
+    "sdk_php_source": "7decd1a9fc39704f48b10c9209a23db8668ae7f2",
+    "sdk_php_lock": "scripts/conformance/server-parity/corrected-markers/php/composer.lock",
+    "sdk_php_lock_sha256": "42e814ee38813d3dafcf2e4cc371327d661536adda653e6cf1518a91a46087ca",
+    "mysql": "mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6",
+    "mysql_version": "8.4.5",
+    "redis": "redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c",
+    "redis_version": "7.2.16",
+    "native_image": "ghcr.io/durable-workflow/server-native@sha256:f54e89d775dbf7c6074f37836c6bb0b25f94869d23711b0706e9547c3edecb29",
+    "native_version": "3.0.0-rc.2",
+    "native_image_source": "6caf527ab5c85d6f33b63274847080c97a8d4336",
+    "client_runtime_image": "durableworkflow/server@sha256:944c384c9875fd82637dd2bdea74dcb881cf983a57599ba0e492bec706296549"
+  },
+  "hardware": {
+    "provider_plan": "vultr vhp-4c-8gb-amd",
+    "machine_facts": "recorded in each run identity.json"
+  },
+  "topology": {
+    "compose": "scripts/perf/server-port-matched.compose.yml",
+    "database_isolation": "different_compose_project_and_fresh_mysql_volume_for_each_implementation",
+    "implementations_never_run_concurrently": true,
+    "extra_swap_bytes": 0,
+    "runtime_aggregate_limit": {
+      "cpu_cores": 2,
+      "memory_bytes": 2147483648
+    },
+    "php_runtime_components": [
+      "php-server",
+      "php-worker",
+      "php-scheduler",
+      "redis"
+    ],
+    "native_runtime_components": [
+      "native-server"
+    ],
+    "database_limit": {
+      "cpu_cores": 1,
+      "memory_bytes": 1073741824
+    },
+    "sdk_worker_limit": {
+      "cpu_cores": 0.5,
+      "memory_bytes": 536870912
+    },
+    "probe_limit": {
+      "cpu_cores": 0.5,
+      "memory_bytes": 536870912
+    },
+    "runtime_memory_accounting": "all_runtime_components_plus_mysql_reported_separately_from_sdk_and_probe"
+  },
+  "workload": {
+    "authority": "benchmarks/capacity/v1/suite.json",
+    "authority_suite_version": "1.9.0",
+    "cell": "one-activity",
+    "workflow_type": "capacity.v1.one_activity",
+    "activity_type": "capacity.v1.echo",
+    "payload_bytes_each_direction": 1024,
+    "codec": "avro",
+    "client_processes": 1,
+    "sdk_worker_processes": 1,
+    "adapter": "benchmarks/capacity/v1/bindings/php/capacity_adapter.php",
+    "adapter_sha256": "0ad9fd714f325970c18d32cfedf754895cec621bd048593ac04fd8b9a247b926",
+    "command": "scripts/perf/standard-workflow-offered.php",
+    "command_sha256": "cac36195aa9d0867516dff7bcb09f7d9df5fc65b9c0a0b7f49f8d7852def055f",
+    "warmup_seconds": 60,
+    "offer_seconds": 120,
+    "drain_limit_seconds": 120,
+    "describe_interval_ms": 250,
+    "offered_rates_per_second": [
+      0.25,
+      0.5,
+      1
+    ],
+    "repeats": 3,
+    "baseline_drift_control": "repeat_0.25_before_and_after_higher_rates"
+  },
+  "idle": {
+    "command": "scripts/perf/idle-poll-probe.php",
+    "command_sha256": "e25704097dcd2138914b2dde9b81ea50ec47baa19764c2930823699f709f16cc",
+    "outcome_classifier": "scripts/perf/idle-poll-outcome.php",
+    "outcome_classifier_sha256": "df85f993c7fcec89b40986dd7643094b87da2b444f740368198b295bea1d9338",
+    "kind": "mixed",
+    "counts": [
+      6,
+      12,
+      24
+    ],
+    "requested_timeout_seconds": 10,
+    "repeats": 3,
+    "ordinary_api_probe": "health_and_ready_during_held_polls",
+    "queue_condition": "no_tasks_or_active_workflows"
+  },
+  "required_evidence": [
+    "source_and_runner_revisions_input_hashes_and_optimized_binary_hash",
+    "actual_installed_sdk_and_php_engine_identity",
+    "resolved_images_machine_facts_and_actual_component_limits",
+    "offered_accepted_in_window_completed_drained_and_verified_counts",
+    "latencies_errors_full_window_component_cpu_and_memory_samples",
+    "ordinary_api_latency_during_work_and_idle_waits",
+    "final_database_tasks_registrations_restarts_oom_and_swap",
+    "all_repetitions_including_failures_and_baseline_drift",
+    "cleanup_of_databases_objects_dependencies_compiler_and_task_resources"
+  ],
+  "limitations": [
+    "Prospective inputs, not a measured result or published native artifact.",
+    "The original v1 PHP measurements remain historical; both implementations need fresh matched observations.",
+    "This single-client 120-second development workload does not qualify the standard capacity topology or maximum sustained capacity.",
+    "Equal aggregate runtime limits include PHP HTTP, queue, scheduler and Redis, or the replacement native process; MySQL is additional and identical.",
+    "A debug build, missing component samples, growing backlog, failed cleanup or changed background workload cannot establish a performance gain.",
+    "The PHP reference is published 2.11.8 rather than the recorded 2.6.2 baseline, so PHP numbers are not comparable with October 20 or 30; native-image numbers are, on the same host type.",
+    "The native_binary_* fields describe the October 20 binary-mounted build and do not apply to native-image runs."
+  ],
+  "driver": {
+    "script": "scripts/perf/run-server-port-matched.sh",
+    "summarizer": "scripts/perf/summarize-server-port-matched.py",
+    "revision": "a8b5883e809d18df389064b5ea1bdb5918a589c1"
+  }
+}

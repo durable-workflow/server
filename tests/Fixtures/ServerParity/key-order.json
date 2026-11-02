@@ -1,0 +1,181 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "id": "key-order",
+  "review_state": "reviewed",
+  "contract": "Key order in plain JSON input and in search attribute validation (published Server 2.11.7 with Workflow 2.15.7: PayloadEnvelopeResolver::resolve, Avro::toDatum and SearchAttributeValueValidator), over raw HTTP in a fresh namespace without registered search attributes. Each body is sent exactly as written here. A start's plain input becomes its values in document order (array_values), so an object input with integer keys out of order and an object input with named keys keep the order they were written in. A nested object is encoded as an Avro map in document order, which the stored input blob shows. An integer-keyed nested object that is not a list in document order (`{\"1\":\"a\",\"0\":\"b\"}`) is refused with 422 validation_failed and the serializer's invalid_map_key message under workflow_type, and no run is created. A signal's plain input is stored the same way. Several invalid search attributes on one start, and on one upsert_search_attributes command, are reported in request order.",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "key order λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "key order λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "key_order": {
+    "workflow_type": "parity.v1.key_order",
+    "starts": {
+      "nested_map": {
+        "input": "[{\"zeta\":1,\"alpha\":{\"yak\":2,\"bee\":3}},\"x\"]"
+      },
+      "object_integer_keys": {
+        "input": "{\"1\":\"a\",\"0\":\"b\"}"
+      },
+      "object_named_keys": {
+        "input": "{\"second\":\"b\",\"first\":\"a\"}"
+      },
+      "nested_integer_keys": {
+        "input": "[{\"1\":\"a\",\"0\":\"b\"}]"
+      },
+      "nested_integer_key": {
+        "input": "[{\"1\":\"a\"}]"
+      },
+      "search_attribute_errors": {
+        "input": "[\"x\"]",
+        "search_attributes": "{\"Zz\":[\"l\"],\"9bad\":\"x\",\"Aa\":{\"m\":1}}"
+      }
+    },
+    "signal": {
+      "start": "nested_map",
+      "name": "go",
+      "input": "[{\"zeta\":1,\"alpha\":2}]"
+    },
+    "upsert": {
+      "attributes": "{\"Zz\":[\"l\"],\"9bad\":\"x\",\"Aa\":{\"m\":1}}"
+    },
+    "expected": {
+      "starts": {
+        "nested_map": {
+          "start": {
+            "status": 201,
+            "reason": null,
+            "outcome": "started_new",
+            "message": null,
+            "errors": null
+          },
+          "input": [
+            {
+              "zeta": 1,
+              "alpha": {
+                "yak": 2,
+                "bee": 3
+              }
+            },
+            "x"
+          ],
+          "input_blob": "wwHioz3/VYAiNwwEDgQIemV0YQQCCmFscGhhDgQGeWFrBAQGYmVlBAYAAAoCeAA="
+        },
+        "object_integer_keys": {
+          "start": {
+            "status": 201,
+            "reason": null,
+            "outcome": "started_new",
+            "message": null,
+            "errors": null
+          },
+          "input": [
+            "a",
+            "b"
+          ],
+          "input_blob": "wwHioz3/VYAiNwwECgJhCgJiAA=="
+        },
+        "object_named_keys": {
+          "start": {
+            "status": 201,
+            "reason": null,
+            "outcome": "started_new",
+            "message": null,
+            "errors": null
+          },
+          "input": [
+            "b",
+            "a"
+          ],
+          "input_blob": "wwHioz3/VYAiNwwECgJiCgJhAA=="
+        },
+        "nested_integer_keys": {
+          "start": {
+            "status": 422,
+            "reason": "validation_failed",
+            "outcome": null,
+            "message": "invalid_map_key: Avro Value maps require string keys; keys are never stringified.",
+            "errors": {
+              "workflow_type": [
+                "invalid_map_key: Avro Value maps require string keys; keys are never stringified."
+              ]
+            }
+          }
+        },
+        "nested_integer_key": {
+          "start": {
+            "status": 422,
+            "reason": "validation_failed",
+            "outcome": null,
+            "message": "invalid_map_key: Avro Value maps require string keys; keys are never stringified.",
+            "errors": {
+              "workflow_type": [
+                "invalid_map_key: Avro Value maps require string keys; keys are never stringified."
+              ]
+            }
+          }
+        },
+        "search_attribute_errors": {
+          "start": {
+            "status": 422,
+            "reason": "validation_failed",
+            "outcome": null,
+            "message": "Search attribute [Zz] must be a scalar value or null unless it is registered as keyword_list. (and 2 more errors)",
+            "errors": {
+              "search_attributes": [
+                "Search attribute [Zz] must be a scalar value or null unless it is registered as keyword_list.",
+                "Search attribute key [9bad] must start with a letter and contain only letters, numbers, and underscores.",
+                "Search attribute [Aa] must be a scalar value or null unless it is registered as keyword_list."
+              ]
+            }
+          }
+        }
+      },
+      "signal": {
+        "answer": {
+          "status": 202,
+          "reason": null,
+          "outcome": "signal_received",
+          "message": null,
+          "errors": null
+        },
+        "arguments_blob": "wwHioz3/VYAiNwwCDgQIemV0YQQCCmFscGhhBAQAAA=="
+      },
+      "upsert": {
+        "status": 422,
+        "reason": "validation_failed",
+        "errors": {
+          "commands.0.attributes": [
+            "Search attribute [Zz] must be a scalar value or null unless it is registered as keyword_list.",
+            "Search attribute key [9bad] must start with a letter and contain only letters, numbers, and underscores.",
+            "Search attribute [Aa] must be a scalar value or null unless it is registered as keyword_list."
+          ]
+        }
+      }
+    }
+  }
+}

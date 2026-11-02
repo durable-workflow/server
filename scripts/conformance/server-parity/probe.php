@@ -438,11 +438,13 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $manyUpdates = isset($fixture['many_updates']) ? finishHttpManyUpdates($client, $fixture, $workflowId, $url) : null;
     $workerErrorBodies = isset($fixture['worker_error_bodies']) ? finishHttpWorkerErrorBodies($client, $fixture, $workflowId, $url) : null;
     $childDescriptions = isset($fixture['child_descriptions']) ? finishHttpChildDescriptions($client, $fixture, $workflowId, $url) : null;
+    $childOpenParentTask = isset($fixture['child_open_parent_task']) ? finishHttpChildOpenParentTask($client, $fixture, $workflowId, $url) : null;
     $childRetries = isset($fixture['child_retries']) ? finishHttpChildRetries($client, $fixture, $workflowId, $url) : null;
     $activityLateOutcomes = isset($fixture['activity_late_outcomes']) ? finishHttpActivityLateOutcomes($client, $fixture, $workflowId, $url) : null;
     $childVisibility = isset($fixture['child_visibility']) ? finishHttpChildVisibility($client, $fixture, $workflowId, $url) : null;
     $clusterCapabilities = isset($fixture['cluster_capabilities']) ? finishHttpClusterCapabilities($client, $fixture, $workflowId, $url) : null;
     $deepJsonBodies = isset($fixture['deep_json_bodies']) ? finishHttpDeepJsonBodies($client, $fixture, $workflowId, $url) : null;
+    $keyOrder = isset($fixture['key_order']) ? finishHttpKeyOrder($client, $fixture, $workflowId, $url) : null;
     $visibilityCollation = isset($fixture['visibility_collation']) ? finishHttpVisibilityCollation($client, $fixture, $workflowId, $url) : null;
     $searchAttributeDatetimes = isset($fixture['search_attribute_datetimes']) ? finishHttpSearchAttributeDatetimes($client, $fixture, $workflowId, $url) : null;
     $retriedChildCancellation = isset($fixture['retried_child_cancellation']) ? finishHttpRetriedChildCancellation($client, $fixture, $workflowId, $url) : null;
@@ -586,11 +588,13 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'many_updates' => $manyUpdates,
         'worker_error_bodies' => $workerErrorBodies,
         'child_descriptions' => $childDescriptions,
+        'child_open_parent_task' => $childOpenParentTask,
         'child_retries' => $childRetries,
         'activity_late_outcomes' => $activityLateOutcomes,
         'child_visibility' => $childVisibility,
         'cluster_capabilities' => $clusterCapabilities,
         'deep_json_bodies' => $deepJsonBodies,
+        'key_order' => $keyOrder,
         'visibility_collation' => $visibilityCollation,
         'search_attribute_datetimes' => $searchAttributeDatetimes,
         'retried_child_cancellation' => $retriedChildCancellation,
@@ -937,11 +941,13 @@ try {
     require __DIR__.'/many-updates-probe.php';
     require __DIR__.'/worker-error-bodies-probe.php';
     require __DIR__.'/child-descriptions-probe.php';
+    require __DIR__.'/child-open-parent-task-probe.php';
     require __DIR__.'/child-retries-probe.php';
     require __DIR__.'/activity-late-outcomes-probe.php';
     require __DIR__.'/child-visibility-probe.php';
     require __DIR__.'/cluster-capabilities-probe.php';
     require __DIR__.'/deep-json-bodies-probe.php';
+    require __DIR__.'/key-order-probe.php';
     require __DIR__.'/visibility-collation-probe.php';
     require __DIR__.'/search-attribute-datetimes-probe.php';
     require __DIR__.'/retried-child-cancellation-probe.php';
@@ -1156,6 +1162,9 @@ try {
     if ($mode === 'embedded' && isset($fixture['child_descriptions'])) {
         $observation['child_descriptions'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
+    if ($mode === 'embedded' && isset($fixture['child_open_parent_task'])) {
+        $observation['child_open_parent_task'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
     if ($mode === 'embedded' && isset($fixture['child_retries'])) {
         $observation['child_retries'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
@@ -1170,6 +1179,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['deep_json_bodies'])) {
         $observation['deep_json_bodies'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_request_bodies'];
+    }
+    if ($mode === 'embedded' && isset($fixture['key_order'])) {
+        $observation['key_order'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_request_bodies'];
     }
     if ($mode === 'embedded' && isset($fixture['visibility_collation'])) {
         $observation['visibility_collation'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_list_queries'];

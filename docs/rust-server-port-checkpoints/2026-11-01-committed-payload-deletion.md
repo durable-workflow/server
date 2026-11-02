@@ -96,6 +96,7 @@
 - **Not covered.** Takeover of a 2.11.8 source, whose new
   `runtime_external_payload_deletions` table is not yet a recognized source
   layout, and copying its pending intentions, is separate work.
-- **Database upgrade.** No native migration runs between schema versions, so
-  a database created by release candidates 1 or 2 (schema version 7) refuses
-  to open on this schema with `unsupported_rust_schema`; create it again.
+- **Database upgrade.** A database created by release candidates 1 or 2
+  (schema version 7) refuses to open on this schema. Since November 1,
+  `schema-upgrade` moves it to version 8 in place
+  ([schema upgrades](../../rust/README.md#native-schema-upgrades)).

@@ -44,6 +44,8 @@ foreach (['shared', 'tenant-a'] as $namespace) {
         $row['scenario'] = 'external_payload';
     }
     $deadline = microtime(true) + $row['budget_seconds'];
+    $history = [];
+    $serviceHistory = [];
     try {
         $client = new Client('http://server:8080', namespace: $namespace, controlToken: $input['token']);
         $handle = $client->startWorkflow('nexus.fixture.php.caller',
@@ -142,6 +144,8 @@ foreach (['shared', 'tenant-a'] as $namespace) {
             && count($eventsOfType($row['history'], 'ServiceCallCompleted')) === 1;
     } catch (Throwable $failure) {
         $row['failure'] = ['type' => $failure::class, 'message' => $failure->getMessage()];
+        $row['last_observed_caller_event_types'] = array_column($history['events'] ?? [], 'event_type');
+        $row['last_observed_service_event_types'] = array_column($serviceHistory['events'] ?? [], 'event_type');
         $row['recovery_qualified'] = false;
     } finally {
         if (is_resource($worker)) {

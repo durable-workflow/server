@@ -776,6 +776,9 @@ ${payloadMount}    command: ["server-bootstrap"]
     environment: &server_environment
       APP_ENV: local
       APP_DEBUG: "false"
+      # The external fixture carries 4 MiB arguments and an 8 MiB result.
+      # Keep its logical payload ceiling distinct from the 2 MiB offload threshold.
+      DW_V2_LIMIT_PAYLOAD_SIZE_BYTES: "16777216"
       DB_CONNECTION: mysql
       DB_HOST: mysql
       DB_PORT: 3306
@@ -3257,6 +3260,109 @@ function observedTypedErrorRoundTrip(serviceProbe, expectedType) {
     && stringValue(envelope?.failure?.message) !== '';
 }
 
+function authoredCallerWorkflowEvidence(probes, callerLanguage, serviceLanguage, expectedVersion) {
+  const assert = require('node:assert/strict');
+  const caller = callerLanguage === 'sdk-php' ? 'php' : 'python';
+  const service = serviceLanguage === 'sdk-python' ? 'python' : 'php';
+  const namespaces = ['shared', caller === 'php' ? 'tenant-a' : 'tenant-b'];
+  const observations = [];
+  const identities = new Set();
+  let selected;
+  try {
+    probes = JSON.parse(JSON.stringify(probes));
+    assert.ok(['sdk-php', 'sdk-python'].includes(callerLanguage));
+    assert.ok(['workflow-php', 'sdk-python'].includes(serviceLanguage));
+    assert.ok(expectedVersion);
+    for (const status of ['completed', 'failed', 'cancelled']) {
+      const response = probes?.[status];
+      assert.equal(response?.ok, true);
+      assert.equal(response.body.scope, `${caller}_caller_${service}_workflow_service`);
+      assert.equal(response.body.outcome, 'pass');
+      const rows = response.body.observations;
+      assert.deepEqual(rows.map(row => row.caller_namespace), namespaces);
+      for (const row of rows) {
+        assert.ok(row.workflow_id && row.run_id && row.process_id > 0);
+        assert.equal(String(row.installed_sdk_version).replace(/^v/, ''), String(expectedVersion).replace(/^v/, ''));
+        assert.equal(row.public_method, caller === 'php' ? 'WorkflowContext.serviceOperation' : 'WorkflowContext.call_nexus_service');
+        assert.equal(row.request_qualified, true);
+        assert.equal(row.result.status, status);
+        const call = row.durable_service_call?.body?.service_call || row.durable_service_call?.body;
+        assert.equal(row.durable_service_call?.ok, true);
+        assert.equal(call?.status, status);
+        assert.ok(row.result.service_call_id && row.linked_service_run_id);
+        assert.equal(call.service_call_id || call.id, row.result.service_call_id);
+        assert.equal(call.caller_workflow_instance_id, row.workflow_id);
+        assert.equal(call.caller_workflow_run_id, row.run_id);
+        assert.equal(call.caller_namespace, row.caller_namespace);
+        assert.equal(call.target_namespace, 'shared');
+        assert.equal(call.linked_workflow_run_id, row.linked_service_run_id);
+        assert.equal(String(call.endpoint_name).toLowerCase(), `published-${service}-workflow-service`);
+        assert.equal(String(call.service_name).toLowerCase(), service === 'php' ? 'publishedworkflowgreeter' : 'publishedpythonworkflowgreeter');
+        assert.equal(call.operation_name, 'greet');
+        assert.equal(row.scenario, status);
+        for (const identity of [`run:${row.run_id}`, `call:${row.result.service_call_id}`]) {
+          assert.ok(!identities.has(identity));
+          identities.add(identity);
+        }
+        const events = row.history.events;
+        const starts = events.filter(event => event.event_type === 'ServiceCallStarted');
+        const terminals = events.filter(event => ['ServiceCallCompleted', 'ServiceCallFailed', 'ServiceCallCancelled'].includes(event.event_type));
+        assert.equal(starts.length, 1);
+        assert.equal(terminals.length, 1);
+        assert.equal(terminals[0].event_type, {completed: 'ServiceCallCompleted', failed: 'ServiceCallFailed', cancelled: 'ServiceCallCancelled'}[status]);
+        assert.equal(starts[0].payload.caller_sdk_language, callerLanguage);
+        for (const event of [starts[0], terminals[0]]) assert.equal(event.payload.service_call_id, row.result.service_call_id);
+        assert.equal(starts[0].payload.sequence, terminals[0].payload.sequence);
+        assert.ok(terminals[0].sequence > starts[0].sequence);
+        assert.equal(events.filter(event => event.event_type === 'WorkflowCompleted').length, 1);
+        const linkedTerminal = row.linked_service_history.events.filter(event => event.event_type === {
+          completed: 'WorkflowCompleted', failed: 'WorkflowFailed', cancelled: 'WorkflowCancelled',
+        }[status]);
+        assert.equal(linkedTerminal.length, 1);
+        if (caller === 'php') {
+          assert.ok(row.worker_process_id > 0 && row.worker_log);
+          assert.equal(row.worker_exit_code, row.worker_signal_handlers_available ? 0 : 15);
+        } else {
+          assert.ok(row.receipts.some(receipt => receipt.method === 'POST' && receipt.status === 200
+            && receipt.path.includes('/workflow-tasks/') && receipt.path.endsWith('/complete')));
+        }
+        if (status === 'completed') {
+          assert.equal(row.completed, true);
+          assert.equal(row.service_input_qualified, true);
+          const expected = {greeting: 'hello, world', language: service, name: 'world'};
+          assert.deepEqual(row.result.result, expected);
+          assert.deepEqual(row.linked_service_result, expected);
+          assert.ok(call.completed_at);
+          if (row.caller_namespace === namespaces[1]) selected = row;
+        } else {
+          assert.equal(row.result.failure_class, caller === 'php' ? 'DurableWorkflow\\Exception\\ServiceOperationFailed' : 'NexusOperationFailed');
+          if (status === 'failed') {
+            assert.equal(row.typed_failure_qualified, true);
+            const failure = linkedTerminal[0].payload;
+            const type = failure.exception_type || failure.exception_class;
+            assert.ok(type?.endsWith('NexusFixtureFailure'));
+            assert.equal(failure.message, 'fixture service failure');
+            assert.equal(row.result.failure_message, failure.message);
+            assert.equal(row.result.failure_type, type);
+            assert.equal(call.service_error_type, type);
+            assert.ok(call.failed_at);
+          } else {
+            assert.equal(row.cancellation_qualified, true);
+            if (caller === 'php') assert.equal(row.result.cancelled, true);
+          }
+        }
+        observations.push({caller_namespace: row.caller_namespace, workflow_id: row.workflow_id, run_id: row.run_id,
+          process_id: row.process_id, installed_sdk_version: row.installed_sdk_version, public_method: row.public_method,
+          service_call_id: row.result.service_call_id, linked_service_run_id: row.linked_service_run_id,
+          status, start_sequence: starts[0].sequence, terminal_sequence: terminals[0].sequence});
+      }
+    }
+    return {qualified: true, selected, observations};
+  } catch (error) {
+    return {qualified: false, failure_reason: String(error.message).slice(0, 500)};
+  }
+}
+
 function crossLanguageScenarioResult({
   scenarioId,
   callerLanguage,
@@ -3276,22 +3382,38 @@ function crossLanguageScenarioResult({
   missingSurface,
   missingSurfaceOwner,
   versions,
+  authoredCallerProbes = null,
 }) {
-  const serviceCallId = serviceCallIdFrom(execute) || serviceCallIdFrom(describe);
+  const authoredQualification = authoredCallerWorkflowEvidence(authoredCallerProbes, callerLanguage, serviceLanguage, versions[callerLanguage]);
+  const authored = authoredQualification.qualified ? authoredQualification : null;
+  if (authored) {
+    callerWorkflowInstanceId = authored.selected.workflow_id;
+    callerWorkflowRunId = authored.selected.run_id;
+    describe = authored.selected.durable_service_call;
+    operationName = `${(describe.body.service_call || describe.body).service_name}.greet`;
+  }
+  const serviceCallId = authored?.selected.result.service_call_id || serviceCallIdFrom(execute) || serviceCallIdFrom(describe);
   const historyRows = historyRowsFrom(history);
-  const callerHistoryRecorded = serviceCallId !== ''
-    && historyRows.some((row) => String(row.service_call_id || '') === serviceCallId);
+  const callerHistoryRecorded = authored !== null || (serviceCallId !== ''
+    && historyRows.some((row) => String(row.service_call_id || '') === serviceCallId));
   const serviceProbeSucceeded = serviceProbe?.ok === true
     && Number(serviceProbe?.status ?? 0) >= 200
     && Number(serviceProbe?.status ?? 0) < 300;
-  const responsePayload = serviceResponsePayload(serviceProbe);
+  const responsePayload = authored?.selected.result.result || serviceResponsePayload(serviceProbe);
   const payloadRoundTrip = serviceProbeSucceeded
     && observedPayloadRoundTrip(serviceProbe, requestPayload);
   const typedErrorRoundTrip = observedTypedErrorRoundTrip(typedErrorProbe, expectedTypedError);
   const typedErrorProbeSucceeded = typedErrorRoundTrip;
   const callerWorker = workerExecution.workers?.find((worker) => worker.sdk_language === callerLanguage);
   const serviceWorker = workerExecution.workers?.find((worker) => worker.sdk_language === serviceLanguage);
-  const callerWorkerInvocation = callerWorker?.caller_workflow_invocation || null;
+  const callerWorkerInvocation = authored ? {executed: true, execution_mode: 'published_sdk_caller_workflow',
+    sdk_language: callerLanguage, public_method: authored.selected.public_method,
+    process_id: authored.selected.process_id, workflow_id: authored.selected.workflow_id,
+    run_id: authored.selected.run_id, local_product_source_checkouts_used: false,
+    observations: authored.observations} : callerWorker?.caller_workflow_invocation || null;
+  if (authored) workerExecution = {...workerExecution, workers: (workerExecution.workers || []).map(worker => (
+    worker.sdk_language === callerLanguage ? {...worker, caller_workflow_invocation: callerWorkerInvocation} : worker
+  ))};
   const serviceHealth = serviceHealthEvidenceFromWorkerExecution(workerExecution, serviceLanguage);
   const serviceHealthSucceeded = serviceHealth.health_succeeded === true;
   const callerPublicSurfaceAvailable = publicSurfaceAvailable(callerWorker?.public_service_call_surface)
@@ -3306,12 +3428,15 @@ function crossLanguageScenarioResult({
     && describe?.ok === true
     && durableCall.status === 'completed'
     && durableCall.completed_at != null;
-  const callerSdkInvocation = execute?.body?.caller_sdk_invocation || null;
+  const callerSdkInvocation = authored ? {executed: true, public_method: authored.selected.public_method,
+    workflow_worker_executed: true, process_id: authored.selected.process_id} : execute?.body?.caller_sdk_invocation || null;
   const callerSdkExecuted = callerSdkInvocation?.executed === true
-    && Number(execute?.body?.client_process_id || 0) > 0;
-  const callerWorkflowExecuted = callerWorkerInvocation?.executed === true
-    && callerWorkerInvocation?.execution_mode !== 'public_api_reflection';
+    && Number(authored?.selected.process_id || execute?.body?.client_process_id || 0) > 0;
+  const callerWorkflowExecuted = authored !== null;
   let missing = missingSurface;
+  if (missing === null && authoredCallerProbes !== null && !authored) {
+    missing = `authored caller evidence did not qualify: ${authoredQualification.failure_reason}`;
+  }
   if (missing === null && !callerPublicSurfaceAvailable) {
     missing = `published ${callerLanguage} caller workflow did not expose a public SDK service-call API during the reflected package probe`;
   } else if (missing === null && !serviceHealthSucceeded) {
@@ -3360,15 +3485,22 @@ function crossLanguageScenarioResult({
   const responseSurface = {
     status: pass ? 'completed' : (serviceInvocationFailed || serviceResponseMismatch ? 'failed'
       : (unprovenDurableExecution ? 'not_covered' : 'unsupported')),
-    execute_response: responseSummary(execute),
+    execute_response: authored ? {evidence_source: 'installed_sdk_workflow_result', ok: true,
+      body: authored.selected.result} : responseSummary(execute),
     describe_response: responseSummary(describe),
-    caller_history_response: responseSummary(history),
+    caller_history_response: authored ? {evidence_source: 'installed_sdk_workflow_history', ok: true,
+      body: authored.selected.history} : responseSummary(history),
+    ...(authored ? {caller_workflow_result: authored.selected.result,
+      caller_workflow_history: authored.selected.history,
+      sdk_client_admission_response: responseSummary(execute),
+      sdk_client_admission_service_call_id: serviceCallIdFrom(execute)} : {}),
     service_probe_response: serviceProbe,
     typed_error_probe_response: typedErrorProbe,
     service_response_payload: responsePayload,
     missing_public_surface: missingSurface,
     caller_sdk_invocation: callerSdkInvocation,
     caller_workflow_execution_verified: callerWorkflowExecuted,
+    ...(authoredCallerProbes !== null && !authored ? {authored_caller_validation_failure: authoredQualification.failure_reason} : {}),
   };
 
   if (pass) {
@@ -3378,7 +3510,7 @@ function crossLanguageScenarioResult({
       caller_sdk_language: callerLanguage,
       service_sdk_language: serviceLanguage,
       operation_name: operationName,
-      request_payload: requestPayload,
+      request_payload: authored ? {arguments: ['world']} : requestPayload,
       response_or_failure_surface: responseSurface,
       service_call_id: serviceCallId,
       artifact_tuple: artifactTupleEvidence,
@@ -3394,6 +3526,7 @@ function crossLanguageScenarioResult({
       caller_history_recorded: callerHistoryRecorded,
       caller_worker_invocation: callerWorkerInvocation,
       durable_service_response_observed: durableServiceResponseObserved,
+      ...(authored ? {authored_caller_workflow_observations: authored.observations} : {}),
     });
   }
 
@@ -3819,6 +3952,18 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
     const pythonToPhpMissing = pythonMissingSurface || phpServiceRuntimeMissing;
     const pythonToPhpOwner = pythonMissingSurface !== null ? 'sdk-python' : 'workflow';
 
+    const readProbe = name => {
+      try { return JSON.parse(fs.readFileSync(path.join(resultDir, name), 'utf8')); }
+      catch { return null; }
+    };
+    const failed = readProbe('nexus-typed-failure-probes.json');
+    const cancelled = readProbe('nexus-cancellation-probes.json');
+    const authoredProbes = (caller, service, completed) => ({
+      completed: readProbe(completed),
+      failed: failed?.reports?.find(pair => pair.caller === caller && pair.service === service)?.observation,
+      cancelled: cancelled?.reports?.find(pair => pair.caller === caller && pair.service === service)?.observation,
+    });
+
     return [
       crossLanguageScenarioResult({
         scenarioId: 'php_caller_python_service',
@@ -3836,6 +3981,7 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         expectedTypedError: 'NexusPublishedServiceError',
         artifactTupleEvidence: tuple,
         workerExecution,
+        authoredCallerProbes: authoredProbes('php', 'python', 'nexus-php-workflow-probe.json'),
         missingSurface: phpToPythonMissing,
         missingSurfaceOwner: phpToPythonOwner,
         versions,
@@ -3856,12 +4002,21 @@ async function probePublishedPhpPythonServiceCalls(baseUrl, token, versions, sou
         expectedTypedError: 'NexusPublishedServiceError',
         artifactTupleEvidence: tuple,
         workerExecution,
+        authoredCallerProbes: authoredProbes('python', 'php', 'nexus-python-workflow-probe.json'),
         missingSurface: pythonToPhpMissing,
         missingSurfaceOwner: pythonToPhpOwner,
         versions,
       }),
     ];
   } finally {
+    for (const [language, suffix] of [['php', '-php-workflow-service'], ['python', '-python-sdk-service']]) {
+      const containerName = started.find(name => name.endsWith(suffix));
+      if (!containerName) continue;
+      const log = spawnSync('docker', ['exec', containerName, 'cat', `/tmp/nexus-${language}-service-worker.log`],
+        {encoding: 'utf8', timeout: 3000, maxBuffer: 8 * 1024 * 1024});
+      fs.writeFileSync(path.join(resultDir, `nexus-${language}-final-service-worker.log`),
+        `exit_status=${log.status}\n${log.stdout || ''}\n${log.stderr || ''}`);
+    }
     for (const containerName of started) {
       dockerStop(containerName, path.join(resultDir, `${containerName}-stop.log`));
     }

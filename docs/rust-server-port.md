@@ -107,7 +107,8 @@ Updated October 27, 2026.
   - native schema upgrades between native versions (schema 7 to 8 after
     #914);
   - takeover of a published 2.11.8 database, with its pending
-    external-payload deletions;
+    external-payload deletions, is covered
+    ([checkpoint](rust-server-port-checkpoints/2026-11-01-php-2118-takeover.md));
   - moving the parity reference to published 2.11.8, then reporting the
     cleanup counts always;
   - Security acceptance of the post-commit external-payload deletion
@@ -439,18 +440,44 @@ contract fixture before its correction.
   and PostgreSQL. Native refuses such a name, and a name of only spaces,
   with `invalid_signal_name` or `invalid_update_name` on every database
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-poll-waits.md)).
-- **Key order inside plain JSON input.** For input that is not an envelope,
-  PHP encodes nested objects as Avro maps in request order; native encodes
-  them with sorted keys. The decoded values are equal, but the blobs differ.
-- **Child completion while the parent has an open workflow task.** Published
-  Workflow records the child resolution and reuses the parent's existing ready
-  or leased workflow task (`WorkflowExecutor::dispatchParentResumeTasks`).
-  Without a cooperative cancellation request, native gives the resolution
-  its own resume task, as activity and timer resolutions do
-  ([checkpoint](rust-server-port-checkpoints/2026-10-23-command-batches.md)).
-  Signals still create no resume while the parent
-  waits on a child, because only signal and condition waits count as open
-  waits.
+- **Key order inside plain JSON input** (November 1, closed). For input
+  that is not an envelope, published PHP takes an object input's values in
+  document order (`array_values`) and encodes each nested object as an Avro
+  map in document order (`Avro::toDatum`). A nested object whose integer
+  keys are not 0 to n-1 in document order, such as `{"1": "a", "0": "b"}`,
+  is not a list, and its encoder fails with `invalid_map_key`. Native
+  encoded nested maps with sorted keys and read such an object as the list
+  `["b", "a"]`. It now encodes plain input in document order through the
+  ordered Avro writer, so its blobs are PHP's byte for byte, and refuses an
+  integer-keyed object that is not a list: on a start with PHP's 422 under
+  `workflow_type`. On a signal, update, query, message or bridge start it
+  keeps native's `422 invalid_workflow_arguments`, where PHP's signal answers
+  `500 control_plane_internal_error`. The `key-order` fixture records starts
+  and a signal against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-key-order.md)).
+- **Child completion while the parent has an open workflow task**
+  (November 1; ready task closed, leased task decided;
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-child-open-parent-task.md)).
+  Published PHP 2.11.7 records the child resolution and, while the parent
+  has a ready or leased workflow task, creates none and leaves that task's
+  payload as it is (`dispatchParentResumeTasks`).
+  - **Ready task.** Native now does the same: the ready task replays the
+    parent with the resolution in its history. An update task does not
+    replay the workflow, so beside one the resolution still gets its own
+    resume task. The `child-open-parent-task` fixture records it against
+    published 2.11.7.
+  - **Leased task.** On 2.11.7 a lease whose worker read history before the
+    resolution completes without it, and the parent is left with no task;
+    the repair pass does not recover it
+    ([workflow#962](https://github.com/durable-workflow/workflow/issues/962)).
+    Core 2.15.10, not yet in a published Server release, creates one child
+    resume task when such a lease completes. Native gives the resolution
+    its own resume task at once, as activity and timer resolutions do on
+    both servers. Compare again when the parity reference moves to a Server
+    release with Core 2.15.10.
+  - A signal creates no resume while the parent waits only on a child, as
+    on PHP: `PendingMessageTask::signalCanAdvanceRun` advances only signal
+    and condition waits.
 - **Update delivery into a ready task** (November 1, decided: native
   keeps its behavior). Published PHP merges an accepted update into the
   run's ready workflow task (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).
@@ -528,6 +555,17 @@ contract fixture before its correction.
   consumed lose their payloads once a retained later run's cursor checkpoint
   covers them, and the instance's last retained run, once terminal, takes the
   instance's streams with it.
+- **Native schema upgrades** (November 1, closed). Native once had no
+  migration between its own schema versions, so the move to version 8 left
+  release candidate databases (version 7) unable to open. The explicit
+  `schema-upgrade` command now upgrades a stopped, backed-up native database
+  on all four backends, as `upgrade-takeover` runs: it recognises the earlier
+  version exactly, runs each later step file and records the new cumulative
+  migration, verified as a fresh bootstrap is. Startup refuses an earlier
+  version (`native_schema_upgrade_required`) or a later one
+  (`native_schema_newer_than_binary`) instead of upgrading. MySQL and MariaDB
+  fence the marker as `rust-upgrading` and resume an interrupted upgrade
+  ([schema upgrades](../rust/README.md#native-schema-upgrades)).
 - **Deeply nested JSON bodies** (October 30, closed). Published PHP's
   `json_decode` reads bodies nested up to 511 levels (its default depth of
   512) and refuses deeper ones with `400 malformed_json`. Native's handlers
@@ -770,9 +808,14 @@ contract fixture before its correction.
   without trailing spaces). The `visibility-collation` fixture records both
   collations against published 2.11.7
   ([checkpoint](rust-server-port-checkpoints/2026-10-30-visibility-collation.md)).
-- **Visibility query key order.** When one command or query has several
-  errors, native reports them in sorted key order rather than request order.
-  The same holds for several invalid search attributes on one start.
+- **Search attribute validation order** (November 1, closed). Published
+  PHP reports several invalid search attributes in request order, on a
+  start and on one `upsert_search_attributes` command, as
+  `SearchAttributeValueValidator` loops over them. Native reported them in
+  sorted key order. Since `serde_json`'s `preserve_order` (#906) its
+  validator visits the request's keys in document order, and the `key-order`
+  fixture records both orders against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-key-order.md)).
 - **Inherited memos and search attributes on child runs** (October 29,
   closed). Published PHP copies the parent's memos and search attributes to
   a child run, and the failed run's to a retried child
@@ -898,7 +941,7 @@ does not establish full parity, current-head qualification or release readiness.
 | Local activities, cancellation scopes, worker sessions, streams, service catalog/Nexus, bridge adapters, standalone activities, debugging and repair | `routes/api.php`, `docs/contracts/`, worker/control-plane specifications, corresponding Feature tests and Nexus runner | Scoped native repair and diagnostics exist. Local-activity execution, cancellation scopes, sessions, streams, Nexus/catalog, bridge and standalone-activity compatibility remain required work. No unpublished package telemetry or stored-job contract is adopted by these slices. |
 | Actual PHP/Python/Rust directions and existing CLI/Waterline/Sample App | Organization [conformance runbook](https://github.com/durable-workflow/.github/blob/main/conformance/README.md) and its SDK coverage inventory; Sample App activity, child, timer, saga, update, namespace and search experiments | Published cohorts cover workflow/activity (#401), parent/child (#408), timer authors (#411), signals (#415), queries (#422), successful/failed updates (#424/#427), named namespaces (#429), selected-run signals (#434) and subsequent corrected marker/range and authority slices. Each retains its exact source/tuple and failures. CLI reads have bounded coverage. Remaining SDK families, broader CLI, native Waterline/Sample App and browser acceptance remain open; published PHP consumers do not qualify native. |
 | SQL schema and stored representations | `database/migrations/`, Workflow package `src/migrations/`, model casts, `Workflow\\Serializers\\Serializer`, queue job payloads, exported history and credential digests | [Representation checkpoints](rust-server-storage-audit.md) recorded; complete mapping and executable migration tests pending |
-| Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | Published PHP remains the default. Native bootstrap, health/readiness, configuration and shutdown foundations exist. Qualified native publication, both architectures, full configuration/metrics compatibility, Compose/Helm consumers and operational cutover remain open. |
+| Images, architecture, bootstrap, configuration, readiness, metrics and graceful shutdown | `Dockerfile`, `docker/`, `config/`, `docker-compose*.yml`, `k8s/helm/`, `docs/server-reference.md`, small-cluster/multi-region validation docs | From November 1 (operator decision) the published Compose file, `docker-compose.published.yml`, runs the native server with MySQL only: native creates its schema, runs its maintenance loop and needs no bootstrap job, queue worker, scheduler or Redis. Its default image is the current native release candidate by digest until 3.0.0 replaces it. The PHP 2.x stack moved to `docker-compose.php.yml`, which PHP releases still synchronize and the PHP published-artifact runners use. Native refuses `DW_AUTH_BACKWARD_COMPATIBLE=false` and an empty `DW_AUTH_TOKEN`, so role-only authentication is not available: the shared token is required and accepted for every role. The Helm chart switch, full configuration and metrics compatibility, and operational cutover remain open. |
 | Backup and in-place upgrade | `docs/self-hosted-backup-and-restore.md`, [PHP ownership/refusal controls](php-database-ownership.md), external payload backup holds; last PHP image writes, all PHP roles stop, Rust takes over same DB sequentially | Ownership/refusal controls and isolated migration preparation exist. Backup-first native takeover with pending work, interrupted migration, external payload preservation and PHP refusal still need complete qualification on SQLite, MariaDB/MySQL and PostgreSQL. No mixed fleet or PHP rollback is permitted. |
 | Throughput, memory, CPU, latency, backlog/drain, idle mixed long polls | `benchmarks/capacity/v1/` and `scripts/benchmark/`; repeated runs and drift checks using frozen artifacts | The [diagnostic PHP reference](../benchmarks/server-port/v1/php-observations-2026-10-09.md) and scoped comparison observations are recorded. Complete matched throughput/memory/idle-poll proof, repeated measurements, drift checks and CPU-load deadline health remain release gates. Source checks and functional comparisons make no performance claim. |
 
