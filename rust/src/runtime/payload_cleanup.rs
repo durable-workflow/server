@@ -11,9 +11,10 @@
 //!
 //! Native stores objects only with the local driver. A reference it cannot
 //! map to the namespace's local storage (no enabled local policy, or an object
-//! outside the current root) is blocked rather than deleted. Native never
-//! takes an online-backup hold; a hold row PHP left active still blocks
-//! deletion, and a missing row means no hold.
+//! outside the current root) is blocked rather than deleted. An active
+//! online-backup hold (`backup_hold`) blocks deletion; the hold row stays
+//! locked through the object's deletion, so a backup acquiring the hold waits
+//! for it.
 use super::Result;
 use super::activity_completion_uploads::Context;
 use super::laravel_validation::{Rule, failure_messages, rule_errors};
@@ -227,7 +228,7 @@ store_methods! {
             tx.commit().await?;
             return Ok(Outcome::Blocked);
         };
-        if Self::backup_hold_active(&mut tx).await? {
+        if Self::locked_backup_hold(&mut tx).await?.active() {
             tx.commit().await?;
             return Ok(Outcome::Blocked);
         }
@@ -240,18 +241,11 @@ store_methods! {
         Ok(Outcome::DeletedObject)
     }
 
-    /// `ExternalPayloadBackupHold::deleting`: an owner whose hold has not
-    /// expired pauses reclamation.
+    /// `assertReclamationAllowed`: an owner whose hold has not expired, by
+    /// the database's clock, pauses reclamation. This preflight takes no lock;
+    /// the provider delete is fenced again under [`Self::locked_backup_hold`].
     pub(super) async fn backup_hold_active(tx: &mut super::transaction::Transaction<'_, DB>) -> Result<bool> {
-        // PostgreSQL keeps the owner as a uuid; only its presence matters.
-        let Some(hold) = Self::query("SELECT CASE WHEN owner IS NULL THEN 0 ELSE 1 END AS held,expires_at FROM runtime_external_payload_backup_hold WHERE id=1")
-            .fetch_optional(&mut **tx)
-            .await?
-        else {
-            return Ok(false);
-        };
-        Ok(DB::number(&hold, "held")? == 1
-            && DB::optional_instant(&hold, "expires_at")?.is_some_and(|expires| expires > now()))
+        Ok(Self::read_backup_hold(tx).await?.is_some_and(|hold| hold.active()))
     }
 
     /// `recordStats` for an existing namespace. Times are whole seconds, as
