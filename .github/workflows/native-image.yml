@@ -19,6 +19,7 @@ on:
       - scripts/ci/promote-release-image-rolling-tags.sh
       - scripts/ci/check-native-release-tags.sh
       - scripts/ci/verify-release-tag-source.sh
+      - scripts/ci/verify-native-release-dispatch.sh
       - .github/workflows/native-image.yml
       - .github/workflows/native-release.yml
       - .github/workflows/release.yml
