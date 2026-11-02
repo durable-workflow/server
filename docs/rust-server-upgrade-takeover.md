@@ -10,6 +10,17 @@ read, and their `backup_verified`, `php_quiescence_verified`,
 `stored_representation_compatibility_verified` and `takeover_allowed` flags are
 always false. This note says what makes each one true.
 
+## Deprecation
+
+Takeover ships in 3.0.0 so self-hosted installations can upgrade a PHP Server
+database (layouts 2.5.14 through 2.11.8) in place. It gets no further
+investment beyond what 3.0.0 ships and is planned for deprecation in the 3.1.x
+line (operator decision, November 1, 2026, recorded on
+[#325](https://github.com/durable-workflow/server/issues/325)). Upgrade from
+PHP while running 3.0.x; the release that deprecates takeover will say so in
+its release notes. New installations, including Durable Workflow Cloud cells,
+start on a fresh native database and never take over a PHP one.
+
 ## Shape
 
 Takeover is an explicit command, never a side effect of starting the server.
