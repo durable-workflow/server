@@ -1117,12 +1117,16 @@ SH);
             $smallCluster['x-server-environment']['APP_VERSION'] ?? null,
         );
 
+        // The chart packages its own Server image (the native line), which
+        // may differ from the frozen PHP source release.
+        $expectedChartAppVersion = $release['helm_chart']['app_version'] ?? $expectedVersion;
+        $this->assertIsString($expectedChartAppVersion);
         $chart = Yaml::parse($this->read('k8s/helm/durable-workflow/Chart.yaml'));
         $this->assertIsArray($chart);
         $this->assertSame($expectedChartVersion, $chart['version'] ?? null);
-        $this->assertSame($expectedVersion, $chart['appVersion'] ?? null);
+        $this->assertSame($expectedChartAppVersion, $chart['appVersion'] ?? null);
         $this->assertSame(
-            "docker.io/durableworkflow/server:{$expectedVersion}",
+            "docker.io/durableworkflow/server:{$expectedChartAppVersion}",
             $chart['annotations']['dev.durable-workflow.image-reference'] ?? null,
         );
     }

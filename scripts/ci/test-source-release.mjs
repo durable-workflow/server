@@ -107,12 +107,19 @@ test('a stable server source identity fans out through current release consumers
     const check = runGenerator(temporaryRoot, ['--check']);
     assert.equal(check.status, 0, check.stderr);
 
+    // The PHP-mode chart fixtures follow the PHP release; the chart's own
+    // appVersion follows the image the chart packages.
+    const fixture = await readFile(
+      join(temporaryRoot, 'k8s/helm/durable-workflow/ci/inline-secrets-values.yaml'),
+      'utf8',
+    );
+    assert.match(fixture, /^  tag: "2\.0\.0"$/m);
     const chart = await readFile(
       join(temporaryRoot, 'k8s/helm/durable-workflow/Chart.yaml'),
       'utf8',
     );
-    assert.match(chart, /^appVersion: "2\.0\.0"$/m);
-    assert.match(chart, /docker\.io\/durableworkflow\/server:2\.0\.0/);
+    const chartAppVersion = manifest.helm_chart.app_version ?? manifest.server.version;
+    assert.match(chart, new RegExp(`^appVersion: "${chartAppVersion.replaceAll('.', '\\.')}"$`, 'm'));
   } finally {
     await rm(temporaryRoot, {recursive: true, force: true});
   }
@@ -128,8 +135,10 @@ test('a simulated next release fans out without rewriting history or retaining s
     const previousChart = manifest.helm_chart.version;
     const nextServer = nextServerRelease(previousServer);
     const nextChart = nextServerRelease(previousChart);
+    const nextChartApp = nextServerRelease(manifest.helm_chart.app_version ?? previousServer);
     manifest.server.version = nextServer;
     manifest.helm_chart.version = nextChart;
+    manifest.helm_chart.app_version = nextChartApp;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
     const upgradingPath = 'k8s/helm/durable-workflow/docs/UPGRADING.md';
@@ -182,7 +191,13 @@ test('a simulated next release fans out without rewriting history or retaining s
       'release generation must not rewrite the Artifact Hub changelog',
     );
     assert.match(chartAfter, new RegExp(`^version: ${nextChart.replaceAll('.', '\\.')}$`, 'm'));
-    assert.match(chartAfter, new RegExp(`^appVersion: "${nextServer.replaceAll('.', '\\.')}"$`, 'm'));
+    assert.match(chartAfter, new RegExp(`^appVersion: "${nextChartApp.replaceAll('.', '\\.')}"$`, 'm'));
+    assert.match(
+      chartAfter,
+      new RegExp(`docker\\.io/durableworkflow/server:${nextChartApp.replaceAll('.', '\\.')}"`),
+    );
+    const values = await readFile(join(temporaryRoot, 'k8s/helm/durable-workflow/values.yaml'), 'utf8');
+    assert.match(values, new RegExp(`^  tag: "${nextChartApp.replaceAll('.', '\\.')}"$`, 'm'));
 
     const stale = [];
     for (const path of paths) {

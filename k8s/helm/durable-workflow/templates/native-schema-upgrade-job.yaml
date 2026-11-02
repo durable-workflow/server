@@ -1,0 +1,84 @@
+{{- /*
+Explicit native schema upgrade. A native Server never upgrades its schema at
+startup: on an older schema it refuses with native_schema_upgrade_required.
+The image's schema-upgrade command moves a database to the image's schema,
+and needs every native Server stopped and a database backup taken first.
+This pre-upgrade hook runs it only when native.schemaUpgrade.enabled is set,
+and the chart refuses to render it while a native Server pod can still run.
+It never runs on install, where the Server bootstraps an empty database.
+*/ -}}
+{{- $native := default (dict) .Values.native }}
+{{- $upgrade := default (dict) (get $native "schemaUpgrade") }}
+{{- if and (include "durable-workflow.isNative" .) (get $upgrade "enabled") }}
+{{- include "durable-workflow.validateNativeSchemaUpgradeQuiescence" . }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "durable-workflow.nativeSchemaUpgradeJobName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "durable-workflow.componentLabels" (dict "context" . "component" "schema-upgrade") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ default 0 (get $upgrade "backoffLimit") }}
+  activeDeadlineSeconds: {{ default 1800 (get $upgrade "activeDeadlineSeconds") }}
+  template:
+    metadata:
+      labels:
+        {{- include "durable-workflow.componentLabels" (dict "context" . "component" "schema-upgrade") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "durable-workflow.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.server.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: schema-upgrade
+          image: {{ include "durable-workflow.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["schema-upgrade"]
+          env:
+            {{- include "durable-workflow.nativeSchemaUpgradeEnv" . | nindent 12 }}
+            {{- with .Values.server.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml (default (dict) (get $upgrade "resources")) | nindent 12 }}
+          {{- with .Values.server.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if .Values.externalDatabase.tls.existingSecret }}
+          volumeMounts:
+            {{- include "durable-workflow.databaseTlsVolumeMount" . | nindent 12 }}
+          {{- end }}
+        {{- with .Values.sidecars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if .Values.externalDatabase.tls.existingSecret }}
+      volumes:
+        {{- include "durable-workflow.databaseTlsVolume" . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

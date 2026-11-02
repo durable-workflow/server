@@ -11,7 +11,7 @@ The chart enforces this two ways:
 Operators who need duplicate scheduler runners as a steady-state topology
 must contact support; that path is outside this chart's contract.
 */ -}}
-{{- if .Values.scheduler.enabled }}
+{{- if and (include "durable-workflow.isPhp" .) .Values.scheduler.enabled }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:

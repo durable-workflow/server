@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check CA delivery to every role, including the pre-install bootstrap hook."""
+"""Check CA delivery to every role in both runtimes, including the bootstrap and schema-upgrade hooks."""
 
 from pathlib import Path
 import subprocess
@@ -11,6 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "k8s/helm/durable-workflow"
 CA_PATH = "/etc/durable-workflow/database-tls/ca.pem"
+PHP = ["--set-string", "runtime=php", "--set-string", "image.tag=2.11.8"]
 
 
 def render(*options: str) -> list[dict]:
@@ -35,7 +36,7 @@ class DatabaseTlsChartTest(unittest.TestCase):
     def test_ca_reaches_all_four_roles_in_hook_and_regular_bootstrap(self):
         for hooks in ["true", "false"]:
             with self.subTest(hooks=hooks):
-                resources = render("--set", f"bootstrap.useHelmHooks={hooks}")
+                resources = render(*PHP, "--set", f"bootstrap.useHelmHooks={hooks}")
                 config = next(item for item in resources if item["kind"] == "ConfigMap")["data"]
                 self.assertEqual(config["DB_SSLMODE"], "verify-full")
                 self.assertEqual(config["DB_SSLROOTCERT"], CA_PATH)
@@ -59,9 +60,32 @@ class DatabaseTlsChartTest(unittest.TestCase):
                         self.assertEqual(environment["DB_SSLROOTCERT"], CA_PATH)
                 self.assertEqual(roles, {"server", "worker", "migrate", "scheduler"})
 
+    def test_ca_reaches_the_native_server_and_schema_upgrade_hook(self):
+        resources = render("--set", "native.schemaUpgrade.enabled=true")
+        config = next(item for item in resources if item["kind"] == "ConfigMap")["data"]
+        self.assertEqual(config["DB_SSLMODE"], "verify-full")
+        self.assertEqual(config["DB_SSLROOTCERT"], CA_PATH)
+        roles = set()
+        for resource in resources:
+            pod = pod_spec(resource)
+            if pod is None:
+                continue
+            container = pod["containers"][0]
+            roles.add(container["name"])
+            volume = next(item for item in pod["volumes"] if item["name"] == "database-tls")
+            self.assertEqual(volume["secret"]["secretName"], "database-ca")
+            mount = next(item for item in container["volumeMounts"] if item["name"] == "database-tls")
+            self.assertEqual(mount["mountPath"] + "/ca.pem", CA_PATH)
+            if container["name"] == "schema-upgrade":
+                environment = {item["name"]: item.get("value") for item in container["env"]}
+                self.assertEqual(environment["DB_SSLMODE"], "verify-full")
+                self.assertEqual(environment["DB_SSLROOTCERT"], CA_PATH)
+        self.assertEqual(roles, {"server", "schema-upgrade"})
+
     def test_existing_volumes_and_mounts_survive_with_or_without_ca(self):
         for ca in ["database-ca", ""]:
             resources = render(
+                *PHP,
                 "--set", f"externalDatabase.tls.existingSecret={ca}",
                 "--set-json", 'server.extraVolumes=[{"name":"application-data","emptyDir":{}}]',
                 "--set", "server.extraVolumeMounts[0].name=application-data",
@@ -84,7 +108,7 @@ class DatabaseTlsChartTest(unittest.TestCase):
             with self.subTest(setting=setting):
                 result = subprocess.run(
                     ["helm", "template", "tls-check", str(CHART), "--values",
-                     str(CHART / "ci/database-tls-values.yaml"), "--set", setting],
+                     str(CHART / "ci/database-tls-values.yaml"), *PHP, "--set", setting],
                     capture_output=True, text=True,
                 )
                 self.assertNotEqual(result.returncode, 0)

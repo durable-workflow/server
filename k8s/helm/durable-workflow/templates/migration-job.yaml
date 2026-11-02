@@ -1,4 +1,4 @@
-{{- if .Values.bootstrap.enabled }}
+{{- if and (include "durable-workflow.isPhp" .) .Values.bootstrap.enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:

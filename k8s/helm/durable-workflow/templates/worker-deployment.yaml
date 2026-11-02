@@ -1,5 +1,5 @@
 {{- include "durable-workflow.validateMemoPayloadTransition" . }}
-{{- if .Values.worker.enabled }}
+{{- if and (include "durable-workflow.isPhp" .) .Values.worker.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -158,17 +158,38 @@ touches `k8s/helm/**` or the chart smoke script. The harness has two jobs:
    - runs `helm upgrade` in place and re-checks readiness;
    - runs `helm uninstall` and asserts no chart-owned resources remain.
 
-The CI fixtures intentionally cover four shapes:
+   The same job then runs `scripts/helm-chart-native-kind-smoke.sh`, which
+   installs the native Server from the chart's default published image
+   against a fresh in-cluster MySQL database and:
+   - waits for the single server Deployment to become ready and runs
+     `helm test`;
+   - asserts that no worker, scheduler, migration Job or Redis Secret exists;
+   - upgrades with an empty `runtime` and confirms the release stays native;
+   - confirms that the schema-upgrade hook refuses while a Server pod runs,
+     then scales to zero and runs the hook, which verifies the current schema;
+   - confirms that an upgrade of a release whose server Deployment lacks the
+     native runtime marker refuses an empty `runtime`;
+   - runs `helm uninstall` and asserts no chart-owned resources remain.
+
+The CI fixtures intentionally cover six shapes:
 
 | Fixture | Purpose |
 | --- | --- |
 | `ci/inline-secrets-values.yaml` | Smallest renderable chart — exercises secret rendering. |
 | `ci/existing-secrets-values.yaml` | GitOps / externally-managed-secret path. The chart renders no Secret resources of its own. |
 | `ci/ingress-and-hpa-values.yaml` | Optional templates: Ingress, HPA, NetworkPolicy, server + worker PDB. |
-| `ci/database-tls-values.yaml` | External CA Secret, canonical TLS settings and read-only mounts in every PHP role. |
+| `ci/database-tls-values.yaml` | External CA Secret, canonical TLS settings and read-only mounts. Renders native by default. The TLS test also renders it in PHP mode. |
+| `ci/native-inline-secrets-values.yaml` | Native Server with inline secrets: one Deployment, no PHP roles. |
+| `ci/native-ingress-and-hpa-values.yaml` | Native with Ingress, HPA, NetworkPolicy, PDB, a payload claim and the schema-upgrade hook. |
 
-A chart change that affects rendered manifests must keep all four
-fixtures green, and the kind smoke must end with a clean uninstall.
+The first three fixtures pin `runtime: php`. A chart change that affects
+rendered manifests must keep every fixture green, and both kind smokes must
+end with a clean uninstall.
+
+`scripts/ci/test_helm_runtime_modes.py` checks what each runtime renders, that
+a tag from the other runtime is refused, that an upgrade with an empty
+`runtime` must find a native release, and the native render-time refusals
+that mirror native startup refusals.
 
 `scripts/ci/test_database_tls_chart.py` also checks both pre-install-hook and
 ordinary bootstrap ordering, CA path/key consistency, and preservation of
