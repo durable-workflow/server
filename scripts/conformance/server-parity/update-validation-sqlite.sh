@@ -37,7 +37,7 @@ name="${3:-update-validation}"
 [[ -n "$DW_PARITY_RUNNER_REVISION" ]]
 fixture="tests/Fixtures/ServerParity/$name.json"
 test -f "$fixture"
-image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.7.json)
+image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.8.json)
 . scripts/conformance/server-parity/php-maintenance-window.sh
 
 prefix=parity-v1

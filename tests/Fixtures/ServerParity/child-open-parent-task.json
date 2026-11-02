@@ -82,6 +82,57 @@
           "wait_kind": null,
           "wait_reason": null
         }
+      },
+      "leased": {
+        "opened": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "activity_completed": 200,
+        "lease_replays_child_result": false,
+        "child_completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed"
+        },
+        "described_after_child": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "wait_kind": "workflow-task",
+          "wait_reason": "Workflow task leased to worker"
+        },
+        "lease_completed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "waiting"
+        },
+        "described_after_lease": {
+          "status": "waiting",
+          "status_bucket": "running",
+          "is_terminal": false,
+          "wait_kind": "timer",
+          "wait_reason": "Waiting for timer"
+        },
+        "claimable_parent_tasks": [
+          {
+            "workflow_update_id": null,
+            "replays_child_result": true
+          }
+        ],
+        "closed": {
+          "status": 200,
+          "reason": null,
+          "run_status": "completed"
+        },
+        "described_after_close": {
+          "status": "completed",
+          "status_bucket": "completed",
+          "is_terminal": true,
+          "wait_kind": null,
+          "wait_reason": null
+        }
       }
     }
   }

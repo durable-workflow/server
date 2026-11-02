@@ -1054,6 +1054,15 @@ impl Runtime {
             return Ok(answer("rejected", Some(prepared.eligibility.with_error("target.run_id_conflict",
                 "A workflow run with this run_id already exists and was not imported from the same bundle.")), &empty, None));
         }
+        // Core 2.15.12 (Server 2.11.8): an instance of another namespace is
+        // refused before a dry run or a write, not left to the write's failure.
+        let instance_id = prepared.summary.instance_id.clone().unwrap_or_default();
+        if let Some(namespace) = self.import_instance_namespace(&instance_id).await?
+            && namespace != prepared.summary.namespace
+        {
+            return Ok(answer("rejected", Some(prepared.eligibility.with_error("target.instance_namespace_conflict",
+                "A workflow instance with this instance_id already exists outside the target namespace.")), &empty, None));
+        }
         let root = Php::Array(prepared.bundle.clone());
         // Native's reference fence (Server #765), after PHP's eligibility and
         // run checks so their answers stay PHP's, and before a dry run or a
@@ -1131,6 +1140,18 @@ store_methods! {
             dedupe_key: DB::optional_string(&row, "import_dedupe_key")?,
             namespace: DB::optional_string(&row, "namespace")?,
         }))
+    }
+
+    /// The namespace of an existing workflow instance, if there is one.
+    pub(crate) async fn import_instance_namespace(&self, instance_id: &str) -> Result<Option<String>> {
+        let Some(row) = Self::query("SELECT namespace FROM workflow_instances WHERE id=$1")
+            .bind(instance_id)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(DB::optional_string(&row, "namespace")?.unwrap_or_default()))
     }
 
     pub(crate) fn namespace_name(&self) -> String {

@@ -38,7 +38,9 @@ async fn status(router: &Router) -> Value {
 fn report(values: [i64; 7], backlog: i64, limit: i64, pressure: bool) -> Value {
     json!({"processed": values[0], "deleted_references": values[1], "deleted_backing_objects": values[2],
         "shared_objects_preserved": values[3], "skipped": values[4], "blocked": values[5],
-        "storage_driver_failures": values[6], "backlog": backlog, "scan_limit": limit, "scan_pressure": pressure})
+        "storage_driver_failures": values[6], "backlog": backlog, "scan_limit": limit, "scan_pressure": pressure,
+        // 2.11.8 always reports committed retention deletions still pending.
+        "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}})
 }
 
 #[tokio::test]

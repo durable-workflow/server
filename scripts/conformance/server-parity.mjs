@@ -44,7 +44,7 @@ Requires Node 20+ and PHP 8.3+ with the locked adapter installed. Each target
 must have its own isolated, already bootstrapped database. Set DW_PARITY_TOKEN
 for the HTTP target; it is never recorded. Use the same --prefix on all targets
 and a fresh database or prefix for a new run. --artifacts selects the exact
-consumer tuple; the default is tests/Fixtures/ServerParityBaselines/php-2.11.7.json.
+consumer tuple; the default is tests/Fixtures/ServerParityBaselines/php-2.11.8.json.
 Repeat --fixture PATH to record or compare an explicitly selected candidate
 set. --database-resource-limits accepts inspected memory_bytes and
 memory_swap_bytes as a JSON object; comparisons require equal effective
@@ -81,7 +81,7 @@ try {
     }
     const record = {
       schema: 'durable-workflow.server-parity-record/v1', target: values.target, mode: values.mode,
-      runner_revision: values['runner-revision'], artifacts: json(values.artifacts ?? resolve(root, 'tests/Fixtures/ServerParityBaselines/php-2.11.7.json')),
+      runner_revision: values['runner-revision'], artifacts: json(values.artifacts ?? resolve(root, 'tests/Fixtures/ServerParityBaselines/php-2.11.8.json')),
       started_at: new Date().toISOString(), outcome: 'runner-blocked', fixture_hashes: hashes, cases: [],
       database_resource_limits: parseDatabaseResourceLimits(values['database-resource-limits']),
     };

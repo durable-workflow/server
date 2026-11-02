@@ -13,6 +13,10 @@ use GuzzleHttp\HandlerStack;
 // result leaves the parent a ready resume task; then the child completes.
 // Records the parent's description, every workflow task a worker can then
 // claim for the parent, and the run's close from the first of them.
+//
+// The leased case claims that resume task before the child completes, so the
+// lease's history lacks the child's result, then completes the lease with a
+// long timer (workflow#962: Core 2.15.10 gives the parent a follow-up task).
 function finishHttpChildOpenParentTask(Client $admin, array $fixture, string $workflowId, string $url): array
 {
     $definition = $fixture['child_open_parent_task'];
@@ -66,51 +70,74 @@ function finishHttpChildOpenParentTask(Client $admin, array $fixture, string $wo
         ['lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'], 'commands' => $commands]);
     $answer = static fn (array $result): array => ['status' => $result['status'],
         'reason' => $result['response']['reason'] ?? null, 'run_status' => $result['response']['run_status'] ?? null];
-    $described = static fn (): array => array_intersect_key(
-        $raw('GET', 'workflows/'.rawurlencode($id))['response'], array_flip($definition['described_fields']));
-
-    $first = $poll('workflow', $worker, $queue, 5) ?? throw new RuntimeException('Child open parent task: no first task');
-    $opened = $complete($first, [
-        ['type' => 'start_child_workflow', 'workflow_type' => $definition['child_type'], 'arguments' => $empty, 'queue' => $childQueue],
-        ['type' => 'schedule_activity', 'activity_type' => $definition['activity_type'], 'arguments' => $empty],
-    ]);
-    $activity = $poll('activity', $worker, $queue, 5) ?? throw new RuntimeException('Child open parent task: no activity');
-    $activityDone = $raw('POST', 'worker/activity-tasks/'.$activity['task_id'].'/complete', ['lease_owner' => $activity['lease_owner'],
-        'activity_attempt_id' => $activity['activity_attempt_id'], 'result' => $empty]);
-    $child = $poll('workflow', $childWorker, $childQueue, 5) ?? throw new RuntimeException('Child open parent task: no child task');
-    $childDone = $complete($child, [['type' => 'complete_workflow', 'result' => $empty]]);
-    $afterChild = $described();
-
-    // Every workflow task a worker can now claim for the parent.
-    $claimed = [];
-    for ($attempt = 0; $attempt < 3; $attempt++) {
-        $task = $poll('workflow', $worker, $queue, $attempt === 0 ? 5 : 1);
-        if ($task === null) {
-            break;
+    $claimable = static function (string $runId) use ($poll, $worker, $queue): array {
+        // Every workflow task a worker can now claim for the parent.
+        $claimed = [];
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $task = $poll('workflow', $worker, $queue, $attempt === 0 ? 5 : 1);
+            if ($task === null) {
+                break;
+            }
+            if (isset($task['workflow_id']) && $task['workflow_id'] !== $runId) {
+                throw new RuntimeException('Child open parent task: a task for another run: '.json_encode($task['workflow_id'] ?? null));
+            }
+            $claimed[] = $task;
         }
-        $claimed[] = $task;
-    }
-    $tasks = array_map(static fn (array $task): array => [
+
+        return $claimed;
+    };
+    $shape = static fn (array $claimed): array => array_map(static fn (array $task): array => [
         'workflow_update_id' => $task['workflow_update_id'] ?? null,
         'replays_child_result' => in_array('ChildRunCompleted', array_map(
             static fn (array $event): string => (string) ($event['event_type'] ?? ''), $task['history_events'] ?? []), true),
     ], $claimed);
-    $closed = $claimed === [] ? null : $answer($complete($claimed[0], [['type' => 'complete_workflow', 'result' => $empty]]));
-    $final = $described();
-    if ($final['status'] !== 'completed') {
-        $raw('POST', 'workflows/'.rawurlencode($id).'/terminate', ['reason' => 'child open parent task recorded']);
-    }
+    $case = static function (string $runId, bool $leased, bool $start) use ($raw, $poll, $complete, $answer, $claimable, $shape, $definition,
+        $empty, $queue, $childQueue, $worker, $childWorker): array {
+        $described = static fn (): array => array_intersect_key(
+            $raw('GET', 'workflows/'.rawurlencode($runId))['response'], array_flip($definition['described_fields']));
+        if ($start && $raw('POST', 'workflows', ['workflow_id' => $runId, 'workflow_type' => $definition['workflow_type'],
+            'task_queue' => $queue, 'input' => $empty])['status'] !== 201) {
+            throw new RuntimeException('Child open parent task: start '.$runId);
+        }
+        $first = $poll('workflow', $worker, $queue, 5) ?? throw new RuntimeException('Child open parent task: no first task');
+        $opened = $complete($first, [
+            ['type' => 'start_child_workflow', 'workflow_type' => $definition['child_type'], 'arguments' => $empty, 'queue' => $childQueue],
+            ['type' => 'schedule_activity', 'activity_type' => $definition['activity_type'], 'arguments' => $empty],
+        ]);
+        $activity = $poll('activity', $worker, $queue, 5) ?? throw new RuntimeException('Child open parent task: no activity');
+        $activityDone = $raw('POST', 'worker/activity-tasks/'.$activity['task_id'].'/complete', ['lease_owner' => $activity['lease_owner'],
+            'activity_attempt_id' => $activity['activity_attempt_id'], 'result' => $empty]);
+        $lease = $leased ? ($poll('workflow', $worker, $queue, 5) ?? throw new RuntimeException('Child open parent task: no resume task')) : null;
+        $child = $poll('workflow', $childWorker, $childQueue, 5) ?? throw new RuntimeException('Child open parent task: no child task');
+        $childDone = $complete($child, [['type' => 'complete_workflow', 'result' => $empty]]);
+        $afterChild = $described();
+        // The lease's worker has not seen the child's result; it waits on a
+        // long timer instead, as a workflow body awaiting a timer would.
+        $leaseDone = $lease === null ? null : $answer($complete($lease, [['type' => 'start_timer', 'delay_seconds' => 3600]]));
+        $afterLease = $lease === null ? null : $described();
+        $claimed = $claimable($runId);
+        $closed = $claimed === [] ? null : $answer($complete($claimed[0], [['type' => 'complete_workflow', 'result' => $empty]]));
+        $final = $described();
+        if ($final['status'] !== 'completed') {
+            $raw('POST', 'workflows/'.rawurlencode($runId).'/terminate', ['reason' => 'child open parent task recorded']);
+        }
+
+        return [
+            'opened' => $answer($opened),
+            'activity_completed' => $activityDone['status'],
+            ...($lease === null ? [] : ['lease_replays_child_result' => $shape([$lease])[0]['replays_child_result']]),
+            'child_completed' => $answer($childDone),
+            'described_after_child' => $afterChild,
+            ...($lease === null ? [] : ['lease_completed' => $leaseDone, 'described_after_lease' => $afterLease]),
+            'claimable_parent_tasks' => $shape($claimed),
+            'closed' => $closed,
+            'described_after_close' => $final,
+        ];
+    };
 
     return [
         'applicable' => true,
-        'ready' => [
-            'opened' => $answer($opened),
-            'activity_completed' => $activityDone['status'],
-            'child_completed' => $answer($childDone),
-            'described_after_child' => $afterChild,
-            'claimable_parent_tasks' => $tasks,
-            'closed' => $closed,
-            'described_after_close' => $final,
-        ],
+        'ready' => $case($id, false, false),
+        ...(isset($definition['expected']['leased']) ? ['leased' => $case($id.'-leased', true, true)] : []),
     ];
 }

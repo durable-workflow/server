@@ -1314,7 +1314,7 @@
     }
   },
   "duplicate_other_namespace": {
-    "status": 200,
+    "status": 422,
     "response": {
       "schema": "durable-workflow.v2.embedded-v2-import.report",
       "schema_version": 1,
@@ -1333,8 +1333,13 @@
         "dedupe_key": "{rich.run}:12:2026-10-24T14:47:03.778604Z"
       },
       "eligibility": {
-        "eligible": true,
-        "errors": [],
+        "eligible": false,
+        "errors": [
+          {
+            "rule": "target.run_id_conflict",
+            "message": "A workflow run with this run_id already exists and was not imported from the same bundle."
+          }
+        ],
         "warnings": []
       },
       "integrity": {
@@ -1374,7 +1379,7 @@
         "mode": "database_transaction",
         "partial_import_behavior": "no_rows_committed_on_failure"
       },
-      "status": "already_imported",
+      "status": "rejected",
       "rows": {
         "workflow_instances": 0,
         "workflow_runs": 0,
@@ -1410,7 +1415,7 @@
           "required_fields": [],
           "success_fields": []
         },
-        "status": "already_imported"
+        "status": "rejected"
       }
     }
   },
@@ -6164,7 +6169,7 @@
     }
   },
   "attach": {
-    "status": 201,
+    "status": 422,
     "response": {
       "schema": "durable-workflow.v2.embedded-v2-import.report",
       "schema_version": 1,
@@ -6183,8 +6188,13 @@
         "dedupe_key": "{attach.run}:4:2026-10-24T14:42:51.798314Z"
       },
       "eligibility": {
-        "eligible": true,
-        "errors": [],
+        "eligible": false,
+        "errors": [
+          {
+            "rule": "target.instance_namespace_conflict",
+            "message": "A workflow instance with this instance_id already exists outside the target namespace."
+          }
+        ],
         "warnings": []
       },
       "integrity": {
@@ -6224,25 +6234,23 @@
         "mode": "database_transaction",
         "partial_import_behavior": "no_rows_committed_on_failure"
       },
-      "status": "imported",
-      "import_id": "{generated_ulid}",
-      "imported_at": "{imported_at}",
+      "status": "rejected",
       "rows": {
         "workflow_instances": 0,
-        "workflow_runs": 1,
-        "workflow_history_events": 4,
-        "workflow_commands": 2,
+        "workflow_runs": 0,
+        "workflow_history_events": 0,
+        "workflow_commands": 0,
         "workflow_signal_records": 0,
         "workflow_updates": 0,
-        "workflow_tasks": 1,
+        "workflow_tasks": 0,
         "activity_executions": 0,
         "activity_attempts": 0,
         "workflow_run_timers": 0,
-        "workflow_failures": 1,
+        "workflow_failures": 0,
         "workflow_links": 0,
-        "workflow_memos": 1,
+        "workflow_memos": 0,
         "workflow_search_attributes": 0,
-        "workflow_run_summaries": 1
+        "workflow_run_summaries": 0
       },
       "control_plane": {
         "schema": "durable-workflow.v2.control-plane-response",
@@ -6262,7 +6270,7 @@
           "required_fields": [],
           "success_fields": []
         },
-        "status": "imported"
+        "status": "rejected"
       }
     }
   },
@@ -6466,8 +6474,8 @@
       "is_terminal": true,
       "closed_reason": "terminated",
       "task_queue": "q-src",
-      "run_number": 2,
-      "run_count": 2,
+      "run_number": 1,
+      "run_count": 1,
       "is_current_run": true,
       "continued_from_run_id": null,
       "resume_step_sequence": null,
@@ -6628,8 +6636,8 @@
         "status_bucket": "failed",
         "is_terminal": true,
         "task_queue": "q-src",
-        "run_number": 2,
-        "run_count": 2,
+        "run_number": 1,
+        "run_count": 1,
         "is_current_run": true,
         "compatibility": null,
         "started_at": "2026-10-24T14:42:46.447474Z",
