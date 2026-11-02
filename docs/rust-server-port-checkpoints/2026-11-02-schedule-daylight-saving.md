@@ -47,3 +47,28 @@ fall in a repeated hour with specific hours.
 
 PHP Server 2.11.8 (Core 2.15.12) answers the repeated-hour cases with the
 second pass. Native follows the published Core 2.15.13 contract instead.
+
+## Installed acceptance
+
+`scripts/conformance/server-parity/schedule-dst-acceptance.sh IMAGE@sha256:…`
+checks a published image, which shared parity cannot do here because PHP
+2.11.8 keeps the old answers. It starts the image in a bounded loopback
+container on SQLite and backfills six schedules. Backfill uses the same
+`next_occurrence` path as firing, so no clock moves. It compares each
+complete fire-time list, with offsets:
+
+| Case | What it checks |
+| --- | --- |
+| `daily-new-york-fold` | `30 1 * * *` across 2026-11-01 fires once |
+| `daily-kyiv-fold` | `30 3 * * *` across 2026-10-25 fires once |
+| `daily-new-york-from-transition` | a backfill starting exactly at 06:00Z skips 01:30 EST |
+| `half-hourly-new-york-from-transition` | `*/30` from 06:00Z keeps 01:00 and 01:30 EST |
+| `half-hourly-new-york-fold` | `*/30` keeps both passes of 01:00-02:00 |
+| `daily-new-york-gap` | `30 2 * * *` on 2026-03-08 fires at 03:30 EDT |
+
+- **Negative control.** Published rc.3
+  (`ghcr.io/durable-workflow/server@sha256:899b404b…`) fails exactly the
+  three specific-hour fold cases, each with only the duplicate second-pass
+  fire added. The three every-hour and gap cases pass.
+- **Positive control.** A source build of main `8f5ac120` (with #939) passes
+  all six. A refused request (wrong token) ends the run with status 1.
