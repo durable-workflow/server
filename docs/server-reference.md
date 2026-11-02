@@ -1402,7 +1402,11 @@ curl -H "X-Signature: COMPUTED_SIGNATURE" \
 The legacy `DW_SIGNATURE_KEY` follows the same compatibility rule
 as the legacy bearer token.
 
-Set `DW_AUTH_DRIVER=none` to disable authentication (development only).
+Set `DW_AUTH_DRIVER=none` to disable authentication (development only). It
+admits every request as an administrator. The native 3.x release image
+refuses `none`, under `DW_AUTH_DRIVER` or `WORKFLOW_SERVER_AUTH_DRIVER`,
+before it opens storage or binds its port; only a native development build
+accepts it.
 
 ### Custom Auth Providers
 

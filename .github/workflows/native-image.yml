@@ -13,6 +13,10 @@ on:
       - Dockerfile.native.dockerignore
       - scripts/ci/native-image-smoke.sh
       - scripts/ci/native-release-publish.sh
+      - scripts/ci/native-release-rolling-tags.sh
+      - scripts/ci/native-release-identity.sh
+      - scripts/ci/resolve-release-image-rolling-tags.sh
+      - scripts/ci/promote-release-image-rolling-tags.sh
       - scripts/ci/check-native-release-tags.sh
       - scripts/ci/verify-release-tag-source.sh
       - .github/workflows/native-image.yml

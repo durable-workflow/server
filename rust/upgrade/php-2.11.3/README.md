@@ -3,6 +3,8 @@
 These deltas apply to the fresh [PHP 2.11.1 layout](../php-2.11.1/README.md).
 Published Server 2.11.4, 2.11.5 and 2.11.7 add no migration and have this
 layout too (checked October 30, 2026 against a fresh bootstrap of each).
+Published 2.11.8 adds one table; that is the
+[`php-2.11.8`](../php-2.11.8/README.md) layout.
 They come from normal bootstrap of published Server 2.11.3, tag `2.11.3`,
 source `8009904aac5d0a2bf082f06ec0f9f35b816d885a`, image index
 `sha256:923a8924ecad13485562d7af30dc87d7fd6d9d7d4758ec8113bac0766fa8603e`,

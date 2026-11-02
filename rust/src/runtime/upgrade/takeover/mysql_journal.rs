@@ -27,7 +27,7 @@ const MARKED: i64 = 0;
 /// Sessions rechecked and the source fingerprinted again after the marker:
 /// nothing PHP wrote can be missing from the backup.
 const FENCED: i64 = 1;
-const LAST: i64 = 10;
+const LAST: i64 = 11;
 
 /// One takeover run: what its steps need and what its report says.
 struct Run<'a> {
@@ -425,6 +425,24 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             if column_exists(connection, "workflow_durable_streams", "reclaim_at").await? {
                 connection
                     .execute("ALTER TABLE workflow_durable_streams DROP INDEX wf_durable_streams_ns_reclaim_idx, DROP COLUMN reclaim_at")
+                    .await?;
+            }
+        }
+        11 => {
+            // PHP 2.11.8's pending deletions: copied in one transaction
+            // (a repeat copies only rows not copied yet), then PHP's table
+            // goes. A resumed step whose table is gone copied them already.
+            if super::super::has_release(&run.layout, "php-2.11.8")
+                && column_exists(connection, "runtime_external_payload_deletions", "id").await?
+            {
+                let mut tx = connection.begin().await?;
+                let deletions =
+                    super::adopt_payload_deletions::<MySql>(&mut tx, super::MYSQL_PAYLOAD_DELETIONS).await?;
+                tx.commit().await?;
+                run.converted
+                    .insert("external_payload_deletions_copied".into(), json!(deletions));
+                connection
+                    .execute("DROP TABLE runtime_external_payload_deletions")
                     .await?;
             }
         }

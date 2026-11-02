@@ -249,6 +249,8 @@ pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Res
             include_str!("../../upgrade/php-2.11.1-from-2.9.7/sqlite.json"),
             include_str!("../../upgrade/php-2.11.3/sqlite.json"),
             include_str!("../../upgrade/php-2.11.3-from-2.9.7/sqlite.json"),
+            include_str!("../../upgrade/php-2.11.8/sqlite.json"),
+            include_str!("../../upgrade/php-2.11.8-from-2.9.7/sqlite.json"),
         ],
         |row| (row.0.clone(), row.1.clone()),
     )?;

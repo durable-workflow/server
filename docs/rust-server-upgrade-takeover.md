@@ -10,6 +10,17 @@ read, and their `backup_verified`, `php_quiescence_verified`,
 `stored_representation_compatibility_verified` and `takeover_allowed` flags are
 always false. This note says what makes each one true.
 
+## Deprecation
+
+Takeover ships in 3.0.0 so self-hosted installations can upgrade a PHP Server
+database (layouts 2.5.14 through 2.11.8) in place. It gets no further
+investment beyond what 3.0.0 ships and is planned for deprecation in the 3.1.x
+line (operator decision, November 1, 2026, recorded on
+[#325](https://github.com/durable-workflow/server/issues/325)). Upgrade from
+PHP while running 3.0.x; the release that deprecates takeover will say so in
+its release notes. New installations start on a fresh native database and
+never take over a PHP one.
+
 ## Shape
 
 Takeover is an explicit command, never a side effect of starting the server.
@@ -42,14 +53,16 @@ backup.
 
 The native image carries every command below. Native releases from 3.0.0
 publish to the same repositories as PHP, `ghcr.io/durable-workflow/server`
-and `durableworkflow/server` on Docker Hub, as major version 3; they move no
-rolling tag such as `latest`. Release candidates (`X.Y.Z-rc.N`) are
-published to GHCR only. The first two candidates were published as
+and `durableworkflow/server` on Docker Hub, as major version 3. A final
+release moves `3.Y`, `3` and `latest` forward to itself; a PHP 2.x release
+after it moves only `2` and `2.Y`. Release candidates (`X.Y.Z-rc.N`) are
+published to GHCR only and move no rolling tag. The first two candidates were published as
 `ghcr.io/durable-workflow/server-native`; the current one is `3.0.0-rc.2`,
 index
 `sha256:f54e89d775dbf7c6074f37836c6bb0b25f94869d23711b0706e9547c3edecb29`. It
-reads the same `DB_*` settings as the PHP image. Every command needs
-`DW_RUST_EXPERIMENTAL=1`: native is opt-in until it is declared qualified.
+reads the same `DB_*` settings as the PHP image. A published image (a
+release candidate or final release) needs no opt-in; only a development
+build without a release version requires `DW_RUST_EXPERIMENTAL=1`.
 
 The inspection, the fingerprints and the takeover must all name the same
 stopped source. Native refuses a fingerprint that does not match the source
@@ -77,7 +90,7 @@ docker pull "$IMAGE"
    qualified `source_layout`.
 
    ```sh
-   source="-e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=db -e DB_PORT=5432 \
+   source="-e DB_CONNECTION=pgsql -e DB_HOST=db -e DB_PORT=5432 \
      -e DB_DATABASE=workflow -e DB_USERNAME=workflow -e DB_PASSWORD"
    queues="-e DW_RUST_UPGRADE_QUEUE_CONNECTION=database \
      -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database -e DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default"
@@ -105,11 +118,16 @@ docker pull "$IMAGE"
 5. Start native on the taken-over database.
 
    ```sh
-   docker run -d -p 8080:8080 $source -e DW_AUTH_TOKEN "$IMAGE"
+   docker run -d -p 127.0.0.1:8080:8080 $source -e DW_AUTH_TOKEN "$IMAGE"
    ```
 
-   The image runs the repair pass itself (`DW_RUST_MAINTENANCE_LOOP=1`),
-   because it has no separate scheduler container.
+   This publishes the API on the host's loopback interface only. The API is
+   plain HTTP with bearer credentials: for remote access, publish it only to
+   the intended private interface or network and terminate HTTPS in the
+   reverse proxy the [Server reference](server-reference.md) describes;
+   never expose the raw API port to an untrusted network. The image runs the
+   repair pass itself (`DW_RUST_MAINTENANCE_LOOP=1`), because it has no
+   separate scheduler container.
 6. Do not restart PHP against the database: its ownership check refuses it.
 
 The native image uses the PHP image's paths: SQLite at
@@ -295,7 +313,10 @@ with a recorded recipe:
   dispatch outbox and stream reclaim deadlines. The layout READMEs under
   `rust/upgrade/` and the port checkpoints describe each one. Published
   2.11.4, 2.11.5 and 2.11.7 add no migration, so their databases have the
-  2.11.3 layouts and the same recipe.
+  2.11.3 layouts and the same recipe. 2.11.8 adds pending external payload
+  deletions, which takeover carries over to native's own table without
+  deleting any object, refusing one native could never finish (a saved policy native cannot
+  execute, or an unknown failure).
 
 A release whose layout has no recipe is refused by step 1.
 

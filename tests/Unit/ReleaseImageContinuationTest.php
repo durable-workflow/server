@@ -185,6 +185,29 @@ SH);
         }
     }
 
+    public function test_a_native_final_release_keeps_latest_from_a_later_php_release(): void
+    {
+        $result = $this->runScript('promote-release-image-rolling-tags.sh', [
+            'RELEASE_TAG' => '2.11.9', 'VERIFIED_IMAGE_DIGEST' => self::DIGEST,
+            'RELEASE_IMAGE_KNOWN_TAGS' => "2.11.8\n2.11.9\nnative-3.0.0-rc.2\nnative-3.0.0",
+        ]);
+        self::assertSame(0, $result['status'], $result['text']);
+        self::assertStringContainsString('latest_alias=false', $result['output']);
+        foreach (['durableworkflow/server', 'ghcr.io/durable-workflow/server'] as $image) {
+            self::assertStringContainsString('--tag '.$image.':2.11', $result['calls']);
+            self::assertStringContainsString('--tag '.$image.':2 ', $result['calls']);
+            self::assertStringNotContainsString($image.':latest', $result['calls']);
+        }
+
+        $candidate = $this->runScript('promote-release-image-rolling-tags.sh', [
+            'RELEASE_TAG' => '2.11.9', 'VERIFIED_IMAGE_DIGEST' => self::DIGEST,
+            'RELEASE_IMAGE_KNOWN_TAGS' => "2.11.8\n2.11.9\nnative-3.0.0-rc.2",
+        ]);
+        self::assertSame(0, $candidate['status'], $candidate['text']);
+        self::assertStringContainsString('latest_alias=true', $candidate['output']);
+        self::assertSame(2, substr_count($candidate['calls'], ':latest'));
+    }
+
     public function test_invalid_alias_digest_stops_before_registry_writes(): void
     {
         $result = $this->runScript('promote-release-image-rolling-tags.sh', [

@@ -182,6 +182,7 @@ jobs:
         run: echo "key=server-php-tools-v2-${{ runner.os }}-${{ runner.arch }}-$(date -u +%Y%m%d)-${{ hashFiles('Dockerfile', 'Dockerfile.dockerignore', '.dockerignore', 'docker/**') }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore the source-free PHP tool images
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         id: php_tools_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

@@ -401,6 +401,8 @@ async fn source_layout(
             canonical(include_str!("../../upgrade/php-2.11.1-from-2.9.7/mysql.json")),
             canonical(include_str!("../../upgrade/php-2.11.3/mysql.json")),
             canonical(include_str!("../../upgrade/php-2.11.3-from-2.9.7/mysql.json")),
+            canonical(include_str!("../../upgrade/php-2.11.8/mysql.json")),
+            canonical(include_str!("../../upgrade/php-2.11.8-from-2.9.7/mysql.json")),
         ],
         Flavor::MariaDb => [
             canonical(include_str!("../../upgrade/php-2.8.0/mariadb.json")),
@@ -409,6 +411,8 @@ async fn source_layout(
             canonical(include_str!("../../upgrade/php-2.11.1-from-2.9.7/mariadb.json")),
             canonical(include_str!("../../upgrade/php-2.11.3/mariadb.json")),
             canonical(include_str!("../../upgrade/php-2.11.3-from-2.9.7/mariadb.json")),
+            canonical(include_str!("../../upgrade/php-2.11.8/mariadb.json")),
+            canonical(include_str!("../../upgrade/php-2.11.8-from-2.9.7/mariadb.json")),
         ],
     };
     let deltas = deltas.each_ref().map(String::as_str);
@@ -429,6 +433,8 @@ async fn source_layout(
                 "php-2.11.1-from-2.9.7" => "php-2.11.1-from-2.9.7+mariadb-driver",
                 "php-2.11.3" => "php-2.11.3+mariadb-driver",
                 "php-2.11.3-from-2.9.7" => "php-2.11.3-from-2.9.7+mariadb-driver",
+                "php-2.11.8" => "php-2.11.8+mariadb-driver",
+                "php-2.11.8-from-2.9.7" => "php-2.11.8-from-2.9.7+mariadb-driver",
                 _ => {
                     return Err(refuse(
                         StatusCode::CONFLICT,
@@ -1446,6 +1452,8 @@ mod tests {
                     include_str!("../../upgrade/php-2.11.1-from-2.9.7/mysql.json"),
                     include_str!("../../upgrade/php-2.11.3/mysql.json"),
                     include_str!("../../upgrade/php-2.11.3-from-2.9.7/mysql.json"),
+                    include_str!("../../upgrade/php-2.11.8/mysql.json"),
+                    include_str!("../../upgrade/php-2.11.8-from-2.9.7/mysql.json"),
                 ],
             ),
             Flavor::MariaDb => (
@@ -1457,6 +1465,8 @@ mod tests {
                     include_str!("../../upgrade/php-2.11.1-from-2.9.7/mariadb.json"),
                     include_str!("../../upgrade/php-2.11.3/mariadb.json"),
                     include_str!("../../upgrade/php-2.11.3-from-2.9.7/mariadb.json"),
+                    include_str!("../../upgrade/php-2.11.8/mariadb.json"),
+                    include_str!("../../upgrade/php-2.11.8-from-2.9.7/mariadb.json"),
                 ],
             ),
         };
@@ -1666,6 +1676,51 @@ mod tests {
             let dispatches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='workflow_service_call_dispatches'")
                 .fetch_one(&mut connection).await.unwrap();
             assert_eq!((left, dispatches), (0, 0), "{release}: PHP 2.11.3's additions are gone");
+            connection.close().await.unwrap();
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated MySQL/MariaDB create-database role"]
+    async fn qualification_takeover_carries_php_2118_pending_deletions_over() {
+        for release in ["php-2.11.8", "php-2.11.8-from-2.9.7"] {
+            let db = Database::new().await;
+            php_layout(&db, Some(release)).await;
+            registrations(&db).await;
+            let mut connection = db.connection().await;
+            for statement in [
+                r#"INSERT INTO runtime_external_payload_deletions(id,namespace,storage_uri,storage_uri_sha256,storage_policy,attempts,failure_code,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kdel1','default','file:///payloads/default/a','aaaa','{"driver":"local","enabled":true}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#,
+                r#"INSERT INTO runtime_external_payload_deletions(id,namespace,storage_uri,storage_uri_sha256,storage_policy,attempts,failure_code,created_at,updated_at) VALUES ('01m5wvy8d1j3dtr13es05kdel2','gone','file:///payloads/gone/b','bbbb','{"driver":"local"}',3,'backup_hold','2026-11-01 09:00:00','2026-11-01 09:30:00')"#,
+            ] {
+                connection.execute(statement).await.unwrap();
+            }
+            connection.close().await.unwrap();
+            let fingerprint = backup_fingerprint(&db).await;
+            let report = takeover::take_over_mysql(db.options.clone(), &fingerprint, &TAKEOVER_QUEUES)
+                .await
+                .unwrap();
+            assert_eq!(report["status"], "taken_over", "{report}");
+            assert_eq!(report["source_layout"], release);
+            assert_eq!(report["converted"]["external_payload_deletions_copied"], 2, "{report}");
+            converted(&db).await;
+            let mut connection = db.connection().await;
+            let copied: Vec<(String, i64, Option<String>, String)> = sqlx::query_as("SELECT id,attempts,failure_code,DATE_FORMAT(updated_at,'%Y-%m-%d %H:%i:%s') FROM dw_external_payload_deletions ORDER BY id")
+                .fetch_all(&mut connection).await.unwrap();
+            assert_eq!(
+                copied,
+                [
+                    ("01m5wvy8d1j3dtr13es05kdel1".to_owned(), 0, None, "2026-11-01 10:00:00".to_owned()),
+                    ("01m5wvy8d1j3dtr13es05kdel2".to_owned(), 3, Some("backup_hold".to_owned()), "2026-11-01 09:30:00".to_owned()),
+                ],
+                "{release}"
+            );
+            let policy: String = sqlx::query_scalar("SELECT storage_policy FROM dw_external_payload_deletions WHERE id='01m5wvy8d1j3dtr13es05kdel1'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&policy).unwrap(), json!({"driver":"local","enabled":true}));
+            let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='runtime_external_payload_deletions'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(left, 0, "{release}: PHP's table is gone");
             connection.close().await.unwrap();
             db.remove().await;
         }

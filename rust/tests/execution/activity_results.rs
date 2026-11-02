@@ -354,3 +354,48 @@ async fn activity_result_read_uses_canonical_retry_failure_and_cancellation_outc
     runtime.close().await;
     database.remove().await;
 }
+
+/// PHP's activity poll answer carries `server_time` (since 2.11.0), leased
+/// or empty. Published SDKs measure the lease against it and refuse a claim
+/// without it: Python SDK 2.12.2 raised `ActivityLeaseAuthorityLost`
+/// (`invalid_activity_claim`) for every activity native delivered.
+#[tokio::test]
+async fn activity_poll_answers_carry_the_server_clock() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let micros = |value: &Value| {
+        let text = value.as_str().unwrap_or_default();
+        chrono::DateTime::parse_from_rfc3339(text).is_ok()
+            && text.ends_with('Z')
+            && text.rsplit_once('.').is_some_and(|(_, fraction)| fraction.len() == 7)
+    };
+    let app = &app;
+    let call = |method, path: String, body| async move {
+        namespaces::scoped(app, "default", method, &path, body).await
+    };
+    let poll = || call("POST", "/api/worker/activity-tasks/poll".into(),
+        json!({"worker_id":"clock-worker","task_queue":"test","timeout_seconds":0}));
+    let registered = call("POST", "/api/worker/register".into(), json!({
+        "worker_id":"clock-worker","task_queue":"test","runtime":"python",
+        "supported_workflow_types":["echo"],"supported_activity_types":["clock-activity"]})).await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    namespaces::start_scoped(&app, "default", "clock-run").await;
+    let workflow = call("POST", "/api/worker/workflow-tasks/poll".into(),
+        json!({"worker_id":"clock-worker","task_queue":"test","timeout_seconds":0})).await.1["task"].clone();
+    let done = call("POST", format!("/api/worker/workflow-tasks/{}/complete", workflow["task_id"].as_str().unwrap()),
+        completion(&workflow, json!([{"type":"schedule_activity","activity_type":"clock-activity",
+            "arguments":envelope(Payload::Array(vec![])),"start_to_close_timeout":120}]))).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    let leased = poll().await;
+    assert_eq!(leased.0, StatusCode::OK, "{}", leased.1);
+    assert_eq!(leased.1["poll_status"], "leased", "{}", leased.1);
+    assert!(micros(&leased.1["server_time"]), "{}", leased.1);
+    let expiry = chrono::DateTime::parse_from_rfc3339(leased.1["task"]["lease_expires_at"].as_str().unwrap()).unwrap();
+    let clock = chrono::DateTime::parse_from_rfc3339(leased.1["server_time"].as_str().unwrap()).unwrap();
+    assert!(expiry > clock, "{}", leased.1);
+    let empty = poll().await;
+    assert_eq!(empty.0, StatusCode::OK, "{}", empty.1);
+    assert_eq!(empty.1["poll_status"], "empty", "{}", empty.1);
+    assert!(micros(&empty.1["server_time"]), "{}", empty.1);
+}

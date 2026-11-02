@@ -100,6 +100,7 @@ mod php_value;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub mod poll_pauses;
+mod plain_input;
 mod poll_readiness;
 pub mod postgres;
 mod previews;

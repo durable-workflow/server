@@ -1,11 +1,14 @@
 # Rust Server port
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
-rewrite and its acceptance evidence. PHP remains the default published runtime.
-The unpublished crate in [`rust/`](../rust/README.md) is an opt-in development
-runtime (`DW_RUST_EXPERIMENTAL=1`) with official Avro encoding and SQLite,
-PostgreSQL and MySQL/MariaDB storage. Full runtime parity, the backup-first
-in-place upgrade, performance qualification and cutover remain open.
+rewrite and its acceptance evidence. The crate in [`rust/`](../rust/README.md)
+is the native server, with official Avro encoding and SQLite, PostgreSQL and
+MySQL/MariaDB storage. Its release candidates are published to GHCR; the
+final 3.0.0 replaces PHP as `durableworkflow/server` 3.x and `latest`
+(operator decision, November 1). Release builds need no opt-in; a
+development build without a release version requires
+`DW_RUST_EXPERIMENTAL=1`. What remains before 3.0.0 is listed under
+"Remaining for the final release" below.
 
 Read this log top to bottom: current state and next action, the surface
 inventory, design decisions, then the detailed checkpoint history. Each
@@ -94,25 +97,33 @@ Updated October 27, 2026.
   through the native router, and the ones still answering
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
-- **Remaining for the release candidate:**
-  - (Takeover of the latest published PHP release, 2.11.7, is covered:
-    its layout is 2.11.3's.)
-  - the scope question with the operator: prepared local activities,
-    workflow-bound Nexus handlers and external payload takeover;
-  - publishing a final native release to Docker Hub. From November 1, native
-    releases publish to the PHP image's own repositories,
-    `durableworkflow/server` and `ghcr.io/durable-workflow/server`, as major
-    version 3 (operator decision). Candidates 1 and 2 are on GHCR as
-    `ghcr.io/durable-workflow/server-native:3.0.0-rc.1` and `3.0.0-rc.2`.
-    Before the first final native tag reaches Docker Hub, the
-    published-artifact conformance scripts that default to the newest
-    `durableworkflow/server` tag (namespaces, principal attribution, Python,
-    replay, sagas and migration) must either run native or pin PHP;
-  - differential qualification of the published image. (Matched
-    performance against the recorded PHP baseline is met on one host for
-    release candidate 1: throughput, memory and idle long polls, with about a
-    twelfth of PHP's runtime CPU per workflow;
-    [observations](../benchmarks/server-port/rc1/observations-2026-10-30.md).)
+- **Remaining for the final release** (November 1):
+  - **Scope (operator decision, November 1).** 3.0.0 ships without prepared
+    local activities, workflow-bound Nexus handlers and external payload
+    takeover. Native refuses each one explicitly (the local-activity routes
+    with PHP's refusal for a bridge without the prepared role, the Nexus
+    handler kinds with 501, takeover of external payload storage with its
+    refusal), and each is a documented 3.x gap.
+  - **Publication (operator decisions, November 1).** A final native release
+    publishes to `durableworkflow/server` and
+    `ghcr.io/durable-workflow/server`, and moves `3.Y`, `3` and `latest`
+    forward to itself. A PHP 2.x release after it moves only `2` and `2.Y`.
+    Docker Compose and the Helm chart follow native.
+  - native schema upgrades between native versions (schema 7 to 8 after
+    #914);
+  - takeover of a published 2.11.8 database, with its pending
+    external-payload deletions, is covered
+    ([checkpoint](rust-server-port-checkpoints/2026-11-01-php-2118-takeover.md));
+  - moving the parity reference to published 2.11.8, then reporting the
+    cleanup counts always;
+  - Security acceptance of the post-commit external-payload deletion
+    (#914);
+  - Compose and Helm defaults switched to native;
+  - release candidate 3 from main, then its qualification: Security
+    installed acceptance, published-image parity and performance. Matched
+    performance was met for release candidate 1
+    ([observations](../benchmarks/server-port/rc1/observations-2026-10-30.md));
+    the small-host profile adds 1 vCPU plan sizes.
 
 ## API surface still missing
 
@@ -277,6 +288,18 @@ These are confirmed differences from the published PHP reference and open
 contract decisions found while qualifying native slices. Each one needs a
 contract fixture before its correction.
 
+- **MySQL InnoDB Cluster behind MySQL Router** (November 1, qualified on one
+  host; [checkpoint](rust-server-port-checkpoints/2026-11-01-mysql-innodb-cluster-router.md)).
+  Native runs on a single-primary InnoDB Cluster through Router's
+  read-write port. Schema creation, the workflow, timer and
+  activity lifecycle, and primary crash, clean shutdown and hang all pass
+  with exact history and no leftover leases; native answers 503 while no
+  primary is reachable and recovers without a restart, 1 to 5 s after Router
+  switches. Two defects found and fixed: the activity poll answer lacked
+  PHP's `server_time` (since 2.11.0), so Python SDK 2.12.2 refused every
+  activity native delivered on any database; and MySQL failover errors
+  (1053, 1290, 1927, 2055, 3100, 3101, 4031) are now classified transient.
+  Multi-primary, read/write split and several Routers are not covered.
 - **History export waits and timeline** (November 1, closed,
   [checkpoint](rust-server-port-checkpoints/2026-11-01-history-export-waits.md)).
   Native's export now serves the run's stored waits with each kind's
@@ -434,9 +457,21 @@ contract fixture before its correction.
   and PostgreSQL. Native refuses such a name, and a name of only spaces,
   with `invalid_signal_name` or `invalid_update_name` on every database
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-poll-waits.md)).
-- **Key order inside plain JSON input.** For input that is not an envelope,
-  PHP encodes nested objects as Avro maps in request order; native encodes
-  them with sorted keys. The decoded values are equal, but the blobs differ.
+- **Key order inside plain JSON input** (November 1, closed). For input
+  that is not an envelope, published PHP takes an object input's values in
+  document order (`array_values`) and encodes each nested object as an Avro
+  map in document order (`Avro::toDatum`). A nested object whose integer
+  keys are not 0 to n-1 in document order, such as `{"1": "a", "0": "b"}`,
+  is not a list, and its encoder fails with `invalid_map_key`. Native
+  encoded nested maps with sorted keys and read such an object as the list
+  `["b", "a"]`. It now encodes plain input in document order through the
+  ordered Avro writer, so its blobs are PHP's byte for byte, and refuses an
+  integer-keyed object that is not a list: on a start with PHP's 422 under
+  `workflow_type`. On a signal, update, query, message or bridge start it
+  keeps native's `422 invalid_workflow_arguments`, where PHP's signal answers
+  `500 control_plane_internal_error`. The `key-order` fixture records starts
+  and a signal against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-key-order.md)).
 - **Child completion while the parent has an open workflow task**
   (November 1, closed;
   [checkpoint](rust-server-port-checkpoints/2026-11-01-child-open-parent-task.md),
@@ -809,9 +844,14 @@ contract fixture before its correction.
   without trailing spaces). The `visibility-collation` fixture records both
   collations against published 2.11.7
   ([checkpoint](rust-server-port-checkpoints/2026-10-30-visibility-collation.md)).
-- **Visibility query key order.** When one command or query has several
-  errors, native reports them in sorted key order rather than request order.
-  The same holds for several invalid search attributes on one start.
+- **Search attribute validation order** (November 1, closed). Published
+  PHP reports several invalid search attributes in request order, on a
+  start and on one `upsert_search_attributes` command, as
+  `SearchAttributeValueValidator` loops over them. Native reported them in
+  sorted key order. Since `serde_json`'s `preserve_order` (#906) its
+  validator visits the request's keys in document order, and the `key-order`
+  fixture records both orders against published 2.11.7
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-key-order.md)).
 - **Inherited memos and search attributes on child runs** (October 29,
   closed). Published PHP copies the parent's memos and search attributes to
   a child run, and the failed run's to a retried child

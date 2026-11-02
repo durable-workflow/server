@@ -1,0 +1,9 @@
+{
+    "remove": [],
+    "add": [
+        [
+            "runtime_external_payload_deletions",
+            "CREATE TABLE `runtime_external_payload_deletions` (\n  `id` varchar(26) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `namespace` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `storage_uri` text COLLATE utf8mb4_unicode_ci NOT NULL,\n  `storage_uri_sha256` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,\n  `storage_policy` json NOT NULL,\n  `attempts` int unsigned NOT NULL DEFAULT '0',\n  `failure_code` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\n  `created_at` timestamp NULL DEFAULT NULL,\n  `updated_at` timestamp NULL DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  UNIQUE KEY `runtime_payload_deletions_namespace_uri_unique` (`namespace`,`storage_uri_sha256`),\n  KEY `runtime_payload_deletions_namespace_created_index` (`namespace`,`created_at`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        ]
+    ]
+}

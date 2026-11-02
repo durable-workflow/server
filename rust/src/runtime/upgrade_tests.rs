@@ -853,6 +853,8 @@ fn source_layout_names_the_release_each_recorded_delta_reaches() {
         r#"{"remove":[["b","2"]],"add":[["b","2 reordered"]]}"#,
         r#"{"remove":[],"add":[["d","4"]]}"#,
         r#"{"remove":[],"add":[["d","4 after reorder"]]}"#,
+        r#"{"remove":[],"add":[["e","5"]]}"#,
+        r#"{"remove":[],"add":[["e","5"]]}"#,
     ];
     let layout = |actual: &[(&str, &str)]| {
         source_layout(&rows(actual), frozen.clone(), deltas, |row| row.0.clone())
@@ -881,6 +883,15 @@ fn source_layout_names_the_release_each_recorded_delta_reaches() {
         layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2 reordered"), ("d", "4 after reorder")]).unwrap(),
         "php-2.11.3-from-2.9.7"
     );
+    // 2.11.8 adds the same relation to each 2.11.3 variant.
+    assert_eq!(
+        layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2"), ("d", "4"), ("e", "5")]).unwrap(),
+        "php-2.11.8"
+    );
+    assert_eq!(
+        layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2 reordered"), ("d", "4 after reorder"), ("e", "5")]).unwrap(),
+        "php-2.11.8-from-2.9.7"
+    );
     reason(
         layout(&[("c", "3 changed"), ("a", "1 changed"), ("b", "2"), ("d", "4 after reorder")]),
         "upgrade_source_catalog_unqualified",
@@ -903,6 +914,8 @@ fn every_recorded_layout_descends_from_an_earlier_one() {
     }
     assert_eq!(layout_lineage("php-2.11.3"), [0, 1, 2, 4]);
     assert_eq!(layout_lineage("php-2.11.3-from-2.9.7"), [0, 1, 2, 3, 5]);
+    assert_eq!(layout_lineage("php-2.11.8"), [0, 1, 2, 4, 6]);
+    assert_eq!(layout_lineage("php-2.11.8-from-2.9.7"), [0, 1, 2, 3, 5, 7]);
     assert!(layout_lineage("frozen").is_empty());
 }
 
@@ -958,6 +971,14 @@ const RELEASE_2113: &[&str] = &[
     r#"ALTER TABLE "workflow_worker_sessions" ADD COLUMN "lease_owner_incarnation" varchar"#,
     r#"ALTER TABLE "workflow_durable_streams" ADD COLUMN "reclaim_at" datetime"#,
     r#"CREATE INDEX "wf_durable_streams_ns_reclaim_idx" on "workflow_durable_streams" ("namespace", "reclaim_at", "id")"#,
+];
+
+/// PHP 2.11.8's change (Server): pending external payload deletions, as a
+/// published 2.11.8 bootstrap creates them on SQLite.
+const RELEASE_2118: &[&str] = &[
+    r#"CREATE TABLE "runtime_external_payload_deletions" ("id" varchar not null, "namespace" varchar not null, "storage_uri" text not null, "storage_uri_sha256" varchar not null, "storage_policy" text not null, "attempts" integer not null default '0', "failure_code" varchar, "created_at" datetime, "updated_at" datetime, primary key ("id"))"#,
+    r#"CREATE UNIQUE INDEX "runtime_payload_deletions_namespace_uri_unique" on "runtime_external_payload_deletions" ("namespace", "storage_uri_sha256")"#,
+    r#"CREATE INDEX "runtime_payload_deletions_namespace_created_index" on "runtime_external_payload_deletions" ("namespace", "created_at")"#,
 ];
 
 /// The frozen test layout with a release's changes applied in order.
@@ -1147,6 +1168,82 @@ async fn takeover_converts_a_php_2113_database(release: &str, changes: &[&[&'sta
         "{replaced}"
     );
     runtime.close().await;
+}
+
+#[tokio::test]
+async fn takeover_carries_php_2118_pending_deletions_over() {
+    for (release, changes) in [
+        ("php-2.11.8", [PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113, RELEASE_2118]),
+        ("php-2.11.8-from-2.9.7", [PHP_280_CHANGES, QUEUE_DELIVERY, TRACE_CARRIERS, RELEASE_2113, RELEASE_2118]),
+    ] {
+        let (_directory, path) = php_release_layout(&changes).await;
+        // Two deletions PHP recorded after commit: one not yet attempted,
+        // one whose provider failed twice; and the policy each saved.
+        mutate(&path, r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel1','default','file:///payloads/default/a','5d41402abc4b2a76b9719d911017c592aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','{"driver":"local","enabled":true,"config":{"uri":"file:///payloads/default"}}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#).await;
+        mutate(&path, r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel2','gone','file:///payloads/gone/b','5d41402abc4b2a76b9719d911017c592bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','{"driver":"local","config":{"uri":"file:///payloads/gone"}}',2,'storage_unavailable','2026-11-01 09:00:00','2026-11-01 09:30:00')"#).await;
+        let inspection = inspect_sqlite(&path).await.unwrap();
+        assert_eq!(inspection["source_layout"], release);
+        assert_eq!(inspection["status"], "inspected", "{inspection}");
+        assert_eq!(
+            inspection["external_payload_deletion_inspection"],
+            json!({"pending": 2, "unsupported": 0, "reasons": {}})
+        );
+        let fingerprint = backup_fingerprint(&path).await;
+        let report = takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await.unwrap();
+        assert_eq!(report["status"], "taken_over", "{report}");
+        assert_eq!(report["source_layout"], release);
+        assert_eq!(report["converted"]["external_payload_deletions_copied"], 2, "{report}");
+        let mut connection = SqliteConnection::connect(&format!("sqlite://{path}")).await.unwrap();
+        let copied: Vec<(String, String, String, String, i64, Option<String>, String)> = sqlx::query_as(
+            "SELECT id,namespace,storage_uri,storage_policy,attempts,failure_code,updated_at FROM dw_external_payload_deletions ORDER BY id",
+        )
+        .fetch_all(&mut connection)
+        .await
+        .unwrap();
+        assert_eq!(copied.len(), 2);
+        assert_eq!(copied[0].0, "01m5wvy8d1j3dtr13es05kdel1");
+        assert_eq!(
+            serde_json::from_str::<Value>(&copied[0].3).unwrap(),
+            json!({"driver":"local","enabled":true,"config":{"uri":"file:///payloads/default"}})
+        );
+        assert_eq!((copied[1].1.as_str(), copied[1].2.as_str(), copied[1].4, copied[1].5.as_deref()), ("gone", "file:///payloads/gone/b", 2, Some("storage_unavailable")));
+        assert_eq!(copied[1].6, "2026-11-01 09:30:00.000000", "PHP's time, in native's format");
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name='runtime_external_payload_deletions'")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "PHP's table is gone");
+        connection.close().await.unwrap();
+        // Native opens it: marker, ledger and catalog are its own.
+        crate::runtime::Runtime::open(&path, "test-token".into()).await.unwrap().close().await;
+    }
+}
+
+/// A pending deletion native could never finish (a saved policy native's
+/// deletion cannot execute: another driver, an empty policy or a disabled
+/// one; or a failure PHP does not record) refuses takeover before any change.
+#[tokio::test]
+async fn takeover_refuses_a_php_2118_deletion_native_could_never_finish() {
+    for (row, reason_counted) in [
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel3','default','s3://bucket/c','cccc','{"driver":"s3","config":{"bucket":"bucket"}}',1,'storage_unavailable','2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_unexecutable"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel5','default','file:///payloads/e','eeee','[]',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_unexecutable"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel6','default','file:///payloads/f','ffff','{}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_unexecutable"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel7','default','file:///payloads/g','gggg','{"driver":"local","enabled":false}',0,NULL,'2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_storage_unexecutable"),
+        (r#"INSERT INTO runtime_external_payload_deletions VALUES ('01m5wvy8d1j3dtr13es05kdel4','default','file:///payloads/d','dddd','{"driver":"local"}',1,'provider_quota','2026-11-01 10:00:00','2026-11-01 10:00:00')"#, "external_payload_deletion_failure_unrecognized"),
+    ] {
+        let (_directory, path) = php_release_layout(&[PHP_280_CHANGES, TRACE_CARRIERS, QUEUE_DELIVERY, RELEASE_2113, RELEASE_2118]).await;
+        mutate(&path, row).await;
+        let inspection = inspect_sqlite(&path).await.unwrap();
+        assert_eq!(inspection["status"], "unqualified", "{inspection}");
+        assert_eq!(inspection["external_payload_deletion_inspection"]["reasons"][reason_counted], 1, "{inspection}");
+        let before = std::fs::read(&path).unwrap();
+        let fingerprint = backup_fingerprint(&path).await;
+        reason(
+            takeover::take_over_sqlite(&path, &fingerprint, &queue_config()).await,
+            "upgrade_source_external_payload_deletions_unsupported",
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the PHP database is unchanged");
+    }
 }
 
 /// Native runs a service call's handler when it accepts the call, so it

@@ -469,17 +469,30 @@ impl Runtime {
     /// empty input is no arguments and any list or object other than an
     /// envelope is its values, both encoded here. An envelope is left as sent.
     async fn plain_arguments(&self, body: &Value) -> Result<Option<String>> {
+        self.plain_arguments_or(body, || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_workflow_arguments")).await
+    }
+
+    /// The plain input in document order (`super::plain_input`), or
+    /// `refusal` where PHP's serializer fails with `invalid_map_key`.
+    async fn plain_arguments_or(
+        &self,
+        body: &Value,
+        refusal: impl FnOnce() -> super::RuntimeError,
+    ) -> Result<Option<String>> {
         super::input_envelope::check(body)?;
         let arguments = match super::start_request::input(body) {
             super::start_request::Input::Envelope => return Ok(None),
             super::start_request::Input::Empty => Vec::new(),
-            super::start_request::Input::Values(values) => values
-                .into_iter()
-                .map(|value| super::memos::from_json(value.clone()))
-                .collect::<Result<_>>()
-                .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_workflow_arguments"))?,
+            super::start_request::Input::Values(values) => match values.into_iter().map(super::plain_input::ordered).collect() {
+                Some(arguments) => arguments,
+                None => return Err(refusal()),
+            },
         };
-        let blob = super::queries::encode_arguments(self.signal_codec.clone(), crate::codec::Value::Array(arguments)).await?;
+        let blob = super::queries::encode_ordered_arguments(
+            self.signal_codec.clone(),
+            crate::codec::OrderedValue::Array(arguments),
+        )
+        .await?;
         Ok(Some(blob))
     }
 
@@ -566,7 +579,21 @@ impl Runtime {
         let mut body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
         super::start_request::validate(&body)?;
-        match self.plain_arguments(&body).await? {
+        // Core's start reports the serializer's `invalid_map_key` under
+        // `workflow_type`, as the controller reports Core's LogicException.
+        let plain = if bridge {
+            self.plain_arguments(&body).await?
+        } else {
+            self.plain_arguments_or(&body, || {
+                super::laravel_validation::failure_messages(vec![(
+                    "workflow_type".to_owned(),
+                    vec![super::plain_input::INVALID_MAP_KEY.to_owned()],
+                )])
+                .expect("one message")
+            })
+            .await?
+        };
+        match plain {
             Some(blob) => body["input"] = json!({"codec": "avro", "blob": blob}),
             // PHP 2.5.14 answers an undecodable start blob with a 500
             // (server#601); native refuses it as PHP's signal does.
