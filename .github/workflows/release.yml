@@ -65,8 +65,10 @@ jobs:
           set -euo pipefail
           # Pushed or dispatched, a PHP release is 2.x or earlier. A 3.x (or
           # later) or native- tag belongs to native-release.yml.
-          [[ "$REQUESTED_TAG" =~ ^[0-2]\.[0-9]+\.[0-9]+ ]] \
-            || { printf 'tag %s is not a PHP Server release (2.x or earlier)\n' "$REQUESTED_TAG" >&2; exit 1; }
+          if ! [[ "$REQUESTED_TAG" =~ ^[0-2]\.[0-9]+\.[0-9]+ ]]; then
+            printf 'tag %s is not a PHP Server release (2.x or earlier)\n' "$REQUESTED_TAG" >&2
+            exit 1
+          fi
 
       - name: Check out trusted release tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
