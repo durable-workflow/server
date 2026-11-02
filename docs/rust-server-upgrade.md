@@ -5,6 +5,9 @@ backup-first, sequential upgrade of an existing PHP database. This document
 describes the first executable preparation step; production takeover remains
 unimplemented and unqualified.
 
+Takeover of a PHP database is planned for deprecation in the 3.1.x line; see
+[the takeover note](rust-server-upgrade-takeover.md#deprecation).
+
 ## Read-only source inspection contract
 
 The native `upgrade-inspect` command inspects a configured existing PHP
