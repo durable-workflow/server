@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Give the smoked native platform digests (Server #325) one release tag, as
-# one index, in each registry, and verify it. A release candidate (-rc.N)
-# publishes to GHCR only; any other version to GHCR and Docker Hub.
+# one index, in each registry, and verify it. The release workflow publishes
+# every version to GHCR and Docker Hub; PUBLISH_DOCKERHUB=false (GHCR only)
+# remains accepted for a release candidate alone, as a fallback.
 # RELEASE_TAG is the native Git tag, native-<release version>; the image tag
 # is that version without the native- prefix.
 # Env: RELEASE_TAG, GHCR_IMAGE, DOCKERHUB_IMAGE, PUBLISH_DOCKERHUB (true or
