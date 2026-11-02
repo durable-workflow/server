@@ -3,12 +3,11 @@
 [Server #325](https://github.com/durable-workflow/server/issues/325) owns the
 rewrite and its acceptance evidence. The crate in [`rust/`](../rust/README.md)
 is the native server, with official Avro encoding and SQLite, PostgreSQL and
-MySQL/MariaDB storage. Its release candidates are published to GHCR; the
-final 3.0.0 replaces PHP as `durableworkflow/server` 3.x and `latest`
-(operator decision, November 1). Release builds need no opt-in; a
-development build without a release version requires
-`DW_RUST_EXPERIMENTAL=1`. What remains before 3.0.0 is listed under
-"Remaining for the final release" below.
+MySQL/MariaDB storage. **Native 3.0.0 was released on November 2, 2026** as
+`durableworkflow/server` and `ghcr.io/durable-workflow/server` 3.0.0, `3.0`,
+`3` and `latest`, replacing PHP; PHP Server 2.11.8 is the final PHP release.
+Release builds need no opt-in; a development build without a release
+version requires `DW_RUST_EXPERIMENTAL=1`.
 
 Read this log top to bottom: current state and next action, the surface
 inventory, design decisions, then the detailed checkpoint history. Each
@@ -16,6 +15,26 @@ checkpoint stays exact to the source it names. A pass at one tree does not
 qualify a later tree.
 
 ## Current state
+
+- **Released: native 3.0.0 (November 2).** Tag `native-3.0.0` on source
+  `741454251bba3b7667b7ada4f3b0884427b27abc` (the same source as
+  `3.0.0-rc.4`). Index
+  `sha256:ff1ea2167256c9f2a24b152e72f9a0c30e09710124c91a84442d3e9dc1b3996b`
+  in both registries. `3.0`, `3` and `latest` point at it.
+  - **Qualification:** Security verified the source, artifact, provenance and
+    rolling tags. Published-image parity passed on the final index. The
+    schedule daylight-saving acceptance (#942) passes. rc.3's performance
+    results (#944) and installed SDK lifecycle evidence carry over, because
+    rc.4's only runtime change was schedule next-fire math (#939). The
+    record is on #325.
+  - **Not in 3.0.0 (post-final work):** workflow-bound Nexus handlers (#794,
+    Workflow #947), task-delivery offers (#931), and signal and update
+    command keys (#934). Takeover of PHP databases is planned for
+    deprecation in 3.1.x (#930).
+  - Schedules follow Core 2.15.13's daylight-saving rule, not PHP 2.11.8
+    (see Decisions).
+
+The history below is the state before the release.
 
 Updated October 27, 2026.
 
@@ -97,7 +116,8 @@ Updated October 27, 2026.
   through the native router, and the ones still answering
   `501 rust_capability_not_implemented` must match
   [`unserved-php-routes.v2.11.1.txt`](../rust/tests/fixtures/unserved-php-routes.v2.11.1.txt).
-- **Remaining for the final release** (November 1):
+- **Remaining for the final release** (November 1; completed November 2 with
+  3.0.0, above):
   - **Scope (operator decision, November 1).** 3.0.0 ships without prepared
     local activities, workflow-bound Nexus handlers and external payload
     takeover. Native refuses each one explicitly (the local-activity routes
