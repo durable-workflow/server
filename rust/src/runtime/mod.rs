@@ -118,6 +118,7 @@ mod run_observation_store;
 mod run_observation_waits;
 pub(crate) mod laravel_rules;
 pub(crate) mod schedule_cron;
+mod schedule_dst;
 pub(crate) mod schedule_spec;
 pub(crate) mod schedule_zones;
 mod schedule_backfill;

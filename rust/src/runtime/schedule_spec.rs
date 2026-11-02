@@ -3,6 +3,7 @@
 //! given instant across its cron expressions, in its time zone, and its
 //! intervals, which PHP counts in UTC from the Unix epoch plus an offset.
 use super::schedule_cron::{Cron, CronError};
+use super::schedule_dst::{hour_field_is_wildcard, repeated_window_end};
 use jiff::Timestamp;
 use serde_json::Value;
 
@@ -38,7 +39,19 @@ pub(crate) fn next_occurrence(spec: &Value, after: Timestamp) -> Result<Option<(
         let Some(expression) = expression.as_str().filter(|text| !text.is_empty()) else {
             continue;
         };
-        consider(Cron::parse(expression)?.next_after_with_offset(after, zone)?);
+        let cron = Cron::parse(expression)?;
+        let mut next = cron.next_after_with_offset(after, zone)?;
+        // Core 2.15.13: a specific-hour time repeated when clocks go back has
+        // already fired on its first pass; every later match is a first pass.
+        if !hour_field_is_wildcard(expression)
+            && let Some(end) = repeated_window_end(next.0, zone)
+        {
+            let retry = end
+                .checked_sub(jiff::SignedDuration::from_secs(1))
+                .map_err(|_| CronError::Runtime)?;
+            next = cron.next_after_with_offset(retry, zone)?;
+        }
+        consider(next);
     }
     for interval in members(spec.get("intervals").unwrap_or(&Value::Null)) {
         if let Some(next) = interval_occurrence(interval, after) {
@@ -173,6 +186,41 @@ fn combined(body: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn next_in(cron: &str, zone: &str, after: &str) -> String {
+        let spec = serde_json::json!({"cron_expressions": [cron], "timezone": zone});
+        next_fire(&spec, after.parse().unwrap()).unwrap().unwrap().to_string()
+    }
+
+    /// Core 2.15.13's daylight-saving rule (Workflow #882, Server #938). Published
+    /// PHP 2.11.8 answers the first two with the repeated hour's second pass.
+    #[test]
+    fn a_specific_hour_repeated_by_daylight_saving_fires_once() {
+        let ny = "America/New_York";
+        // 01:30 EDT fired at 05:30Z on November 1, 2026; next is 01:30 EST the day after.
+        assert_eq!(next_in("30 1 * * *", ny, "2026-11-01T05:30:00Z"), "2026-11-02T06:30:00Z");
+        // The same from inside the repeated hour.
+        assert_eq!(next_in("30 1 * * *", ny, "2026-11-01T06:10:00Z"), "2026-11-02T06:30:00Z");
+        // Before the change the first pass is chosen.
+        assert_eq!(next_in("30 1 * * *", ny, "2026-11-01T04:00:00Z"), "2026-11-01T05:30:00Z");
+        // Kyiv, 2026-10-25: 03:30 EEST (00:30Z) fired; next is 03:30 EET a day later.
+        assert_eq!(next_in("30 3 * * *", "Europe/Kyiv", "2026-10-25T00:30:00Z"), "2026-10-26T01:30:00Z");
+    }
+
+    #[test]
+    fn every_hour_schedules_keep_both_passes_of_a_repeated_hour() {
+        let ny = "America/New_York";
+        assert_eq!(next_in("*/15 * * * *", ny, "2026-11-01T05:50:00Z"), "2026-11-01T06:00:00Z");
+        assert_eq!(next_in("30 0-23 * * *", ny, "2026-11-01T05:30:00Z"), "2026-11-01T06:30:00Z");
+        assert_eq!(next_in("@hourly", ny, "2026-11-01T05:30:00Z"), "2026-11-01T06:00:00Z");
+    }
+
+    #[test]
+    fn a_skipped_time_fires_once_shifted_by_the_gap() {
+        // 2026-03-08: 02:30 does not exist in New York; it fires at 03:30 EDT.
+        assert_eq!(next_in("30 2 * * *", "America/New_York", "2026-03-08T05:00:00Z"), "2026-03-08T07:30:00Z");
+        assert_eq!(next_in("30 2 * * *", "America/New_York", "2026-03-08T07:30:00Z"), "2026-03-09T06:30:00Z");
+    }
 
     /// Published PHP 2.5.14's `computeNextFireAt` (scripts/conformance/cron-oracle) for seeded specs mixing
     /// cron expressions, intervals with offsets, zones and malformed rules.
