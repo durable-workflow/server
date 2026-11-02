@@ -212,4 +212,46 @@ grep -q 'RELEASE_IMAGE_KNOWN_TAGS: ${{ steps.rolling.outputs.release_inventory }
   || fail "the PHP promoter must use the resolver's inventory."
 awk '/- name: Promote rolling image aliases/,/run: scripts\/ci\/promote-release-image-rolling-tags.sh/' .github/workflows/release.yml \
   | grep -q RELEASE_IMAGE_TAG_SOURCE_URL && fail "the PHP promoter must not read the tags again."
+# The dispatch verifier: the release tag's own ref, at its commit, on main.
+dispatch=scripts/ci/verify-native-release-dispatch.sh
+dispatch_scratch=$(mktemp -d)
+printf '#!/bin/sh\necho "${COMPARE_STATUS:-ahead}"\n' > "$dispatch_scratch/gh"
+chmod +x "$dispatch_scratch/gh"
+commit=0123456789abcdef0123456789abcdef01234567
+other=fedcba9876543210fedcba9876543210fedcba98
+ok_dispatch=(RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh")
+expect "dispatch from refs/tags/native-3.0.2, not refs/heads/main" "${ok_dispatch[@]}" DISPATCH_REF=refs/heads/main bash "$dispatch"
+expect "dispatch from refs/tags/native-3.0.2, not refs/tags/native-3.0.1" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.1 bash "$dispatch"
+expect "is not RELEASE_COMMIT" RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$other DISPATCH_REF=refs/tags/native-3.0.2 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" bash "$dispatch"
+expect "must be native-X.Y.Z" "${ok_dispatch[@]}" RELEASE_TAG=3.0.2 DISPATCH_REF=refs/tags/3.0.2 bash "$dispatch"
+for status in behind diverged; do
+  expect "is not on main (compare status: $status)" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch"
+done
+for status in ahead identical; do
+  env -i PATH="$PATH" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch" >/dev/null \
+    || fail "the dispatch verifier must accept a release commit main contains ($status)."
+done
+rm -rf "$dispatch_scratch"
+# Each job's own condition, exactly: plan has none, so a wrong ref fails in
+# its verifier rather than skipping every job; every publishing job is gated
+# on the release tag's ref.
+job_conditions=$(awk '
+  /^jobs:/ { jobs = 1; next }
+  jobs && /^  [a-z0-9-]+:$/ { if (job != "") print job "=" cond; job = substr($1, 1, length($1) - 1); cond = "none"; next }
+  jobs && /^    if: / { sub(/^    if: /, ""); cond = $0 }
+  END { if (job != "") print job "=" cond }
+' .github/workflows/native-release.yml)
+tag_gate="github.ref == format('refs/tags/{0}', inputs.tag)"
+expected_conditions="plan=none
+build-amd64=$tag_gate
+build-arm64=$tag_gate
+publish=$tag_gate
+aliases=$tag_gate && needs.plan.outputs.dockerhub == 'true'"
+test "$job_conditions" = "$expected_conditions" \
+  || fail "native-release.yml job conditions changed; expected:
+$expected_conditions
+got:
+$job_conditions"
+grep -q 'run: scripts/ci/verify-native-release-dispatch.sh' .github/workflows/native-release.yml \
+  || fail "the plan job must run the dispatch verifier."
 printf 'Native release tags: %d release.yml pattern(s) checked; verifier, publisher and rolling tags behave as intended.\n' "${#patterns[@]}"

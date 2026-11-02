@@ -662,10 +662,17 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .with_role_tokens(worker_token, operator_token, admin_token)
         .with_auth_options(anonymous, runtime_credentials);
     let listener = tokio::net::TcpListener::bind(address).await?;
-    eprintln!(
-        "Rust development runtime listening on {}",
-        listener.local_addr()?
-    );
+    // A release build names its version; a source build stays a development runtime.
+    match option_env!("DW_SERVER_VERSION").filter(|version| !version.is_empty()) {
+        Some(version) => eprintln!(
+            "Durable Workflow native server {version} listening on {}",
+            listener.local_addr()?
+        ),
+        None => eprintln!(
+            "Rust development runtime listening on {}",
+            listener.local_addr()?
+        ),
+    }
     axum::serve(
         listener,
         router(runtime.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
