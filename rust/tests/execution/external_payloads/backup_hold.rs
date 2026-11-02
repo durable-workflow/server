@@ -190,3 +190,28 @@ async fn hold_requests_need_an_admin_a_uuid_owner_and_a_bounded_ttl() {
     let (code, body) = status(&router, "").await;
     assert_eq!((code, &body["owner"]), (StatusCode::OK, &Value::Null), "{body}");
 }
+
+#[tokio::test]
+async fn a_restored_lapsed_hold_is_released_by_its_recorded_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let (database, _runtime, router) = setup(ExternalPayloadConfig::default(), &temp.path().join("objects")).await;
+    let (code, body) = change(&router, "acquire", json!({"owner": OWNER, "ttl": 3600})).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    // A restored snapshot carries the capturing backup's hold, long expired.
+    database.execute("UPDATE runtime_external_payload_backup_hold SET acquired_at='2000-01-01 00:00:00',expires_at='2000-01-01 01:00:00'").await;
+
+    let (code, body) = status(&router, "").await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!([&body["active"], &body["owner"]], [&json!(false), &json!(OWNER)]);
+
+    // Its recorded owner releases it, and releasing again is idempotent.
+    for _ in 0..2 {
+        let (code, body) = change(&router, "release", json!({"owner": OWNER})).await;
+        assert_eq!(code, StatusCode::OK, "{body}");
+        assert_eq!(body["schema"], "durable-workflow.external-payload-backup-hold.v1");
+        assert_eq!([&body["active"], &body["owner"], &body["expires_at"]], [&json!(false), &json!(OWNER), &Value::Null]);
+    }
+    // Another owner still can't release it.
+    let (code, body) = change(&router, "release", json!({"owner": OTHER})).await;
+    assert_eq!((code, &body["reason"]), (StatusCode::CONFLICT, &json!("backup_hold_not_owned")), "{body}");
+}
