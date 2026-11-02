@@ -48,6 +48,16 @@ test('pull requests run without a path filter and push keeps the one path list',
   assert.doesNotMatch(pullRequest, /paths|branches/);
   const patterns = pushPathPatterns(workflowText);
   assert.ok(patterns.includes('rust/**'));
+  // Inputs the fixture jobs read outside the server-parity directories.
+  for (const input of [
+    'tests/Fixtures/ActivityResultInspection/v1.json',
+    'tests/Fixtures/ServerParityReaders/sdk-signals.mjs',
+    'tests/Conformance/ServerParityDeadlinePollTest.mjs',
+    'benchmarks/capacity/v1/bindings/php/capacity_adapter.php',
+    'benchmarks/server-port/v2/matched.json',
+  ]) {
+    assert.deepEqual(matchingFiles(patterns, [input]), [input], `${input} must re-run the fixtures`);
+  }
   assert.ok(patterns.includes('.github/workflows/server-parity.yml'));
   assert.ok(patterns.includes('scripts/conformance/server-parity/**'));
 });
