@@ -12,7 +12,7 @@
 //!
 //! Published PHP Server 2.11.8 (Core 2.15.12) does not apply this rule. This
 //! is a recorded difference from the frozen PHP reference.
-use super::schedule_zones::PhpZone;
+use super::{schedule_cron::php_int, schedule_zones::PhpZone};
 use jiff::{SignedDuration, Timestamp};
 
 /// Core's `cronHourFieldIsWildcard`: whether the hour field selects every
@@ -88,19 +88,6 @@ fn field_matches(field: &str, value: i64, min: i64, max: i64) -> bool {
     false
 }
 
-/// PHP's `(int)` cast of a string: leading blanks, an optional sign and the
-/// leading digits; anything else is zero.
-fn php_int(text: &str) -> i64 {
-    let text = text.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
-    let (sign, digits) = match text.as_bytes().first() {
-        Some(b'-') => (-1, &text[1..]),
-        Some(b'+') => (1, &text[1..]),
-        _ => (1, text),
-    };
-    let digits: String = digits.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse::<i64>().map_or(0, |value| sign * value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,7 +99,9 @@ mod tests {
     #[test]
     fn every_hour_spellings_are_wildcards() {
         for expression in ["* * * * *", "0 * * * *", "*/15 */1 * * *", "0 0/1 * * *", "0 0-23 * * *",
-            "0 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23 * * *", "@hourly", "@HOURLY"] {
+            "0 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23 * * *", "@hourly", "@HOURLY",
+            // PHP's (int) cast reads a numeric string with an exponent as a number: 2e1 is 20.
+            "30 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,2e1,21,22,23 * * *"] {
             assert!(hour_field_is_wildcard(expression), "{expression}");
         }
         for expression in ["30 1 * * *", "0 0-22 * * *", "0 */2 * * *", "@daily", "@midnight", "0 1,13 * * *"] {

@@ -213,6 +213,9 @@ mod tests {
         assert_eq!(next_in("*/15 * * * *", ny, "2026-11-01T05:50:00Z"), "2026-11-01T06:00:00Z");
         assert_eq!(next_in("30 0-23 * * *", ny, "2026-11-01T05:30:00Z"), "2026-11-01T06:30:00Z");
         assert_eq!(next_in("@hourly", ny, "2026-11-01T05:30:00Z"), "2026-11-01T06:00:00Z");
+        // Installed Core 2.15.13 classifies `2e1` as hour 20, so this full list keeps both passes.
+        let full = "30 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,2e1,21,22,23 * * *";
+        assert_eq!(next_in(full, ny, "2026-11-01T05:30:00Z"), "2026-11-01T06:30:00Z");
     }
 
     #[test]
