@@ -155,8 +155,13 @@ store_methods! {
         let event = Self::query("SELECT h.id FROM workflow_history_events h JOIN workflow_runs r ON r.id=h.workflow_run_id AND r.last_history_sequence=h.sequence WHERE h.workflow_run_id=$1")
             .bind(&run_id).fetch_one(&mut *tx).await?;
         let event = DB::string(&event, "id")?;
+        // A whole-run delivery held for this stop resumes (Server #958).
+        let resumed = Self::resume_activity_cancellation_wait(&mut tx, &run_id, request_id, &execution_id, &event).await?;
         tx.summary_changed(&run_id);
         tx.commit().await?;
+        if resumed {
+            self.wake.notify_waiters();
+        }
         Ok(with_protocol(outcome(true, false, None, Some(event))))
     }
 

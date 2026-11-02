@@ -194,3 +194,100 @@ async fn an_activity_delivery_at_the_next_sequence_needs_no_authored_activity() 
     runtime.close().await;
     database.remove().await;
 }
+
+/// Starts a run whose first command schedules `stop-activity` with `options`,
+/// leases the activity and requests the run's cancellation. Returns the run,
+/// the leased activity task and the request id.
+async fn cancel_with_policy(app: &Router, workflow: &str, options: Value) -> (Value, Value, Value) {
+    let registered = request_protocol(app, "POST", "/api/worker/register",
+        json!({"worker_id":"cleanup-worker","task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":["stop-activity"],
+            "capabilities":["cooperative_cancellation"]}), "1.20").await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    let started = start(app, workflow).await;
+    let task = cooperative_poll(app, "workflow").await;
+    let mut command = json!({"type":"schedule_activity","activity_type":"stop-activity",
+        "arguments":envelope(Payload::Array(vec![])),"start_to_close_timeout":300});
+    for (field, value) in options.as_object().unwrap() {
+        command[field] = value.clone();
+    }
+    let scheduled = finish_task(app, &task, json!([command])).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let activity = cooperative_poll(app, "activity").await;
+    let requested = request(app, "POST", &format!("/api/workflows/{workflow}/request-cancellation"),
+        json!({"reason":"stop","cleanup_timeout_seconds":60})).await;
+    assert_eq!(requested.0, StatusCode::ACCEPTED, "{}", requested.1);
+    (started, activity, requested.1["cancellation_request"]["request_id"].clone())
+}
+
+async fn deliver(app: &Router, task: &Value, request_id: &Value) -> (StatusCode, Value) {
+    request_protocol(app, "POST",
+        &format!("/api/worker/workflow-tasks/{}/deliver-cancellation", task["task_id"].as_str().unwrap()),
+        json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
+            "request_id":request_id,"sequence":1,"call_kind":"activity"}), "1.20").await
+}
+
+// `wait_cancellation_completed` holds a whole-run delivery until the live
+// attempt's worker acknowledges the stop, as PHP Core's
+// ActivityCancellationWait does (Server #958).
+#[tokio::test]
+async fn a_waiting_activity_holds_the_run_delivery_until_its_stop_is_acknowledged() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (started, activity, request_id) = cancel_with_policy(&app, "wait-for-stop",
+        json!({"cancellation_policy":"wait_cancellation_completed"})).await;
+    let first = cooperative_poll(&app, "workflow").await;
+    let (status, held) = deliver(&app, &first, &request_id).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!((&held["delivered"], &held["reason"], &held["claim_released"]),
+        (&json!(false), &json!("cancellation_waiting_for_activity"), &json!(true)), "{held}");
+    assert!(task_has_status(&database, &activity["task_id"], "cancelled").await, "the live attempt is cancelled");
+    assert!(task_has_status(&database, &first["task_id"], "completed").await, "the claim is released");
+    // Nothing resumes the run before the stop receipt.
+    assert_eq!(cooperative_poll(&app, "workflow").await, Value::Null);
+
+    let acknowledged = acknowledge(&app, &activity["task_id"], &activity["activity_attempt_id"], &activity["lease_owner"], &request_id).await;
+    assert_eq!((acknowledged.0, acknowledged.1["acknowledged"].clone()), (StatusCode::OK, json!(true)), "{}", acknowledged.1);
+    let repeated = acknowledge(&app, &activity["task_id"], &activity["activity_attempt_id"], &activity["lease_owner"], &request_id).await;
+    assert_eq!(repeated.1["duplicate"], true, "{}", repeated.1);
+
+    // One resumed task delivers; a duplicate receipt made no second one.
+    let resumed = cooperative_poll(&app, "workflow").await;
+    assert!(resumed.is_object(), "the stop receipt resumes the run");
+    let (status, delivered) = deliver(&app, &resumed, &request_id).await;
+    assert_eq!((status, delivered["delivered"].clone()), (StatusCode::OK, json!(true)), "{delivered}");
+    let resumes = task_retry::rows(&database, Box::leak(format!(
+        "SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id='{}' AND payload LIKE '%activity_cancellation_acknowledged%'",
+        started["run_id"].as_str().unwrap()).into_boxed_str())).await;
+    assert_eq!(resumes, 1);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// `abandon` delivers at once and leaves the activity running; it needs the
+// activity's finite schedule-to-close deadline (ActivityAbandonment).
+#[tokio::test]
+async fn an_abandoned_activity_keeps_running_and_needs_a_schedule_to_close_deadline() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (_, activity, request_id) = cancel_with_policy(&app, "abandon-ok",
+        json!({"cancellation_policy":"abandon","schedule_to_close_timeout":600})).await;
+    let task = cooperative_poll(&app, "workflow").await;
+    let (status, delivered) = deliver(&app, &task, &request_id).await;
+    assert_eq!((status, delivered["delivered"].clone()), (StatusCode::OK, json!(true)), "{delivered}");
+    assert!(task_has_status(&database, &activity["task_id"], "leased").await, "the abandoned activity keeps its lease");
+    runtime.close().await;
+    database.remove().await;
+
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (_, _, request_id) = cancel_with_policy(&app, "abandon-unbounded", json!({"cancellation_policy":"abandon"})).await;
+    let task = cooperative_poll(&app, "workflow").await;
+    let (status, refused) = deliver(&app, &task, &request_id).await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("cancellation_activity_abandon_not_supported")), "{refused}");
+    runtime.close().await;
+    database.remove().await;
+}
