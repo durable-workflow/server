@@ -232,11 +232,26 @@ for status in ahead identical; do
     || fail "the dispatch verifier must accept a release commit main contains ($status)."
 done
 rm -rf "$dispatch_scratch"
-# Every job is gated on the release tag's own ref, and the plan job verifies it first.
-test "$(grep -c "^    if: github.ref == 'refs/heads/main'" .github/workflows/native-release.yml)" = 0 \
-  || fail "native-release.yml must not run from main."
-test "$(grep -c "^    if: github.ref == format('refs/tags/{0}', inputs.tag)" .github/workflows/native-release.yml)" -ge 3 \
-  || fail "native-release.yml jobs must be gated on the release tag ref."
+# Each job's own condition, exactly: plan has none, so a wrong ref fails in
+# its verifier rather than skipping every job; every publishing job is gated
+# on the release tag's ref.
+job_conditions=$(awk '
+  /^jobs:/ { jobs = 1; next }
+  jobs && /^  [a-z0-9-]+:$/ { if (job != "") print job "=" cond; job = substr($1, 1, length($1) - 1); cond = "none"; next }
+  jobs && /^    if: / { sub(/^    if: /, ""); cond = $0 }
+  END { if (job != "") print job "=" cond }
+' .github/workflows/native-release.yml)
+tag_gate="github.ref == format('refs/tags/{0}', inputs.tag)"
+expected_conditions="plan=none
+build-amd64=$tag_gate
+build-arm64=$tag_gate
+publish=$tag_gate
+aliases=$tag_gate && needs.plan.outputs.dockerhub == 'true'"
+test "$job_conditions" = "$expected_conditions" \
+  || fail "native-release.yml job conditions changed; expected:
+$expected_conditions
+got:
+$job_conditions"
 grep -q 'run: scripts/ci/verify-native-release-dispatch.sh' .github/workflows/native-release.yml \
   || fail "the plan job must run the dispatch verifier."
 printf 'Native release tags: %d release.yml pattern(s) checked; verifier, publisher and rolling tags behave as intended.\n' "${#patterns[@]}"

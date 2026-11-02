@@ -21,8 +21,9 @@ name: Native release candidate
 # release. It is dispatched from the release tag's own ref
 # (refs/tags/native-<version>), at the tag's commit, which protected main must
 # contain; its build-provenance attestation then names the release commit as
-# its source. It publishes from the dockerhub-native Environment, which allows
-# native-* tags; their creation is restricted by the repository's tag ruleset.
+# its source. It publishes from the dockerhub-native Environment, whose only
+# deployment rule is the tag pattern native-[0-9]*; creating those tags is
+# restricted by the repository's tag ruleset.
 #
 # Every version, release candidates included, publishes to both registries.
 # Candidates 1 and 2 went to GHCR only. That was the porting agent's
