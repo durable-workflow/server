@@ -125,6 +125,41 @@ grep -q 'imagetools create' "$scratch/calls" && fail "aliases were written after
 want "unreadable alias" "$(rolling $'2.11.8' native-3.0.0 'example/native:latest unreadable')" "FAILED"
 grep -q 'imagetools create' "$scratch/calls" && fail "aliases were written though an alias could not be read."
 expect "INDEX_DIGEST must be the verified index digest" RELEASE_TAG=native-3.0.0 "${images[@]}" RELEASE_IMAGE_KNOWN_TAGS=x bash scripts/ci/native-release-rolling-tags.sh
+# GitHub Releases follow the latest alias: the release job marks a final
+# Latest only when the rolling-tag job moved latest to it. Each case feeds the
+# rolling-tag decision for the same state into the release step.
+cat > "$scratch/gh" <<'FAKE'
+#!/usr/bin/env bash
+if [[ "$1 $2" == "release view" ]]; then [[ -n "${EXISTING:-}" ]]; exit; fi
+printf '%s\n' "$*" >> "$GH_LOG"
+FAKE
+chmod +x "$scratch/gh"
+gh_release() { # release tag, rolling tags [, existing] -> the Latest choice
+  : > "$scratch/gh_calls"
+  env -i PATH="$PATH" GH="$scratch/gh" GH_LOG="$scratch/gh_calls" RELEASE_TAG="$1" VERSION="${1#native-}" \
+    RELEASE_COMMIT=$(printf '%040d' 0) INDEX_DIGEST="$index" RUN_URL=https://example.invalid/run \
+    ROLLING_TAGS="$2" EXISTING="${3:-}" bash scripts/ci/native-release-github-release.sh >/dev/null 2>&1 || { echo FAILED; return; }
+  grep -q -- '^release create ' "$scratch/gh_calls" || { echo none; return; }
+  grep -q -- '--verify-tag --title ' "$scratch/gh_calls" || { echo FAILED; return; }
+  tr '\n' ' ' < "$scratch/gh_calls" | grep -oE -- '--prerelease|--latest(=false)?( |$)' | tr -d ' ' | paste -sd' ' -
+}
+want_release() { test "$2" = "$3" || fail "$1: expected GitHub Release '$3', got '$2'."; }
+forward=$(rolling $'2.11.8\nnative-3.0.1\n3.0.2' 3.1.0 $'ghcr.io/example/native:latest 3.0.2\nexample/native:latest 3.0.2')
+want "forward 3.1.0" "$forward" "3.1 3 latest"
+want_release "forward 3.1.0" "$(gh_release 3.1.0 "$forward")" "--latest"
+backport_state=$'ghcr.io/example/native:3 3.1.0\nexample/native:3 3.1.0\nghcr.io/example/native:latest 3.1.0\nexample/native:latest 3.1.0'
+backport=$(rolling $'2.11.8\nnative-3.0.1\n3.1.0' 3.0.2 "$backport_state")
+want "3.0.2 backport behind 3.1.0" "$backport" "3.0"
+want_release "3.0.2 backport behind 3.1.0" "$(gh_release 3.0.2 "$backport")" "--latest=false"
+# The older release finishing last, after reading stale Git tags, still
+# leaves Latest to the newer one.
+stale=$(rolling $'2.11.8\nnative-3.0.1' 3.0.2 "$backport_state")
+want "3.0.2 with stale tags behind 3.1.0" "$stale" "3.0"
+want_release "3.0.2 with stale tags behind 3.1.0" "$(gh_release 3.0.2 "$stale")" "--latest=false"
+want_release "backport that moves nothing" "$(gh_release 3.0.2 "")" "--latest=false"
+want_release "candidate" "$(gh_release 3.1.0-rc.1 "")" "--prerelease --latest=false"
+want_release "native- final that owns latest" "$(gh_release native-3.0.2 "3.0 3 latest")" "--latest"
+want_release "rerun of an existing release" "$(gh_release 3.1.0 "3.1 3 latest" yes)" "none"
 
 # Release identity: only a strict native- label admits a release image, and
 # only when its server reports exactly that version.

@@ -370,6 +370,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      rolling_tags: ${{ steps.rolling.outputs.rolling_tags }}
     steps:
       - name: Check out trusted release tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -393,6 +395,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Reconcile the rolling tags with the attested index
+        id: rolling
         env:
           RELEASE_TAG: ${{ inputs.tag }}
           INDEX_DIGEST: ${{ needs.publish.outputs.digest }}
@@ -402,7 +405,8 @@ jobs:
   release:
     name: Create the GitHub Release
     # Only after both registries publish and a final release's aliases move:
-    # the release page then never runs ahead of the images.
+    # the release page then never runs ahead of the images, and GitHub Latest
+    # follows the latest alias, so a backport never takes it.
     needs: [plan, publish, aliases]
     if: github.ref == format('refs/tags/{0}', inputs.tag)
     runs-on: ubuntu-latest
@@ -410,6 +414,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - name: Create or confirm the release for this tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -418,17 +428,6 @@ jobs:
           RELEASE_COMMIT: ${{ inputs.release_commit }}
           VERSION: ${{ needs.plan.outputs.version }}
           INDEX_DIGEST: ${{ needs.publish.outputs.digest }}
+          ROLLING_TAGS: ${{ needs.aliases.outputs.rolling_tags }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; left unchanged."
-            exit 0
-          fi
-          notes=$(printf 'Durable Workflow Server %s.\n\n| | |\n| --- | --- |\n| Git tag | `%s` → `%s` |\n| Image index | `%s` in `durableworkflow/server` and `ghcr.io/durable-workflow/server` |\n| Release run | %s |\n' \
-            "$VERSION" "$RELEASE_TAG" "$RELEASE_COMMIT" "$INDEX_DIGEST" "$RUN_URL")
-          if [[ "$VERSION" == *-rc.* ]]; then
-            gh release create "$RELEASE_TAG" --verify-tag --title "$VERSION" --notes "$notes" --prerelease --latest=false
-          else
-            gh release create "$RELEASE_TAG" --verify-tag --title "$VERSION" --notes "$notes" --latest
-          fi
+        run: bash scripts/ci/native-release-github-release.sh
