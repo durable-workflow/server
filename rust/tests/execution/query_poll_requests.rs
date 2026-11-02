@@ -202,3 +202,22 @@ async fn duplicate_polls_with_one_request_id_share_one_claim() {
     runtime.close().await;
     database.remove().await;
 }
+
+// An answered query keeps its receipt but holds no queue capacity (Server
+// #964): more sequential queries than the cache's open-task bound (64) all
+// succeed against one run, as against published PHP.
+#[tokio::test]
+async fn answered_queries_release_queue_capacity() {
+    let (database, runtime, app, path) = queryable("sequential-queries").await;
+    for index in 0..80 {
+        let caller = admit_query(&app, &path);
+        let (claimed, _) = poll_waiting(&app, &format!("sequential-{index}"), 5).await;
+        let task = claimed["task"].clone();
+        assert!(task.is_object(), "query {index} was not claimed: {claimed}");
+        finish_query(&app, &task).await;
+        let (status, answer) = caller.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "query {index}: {answer}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}

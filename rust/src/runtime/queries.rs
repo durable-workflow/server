@@ -302,10 +302,25 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// The namespace's open query tasks (pending or leased), at most
+    /// `MAX_ENTRIES`. An answered, failed or timed-out task keeps its receipt
+    /// until it expires but holds no queue capacity, as in PHP, whose
+    /// admission counts only pending task ids (Server #964). Expired receipts
+    /// are removed a bounded batch at a time.
     pub(super) async fn query_entries(
         &self,
         tx: &mut Transaction<'_, DB>,
     ) -> Result<Vec<(String, Value)>> {
+        for expired in Self::query(DB::QUERY_RECEIPTS_EXPIRED)
+            .bind(now())
+            .fetch_all(&mut **tx)
+            .await?
+        {
+            Self::query(DB::QUERY_CACHE_DELETE)
+                .bind(DB::string(&expired, "key")?)
+                .execute(&mut **tx)
+                .await?;
+        }
         let rows = Self::query(DB::QUERY_CACHE_SCAN)
             .bind(self.namespace.to_string())
             .fetch_all(&mut **tx)
