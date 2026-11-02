@@ -71,7 +71,8 @@ chart MINOR bump and an entry below.
 
 No change for existing installs: the default Server stays 2.11.8 and values
 keep their shape. The chart now refuses, at render time, an `image.tag` of a
-native 3.x Server (for example `3.0.0`, now `latest` on Docker Hub). This
+native 3.x Server: a 3.x version such as `3.0.0`, or the rolling tags `3`,
+`3.0` and `latest`, which now point at native. This
 chart's queue worker, scheduler and migration job need the PHP 2.x image, and
 the native image would fail at runtime. For native 3.x, use
 `docker-compose.published.yml` until the chart gains a native mode
