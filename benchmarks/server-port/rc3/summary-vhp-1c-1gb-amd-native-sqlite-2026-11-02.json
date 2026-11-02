@@ -1,0 +1,852 @@
+{
+  "schema": "durable-workflow.server-port-small-host-summary/v1",
+  "driver": {
+    "profile_sha256": "520f4157ffc3e4118cc3fc0df58151c07292d3dede4228a35569743e6fda592d",
+    "source_revision": "8f5ac1200eff190663a72f413236ada1878d8e5c",
+    "provider_plan": "vhp-4c-8gb-amd",
+    "smoke": false,
+    "machine": {
+      "kernel": "6.8.0-146-generic",
+      "logical_cpus": 4,
+      "physical_memory_bytes": 8320532480,
+      "cpu_model": "AMD EPYC-Milan Processor",
+      "docker": "29.1.3",
+      "cgroup_driver": "systemd"
+    },
+    "target_server": {
+      "version": "3.0.0-rc.3",
+      "implementation": "rust"
+    }
+  },
+  "target": {
+    "mode": "native-sqlite",
+    "database": "sqlite",
+    "server_image": "ghcr.io/durable-workflow/server@sha256:899b404b02f856cb582c5e77a95882a3f9928781083d1e7a3fe569f3ff978d6b",
+    "profile_sha256": "520f4157ffc3e4118cc3fc0df58151c07292d3dede4228a35569743e6fda592d",
+    "provider_plan": "vhp-1c-1gb-amd",
+    "container_limits": "none; the plan is the limit",
+    "machine": {
+      "kernel": "6.8.0-146-generic",
+      "logical_cpus": 1,
+      "physical_memory_bytes": 1000873984,
+      "swap_bytes": 2516578304,
+      "cpu_model": "AMD EPYC-Genoa Processor",
+      "docker": "29.1.3",
+      "compose": "2.40.3+ds1-0ubuntu1~24.04.1",
+      "cgroup_driver": "systemd",
+      "docker_storage_driver": "overlayfs"
+    }
+  },
+  "capacity": {
+    "sustained_rate_per_second": 8,
+    "bounds": {
+      "latency_p95_seconds": 2.0,
+      "min_in_window_completion_fraction": 0.9
+    }
+  },
+  "steps": [
+    {
+      "name": "setup",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "pass",
+      "planned": 3,
+      "closed_in_window": 3,
+      "max_probe_p95_seconds": 0.1526780128479004,
+      "reasons": "",
+      "accepted": 3,
+      "completed_by_deadline": 3,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 1,
+      "latency_p50_seconds_median_of_probes": 0.1015920639038086,
+      "latency_p99_seconds_max_of_probes": 0.1526780128479004,
+      "target": {
+        "samples": 4,
+        "cpu_busy_fraction": 1.0,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 400.6,
+        "memory_available_min_mib": 554.0,
+        "swap_used_max_mib": 71.3,
+        "swap_in_pages": 1.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.1437,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0018
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.0381,
+          "memory_max_mib": 19.5
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0168,
+      "health": {
+        "answers": 8,
+        "non_200": 0,
+        "slowest_seconds": 0.0075
+      }
+    },
+    {
+      "name": "warmup",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "pass",
+      "planned": 15,
+      "closed_in_window": 15,
+      "max_probe_p95_seconds": 0.14302301406860352,
+      "reasons": "",
+      "accepted": 15,
+      "completed_by_deadline": 15,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 7,
+      "latency_p50_seconds_median_of_probes": 0.11292505264282227,
+      "latency_p99_seconds_max_of_probes": 0.14302301406860352,
+      "target": {
+        "samples": 28,
+        "cpu_busy_fraction": 0.9968,
+        "cpu_iowait_fraction": 0.079,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 528.2,
+        "memory_available_min_mib": 426.3,
+        "swap_used_max_mib": 112.8,
+        "swap_in_pages": 3343.0,
+        "swap_out_pages": 12291.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.3099,
+        "pressure_memory_some_fraction": 0.042,
+        "pressure_memory_full_fraction": 0.0179,
+        "pressure_io_some_fraction": 0.1144
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.0506,
+          "memory_max_mib": 23.3
+        }
+      },
+      "driver_cpu_busy_fraction": 0.016,
+      "health": {
+        "answers": 52,
+        "non_200": 0,
+        "slowest_seconds": 0.0175
+      }
+    },
+    {
+      "name": "rate-0.5",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "pass",
+      "planned": 30,
+      "closed_in_window": 30,
+      "max_probe_p95_seconds": 0.15864992141723633,
+      "reasons": "",
+      "accepted": 30,
+      "completed_by_deadline": 30,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 25,
+      "latency_p50_seconds_median_of_probes": 0.09653711318969727,
+      "latency_p99_seconds_max_of_probes": 0.31851887702941895,
+      "target": {
+        "samples": 56,
+        "cpu_busy_fraction": 0.9868,
+        "cpu_iowait_fraction": 0.0369,
+        "cpu_steal_fraction": 0.0002,
+        "memory_used_max_mib": 511.2,
+        "memory_available_min_mib": 443.3,
+        "swap_used_max_mib": 124.7,
+        "swap_in_pages": 5016.0,
+        "swap_out_pages": 6234.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.3471,
+        "pressure_memory_some_fraction": 0.0235,
+        "pressure_memory_full_fraction": 0.014,
+        "pressure_io_some_fraction": 0.0609
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.0504,
+          "memory_max_mib": 32.6
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0173,
+      "health": {
+        "answers": 106,
+        "non_200": 0,
+        "slowest_seconds": 0.0249
+      }
+    },
+    {
+      "name": "rate-1",
+      "rate_per_second": 1.0,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "pass",
+      "planned": 60,
+      "closed_in_window": 60,
+      "max_probe_p95_seconds": 0.12074780464172363,
+      "reasons": "",
+      "accepted": 60,
+      "completed_by_deadline": 60,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 57,
+      "latency_p50_seconds_median_of_probes": 0.055744171142578125,
+      "latency_p99_seconds_max_of_probes": 0.3777201175689697,
+      "target": {
+        "samples": 58,
+        "cpu_busy_fraction": 0.4642,
+        "cpu_iowait_fraction": 0.0123,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 512.7,
+        "memory_available_min_mib": 441.8,
+        "swap_used_max_mib": 99.7,
+        "swap_in_pages": 7494.0,
+        "swap_out_pages": 11.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.1705,
+        "pressure_memory_some_fraction": 0.0045,
+        "pressure_memory_full_fraction": 0.0035,
+        "pressure_io_some_fraction": 0.0205
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.0802,
+          "memory_max_mib": 40.4
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0192,
+      "health": {
+        "answers": 109,
+        "non_200": 0,
+        "slowest_seconds": 0.079
+      }
+    },
+    {
+      "name": "rate-2",
+      "rate_per_second": 2.0,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "pass",
+      "planned": 120,
+      "closed_in_window": 120,
+      "max_probe_p95_seconds": 0.07338595390319824,
+      "reasons": "",
+      "accepted": 120,
+      "completed_by_deadline": 120,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 118,
+      "latency_p50_seconds_median_of_probes": 0.0562748908996582,
+      "latency_p99_seconds_max_of_probes": 0.09027814865112305,
+      "target": {
+        "samples": 59,
+        "cpu_busy_fraction": 0.1952,
+        "cpu_iowait_fraction": 0.0088,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 404.4,
+        "memory_available_min_mib": 550.1,
+        "swap_used_max_mib": 57.7,
+        "swap_in_pages": 68.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.1145,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0114
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.1499,
+          "memory_max_mib": 51.5
+        }
+      },
+      "driver_cpu_busy_fraction": 0.023,
+      "health": {
+        "answers": 108,
+        "non_200": 0,
+        "slowest_seconds": 0.0079
+      }
+    },
+    {
+      "name": "rate-4",
+      "rate_per_second": 4.0,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "pass",
+      "planned": 240,
+      "closed_in_window": 240,
+      "max_probe_p95_seconds": 0.09335184097290039,
+      "reasons": "",
+      "accepted": 240,
+      "completed_by_deadline": 240,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 239,
+      "latency_p50_seconds_median_of_probes": 0.06537890434265137,
+      "latency_p99_seconds_max_of_probes": 0.12037515640258789,
+      "target": {
+        "samples": 59,
+        "cpu_busy_fraction": 0.4117,
+        "cpu_iowait_fraction": 0.0184,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 401.9,
+        "memory_available_min_mib": 552.6,
+        "swap_used_max_mib": 57.7,
+        "swap_in_pages": 33.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.2427,
+        "pressure_memory_some_fraction": 0.0001,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0243
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.3522,
+          "memory_max_mib": 72.0
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0268,
+      "health": {
+        "answers": 112,
+        "non_200": 0,
+        "slowest_seconds": 0.0073
+      }
+    },
+    {
+      "name": "rate-8",
+      "rate_per_second": 8.0,
+      "probes": 2,
+      "sdk_workers": 4,
+      "verdict": "pass",
+      "planned": 480,
+      "closed_in_window": 480,
+      "max_probe_p95_seconds": 0.3441441059112549,
+      "reasons": "",
+      "accepted": 480,
+      "completed_by_deadline": 480,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 311,
+      "latency_p50_seconds_median_of_probes": 0.14513492584228516,
+      "latency_p99_seconds_max_of_probes": 0.7332720756530762,
+      "target": {
+        "samples": 59,
+        "cpu_busy_fraction": 0.8655,
+        "cpu_iowait_fraction": 0.0285,
+        "cpu_steal_fraction": 0.0002,
+        "memory_used_max_mib": 406.9,
+        "memory_available_min_mib": 547.6,
+        "swap_used_max_mib": 57.4,
+        "swap_in_pages": 30.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.4522,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0408
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.786,
+          "memory_max_mib": 119.1
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0476,
+      "health": {
+        "answers": 112,
+        "non_200": 0,
+        "slowest_seconds": 0.0764
+      }
+    },
+    {
+      "name": "rate-12",
+      "rate_per_second": 12.0,
+      "probes": 3,
+      "sdk_workers": 6,
+      "verdict": "fail",
+      "planned": 720,
+      "closed_in_window": 513,
+      "max_probe_p95_seconds": 21.597939014434814,
+      "reasons": "a probe reported errors, late or skipped offers, or pending work; in-window completion 513/720; p95 21.597939014434814s over 2.0s",
+      "accepted": 720,
+      "completed_by_deadline": 720,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 292,
+      "latency_p50_seconds_median_of_probes": 9.494269847869873,
+      "latency_p99_seconds_max_of_probes": 22.116286039352417,
+      "target": {
+        "samples": 79,
+        "cpu_busy_fraction": 0.9827,
+        "cpu_iowait_fraction": 0.0297,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 421.9,
+        "memory_available_min_mib": 532.6,
+        "swap_used_max_mib": 57.4,
+        "swap_in_pages": 123.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.3936,
+        "pressure_memory_some_fraction": 0.0003,
+        "pressure_memory_full_fraction": 0.0001,
+        "pressure_io_some_fraction": 0.0403
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.9035,
+          "memory_max_mib": 188.1
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0619,
+      "health": {
+        "answers": 144,
+        "non_200": 0,
+        "slowest_seconds": 0.1561
+      }
+    },
+    {
+      "name": "rate-12-confirm",
+      "rate_per_second": 12.0,
+      "probes": 3,
+      "sdk_workers": 6,
+      "verdict": "fail",
+      "planned": 720,
+      "closed_in_window": 358,
+      "max_probe_p95_seconds": 43.83990216255188,
+      "reasons": "a probe reported errors, late or skipped offers, or pending work; in-window completion 358/720; p95 43.83990216255188s over 2.0s",
+      "accepted": 716,
+      "completed_by_deadline": 716,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 282,
+      "latency_p50_seconds_median_of_probes": 29.987098932266235,
+      "latency_p99_seconds_max_of_probes": 44.777791023254395,
+      "target": {
+        "samples": 99,
+        "cpu_busy_fraction": 0.9971,
+        "cpu_iowait_fraction": 0.0247,
+        "cpu_steal_fraction": 0.0001,
+        "memory_used_max_mib": 411.4,
+        "memory_available_min_mib": 543.1,
+        "swap_used_max_mib": 57.4,
+        "swap_in_pages": 41.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.3608,
+        "pressure_memory_some_fraction": 0.0003,
+        "pressure_memory_full_fraction": 0.0001,
+        "pressure_io_some_fraction": 0.0339
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.9257,
+          "memory_max_mib": 246.6
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0534,
+      "health": {
+        "answers": 172,
+        "non_200": 0,
+        "slowest_seconds": 1.2367
+      }
+    },
+    {
+      "name": "low-after",
+      "rate_per_second": 0.5,
+      "probes": 1,
+      "sdk_workers": 2,
+      "verdict": "pass",
+      "planned": 30,
+      "closed_in_window": 30,
+      "max_probe_p95_seconds": 0.2797079086303711,
+      "reasons": "",
+      "accepted": 30,
+      "completed_by_deadline": 30,
+      "errors": 0,
+      "cross_clock_negative_first_stages": 29,
+      "latency_p50_seconds_median_of_probes": 0.1496140956878662,
+      "latency_p99_seconds_max_of_probes": 0.31158995628356934,
+      "target": {
+        "samples": 58,
+        "cpu_busy_fraction": 0.2732,
+        "cpu_iowait_fraction": 0.0027,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 406.1,
+        "memory_available_min_mib": 548.4,
+        "swap_used_max_mib": 57.2,
+        "swap_in_pages": 27.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.1298,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.004
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.2356,
+          "memory_max_mib": 246.8
+        }
+      },
+      "driver_cpu_busy_fraction": 0.0188,
+      "health": {
+        "answers": 108,
+        "non_200": 0,
+        "slowest_seconds": 0.0995
+      }
+    }
+  ],
+  "idle": [
+    {
+      "name": "idle-6-1",
+      "probe": {
+        "requested_polls": 6,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "empty": 6
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "empty": 2
+          },
+          "activity": {
+            "empty": 2
+          },
+          "query": {
+            "empty": 2
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 11,
+        "cpu_busy_fraction": 0.1589,
+        "cpu_iowait_fraction": 0.001,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 403.3,
+        "memory_available_min_mib": 551.2,
+        "swap_used_max_mib": 57.2,
+        "swap_in_pages": 11.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.0859,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0005
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.125,
+          "memory_max_mib": 247.0
+        }
+      },
+      "health": {
+        "answers": 20,
+        "non_200": 0,
+        "slowest_seconds": 0.0055
+      }
+    },
+    {
+      "name": "idle-6-2",
+      "probe": {
+        "requested_polls": 6,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "empty": 6
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "empty": 2
+          },
+          "activity": {
+            "empty": 2
+          },
+          "query": {
+            "empty": 2
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 11,
+        "cpu_busy_fraction": 0.1602,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 405.1,
+        "memory_available_min_mib": 549.4,
+        "swap_used_max_mib": 57.2,
+        "swap_in_pages": 5.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.0933,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0007
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.1265,
+          "memory_max_mib": 249.6
+        }
+      },
+      "health": {
+        "answers": 18,
+        "non_200": 0,
+        "slowest_seconds": 0.0052
+      }
+    },
+    {
+      "name": "idle-12-1",
+      "probe": {
+        "requested_polls": 12,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "empty": 12
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "empty": 4
+          },
+          "activity": {
+            "empty": 4
+          },
+          "query": {
+            "empty": 4
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 11,
+        "cpu_busy_fraction": 0.2271,
+        "cpu_iowait_fraction": 0.001,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 403.4,
+        "memory_available_min_mib": 551.1,
+        "swap_used_max_mib": 57.2,
+        "swap_in_pages": 8.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.1394,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0011
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.1925,
+          "memory_max_mib": 246.5
+        }
+      },
+      "health": {
+        "answers": 20,
+        "non_200": 0,
+        "slowest_seconds": 0.0918
+      }
+    },
+    {
+      "name": "idle-12-2",
+      "probe": {
+        "requested_polls": 12,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "empty": 12
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "empty": 4
+          },
+          "activity": {
+            "empty": 4
+          },
+          "query": {
+            "empty": 4
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 11,
+        "cpu_busy_fraction": 0.2123,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 403.0,
+        "memory_available_min_mib": 551.5,
+        "swap_used_max_mib": 57.2,
+        "swap_in_pages": 1.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.1437,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0008
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.1802,
+          "memory_max_mib": 246.6
+        }
+      },
+      "health": {
+        "answers": 20,
+        "non_200": 0,
+        "slowest_seconds": 0.0054
+      }
+    },
+    {
+      "name": "idle-24-1",
+      "probe": {
+        "requested_polls": 24,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "empty": 24
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "empty": 8
+          },
+          "activity": {
+            "empty": 8
+          },
+          "query": {
+            "empty": 8
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 10,
+        "cpu_busy_fraction": 0.3064,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 403.7,
+        "memory_available_min_mib": 550.8,
+        "swap_used_max_mib": 57.2,
+        "swap_in_pages": 0.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.2368,
+        "pressure_memory_some_fraction": 0.0,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0004
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.2748,
+          "memory_max_mib": 247.4
+        }
+      },
+      "health": {
+        "answers": 18,
+        "non_200": 0,
+        "slowest_seconds": 0.1783
+      }
+    },
+    {
+      "name": "idle-24-2",
+      "probe": {
+        "requested_polls": 24,
+        "requested_poll_timeout_seconds": 10,
+        "outcomes": {
+          "empty": 24
+        },
+        "outcomes_by_kind": {
+          "workflow": {
+            "empty": 8
+          },
+          "activity": {
+            "empty": 8
+          },
+          "query": {
+            "empty": 8
+          }
+        },
+        "all_registered": true,
+        "sdk_php": "2.3.9",
+        "php": "8.3.35",
+        "cleanup_errors": 0
+      },
+      "target": {
+        "samples": 10,
+        "cpu_busy_fraction": 0.3225,
+        "cpu_iowait_fraction": 0.0,
+        "cpu_steal_fraction": 0.0,
+        "memory_used_max_mib": 403.7,
+        "memory_available_min_mib": 550.8,
+        "swap_used_max_mib": 57.2,
+        "swap_in_pages": 32.0,
+        "swap_out_pages": 0.0,
+        "oom_kills": 0.0,
+        "pressure_cpu_some_fraction": 0.2515,
+        "pressure_memory_some_fraction": 0.0001,
+        "pressure_memory_full_fraction": 0.0,
+        "pressure_io_some_fraction": 0.0012
+      },
+      "target_services": {
+        "native-sqlite": {
+          "cpu_cores_average": 0.2881,
+          "memory_max_mib": 247.9
+        }
+      },
+      "health": {
+        "answers": 20,
+        "non_200": 0,
+        "slowest_seconds": 0.0053
+      }
+    }
+  ],
+  "target_whole_run": {
+    "samples": 694,
+    "cpu_busy_fraction": 0.6054,
+    "cpu_iowait_fraction": 0.0194,
+    "cpu_steal_fraction": 0.0001,
+    "memory_used_max_mib": 528.2,
+    "memory_available_min_mib": 426.3,
+    "swap_used_max_mib": 124.7,
+    "swap_in_pages": 16336.0,
+    "swap_out_pages": 18536.0,
+    "oom_kills": 0.0,
+    "pressure_cpu_some_fraction": 0.2532,
+    "pressure_memory_some_fraction": 0.0042,
+    "pressure_memory_full_fraction": 0.0023,
+    "pressure_io_some_fraction": 0.0282
+  },
+  "target_container_states": [
+    "native-sqlite restarts=0 oom=false exit=0 status=running"
+  ],
+  "target_database_audit": [
+    "sqlite: the native image has no sqlite3 client; the driver verified each history over the API"
+  ],
+  "target_teardown": "containers=0 volumes=0",
+  "clock": {
+    "driver": {
+      "ntp_synchronized_at_both_ends": true,
+      "offset_and_jitter_in_every_capture": true,
+      "max_abs_offset_seconds": 0.011061999999999999,
+      "max_jitter_seconds": 0.005211
+    },
+    "target": {
+      "ntp_synchronized_at_both_ends": true,
+      "offset_and_jitter_in_every_capture": true,
+      "max_abs_offset_seconds": 0.004914,
+      "max_jitter_seconds": 0.002875
+    },
+    "cross_host_tolerance_seconds": 0.005,
+    "cross_host_timing_reliable": false
+  }
+}
