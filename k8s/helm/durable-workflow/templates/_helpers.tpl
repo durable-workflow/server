@@ -77,6 +77,13 @@ Image reference. Prefers digest over tag; tag falls back to .Chart.AppVersion.
 {{- printf "%s/%s@%s" $registry $repo .Values.image.digest -}}
 {{- else -}}
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- /* This chart runs the PHP 2.x Server: a queue worker, a scheduler and a
+migration job that call server-entrypoint and artisan. The native 3.x image
+has none of them, so a 3.x tag would render workloads that fail at runtime
+(Server #946). */ -}}
+{{- if regexMatch "^v?([3-9]|[1-9][0-9]+)\\." (toString $tag) -}}
+{{- fail (printf "image.tag %s is a native 3.x Server image; this chart runs PHP 2.x only until its native mode lands (durable-workflow/server#946). Use docker-compose.published.yml for native, or pin a 2.x tag." $tag) -}}
+{{- end -}}
 {{- printf "%s/%s:%s" $registry $repo $tag -}}
 {{- end -}}
 {{- end -}}

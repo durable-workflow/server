@@ -24,6 +24,8 @@ image:
   tag: "2.11.8"
   # Optional digest pin. When set, takes precedence over tag for change control.
   # Example: "sha256:abc123..."
+  # This chart runs the PHP 2.x Server only. A 3.x tag is refused at render
+  # time; pin only a PHP 2.x digest here (native 3.x: server#946).
   digest: ""
   # Required when a custom repository, custom tag, or digest prevents the chart
   # from deriving this image capability. Leave empty for recognized official
