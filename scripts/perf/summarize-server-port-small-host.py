@@ -273,18 +273,22 @@ def clock_records(driver, target):
     for side, folder, files in (("driver", driver, ("clock-start.txt", "clock-end.txt")),
                                 ("target", target, ("clock-up.txt", "clock-down.txt"))):
         texts = [read_text(folder / f) or "" for f in files]
-        offsets = [offset for text in texts for offset in clock_offsets(text)]
-        jitters = [jitter for text in texts for jitter in clock_jitters(text)]
+        offsets = [clock_offsets(text) for text in texts]
+        jitters = [clock_jitters(text) for text in texts]
         synchronized = all(re.search(r"NTPSynchronized=yes", t) for t in texts)
-        max_offset = max((abs(o) for o in offsets), default=None)
-        max_jitter = max(jitters, default=None)
+        # Every capture, start and end, must carry its own offset and jitter;
+        # one capture's numbers never stand in for another's missing ones.
+        measured = all(offsets) and all(jitters)
+        max_offset = max((abs(o) for capture in offsets for o in capture), default=None)
+        max_jitter = max((j for capture in jitters for j in capture), default=None)
         clock[side] = {
             "ntp_synchronized_at_both_ends": synchronized,
+            "offset_and_jitter_in_every_capture": measured,
             "max_abs_offset_seconds": max_offset,
             "max_jitter_seconds": max_jitter,
         }
-        trusted = trusted and synchronized and max_offset is not None \
-            and max_offset + (max_jitter or 0.0) <= CROSS_HOST_TOLERANCE_SECONDS
+        trusted = trusted and synchronized and measured \
+            and max_offset + max_jitter <= CROSS_HOST_TOLERANCE_SECONDS
     clock["cross_host_tolerance_seconds"] = CROSS_HOST_TOLERANCE_SECONDS
     clock["cross_host_timing_trusted"] = trusted
     return clock

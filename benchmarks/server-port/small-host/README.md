@@ -64,8 +64,10 @@ capacity claim. The 4 vCPU comparison host instead runs the matched profile
   server's, so both hosts must report `NTPSynchronized=yes`. Synchronized is
   not enough on its own: a 1 vCPU kvm-clock plan measured +39 ms offset and
   62 ms jitter while synchronized. Each run records offset and jitter, and the
-  summary's `clock.cross_host_timing_trusted` is true only when each host's
-  offset plus jitter is within 5 ms. When it is false, read capacity, resource
+  summary's `clock.cross_host_timing_trusted` is true only when every start
+  and end capture on both hosts reports both an offset and a jitter, and each
+  host's offset plus jitter is within 5 ms. A missing number makes it false.
+  When it is false, read capacity, resource
   use and the server-clock history stages, but not latency or the first stage.
   History order is verified on the server's clock alone, so an offset never
   fails a probe; each probe's `cross_clock` reports the first stage's minimum
