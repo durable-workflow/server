@@ -18,7 +18,12 @@ name: Native release candidate
 # replaces a PHP image. A final release then moves X.Y, X and latest
 # forward to its index (operator decision, November 1); a candidate moves
 # none, and the PHP Release workflow leaves latest to a newer native
-# release. It runs only from main, in the dockerhub-native Environment.
+# release. It is dispatched from the release tag's own ref
+# (refs/tags/native-<version>), at the tag's commit, which protected main must
+# contain; its build-provenance attestation then names the release commit as
+# its source. It publishes from the dockerhub-native Environment, whose only
+# deployment rule is the tag pattern native-[0-9]*; creating those tags is
+# restricted by the repository's tag ruleset.
 #
 # Every version, release candidates included, publishes to both registries.
 # Candidates 1 and 2 went to GHCR only. That was the porting agent's
@@ -56,13 +61,29 @@ env:
 jobs:
   plan:
     name: Choose the registries for this tag
-    if: github.ref == 'refs/heads/main'
+    # No job condition: a dispatch from any other ref fails here, loudly,
+    # rather than skipping every job and finishing green.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       dockerhub: ${{ steps.plan.outputs.dockerhub }}
       version: ${{ steps.plan.outputs.version }}
     steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require a dispatch from the release tag, at its commit, on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: scripts/ci/verify-native-release-dispatch.sh
+
       - name: Publish to both registries
         id: plan
         env:
@@ -77,7 +98,7 @@ jobs:
   build-amd64:
     name: Build and smoke linux/amd64
     needs: plan
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
     runs-on: ubuntu-latest
     timeout-minutes: 75
     environment: dockerhub-native
@@ -170,7 +191,7 @@ jobs:
   build-arm64:
     name: Build and smoke linux/arm64
     needs: plan
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 75
     environment: dockerhub-native
@@ -263,7 +284,7 @@ jobs:
   publish:
     name: Tag, verify and attest the native index
     needs: [plan, build-amd64, build-arm64]
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: dockerhub-native
@@ -331,7 +352,7 @@ jobs:
   aliases:
     name: Move the rolling tags of a final release
     needs: [plan, publish]
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.dockerhub == 'true'
+    if: github.ref == format('refs/tags/{0}', inputs.tag) && needs.plan.outputs.dockerhub == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: dockerhub-native
