@@ -125,41 +125,58 @@ grep -q 'imagetools create' "$scratch/calls" && fail "aliases were written after
 want "unreadable alias" "$(rolling $'2.11.8' native-3.0.0 'example/native:latest unreadable')" "FAILED"
 grep -q 'imagetools create' "$scratch/calls" && fail "aliases were written though an alias could not be read."
 expect "INDEX_DIGEST must be the verified index digest" RELEASE_TAG=native-3.0.0 "${images[@]}" RELEASE_IMAGE_KNOWN_TAGS=x bash scripts/ci/native-release-rolling-tags.sh
-# GitHub Releases follow the latest alias: the release job marks a final
-# Latest only when the rolling-tag job moved latest to it. Each case feeds the
-# rolling-tag decision for the same state into the release step.
+# GitHub Releases follow the latest alias: the release step, holding the
+# rolling-alias lock, marks a final Latest only when the live latest alias
+# names its index in both registries. LATEST_STATE lists "image digest" for
+# latest aliases that exist; "unreadable" fails the lookup.
 cat > "$scratch/gh" <<'FAKE'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "release view" ]]; then [[ -n "${EXISTING:-}" ]]; exit; fi
 printf '%s\n' "$*" >> "$GH_LOG"
 FAKE
-chmod +x "$scratch/gh"
-gh_release() { # release tag, rolling tags [, existing] -> the Latest choice
+cat > "$scratch/latest-docker" <<'FAKE'
+#!/usr/bin/env bash
+ref=${!#}
+digest=$(awk -v r="${ref%:latest}" '$1 == r { print $2 }' <<<"${LATEST_STATE:-}")
+[[ -z "$digest" ]] && { echo "ERROR: $ref: not found" >&2; exit 1; }
+[[ "$digest" == unreadable ]] && { echo "ERROR: unauthorized" >&2; exit 1; }
+printf '%s\n' "$digest"
+FAKE
+chmod +x "$scratch/gh" "$scratch/latest-docker"
+newer_index=sha256:$(printf '%064d' 0 | tr 0 b)
+gh_release() { # release tag, latest state [, existing] -> the Latest choice
   : > "$scratch/gh_calls"
-  env -i PATH="$PATH" GH="$scratch/gh" GH_LOG="$scratch/gh_calls" RELEASE_TAG="$1" VERSION="${1#native-}" \
-    RELEASE_COMMIT=$(printf '%040d' 0) INDEX_DIGEST="$index" RUN_URL=https://example.invalid/run \
-    ROLLING_TAGS="$2" EXISTING="${3:-}" bash scripts/ci/native-release-github-release.sh >/dev/null 2>&1 || { echo FAILED; return; }
+  env -i PATH="$PATH" GH="$scratch/gh" GH_LOG="$scratch/gh_calls" DOCKER="$scratch/latest-docker" "${images[@]}" \
+    RELEASE_TAG="$1" VERSION="${1#native-}" RELEASE_COMMIT=$(printf '%040d' 0) INDEX_DIGEST="$index" \
+    RUN_URL=https://example.invalid/run LATEST_STATE="$2" EXISTING="${3:-}" \
+    bash scripts/ci/native-release-github-release.sh >/dev/null 2>&1 || { echo FAILED; return; }
   grep -q -- '^release create ' "$scratch/gh_calls" || { echo none; return; }
   grep -q -- '--verify-tag --title ' "$scratch/gh_calls" || { echo FAILED; return; }
   tr '\n' ' ' < "$scratch/gh_calls" | grep -oE -- '--prerelease|--latest(=false)?( |$)' | tr -d ' ' | paste -sd' ' -
 }
 want_release() { test "$2" = "$3" || fail "$1: expected GitHub Release '$3', got '$2'."; }
+ours=$'ghcr.io/example/native '"$index"$'\nexample/native '"$index"
+theirs=$'ghcr.io/example/native '"$newer_index"$'\nexample/native '"$newer_index"
+# Forward: 3.1.0 moved latest, so it is Latest.
 forward=$(rolling $'2.11.8\nnative-3.0.1\n3.0.2' 3.1.0 $'ghcr.io/example/native:latest 3.0.2\nexample/native:latest 3.0.2')
 want "forward 3.1.0" "$forward" "3.1 3 latest"
-want_release "forward 3.1.0" "$(gh_release 3.1.0 "$forward")" "--latest"
-backport_state=$'ghcr.io/example/native:3 3.1.0\nexample/native:3 3.1.0\nghcr.io/example/native:latest 3.1.0\nexample/native:latest 3.1.0'
-backport=$(rolling $'2.11.8\nnative-3.0.1\n3.1.0' 3.0.2 "$backport_state")
+want_release "forward 3.1.0" "$(gh_release 3.1.0 "$ours")" "--latest"
+# Backport: 3.0.2 behind 3.1.0 leaves latest at 3.1.0, and GitHub Latest too.
+backport=$(rolling $'2.11.8\nnative-3.0.1\n3.1.0' 3.0.2 $'ghcr.io/example/native:3 3.1.0\nexample/native:3 3.1.0\nghcr.io/example/native:latest 3.1.0\nexample/native:latest 3.1.0')
 want "3.0.2 backport behind 3.1.0" "$backport" "3.0"
-want_release "3.0.2 backport behind 3.1.0" "$(gh_release 3.0.2 "$backport")" "--latest=false"
-# The older release finishing last, after reading stale Git tags, still
-# leaves Latest to the newer one.
-stale=$(rolling $'2.11.8\nnative-3.0.1' 3.0.2 "$backport_state")
-want "3.0.2 with stale tags behind 3.1.0" "$stale" "3.0"
-want_release "3.0.2 with stale tags behind 3.1.0" "$(gh_release 3.0.2 "$stale")" "--latest=false"
-want_release "backport that moves nothing" "$(gh_release 3.0.2 "")" "--latest=false"
-want_release "candidate" "$(gh_release 3.1.0-rc.1 "")" "--prerelease --latest=false"
-want_release "native- final that owns latest" "$(gh_release native-3.0.2 "3.0 3 latest")" "--latest"
-want_release "rerun of an existing release" "$(gh_release 3.1.0 "3.1 3 latest" yes)" "none"
+want_release "3.0.2 backport behind 3.1.0" "$(gh_release 3.0.2 "$theirs")" "--latest=false"
+# Interleaved: 3.0.2 moved latest, then 3.1.0 moved it on before 3.0.2's
+# release step ran. The live alias names 3.1.0, so 3.0.2 is not Latest.
+interleaved=$(rolling $'2.11.8\nnative-3.0.1' 3.0.2)
+want "3.0.2 before 3.1.0" "$interleaved" "3.0 3 latest"
+want_release "3.0.2 released after 3.1.0 took latest" "$(gh_release 3.0.2 "$theirs")" "--latest=false"
+# Both registries must name the index; one behind is not enough.
+want_release "only GHCR names the index" "$(gh_release 3.0.2 $'ghcr.io/example/native '"$index"$'\nexample/native '"$newer_index")" "--latest=false"
+want_release "no latest alias yet" "$(gh_release 3.0.2 "")" "--latest=false"
+want_release "unreadable latest alias" "$(gh_release 3.0.2 $'ghcr.io/example/native unreadable\nexample/native '"$index")" "FAILED"
+want_release "candidate" "$(gh_release 3.1.0-rc.1 "$ours")" "--prerelease --latest=false"
+want_release "native- final that owns latest" "$(gh_release native-3.0.2 "$ours")" "--latest"
+want_release "rerun of an existing release" "$(gh_release 3.1.0 "$ours" yes)" "none"
 
 # Release identity: only a strict native- label admits a release image, and
 # only when its server reports exactly that version.
@@ -249,10 +266,16 @@ test ! -s "$scratch/calls" || fail "the promoter wrote without a tag inventory."
 rm -f "$scratch/git" "$scratch/git-count"
 # Both workflows hold the one rolling-alias lock, and the PHP promoter takes
 # the resolver's inventory rather than reading the tags again.
-for workflow in .github/workflows/release.yml .github/workflows/native-release.yml; do
-  test "$(grep -c '^      group: durable-workflow-server-rolling-aliases$' "$workflow")" = 1 \
-    || fail "$workflow must hold the durable-workflow-server-rolling-aliases lock in one job."
-done
+# The native release step holds it too, so GitHub Latest is decided with no
+# alias moving underneath it.
+test "$(grep -c '^      group: durable-workflow-server-rolling-aliases$' .github/workflows/release.yml)" = 1 \
+  || fail "release.yml must hold the durable-workflow-server-rolling-aliases lock in one job."
+locked_jobs=$(awk '
+  /^  [a-z0-9-]+:$/ { job = substr($1, 1, length($1) - 1) }
+  /^      group: durable-workflow-server-rolling-aliases$/ { print job }
+' .github/workflows/native-release.yml | paste -sd' ' -)
+test "$locked_jobs" = "aliases release" \
+  || fail "native-release.yml must hold the rolling-alias lock in aliases and release, not '$locked_jobs'."
 grep -q 'RELEASE_IMAGE_KNOWN_TAGS: ${{ steps.rolling.outputs.release_inventory }}' .github/workflows/release.yml \
   || fail "the PHP promoter must use the resolver's inventory."
 awk '/- name: Promote rolling image aliases/,/run: scripts\/ci\/promote-release-image-rolling-tags.sh/' .github/workflows/release.yml \
