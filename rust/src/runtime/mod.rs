@@ -62,6 +62,7 @@ mod external_resolution;
 mod external_transport;
 mod external_wait_summary;
 mod failure_commands;
+mod failure_describe;
 mod history_budget;
 mod history_pages;
 mod export_timeline;
