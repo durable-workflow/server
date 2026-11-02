@@ -27,7 +27,7 @@ scope="dw-parity-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-
 export RESOURCE_SCOPE="$scope"
 export DW_PARITY_RUNNER_REVISION
 DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
-image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.7.json)
+image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.8.json)
 
 # CI's corpus selection: the reviewed corpus without service-calls, which
 # records separately below with PHP's maintenance loop stopped (Server #796),

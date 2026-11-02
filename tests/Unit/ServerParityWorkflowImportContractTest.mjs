@@ -4,7 +4,7 @@ import test from 'node:test';
 import {checkWorkflowImport} from '../../scripts/conformance/server-parity/workflow-import-contract.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/workflow-import.json', import.meta.url)));
-// The observation published Server 2.11.1 returned for this fixture.
+// The observation published Server 2.11.8 returned for this fixture.
 const recorded = JSON.parse(readFileSync(
   new URL('../Fixtures/ServerParityExpected/workflow-import-observation.json', import.meta.url)));
 const id = 'pr1-workflow-import';
@@ -14,10 +14,11 @@ const observation = (change = () => {}, base = recorded) => {
   return {mode: 'http', workflow_import: state};
 };
 const check = state => checkWorkflowImport(fixture, state, id);
-// The isolated answers: no namespace sees or changes another's runs.
+// The isolated answers: no namespace sees or changes another's runs. Since
+// 2.11.8 they are also the published ones.
 const intended = JSON.parse(JSON.stringify(fixture.workflow_import.expected).replaceAll('{id}', id));
 
-test('the published 2.11.1 recording satisfies the contract', () => {
+test('the published 2.11.8 recording satisfies the contract', () => {
   assert.deepStrictEqual(check(observation()), {scope: 'workflow_import'});
 });
 
@@ -40,9 +41,11 @@ for (const [label, change, message] of [
   ['an unimplemented route', state => {
     state.import = {status: 501, response: {reason: 'rust_capability_not_implemented'}};
   }, /workflow import import/],
-  ['only part of the published attach defect', state => {
-    state.attach = structuredClone(intended.attach);
-  }, /workflow import attach_source_describe_after/],
+  // 2.11.1 to 2.11.7 attached the run to the other namespace's instance
+  // (#765); 2.11.8 refuses it as native does.
+  ['an attach into another namespace', state => {
+    state.attach = structuredClone(state.import);
+  }, /workflow import attach/],
   ['a cross-namespace duplicate that writes a second run', state => {
     state.duplicate_other_namespace = structuredClone(state.import);
   }, /workflow import duplicate_other_namespace/],

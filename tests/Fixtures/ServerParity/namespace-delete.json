@@ -13,6 +13,7 @@
   "expected_events": ["StartAccepted", "WorkflowStarted", "WorkflowCompleted"],
   "namespace_delete": {
     "description": "delete me λ",
+    "external_payload_cleanup": {"pending": 0, "failed": 0, "blocked": 0},
     "search_attribute": {"name": "CustomerTier", "type": "keyword"},
     "deleted": {
       "workflow_commands": 1,

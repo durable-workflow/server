@@ -86,7 +86,9 @@ function finishHttpNamespaceDeletePayloads(Client $admin, array $fixture, string
         $state['steps'][$step] = $status === 200
             ? ['status' => 200, 'name_matches' => ($body['name'] ?? null) === $name, 'outcome' => $body['status'] ?? null,
                 'payloads' => array_intersect_key($body['deleted'] ?? [],
-                    array_flip(['external_payloads_deleted', 'runtime_external_payload_references']))]
+                    array_flip(['external_payloads_deleted', 'runtime_external_payload_references'])),
+                // 2.11.8's post-commit provider deletions still pending (#911).
+                'cleanup' => $body['external_payload_cleanup'] ?? null]
             : ['status' => $status, 'body' => $body, ...$named];
     };
     $described = static function (string $step, string $name) use ($json, &$state): void {

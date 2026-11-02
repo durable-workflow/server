@@ -140,7 +140,8 @@
               "provider_locations_exposed": false,
               "reusable_reference_identities_exposed": false
             }
-          }
+          },
+          "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}
         }
       ],
       "pass": [
@@ -157,7 +158,8 @@
             "storage_driver_failures": 0,
             "backlog": 0,
             "scan_limit": 100,
-            "scan_pressure": false
+            "scan_pressure": false,
+            "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}
           }
         }
       ],
@@ -200,7 +202,8 @@
               "provider_locations_exposed": false,
               "reusable_reference_identities_exposed": false
             }
-          }
+          },
+          "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}
         }
       ],
       "pass limit 5": [
@@ -217,7 +220,8 @@
             "storage_driver_failures": 0,
             "backlog": 0,
             "scan_limit": 5,
-            "scan_pressure": false
+            "scan_pressure": false,
+            "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}
           }
         }
       ],
@@ -303,7 +307,8 @@
             "storage_driver_failures": 0,
             "backlog": 0,
             "scan_limit": 100,
-            "scan_pressure": false
+            "scan_pressure": false,
+            "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}
           }
         }
       ],
@@ -321,7 +326,8 @@
             "storage_driver_failures": 0,
             "backlog": 0,
             "scan_limit": 7,
-            "scan_pressure": false
+            "scan_pressure": false,
+            "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}
           }
         }
       ],
@@ -339,7 +345,8 @@
             "storage_driver_failures": 0,
             "backlog": 0,
             "scan_limit": 100,
-            "scan_pressure": false
+            "scan_pressure": false,
+            "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}
           }
         }
       ],
@@ -382,7 +389,8 @@
               "provider_locations_exposed": false,
               "reusable_reference_identities_exposed": false
             }
-          }
+          },
+          "retention_cleanup": {"pending": 0, "failed": 0, "blocked": 0}
         }
       ]
     }

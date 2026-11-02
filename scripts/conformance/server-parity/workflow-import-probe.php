@@ -223,8 +223,21 @@ function finishHttpWorkflowImport(Client $admin, array $fixture, string $workflo
     }])]);
     $main = $ok($raw('GET', '/api/workflows/'.rawurlencode($workflowId), null, ['namespace' => 'default']), 200, 'main describe');
     $labels[$main['run_id']] = '{main.run}';
+    // The whole bundle names the native run: Core 2.15.12 (Server 2.11.8)
+    // checks that each command's and signal's resolved_run_id names the
+    // imported run before it reaches the run id conflict.
     $state['conflict_native_run'] = $embedded(['bundle' => $bundle('rich', 'native-run', ['mutate' => static function (array &$document) use ($main): void {
-        $document['workflow']['run_id'] = $main['run_id'];
+        $original = $document['workflow']['run_id'];
+        $rename = static function (array &$node) use (&$rename, $original, $main): void {
+            foreach ($node as $key => &$value) {
+                if (is_array($value)) {
+                    $rename($value);
+                } elseif (is_string($key) && str_ends_with($key, 'run_id') && $value === $original) {
+                    $value = $main['run_id'];
+                }
+            }
+        };
+        $rename($document);
     }]), 'dry_run' => true]);
 
     // Integrity and signatures. No signing key is configured on the target.

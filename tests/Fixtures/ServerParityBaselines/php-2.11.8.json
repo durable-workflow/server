@@ -1,0 +1,20 @@
+{
+  "schema": "durable-workflow.server-port-artifacts/v1",
+  "server": {
+    "version": "2.11.8",
+    "source_commit": "fa3fc2f2f6b8935ea4a6eea47f6a9221e2adafff",
+    "images": {
+      "linux/amd64": "durableworkflow/server@sha256:980fe0a052089ced34ec3fcd2be2ea4e77436861d8fb537fb6654cb652a53e07",
+      "linux/arm64": "durableworkflow/server@sha256:cea163f8fcedf3a17302acf0141b073a85fbdb395ebbcd59e5af6f5fa9ad75e1"
+    }
+  },
+  "workflow": "2.15.12",
+  "sdk_php": "2.2.6",
+  "sdk_python": "2.5.0",
+  "sdk_rust": "3.4.1",
+  "cli": "2.2.0",
+  "waterline": "2.3.1",
+  "sample_app_commit": "4427a537e092f9d92c96d2a4867b9186e0e75ccd",
+  "capacity_suite": "1.9.0",
+  "performance_status": "not_measured"
+}

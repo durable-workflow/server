@@ -146,6 +146,9 @@ function rangePendingEmbeddedPhase(array $fixture, array $options): array
     $definition = __DIR__.'/range-pending-embedded-'.($phase === 'incompatible' ? 'incompatible' : 'original').'.php';
     require $definition;
     config(['queue.default' => 'database', 'workflows.v2.task_dispatch_mode' => 'queue',
+        // Core 2.15.12 (Server 2.11.8) resolves a run through its instance's
+        // namespace, and reserves a caller-named instance without model events.
+        'workflows.v2.namespace' => 'default',
         'workflows.v2.types.workflows' => [$fixture['workflow_type'] => RangeRepairWorkflow::class],
         'workflows.v2.types.activities' => ['parity.v1.echo_activity' => RangeRepairActivity::class]]);
     foreach ([\Workflow\V2\Models\WorkflowInstance::class, \Workflow\V2\Models\WorkflowRun::class,

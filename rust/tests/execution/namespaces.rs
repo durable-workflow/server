@@ -797,8 +797,9 @@ async fn namespace_delete_removes_only_what_the_namespace_owns() {
     let (status, body) = scoped(&app, "default", "DELETE", "/api/namespaces/DOOMED", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // What published PHP 2.5.14 reports for one started run and one search
-    // attribute definition.
-    assert_eq!(body, json!({"name":"doomed","status":"deleted","deleted":{
+    // attribute definition, with 2.11.8's post-commit deletion counts.
+    assert_eq!(body, json!({"name":"doomed","status":"deleted",
+        "external_payload_cleanup":{"pending":0,"failed":0,"blocked":0},"deleted":{
         "workflow_commands":1,"workflow_history_events":2,"workflow_tasks":1,
         "search_attribute_definitions":1,"workflow_run_summaries":1,"workflow_runs":1,"workflow_instances":1}}));
     for (method, uri) in [("GET", "/api/namespaces/doomed"), ("DELETE", "/api/namespaces/doomed")] {

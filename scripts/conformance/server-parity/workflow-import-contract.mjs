@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 
 // Reviewed history import (EmbeddedV2ImportController), recorded against
-// published Server 2.11.1. The fixture's `expected` holds the whole
+// published Server 2.11.1 and moved to 2.11.8. The fixture's `expected` holds the whole
 // normalized observation, with the probe's workflow prefix as `{id}`, bundle
 // identities, checksums and signatures as `{<label>.<token>}` labels, and
 // generated import ids, import times and raw database messages as
 // placeholders. Every step compares exactly.
 //
-// Published defect boundaries (fixture `published_defects`): the importer
-// looks runs and instances up in every namespace, so a bundle already
-// imported elsewhere answers already_imported, and a run is attached to an
-// instance of another namespace, taking over its current run. At those
-// steps the published answers, as a set, or the isolated answers in
-// `expected` are accepted; nothing else is relaxed.
+// Published defect boundaries (fixture `published_defects`): at a recorded
+// defect's steps the published answers, as a set, or the isolated answers in
+// `expected` are accepted; nothing else is relaxed. Published 2.11.1 to
+// 2.11.7 looked runs and instances up in every namespace (#765). Core
+// 2.15.12, in Server 2.11.8, refuses both as native does, so the reference
+// records no defect now.
 export function checkWorkflowImport(fixture, observation, workflowId) {
   const state = observation.workflow_import;
   const projection = {scope: 'workflow_import'};

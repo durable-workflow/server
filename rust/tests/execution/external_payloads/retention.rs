@@ -187,7 +187,7 @@ async fn retention_without_storage_or_after_a_failed_delete_keeps_the_run() {
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
         let (status, body) = cleanup_pass(&router).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body["cleanup"].get("retention_cleanup").is_none(), "{body}");
+        assert_eq!(body["cleanup"]["retention_cleanup"], json!({"pending": 0, "failed": 0, "blocked": 0}), "{body}");
     } else {
         std::fs::remove_file(directory.join("probe")).unwrap();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -199,7 +199,7 @@ async fn retention_without_storage_or_after_a_failed_delete_keeps_the_run() {
     let (status, body) = ns_request(&router, "POST", PASS, "default", json!({"run_ids": [second]})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     pruned(&body["results"][0], 1);
-    assert!(body.get("external_payload_cleanup").is_none(), "nothing pending: {body}");
+    assert_eq!(body["external_payload_cleanup"], json!({"pending": 0, "failed": 0, "blocked": 0}), "nothing pending: {body}");
     assert!(!object(&root, &shared).exists());
 }
 
@@ -308,7 +308,7 @@ async fn pending_deletions_wait_out_a_backup_hold_and_yield_to_a_new_registratio
     database.execute("UPDATE runtime_external_payload_backup_hold SET expires_at='2000-01-01 00:00:00'").await;
     let (status, body) = cleanup_pass(&router).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body["cleanup"].get("retention_cleanup").is_none(), "{body}");
+    assert_eq!(body["cleanup"]["retention_cleanup"], json!({"pending": 0, "failed": 0, "blocked": 0}), "{body}");
     assert!(!object(&root, &held).exists());
     assert!(object(&root, &again).exists());
     assert_eq!(registered(&database, &again).await, 1);

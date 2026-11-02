@@ -46,7 +46,7 @@ async fn namespace_delete_settles_its_external_payloads() {
     assert_eq!(body["deleted"]["external_payloads_deleted"], 1, "{body}");
     assert_eq!(body["deleted"]["runtime_external_payload_references"], 2, "{body}");
     // Nothing pending: the answer is 2.11.7's, without the cleanup counts.
-    assert!(body.get("external_payload_cleanup").is_none(), "{body}");
+    assert_eq!(body["external_payload_cleanup"], json!({"pending": 0, "failed": 0, "blocked": 0}), "{body}");
     assert!(!object(&root, &sole).exists());
     assert!(!object(&root, &unused).exists());
     assert!(object(&root, &theirs).exists());

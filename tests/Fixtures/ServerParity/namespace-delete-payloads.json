@@ -74,6 +74,11 @@
         "payloads": {
           "external_payloads_deleted": 1,
           "runtime_external_payload_references": 2
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "deleted: namespace gone": {
@@ -89,6 +94,11 @@
         "outcome": "deleted",
         "payloads": {
           "external_payloads_deleted": 1
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       },
       "idle deleted": {
@@ -97,6 +107,11 @@
         "outcome": "deleted",
         "payloads": {
           "runtime_external_payload_references": 1
+        },
+        "cleanup": {
+          "pending": 0,
+          "failed": 0,
+          "blocked": 0
         }
       }
     }

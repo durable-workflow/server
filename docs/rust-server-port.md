@@ -50,6 +50,11 @@ Updated October 27, 2026.
   - The parity reference moves to published 2.11.7 (#863), with native's
     v1 projection history bytes in Core's canonical unit (#770)
     ([checkpoint](rust-server-port-checkpoints/2026-10-29-reference-2117.md)).
+  - The parity reference moves to published 2.11.8 (Core 2.15.12): native
+    always reports post-commit payload deletion counts, and a child's
+    resolution under a leased parent task now gives PHP a follow-up task
+    (workflow#962)
+    ([checkpoint](rust-server-port-checkpoints/2026-11-01-reference-2118.md)).
   - [#814](https://github.com/durable-workflow/server/pull/814): the shared
     fixtures accept published PHP's typed `429 long_poll_capacity_exhausted`
     poll refusal, and retry a locked Composer install after a transient
@@ -468,28 +473,45 @@ contract fixture before its correction.
   and a signal against published 2.11.7
   ([checkpoint](rust-server-port-checkpoints/2026-11-01-key-order.md)).
 - **Child completion while the parent has an open workflow task**
-  (November 1; ready task closed, leased task decided;
-  [checkpoint](rust-server-port-checkpoints/2026-11-01-child-open-parent-task.md)).
-  Published PHP 2.11.7 records the child resolution and, while the parent
-  has a ready or leased workflow task, creates none and leaves that task's
-  payload as it is (`dispatchParentResumeTasks`).
-  - **Ready task.** Native now does the same: the ready task replays the
-    parent with the resolution in its history. An update task does not
-    replay the workflow, so beside one the resolution still gets its own
-    resume task. The `child-open-parent-task` fixture records it against
-    published 2.11.7.
-  - **Leased task.** On 2.11.7 a lease whose worker read history before the
-    resolution completes without it, and the parent is left with no task;
-    the repair pass does not recover it
-    ([workflow#962](https://github.com/durable-workflow/workflow/issues/962)).
-    Core 2.15.10, not yet in a published Server release, creates one child
-    resume task when such a lease completes. Native gives the resolution
-    its own resume task at once, as activity and timer resolutions do on
-    both servers. Compare again when the parity reference moves to a Server
-    release with Core 2.15.10.
+  (November 1, closed;
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-child-open-parent-task.md),
+  [reference move](rust-server-port-checkpoints/2026-11-01-reference-2118.md)).
+  Published PHP records the child resolution and, while the parent has a
+  ready or leased workflow task, creates none and leaves that task's payload
+  as it is (`dispatchParentResumeTasks`).
+  - **Ready task.** Native does the same: the ready task replays the parent
+    with the resolution in its history. An update task does not replay the
+    workflow, so beside one the resolution still gets its own resume task.
+  - **Leased task.** A lease whose worker read history before the
+    resolution completes without it. Published 2.11.7 then left the parent
+    with no task ([workflow#962](https://github.com/durable-workflow/workflow/issues/962));
+    2.11.8 (Core 2.15.10 and later) gives it one follow-up task that
+    replays the child's result. Native gives the resolution its own resume
+    task at once, as activity and timer resolutions do, so after the lease
+    both servers offer exactly one task that replays the result. While the
+    lease's new timer is open beside that task, native now describes the
+    run as 2.11.8 does (`timer_scheduled`, waiting for the timer) instead of
+    leaving it unprojected. The `child-open-parent-task` fixture records
+    both cases against published 2.11.8.
   - A signal creates no resume while the parent waits only on a child, as
     on PHP: `PendingMessageTask::signalCanAdvanceRun` advances only signal
     and condition waits.
+- **History import fences of Core 2.15.8 to 2.15.12** (November 1,
+  narrowed with the reference move to 2.11.8;
+  [checkpoint](rust-server-port-checkpoints/2026-11-01-reference-2118.md)).
+  Published 2.11.8 checks a bundle's internal references before its target:
+  each command's and signal's `resolved_run_id` must name the imported run,
+  messages must bind to the bundle's commands, and lineage must stay within
+  verified endpoints (`EmbeddedV2ImportReferences`,
+  `EmbeddedV2ImportMessageReferences`, `EmbeddedV2ImportLineage`). It also
+  refuses an instance of another namespace before writing
+  (`target.instance_namespace_conflict`), and a run already imported into
+  another namespace as a run id conflict. Native now gives both target
+  answers as 2.11.8 does, and the `workflow-import` fixture records them;
+  the published-defect allowances for 2.11.1 to 2.11.7 are gone. Native's
+  own reference fence (#765) runs after the run id check, and its rules and
+  rule names have not yet been compared with Core's for bundles whose
+  references are inconsistent; no fixture case sends such a bundle.
 - **Update delivery into a ready task** (November 1, decided: native
   keeps its behavior). Published PHP merges an accepted update into the
   run's ready workflow task (`ExternalWorkflowUpdateAdmission::wakeWorkflowTask`).
@@ -565,14 +587,16 @@ contract fixture before its correction.
   the prune records the deletion in `dw_external_payload_deletions` (schema
   version 8), so a prune that fails later keeps the run, its registrations
   and every object. A provider failure after the commit leaves the deletion
-  pending, retried by the next pass. While one is pending the retention pass
-  reports `external_payload_cleanup`, the payload cleanup routes report
-  `retention_cleanup` (the pass answering 207), and namespace delete reports
-  `external_payload_cleanup` with 207; 2.11.8 adds those counts to clean
-  answers too, which native will do once CI's parity reference moves from
-  2.11.7, whose clean answers lack them. An online-backup hold still fails the prune before it commits. The
-  `retention-external-payloads` fixture records it against published 2.11.7
-  and passes unchanged against 2.11.8.
+  pending, retried by the next pass. As on 2.11.8, every answer carries the
+  counts (`pending`, `failed`, `blocked`): the retention pass and namespace
+  delete as `external_payload_cleanup`, the payload cleanup routes as
+  `retention_cleanup`. Namespace delete answers 207 while a deletion is
+  pending, and the cleanup pass also when it blocked a reference. An
+  online-backup hold still fails the prune before it commits. The
+  `retention-external-payloads`, `namespace-delete-payloads`,
+  `namespace-delete` and `payload-cleanup` fixtures pin the counts against
+  published 2.11.8
+  ([checkpoint](rust-server-port-checkpoints/2026-11-01-reference-2118.md)).
   A run holding a reference native cannot settle (PHP's stored format from a
   workflow import, an envelope, or one on an inbound or durable stream) is
   still skipped with `external_payload_cleanup_unavailable`. Since November 1,
