@@ -10,6 +10,7 @@ empty runtime value confirm that this release already runs native.
 {{- include "durable-workflow.validateNative" . }}
 {{- $native := default (dict) .Values.native }}
 {{- $storage := default (dict) (get $native "storage") }}
+{{- $resources := include "durable-workflow.nativeResources" (dict "resources" .Values.server.resources "ephemeralStorage" (get $native "ephemeralStorage")) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,6 +52,8 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "durable-workflow.serviceAccountName" . }}
+      {{- /* The native Server never calls the Kubernetes API. */}}
+      automountServiceAccountToken: {{ ternary "true" "false" (eq (toString (get $native "automountServiceAccountToken")) "true") }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -94,7 +97,7 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           resources:
-            {{- toYaml .Values.server.resources | nindent 12 }}
+            {{- $resources | nindent 12 }}
           {{- with .Values.server.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}

@@ -75,6 +75,12 @@ class NativeModeTest(unittest.TestCase):
         self.assertIn({"name": "server-storage", "mountPath": "/app/storage"}, container["volumeMounts"])
         self.assertIn({"name": "server-storage", "emptyDir": {}}, pod["volumes"])
         self.assertEqual({item["name"] for item in container["env"]}, {"DB_USERNAME", "DB_PASSWORD"})
+        # Native never calls the Kubernetes API, and its ephemeral storage
+        # (including the payload emptyDir) is bounded.
+        self.assertIs(pod["automountServiceAccountToken"], False)
+        self.assertEqual(container["resources"]["limits"]["ephemeral-storage"], "2Gi")
+        self.assertEqual(container["resources"]["requests"]["ephemeral-storage"], "128Mi")
+        self.assertEqual(container["resources"]["limits"]["memory"], "512Mi")
 
         config = named(resources, "ConfigMap", "-config")["data"]
         for key in config:
@@ -87,7 +93,7 @@ class NativeModeTest(unittest.TestCase):
     def test_server_options_shared_with_php_mode_apply(self):
         resources = render(values=CHART / "ci/native-ingress-and-hpa-values.yaml")
         kinds = {item["kind"] for item in resources}
-        self.assertTrue({"Ingress", "HorizontalPodAutoscaler", "PodDisruptionBudget", "NetworkPolicy", "Service"} <= kinds)
+        self.assertLessEqual({"Ingress", "HorizontalPodAutoscaler", "PodDisruptionBudget", "NetworkPolicy", "Service"}, kinds)
         server = named(resources, "Deployment", "-server")
         self.assertNotIn("replicas", server["spec"])
         volume = next(item for item in server["spec"]["template"]["spec"]["volumes"] if item["name"] == "server-storage")
@@ -106,6 +112,17 @@ class NativeModeTest(unittest.TestCase):
         self.assertEqual(environment["DB_HOST"]["value"], "db.example.internal")
         self.assertIn("DB_PASSWORD", environment)
         self.assertNotIn("DW_AUTH_TOKEN", environment)
+        self.assertIs(job["spec"]["template"]["spec"]["automountServiceAccountToken"], False)
+        self.assertIn("ephemeral-storage", container["resources"]["limits"])
+
+    def test_explicit_ephemeral_storage_and_token_settings_win(self):
+        server = named(render(
+            "--set-string", "server.resources.limits.ephemeral-storage=5Gi",
+            "--set", "native.automountServiceAccountToken=true",
+        ), "Deployment", "-server")
+        pod = server["spec"]["template"]["spec"]
+        self.assertIs(pod["automountServiceAccountToken"], True)
+        self.assertEqual(pod["containers"][0]["resources"]["limits"]["ephemeral-storage"], "5Gi")
 
     def test_render_time_refusals_match_native_startup_refusals(self):
         cases = {
@@ -139,7 +156,7 @@ class NativeModeTest(unittest.TestCase):
 class PhpModeTest(unittest.TestCase):
     def test_php_fixture_keeps_the_php_shape(self):
         resources = render(values=PHP)
-        self.assertTrue(PHP_ONLY_COMPONENTS <= {component(item) for item in resources})
+        self.assertLessEqual(PHP_ONLY_COMPONENTS, {component(item) for item in resources})
         server = named(resources, "Deployment", "-server")
         self.assertNotIn("workflows.durable-workflow.dev/runtime", server["metadata"]["annotations"])
         self.assertIn("workflows.durable-workflow.dev/memo-payload-storage", server["metadata"]["annotations"])

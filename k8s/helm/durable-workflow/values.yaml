@@ -195,6 +195,17 @@ auth:
 # ---------------------------------------------------------------------------
 
 native:
+  # The native Server never calls the Kubernetes API, so its pods mount no
+  # service account token. Set true only for a sidecar that needs one.
+  automountServiceAccountToken: false
+
+  # Ephemeral storage added to the server and schema-upgrade containers unless
+  # their resources already set it. The payload emptyDir (no storage claim)
+  # counts toward the server pod's limit.
+  ephemeralStorage:
+    request: 128Mi
+    limit: 2Gi
+
   # On SIGTERM the native Server holds open worker polls for up to
   # DW_WORKER_POLL_TIMEOUT (30 seconds unless config.extraEnv changes it).
   # Keep this above that timeout so a rollout drains polls instead of cutting

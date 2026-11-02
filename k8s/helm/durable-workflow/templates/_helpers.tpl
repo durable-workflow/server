@@ -799,3 +799,25 @@ rather than the previous release's ConfigMap.
 {{- define "durable-workflow.nativeSchemaUpgradeJobName" -}}
 {{ include "durable-workflow.componentName" (dict "context" . "component" "schema-upgrade") }}
 {{- end -}}
+
+{{/*
+Container resources for native pods: the configured requests and limits, plus
+an ephemeral-storage request and limit from native.ephemeralStorage unless the
+resources already name one. The payload emptyDir counts toward the pod's
+ephemeral storage, so the limit also bounds it.
+*/}}
+{{- define "durable-workflow.nativeResources" -}}
+{{- $resources := deepCopy (default (dict) .resources) -}}
+{{- $ephemeral := default (dict) .ephemeralStorage -}}
+{{- range $kind, $key := dict "requests" "request" "limits" "limit" -}}
+{{- $value := get $ephemeral $key -}}
+{{- if $value -}}
+{{- $section := default (dict) (get $resources $kind) -}}
+{{- if not (hasKey $section "ephemeral-storage") -}}
+{{- $_ := set $section "ephemeral-storage" $value -}}
+{{- end -}}
+{{- $_ := set $resources $kind $section -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $resources -}}
+{{- end -}}

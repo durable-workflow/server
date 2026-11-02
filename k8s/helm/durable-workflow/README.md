@@ -136,6 +136,12 @@ Driver, or any GitOps secret bridge that produces a Kubernetes `Secret`.
   `native.terminationGracePeriodSeconds` (default 45) must stay above it. The
   chart refuses a grace period at or below a `DW_WORKER_POLL_TIMEOUT` set in
   `config.extraEnv`.
+* Native pods set an ephemeral-storage request and limit from
+  `native.ephemeralStorage` (128Mi and 2Gi) unless `server.resources` names
+  one. The payload `emptyDir` counts toward that limit. They also mount no
+  service account token, because the native Server never calls the
+  Kubernetes API. Set `native.automountServiceAccountToken: true` only for a
+  sidecar that needs one.
 * The chart supports MySQL, MariaDB and PostgreSQL. It does not run the
   native Server on SQLite.
 

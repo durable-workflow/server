@@ -19,6 +19,11 @@ function runGenerator(root, mode) {
   });
 }
 
+// A version as a literal regular expression fragment.
+function literal(version) {
+  return version.replaceAll('.', String.raw`\.`);
+}
+
 function nextServerRelease(version) {
   const match = /^(.*-(?:alpha|beta|rc)\.)(\d+)$/.exec(version);
   if (match) {
@@ -113,13 +118,13 @@ test('a stable server source identity fans out through current release consumers
       join(temporaryRoot, 'k8s/helm/durable-workflow/ci/inline-secrets-values.yaml'),
       'utf8',
     );
-    assert.match(fixture, /^  tag: "2\.0\.0"$/m);
+    assert.match(fixture, /^ {2}tag: "2\.0\.0"$/m);
     const chart = await readFile(
       join(temporaryRoot, 'k8s/helm/durable-workflow/Chart.yaml'),
       'utf8',
     );
     const chartAppVersion = manifest.helm_chart.app_version ?? manifest.server.version;
-    assert.match(chart, new RegExp(`^appVersion: "${chartAppVersion.replaceAll('.', '\\.')}"$`, 'm'));
+    assert.match(chart, new RegExp(`^appVersion: "${literal(chartAppVersion)}"$`, 'm'));
   } finally {
     await rm(temporaryRoot, {recursive: true, force: true});
   }
@@ -190,14 +195,11 @@ test('a simulated next release fans out without rewriting history or retaining s
       chartHistoryBefore,
       'release generation must not rewrite the Artifact Hub changelog',
     );
-    assert.match(chartAfter, new RegExp(`^version: ${nextChart.replaceAll('.', '\\.')}$`, 'm'));
-    assert.match(chartAfter, new RegExp(`^appVersion: "${nextChartApp.replaceAll('.', '\\.')}"$`, 'm'));
-    assert.match(
-      chartAfter,
-      new RegExp(`docker\\.io/durableworkflow/server:${nextChartApp.replaceAll('.', '\\.')}"`),
-    );
+    assert.match(chartAfter, new RegExp(`^version: ${literal(nextChart)}$`, 'm'));
+    assert.match(chartAfter, new RegExp(`^appVersion: "${literal(nextChartApp)}"$`, 'm'));
+    assert.ok(chartAfter.includes(`docker.io/durableworkflow/server:${nextChartApp}"`));
     const values = await readFile(join(temporaryRoot, 'k8s/helm/durable-workflow/values.yaml'), 'utf8');
-    assert.match(values, new RegExp(`^  tag: "${nextChartApp.replaceAll('.', '\\.')}"$`, 'm'));
+    assert.match(values, new RegExp(String.raw`^ {2}tag: "${literal(nextChartApp)}"$`, 'm'));
 
     const stale = [];
     for (const path of paths) {

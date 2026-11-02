@@ -53,15 +53,15 @@ collect_artifacts() {
 
 cleanup() {
   local status=$?
-  if [ -n "${port_forward_pid}" ]; then
+  if [[ -n "${port_forward_pid}" ]]; then
     kill "${port_forward_pid}" >/dev/null 2>&1 || true
   fi
-  if [ "${status}" -ne 0 ]; then
+  if [[ "${status}" -ne 0 ]]; then
     collect_artifacts
     echo "native helm chart kind smoke failed; artifacts in ${artifact_dir}" >&2
   fi
   rm -rf "${work_dir}"
-  if [ "${created_cluster}" = "1" ]; then
+  if [[ "${created_cluster}" = "1" ]]; then
     "${kind_bin}" delete cluster --name "${cluster}" >/dev/null 2>&1 || true
   fi
   exit "${status}"
@@ -99,7 +99,7 @@ start_port_forward() {
 # 1. Cluster and a fresh MySQL database. The shared fixture manifest is reused
 #    without Redis, which native does not need, in its own namespace so a
 #    database the PHP smoke bootstrapped is never offered to native.
-if [ "${reuse_cluster}" != "1" ]; then
+if [[ "${reuse_cluster}" != "1" ]]; then
   command -v "${kind_bin}" >/dev/null 2>&1 || { echo "Missing required command: ${kind_bin}" >&2; exit 127; }
   "${kind_bin}" create cluster --name "${cluster}" --image "${kind_node_image}" --wait 120s
   created_cluster=1
@@ -141,7 +141,7 @@ server:
     enabled: false
 EOF
 image_options=()
-if [ -n "${K8S_HELM_NATIVE_SMOKE_IMAGE_TAG:-}" ]; then
+if [[ -n "${K8S_HELM_NATIVE_SMOKE_IMAGE_TAG:-}" ]]; then
   image_options=(--set-string "image.tag=${K8S_HELM_NATIVE_SMOKE_IMAGE_TAG}")
 fi
 
@@ -151,7 +151,7 @@ fi
 
 workloads="$("${kubectl_bin}" -n "${namespace}" get deploy,cronjob,job \
   -l "app.kubernetes.io/instance=${release}" -o name)"
-if [ "${workloads}" != "deployment.apps/${release}-durable-workflow-server" ]; then
+if [[ "${workloads}" != "deployment.apps/${release}-durable-workflow-server" ]]; then
   printf 'native mode must render only the server Deployment, found:\n%s\n' "${workloads}" >&2
   exit 1
 fi
@@ -161,7 +161,7 @@ if "${kubectl_bin}" -n "${namespace}" get secret "${release}-durable-workflow-re
 fi
 marker="$("${kubectl_bin}" -n "${namespace}" get deploy "${release}-durable-workflow-server" \
   -o jsonpath='{.metadata.annotations.workflows\.durable-workflow\.dev/runtime}')"
-[ "${marker}" = "native" ] || { echo "server Deployment lacks the native runtime marker" >&2; exit 1; }
+[[ "${marker}" = "native" ]] || { echo "server Deployment lacks the native runtime marker" >&2; exit 1; }
 
 "${helm_bin}" test "${release}" --namespace "${namespace}"
 start_port_forward
@@ -240,15 +240,15 @@ remaining=""
 for _ in $(seq 1 30); do
   remaining="$("${kubectl_bin}" -n "${namespace}" get all,configmap,secret,pdb \
     -l "app.kubernetes.io/instance=${release}" -o name 2>/dev/null || true)"
-  [ -z "${remaining}" ] && break
+  [[ -z "${remaining}" ]] && break
   sleep 2
 done
-if [ -n "${remaining}" ]; then
+if [[ -n "${remaining}" ]]; then
   printf 'helm uninstall left chart-owned resources behind:\n%s\n' "${remaining}" >&2
   exit 1
 fi
 
-if [ "${created_cluster}" != "1" ]; then
+if [[ "${created_cluster}" != "1" ]]; then
   "${kubectl_bin}" delete namespace "${namespace}" --wait=false >/dev/null
 fi
 echo "native helm chart kind smoke OK"

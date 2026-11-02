@@ -309,7 +309,7 @@ const consumers = [
     render(source, release) {
       return replaceExactly(
         source,
-        new RegExp(`^(  tag:\\s*["'])${serverVersion}(["']\\s*)$`, 'gm'),
+        new RegExp(String.raw`^( {2}tag:\s*["'])${serverVersion}(["']\s*)$`, 'gm'),
         (_match, prefix, suffix) => `${prefix}${release[version]}${suffix}`,
         1,
         path,
