@@ -402,6 +402,10 @@ class ActivityTimeoutTest extends TestCase
     {
         Queue::fake();
 
+        // The dispatch counter is keyed by wall-clock minute. Hold the clock at
+        // the start of a minute so the dispatch and the queue read share one.
+        Carbon::setTestNow(Carbon::now()->startOfMinute());
+
         config([
             'server.admission.queue_overrides' => [
                 'default:external-activities' => [
@@ -502,6 +506,8 @@ class ActivityTimeoutTest extends TestCase
             ->assertJsonPath('admission.activity_tasks.server_max_dispatches_per_minute', 1)
             ->assertJsonPath('admission.activity_tasks.server_dispatch_count_this_minute', 1)
             ->assertJsonPath('admission.activity_tasks.server_remaining_dispatch_capacity', 0);
+
+        Carbon::setTestNow();
     }
 
     public function test_activity_poll_response_omits_deadlines_when_none_set(): void
