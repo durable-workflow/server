@@ -133,7 +133,7 @@ async fn a_hold_expires_by_the_database_clock_and_never_outlives_a_day() {
     assert_eq!(code, StatusCode::OK, "{body}");
 
     // Acquired nearly a day ago: a renewal stops at the day's end.
-    database.execute("UPDATE runtime_external_payload_backup_hold SET acquired_at='2000-01-01 00:00:00',expires_at='2999-01-01 00:00:00'").await;
+    database.execute("UPDATE runtime_external_payload_backup_hold SET acquired_at='2000-01-01 00:00:00',expires_at='2037-01-01 00:00:00'").await;
     let (code, body) = change(&router, "renew", json!({"owner": OWNER, "ttl": 3600})).await;
     assert_eq!(code, StatusCode::OK, "{body}");
     assert_eq!(body["expires_at"], "2000-01-02 00:00:00");
