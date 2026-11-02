@@ -12,6 +12,34 @@ pub(super) fn version() -> &'static str {
     option_env!("DW_SERVER_VERSION").filter(|version| !version.is_empty()).unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
+/// What `/api/ready` and `/api/cluster/info` report about the build:
+/// `(development, qualification)`. A release image carries its version in
+/// `DW_SERVER_VERSION`; a source build without one is a development build.
+pub(super) fn build_identity() -> (bool, &'static str) {
+    build_identity_for(option_env!("DW_SERVER_VERSION"))
+}
+
+fn build_identity_for(release_version: Option<&str>) -> (bool, &'static str) {
+    if release_version.is_some_and(|version| !version.is_empty()) {
+        (false, "release")
+    } else {
+        (true, "unpublished_execution_slice")
+    }
+}
+
+#[cfg(test)]
+mod build_identity_tests {
+    use super::build_identity_for;
+
+    #[test]
+    fn only_a_build_with_a_release_version_reports_itself_released() {
+        assert_eq!(build_identity_for(Some("3.0.1")), (false, "release"));
+        assert_eq!(build_identity_for(Some("3.1.0-rc.1")), (false, "release"));
+        assert_eq!(build_identity_for(Some("")), (true, "unpublished_execution_slice"));
+        assert_eq!(build_identity_for(None), (true, "unpublished_execution_slice"));
+    }
+}
+
 /// PHP's capability map, answered for native. `true` where native serves the
 /// feature; `false` where it does not, including each `*_contract` member
 /// whose manifest document native does not publish.

@@ -1022,10 +1022,13 @@ async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
         } else {
             StatusCode::SERVICE_UNAVAILABLE
         },
-        Json(json!({
-        "status": if ready { "ready" } else { "not_ready" }, "development": true,
-        "checks": {"database": database},
-        "qualification": "unpublished_execution_slice"})),
+        {
+            let (development, qualification) = super::cluster_info::build_identity();
+            Json(json!({
+            "status": if ready { "ready" } else { "not_ready" }, "development": development,
+            "checks": {"database": database},
+            "qualification": qualification}))
+        },
     )
         .into_response()
 }
@@ -1067,7 +1070,7 @@ async fn cluster(
     let limits = super::payload_discovery::limits()?;
     let structural_limits = runtime.cluster_structural_limits(&metrics_config(&runtime)).await?;
     Ok(Json(
-        json!({"version": super::cluster_info::version(), "implementation": "rust", "development": true,
+        json!({"version": super::cluster_info::version(), "implementation": "rust", "development": super::cluster_info::build_identity().0,
         "capabilities": super::cluster_info::capabilities(), "structural_limits": structural_limits,
         "discovery": super::cluster_info::discovery(), "native_unqualified": super::cluster_info::unqualified(),
         "server_id": super::payload_discovery::server_id(), "default_namespace": "default",
