@@ -235,10 +235,11 @@ saved policy when `untrackedDriverForPolicy()` is called during recovery.
 
 A database snapshot does not freeze external objects. Before taking an online
 backup, an operator can pause Server-owned payload reclamation with a bounded
-database-backed hold. This is an Artisan-only operation, not a tenant SDK or
-HTTP API. Upgrade all Server and maintenance processes and apply migrations
-before relying on it; old processes and direct provider deletions cannot be
-fenced by this mechanism.
+database-backed hold. On PHP 2.x Server it is an Artisan command. Native 3.x
+Server serves the same operations as admin-only system endpoints. Neither is
+a tenant SDK API. Upgrade all Server and maintenance processes and apply
+migrations before relying on it; old processes and direct provider deletions
+cannot be fenced by this mechanism.
 
 Use a new UUID for each backup operation, and persist it with that operation:
 
@@ -248,6 +249,22 @@ php artisan external-payloads:backup-hold renew --owner="$BACKUP_ID" --ttl=900
 php artisan external-payloads:backup-hold status --owner="$BACKUP_ID"
 php artisan external-payloads:backup-hold release --owner="$BACKUP_ID"
 ```
+
+On native Server, send the same owner and TTL with an admin token:
+
+```sh
+curl -fsS -X POST "$SERVER/api/system/external-payload-backup-hold/acquire" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'X-Durable-Workflow-Control-Plane-Version: 2' \
+  -H 'Content-Type: application/json' -d "{\"owner\":\"$BACKUP_ID\",\"ttl\":900}"
+# .../renew takes the same body; .../release takes {"owner": ...}.
+curl -fsS "$SERVER/api/system/external-payload-backup-hold?owner=$BACKUP_ID" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'X-Durable-Workflow-Control-Plane-Version: 2'
+```
+
+Each answers the command's JSON report. Where a command exits unsuccessfully,
+the endpoint answers 409: `backup_hold_owned_elsewhere` when another backup
+holds the hold, and `backup_hold_not_owned` when the owner's hold expired, was
+released or belongs to another backup. An invalid owner or TTL answers 422.
 
 These commands return JSON. Owner-scoped `status` exits unsuccessfully when the
 hold is inactive or belongs to another operation. Unscoped `status` is for

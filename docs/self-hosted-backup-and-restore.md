@@ -3,6 +3,11 @@
 This procedure applies to the PHP 2.x Compose stack, `docker-compose.php.yml`.
 The published Compose file runs the native server from 3.0.0.
 
+On native 3.x Server, take and release the backup hold through its admin
+endpoints instead of `php artisan external-payloads:backup-hold`. The owner
+UUID, TTL limits and status checks are the same; see
+[coordinating online backups](contracts/external-payload-storage.md#coordinating-online-backups).
+
 This procedure applies to the published single-node Compose stack with MySQL,
 Redis, and a shared S3-compatible external-payload store. A backup is a recovery
 point, not a live migration. It contains operations committed before the MySQL
