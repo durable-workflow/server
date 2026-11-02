@@ -34,6 +34,25 @@ if test -n "${GITHUB_RUN_ID:-}"; then
   revision=$(git rev-parse HEAD)
   jq -e --arg revision "$revision" '.source_revision==$revision' "$binary/build.json" >/dev/null
 fi
+# Every image is pinned by digest, so pulling again is safe. The registry
+# mirror sometimes fails to serve one blob for a few minutes ("could not fetch
+# content descriptor"); retry before a cell fails on that.
+pull_pinned() {
+  local attempt
+  for attempt in 1 2 3 4; do
+    if docker pull --quiet "$1" >/dev/null; then
+      return 0
+    fi
+    echo "::warning::Pull of $1 failed (attempt $attempt of 4)" >&2
+    if test "$attempt" -lt 4; then sleep $((attempt * 15)); fi
+  done
+  return 1
+}
+pull_pinned "$runtime"
+pull_pinned "$observer_image"
+if test "$connection" != sqlite; then
+  pull_pinned "$(jq -r '.image' <<< "$database")"
+fi
 native_server="$scope-native"
 db="$scope-db"
 probe="$scope-ready"
