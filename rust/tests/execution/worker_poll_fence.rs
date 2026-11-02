@@ -214,12 +214,25 @@ async fn at_second_start() {
 }
 
 /// A held poll started without the one-second pause `held` takes.
-async fn held_now(app: &Router, worker: &str, queue: &str, kind: &str) -> tokio::task::JoinHandle<(StatusCode, Value)> {
+///
+/// Nothing outside the poll shows when it has been admitted and has
+/// snapshotted its registration, so the caller waits `settle` for that. A poll
+/// admitted only after the next re-registration belongs to the new
+/// registration and is rightly current, which would fail the case. A case that
+/// must land in one stored second can only spare part of it; any other case
+/// waits a full second, which loaded CI runners need.
+async fn held_now(app: &Router, worker: &str, queue: &str, kind: &str, settle: Duration) -> tokio::task::JoinHandle<(StatusCode, Value)> {
     let app = app.clone();
     let (path, body) = (format!("/api/worker/{kind}-tasks/poll"), json!({"worker_id":worker,"task_queue":queue,"timeout_seconds":4}));
     let poll = tokio::spawn(async move { request(&app, "POST", &path, body).await });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(settle).await;
     poll
+}
+
+/// How long `held_now` waits for admission: within the stored second when
+/// the case depends on it, otherwise a full second.
+fn settle(same_second: bool) -> Duration {
+    Duration::from_millis(if same_second { 300 } else { 1000 })
 }
 
 // Native is stricter than published PHP here (Server #749): every native
@@ -252,7 +265,7 @@ async fn a_reregistration_ends_held_polls_whatever_its_metadata_and_timing() {
                     json!({"worker_id":author,"task_queue":worker,"timeout_seconds":0})).await;
                 assert_eq!((status, polled["poll_status"].clone()), (StatusCode::OK, json!("leased")), "{polled}");
                 let task = polled["task"].clone();
-                let poll = held_now(&app, &worker, &worker, "activity").await;
+                let poll = held_now(&app, &worker, &worker, "activity", settle(process.is_none())).await;
                 let (status, body) = request(&app, "POST", "/api/worker/register", registration(&worker, process)).await;
                 assert_eq!(status, StatusCode::CREATED, "{body}");
                 let done = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"act","arguments":envelope(Payload::Array(vec![]))}])).await;
@@ -260,7 +273,7 @@ async fn a_reregistration_ends_held_polls_whatever_its_metadata_and_timing() {
                 assert_eq!(outcome(&answer(poll).await, &worker), stale(), "{case} {kind}");
                 assert_eq!(outcome(&poll_now(&app, &worker, "activity").await, &worker), leased(), "{case} {kind} next poll");
             } else {
-                let poll = held_now(&app, &worker, &worker, "workflow").await;
+                let poll = held_now(&app, &worker, &worker, "workflow", settle(process.is_none())).await;
                 let (status, body) = request(&app, "POST", "/api/worker/register", registration(&worker, process)).await;
                 assert_eq!(status, StatusCode::CREATED, "{body}");
                 start_on(&app, &worker).await;
@@ -302,7 +315,7 @@ async fn a_reregistration_ends_a_held_query_poll_whatever_its_metadata_and_timin
         assert_eq!(done.0, StatusCode::OK, "{case}: {}", done.1);
         at_second_start().await;
         register_query_worker(&app, &worker, process).await;
-        let held = held_now(&app, &worker, "test", "query").await;
+        let held = held_now(&app, &worker, "test", "query", settle(process.is_none())).await;
         register_query_worker(&app, &worker, process).await;
         let query = {
             let app = app.clone();
