@@ -410,6 +410,9 @@ jobs:
     if: github.ref == format('refs/tags/{0}', inputs.tag)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The tag-restricted Environment guards the write token, as for every
+    # publishing job.
+    environment: dockerhub-native
     concurrency:
       group: durable-workflow-server-rolling-aliases
       cancel-in-progress: false

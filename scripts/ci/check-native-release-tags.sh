@@ -276,6 +276,20 @@ locked_jobs=$(awk '
 ' .github/workflows/native-release.yml | paste -sd' ' -)
 test "$locked_jobs" = "aliases release" \
   || fail "native-release.yml must hold the rolling-alias lock in aliases and release, not '$locked_jobs'."
+# Every job that can publish runs in the tag-restricted Environment: each
+# job with a write scope, the GitHub Release included.
+unprotected=$(awk '
+  function flush() { if (job != "" && writes && env != "dockerhub-native") print job }
+  /^jobs:/ { jobs = 1; next }
+  jobs && /^  [a-z0-9-]+:$/ { flush(); job = substr($1, 1, length($1) - 1); writes = 0; env = ""; next }
+  jobs && /^    environment: / { env = $2 }
+  jobs && /^      [a-z-]+: write$/ { writes = 1 }
+  END { flush() }
+' .github/workflows/native-release.yml | paste -sd' ' -)
+test -z "$unprotected" || fail "native-release.yml jobs with a write scope outside dockerhub-native: $unprotected."
+awk '/^  [a-z0-9-]+:$/ { job = $1 } job == "release:" { print }' .github/workflows/native-release.yml \
+  | grep -q '^    environment: dockerhub-native$' \
+  || fail "the GitHub Release job must run in dockerhub-native."
 grep -q 'RELEASE_IMAGE_KNOWN_TAGS: ${{ steps.rolling.outputs.release_inventory }}' .github/workflows/release.yml \
   || fail "the PHP promoter must use the resolver's inventory."
 awk '/- name: Promote rolling image aliases/,/run: scripts\/ci\/promote-release-image-rolling-tags.sh/' .github/workflows/release.yml \
