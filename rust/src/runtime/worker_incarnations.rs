@@ -23,11 +23,7 @@ pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
         ) => Some("backend_unavailable"),
         RuntimeError::Database(sqlx::Error::Database(error)) => {
             if let Some(mysql) = error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>() {
-                return match mysql.number() {
-                    1205 | 1213 => Some("backend_lock_pressure"),
-                    2002 | 2003 | 2006 | 2013 => Some("backend_unavailable"),
-                    _ => None,
-                };
+                return mysql_transient_reason(mysql.number());
             }
             let code = error.code()?;
             if matches!(code.as_ref(), "55P03" | "40P01" | "40001")
@@ -47,6 +43,35 @@ pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
             }
         }
         _ => None,
+    }
+}
+
+/// MySQL server and client error numbers that describe a passing backend
+/// condition rather than a request fault. Beyond lock waits and lost
+/// connections, an InnoDB Cluster primary switch behind MySQL Router can
+/// surface: 1053 server shutdown in progress, 1290 a write reaching a member
+/// that is (now) `super_read_only`, 1927 connection killed, 2055 connection
+/// lost, 3100 a Group Replication commit hook refusal while the member has no
+/// quorum, 4031 a server-side disconnect; and 3101 a transaction rolled back
+/// at commit by group certification, which a retry can pass.
+pub(super) fn mysql_transient_reason(number: u16) -> Option<&'static str> {
+    match number {
+        1205 | 1213 | 3101 => Some("backend_lock_pressure"),
+        1053 | 1290 | 1927 | 2002 | 2003 | 2006 | 2013 | 2055 | 3100 | 4031 => Some("backend_unavailable"),
+        _ => None,
+    }
+}
+
+#[test]
+fn mysql_cluster_failover_errors_are_transient() {
+    for number in [1053, 1290, 1927, 2002, 2003, 2006, 2013, 2055, 3100, 4031] {
+        assert_eq!(mysql_transient_reason(number), Some("backend_unavailable"), "{number}");
+    }
+    for number in [1205, 1213, 3101] {
+        assert_eq!(mysql_transient_reason(number), Some("backend_lock_pressure"), "{number}");
+    }
+    for number in [1062, 1146, 1452] {
+        assert_eq!(mysql_transient_reason(number), None, "{number}");
     }
 }
 

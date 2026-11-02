@@ -266,6 +266,16 @@ fn after(seconds: i64) -> DateTime<Utc> {
     now() + chrono::Duration::seconds(seconds)
 }
 
+/// As PHP's `ActivityTaskController::poll` (since 2.11.0): an activity poll
+/// answer carries `server_time`, the clock its lease expiry is measured
+/// against. Published SDKs refuse a claimed activity without it.
+fn activity_server_time(kind: &str, mut answer: Value) -> Value {
+    if kind == "activity" {
+        answer["server_time"] = json!(super::activity_lease_renewal::micros(now()));
+    }
+    answer
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -1974,19 +1984,22 @@ where
                 // Compressed after the claim commits; a replayed receipt keeps
                 // the plain events and takes this request's encoding.
                 super::history_pages::compress(&mut task, encoding)?;
-                return Ok(
+                return Ok(activity_server_time(
+                    kind,
                     json!({"task": task, "poll_status": "leased", "server_capabilities": capabilities()}),
-                );
+                ));
             }
             if tokio::time::Instant::now() >= deadline {
-                return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await;
+                return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await
+                    .map(|answer| activity_server_time(kind, answer));
             }
             if self
                 .poll_queue_changed(&body, kind, &mut cross_kind)
                 .await?
                 && tokio::time::Instant::now() < deadline
             {
-                return self.no_task_answer(&body, poll_request.as_ref(), "task_queue_changed", encoding).await;
+                return self.no_task_answer(&body, poll_request.as_ref(), "task_queue_changed", encoding).await
+                    .map(|answer| activity_server_time(kind, answer));
             }
             #[cfg(debug_assertions)]
             if let Some(request) = &poll_request {

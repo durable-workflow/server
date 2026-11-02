@@ -273,6 +273,18 @@ These are confirmed differences from the published PHP reference and open
 contract decisions found while qualifying native slices. Each one needs a
 contract fixture before its correction.
 
+- **MySQL InnoDB Cluster behind MySQL Router** (November 1, qualified on one
+  host; [checkpoint](rust-server-port-checkpoints/2026-11-01-mysql-innodb-cluster-router.md)).
+  Native runs on a single-primary InnoDB Cluster through Router's
+  read-write port. Schema creation, the workflow, timer and
+  activity lifecycle, and primary crash, clean shutdown and hang all pass
+  with exact history and no leftover leases; native answers 503 while no
+  primary is reachable and recovers without a restart, 1 to 5 s after Router
+  switches. Two defects found and fixed: the activity poll answer lacked
+  PHP's `server_time` (since 2.11.0), so Python SDK 2.12.2 refused every
+  activity native delivered on any database; and MySQL failover errors
+  (1053, 1290, 1927, 2055, 3100, 3101, 4031) are now classified transient.
+  Multi-primary, read/write split and several Routers are not covered.
 - **History export waits and timeline** (November 1, closed,
   [checkpoint](rust-server-port-checkpoints/2026-11-01-history-export-waits.md)).
   Native's export now serves the run's stored waits with each kind's
