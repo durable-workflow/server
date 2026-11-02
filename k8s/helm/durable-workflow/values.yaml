@@ -72,7 +72,13 @@ serviceAccount:
   annotations: {}
   automountServiceAccountToken: true
 
-# Common labels applied to every rendered resource.
+# Common labels applied to every rendered resource. Every label and
+# annotation map in these values may not set keys under
+# workflows.durable-workflow.dev/ or the helm.sh/hook keys: the chart sets
+# those itself and relies on them for its runtime, memo storage and
+# schema-upgrade checks, so it refuses to render a map that sets one. A user
+# key that the chart also sets on an object is dropped in favor of the
+# chart's value.
 commonLabels: {}
 commonAnnotations: {}
 

@@ -20,12 +20,10 @@ metadata:
   labels:
     {{- include "durable-workflow.componentLabels" (dict "context" . "component" "scheduler") | nindent 4 }}
   annotations:
+    {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.commonAnnotations) "chart" (list (include "durable-workflow.argoWorkloadAnnotations" .) (include "durable-workflow.fluxDependsOnAnnotation" .))) | nindent 4 }}
     workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}
     {{- include "durable-workflow.argoWorkloadAnnotations" . | nindent 4 }}
     {{- include "durable-workflow.fluxDependsOnAnnotation" . | nindent 4 }}
-    {{- with .Values.commonAnnotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
 spec:
   schedule: {{ .Values.scheduler.schedule | quote }}
   concurrencyPolicy: {{ .Values.scheduler.concurrencyPolicy }}
@@ -44,16 +42,12 @@ spec:
       template:
         metadata:
           labels:
+            {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.scheduler.podLabels) "chart" (list (include "durable-workflow.componentLabels" (dict "context" . "component" "scheduler")))) | nindent 12 }}
             {{- include "durable-workflow.componentLabels" (dict "context" . "component" "scheduler") | nindent 12 }}
-            {{- with .Values.scheduler.podLabels }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
           annotations:
+            {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.scheduler.podAnnotations) "chart" (list (include "durable-workflow.configChecksumAnnotations" .))) | nindent 12 }}
             workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}
             {{- include "durable-workflow.configChecksumAnnotations" . | nindent 12 }}
-            {{- with .Values.scheduler.podAnnotations }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
         spec:
           restartPolicy: Never
           serviceAccountName: {{ include "durable-workflow.serviceAccountName" . }}

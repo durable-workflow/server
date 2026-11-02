@@ -2,6 +2,7 @@
 """Check what the chart renders in native and PHP mode, and what it refuses (Server #946)."""
 
 from pathlib import Path
+import json
 import subprocess
 import unittest
 
@@ -31,6 +32,30 @@ def render(*options: str, values: Path | None = NATIVE) -> list[dict]:
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return [item for item in yaml.safe_load_all(result.stdout) if item]
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """A YAML loader that refuses a mapping with a repeated key.
+
+    Kubernetes and Helm decoding keep the later of two equal keys, so a user
+    value emitted after a chart value would silently replace it.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise AssertionError(f"duplicate key {key!r} at {key_node.start_mark}")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def render_unique(*options: str, values: Path | None = NATIVE) -> list[dict]:
+    result = helm(*options, values=values)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return [item for item in yaml.load_all(result.stdout, Loader=UniqueKeyLoader) if item]
 
 
 def component(resource: dict) -> str:
@@ -260,6 +285,87 @@ class ImageRuntimeGuardTest(unittest.TestCase):
         result = helm("--set-string", "runtime=laravel")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("runtime", result.stderr)
+
+
+class ReservedMetadataTest(unittest.TestCase):
+    """User label and annotation maps cannot shadow the chart's authority keys."""
+
+    RESERVED = [
+        "workflows.durable-workflow.dev/runtime",
+        "workflows.durable-workflow.dev/memo-payload-storage",
+        "workflows.durable-workflow.dev/anything",
+        "helm.sh/hook",
+        "helm.sh/hook-weight",
+        "helm.sh/hook-delete-policy",
+    ]
+    MAPS = [
+        "commonAnnotations", "commonLabels",
+        "server.podAnnotations", "server.podLabels",
+        "server.service.annotations", "server.ingress.annotations",
+        "worker.podAnnotations", "worker.podLabels",
+        "scheduler.podAnnotations", "scheduler.podLabels",
+        "bootstrap.podAnnotations", "bootstrap.podLabels",
+        "serviceAccount.annotations",
+    ]
+
+    def test_every_user_map_refuses_every_reserved_key(self):
+        for values in (NATIVE, PHP):
+            for path in self.MAPS:
+                for key in self.RESERVED:
+                    with self.subTest(values=values.name, path=path, key=key):
+                        result = helm("--set-json", f"{path}={json.dumps({key: 'forged'})}", values=values)
+                        self.assertNotEqual(result.returncode, 0, result.stdout[:200])
+                        self.assertIn(f'{path} sets the reserved key "{key}"', result.stderr)
+
+    def test_security_examples_are_refused(self):
+        # PHP release forging the native runtime marker, which the next
+        # empty-runtime upgrade and the schema-upgrade gate trust.
+        forged_runtime = helm(
+            "--set-json", 'commonAnnotations={"workflows.durable-workflow.dev/runtime":"native"}', values=PHP,
+        )
+        self.assertNotEqual(forged_runtime.returncode, 0, forged_runtime.stdout[:200])
+        self.assertIn("reserved key", forged_runtime.stderr)
+        # A hook type override that would run schema-upgrade after the new
+        # Server starts.
+        forged_hook = helm("--set-json", 'commonAnnotations={"helm.sh/hook":"post-upgrade"}')
+        self.assertNotEqual(forged_hook.returncode, 0, forged_hook.stdout[:200])
+        self.assertIn("reserved key", forged_hook.stderr)
+
+    def test_ordinary_user_metadata_renders_without_duplicate_keys(self):
+        user = [
+            "--set-json", 'commonAnnotations={"team":"payments","argocd.argoproj.io/sync-wave":"7"}',
+            "--set-json", 'commonLabels={"tier":"core","app.kubernetes.io/name":"forged","app.kubernetes.io/component":"forged"}',
+            "--set-json", 'server.podAnnotations={"pod":"server","checksum/config":"forged"}',
+            "--set-json", 'server.podLabels={"lane":"api","app.kubernetes.io/component":"worker"}',
+            "--set-json", 'worker.podAnnotations={"pod":"worker"}',
+            "--set-json", 'scheduler.podLabels={"lane":"cron"}',
+            "--set-json", 'bootstrap.podAnnotations={"pod":"bootstrap"}',
+        ]
+        for values in (NATIVE, PHP):
+            with self.subTest(values=values.name):
+                resources = render_unique(*user, values=values)
+                server = named(resources, "Deployment", "-server")
+                annotations = server["metadata"]["annotations"]
+                self.assertEqual(annotations["team"], "payments")
+                # A chart key wins over the same user key.
+                self.assertEqual(annotations["argocd.argoproj.io/sync-wave"], "0")
+                labels = server["metadata"]["labels"]
+                self.assertEqual(labels["tier"], "core")
+                self.assertEqual(labels["app.kubernetes.io/name"], "durable-workflow")
+                self.assertEqual(labels["app.kubernetes.io/component"], "server")
+                template = server["spec"]["template"]["metadata"]
+                self.assertEqual(template["labels"]["lane"], "api")
+                self.assertEqual(template["labels"]["app.kubernetes.io/component"], "server")
+                self.assertEqual(template["annotations"]["pod"], "server")
+                self.assertNotEqual(template["annotations"]["checksum/config"], "forged")
+                if values == NATIVE:
+                    self.assertEqual(annotations["workflows.durable-workflow.dev/runtime"], "native")
+                else:
+                    self.assertNotIn("workflows.durable-workflow.dev/runtime", annotations)
+                    self.assertEqual(annotations["workflows.durable-workflow.dev/memo-payload-storage"], "dual-v1")
+                    migrate = named(resources, "Job", "-migrate")
+                    self.assertEqual(migrate["metadata"]["annotations"]["helm.sh/hook"], "pre-install,pre-upgrade")
+                    self.assertEqual(migrate["spec"]["template"]["metadata"]["annotations"], {"pod": "bootstrap"})
 
 
 class UpgradeRuntimeSelectionTest(unittest.TestCase):

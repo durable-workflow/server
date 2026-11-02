@@ -268,6 +268,17 @@ override-with-care in `values.yaml`:
   native only when the live server Deployment already carries the native
   runtime annotation. A release that chart 0.x installed runs PHP, so its
   upgrade refuses until `runtime` is set. See [docs/UPGRADING.md](docs/UPGRADING.md).
+* **Chart-owned metadata is reserved.** The runtime annotation, the memo
+  storage annotation and the Helm hook keys decide which runtime an upgrade
+  selects and when a database-mutating Job runs. The chart refuses any label
+  or annotation map in the values (`commonAnnotations`, `commonLabels`, the
+  role `podAnnotations` and `podLabels`, and the Service, Ingress and
+  ServiceAccount annotations) that sets a key under
+  `workflows.durable-workflow.dev/` or `helm.sh/hook`, `helm.sh/hook-weight`
+  or `helm.sh/hook-delete-policy`. Other user keys that the chart also sets on
+  an object, such as Argo CD sync waves or the standard
+  `app.kubernetes.io/*` labels, are dropped in favor of the chart's value, so
+  no rendered map carries a key twice.
 * **Native never upgrades its schema on start.** A pod on an older schema
   refuses with `native_schema_upgrade_required` and stays unready. Schema
   upgrades run only through the explicit hook below.

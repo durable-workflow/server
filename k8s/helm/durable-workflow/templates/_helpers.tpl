@@ -28,15 +28,19 @@ Create a default fully qualified app name. Truncated at 63 chars per DNS-1123.
 {{/*
 Common labels applied to every resource.
 */}}
-{{- define "durable-workflow.labels" -}}
+{{- define "durable-workflow.chartLabels" -}}
 helm.sh/chart: {{ include "durable-workflow.chart" . }}
 {{ include "durable-workflow.selectorLabels" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: durable-workflow
-{{- with .Values.commonLabels }}
-{{ toYaml . }}
+{{- end -}}
+
+{{- define "durable-workflow.labels" -}}
+{{- with include "durable-workflow.userMetadata" (dict "maps" (list .Values.commonLabels) "chart" (list (include "durable-workflow.chartLabels" .) "app.kubernetes.io/component: chart")) }}
+{{ . }}
 {{- end }}
+{{ include "durable-workflow.chartLabels" . }}
 {{- end -}}
 
 {{/*
@@ -862,5 +866,67 @@ chart 0.x. An explicit value, including 0, is used as given.
 {{- if include "durable-workflow.isNative" . -}}1{{- else -}}2{{- end -}}
 {{- else -}}
 {{- int $replicas -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Metadata keys only the chart may set: its authority markers, which the runtime
+selection, the memo transition guard and the schema-upgrade gate trust, and
+Helm's hook keys, which decide when a database-mutating Job runs.
+*/}}
+{{- define "durable-workflow.reservedMetadataKey" -}}
+{{- if or (hasPrefix "workflows.durable-workflow.dev/" .) (has . (list "helm.sh/hook" "helm.sh/hook-weight" "helm.sh/hook-delete-policy")) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Refuse any user-supplied label or annotation map that sets a reserved key.
+*/}}
+{{- define "durable-workflow.validateReservedMetadata" -}}
+{{- $maps := dict
+  "commonAnnotations" .Values.commonAnnotations
+  "commonLabels" .Values.commonLabels
+  "server.podAnnotations" .Values.server.podAnnotations
+  "server.podLabels" .Values.server.podLabels
+  "server.service.annotations" .Values.server.service.annotations
+  "server.ingress.annotations" .Values.server.ingress.annotations
+  "worker.podAnnotations" .Values.worker.podAnnotations
+  "worker.podLabels" .Values.worker.podLabels
+  "scheduler.podAnnotations" .Values.scheduler.podAnnotations
+  "scheduler.podLabels" .Values.scheduler.podLabels
+  "bootstrap.podAnnotations" .Values.bootstrap.podAnnotations
+  "bootstrap.podLabels" .Values.bootstrap.podLabels
+  "serviceAccount.annotations" .Values.serviceAccount.annotations -}}
+{{- range $path, $map := $maps -}}
+{{- range $key, $_ := default (dict) $map -}}
+{{- if include "durable-workflow.reservedMetadataKey" $key -}}
+{{- fail (printf "%s sets the reserved key %q. Keys under workflows.durable-workflow.dev/ and the helm.sh/hook keys are set only by the chart, which relies on them for the runtime, memo storage and schema-upgrade checks. Remove it." $path $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+User labels or annotations for one object: the given maps merged in order,
+without reserved keys and without any key the chart itself sets on that object
+("chart" holds the chart's own YAML for it). The caller emits the chart's keys
+after this output, so the rendered map has no duplicate key and a user value
+can never shadow a chart value, even if validateReservedMetadata were skipped.
+*/}}
+{{- define "durable-workflow.userMetadata" -}}
+{{- $merged := dict -}}
+{{- range $map := .maps -}}
+{{- $merged = mergeOverwrite $merged (deepCopy (default (dict) $map)) -}}
+{{- end -}}
+{{- $chart := dict -}}
+{{- range $yaml := default (list) .chart -}}
+{{- $chart = mergeOverwrite $chart (default (dict) (fromYaml $yaml)) -}}
+{{- end -}}
+{{- range $key := keys $merged -}}
+{{- if or (hasKey $chart $key) (include "durable-workflow.reservedMetadataKey" $key) -}}
+{{- $_ := unset $merged $key -}}
+{{- end -}}
+{{- end -}}
+{{- if $merged -}}
+{{- toYaml $merged -}}
 {{- end -}}
 {{- end -}}

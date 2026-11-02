@@ -19,11 +19,9 @@ metadata:
   labels:
     {{- include "durable-workflow.componentLabels" (dict "context" . "component" "server") | nindent 4 }}
   annotations:
+    {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.commonAnnotations) "chart" (list (include "durable-workflow.argoWorkloadAnnotations" .))) | nindent 4 }}
     workflows.durable-workflow.dev/runtime: native
     {{- include "durable-workflow.argoWorkloadAnnotations" . | nindent 4 }}
-    {{- with .Values.commonAnnotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
 spec:
   {{- if not .Values.server.autoscaling.enabled }}
   replicas: {{ include "durable-workflow.serverReplicas" . }}
@@ -41,15 +39,11 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.server.podLabels) "chart" (list (include "durable-workflow.componentSelectorLabels" (dict "context" . "component" "server")))) | nindent 8 }}
         {{- include "durable-workflow.componentSelectorLabels" (dict "context" . "component" "server") | nindent 8 }}
-        {{- with .Values.server.podLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
       annotations:
+        {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.server.podAnnotations) "chart" (list (include "durable-workflow.configChecksumAnnotations" .))) | nindent 8 }}
         {{- include "durable-workflow.configChecksumAnnotations" . | nindent 8 }}
-        {{- with .Values.server.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
     spec:
       serviceAccountName: {{ include "durable-workflow.serviceAccountName" . }}
       {{- /* The native Server never calls the Kubernetes API. */}}

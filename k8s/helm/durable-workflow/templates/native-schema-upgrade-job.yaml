@@ -22,12 +22,10 @@ metadata:
   labels:
     {{- include "durable-workflow.componentLabels" (dict "context" . "component" "schema-upgrade") | nindent 4 }}
   annotations:
+    {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.commonAnnotations)) | nindent 4 }}
     "helm.sh/hook": pre-upgrade
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
-    {{- with .Values.commonAnnotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
 spec:
   backoffLimit: {{ default 0 (get $upgrade "backoffLimit") }}
   activeDeadlineSeconds: {{ default 1800 (get $upgrade "activeDeadlineSeconds") }}

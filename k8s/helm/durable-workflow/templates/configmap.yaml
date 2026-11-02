@@ -1,5 +1,6 @@
 {{- include "durable-workflow.validateExternalPersistence" . }}
 {{- include "durable-workflow.validateDatabaseTlsVolumes" . }}
+{{- include "durable-workflow.validateReservedMetadata" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

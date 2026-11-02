@@ -201,6 +201,12 @@ them. Set `runtime` explicitly in GitOps values before you move to chart 1.x.
   proves every Server is stopped. GitOps and `helm template` users follow the
   manual path. See [Native schema upgrades](../README.md#native-schema-upgrades).
 - The chart refuses SQLite in both runtimes.
+- The chart refuses label and annotation values that set keys under
+  `workflows.durable-workflow.dev/` or the `helm.sh/hook` keys, which it sets
+  itself. Remove any such key from `commonAnnotations`, `commonLabels` or a
+  role's `podAnnotations`/`podLabels` before upgrading. A user key that
+  collides with another chart-set key is now dropped in favor of the chart's
+  value instead of rendering twice.
 - Native ignores `config.auth.backwardCompatible` and the metrics and
   application name settings, and accepts only the token auth driver.
 

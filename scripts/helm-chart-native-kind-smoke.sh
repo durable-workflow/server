@@ -240,16 +240,28 @@ expect_refusal "schema upgrade with a live server pod" "server pod stray-server 
   schema_upgrade "${release}" --dry-run=server
 "${kubectl_bin}" -n "${namespace}" delete pod stray-server --grace-period=0 --force --wait >/dev/null 2>&1
 
-# The positive render: the hook Job runs schema-upgrade with the database CA.
+# A user annotation cannot turn the hook into one that runs after the new
+# Server starts.
+expect_refusal "schema upgrade with a user hook override" 'commonAnnotations sets the reserved key "helm.sh/hook"' \
+  schema_upgrade "${release}" --dry-run=server --set-json 'commonAnnotations={"helm.sh/hook":"post-upgrade"}'
+
+# The positive render: the hook Job runs schema-upgrade with the database CA,
+# keeps ordinary user annotations, and carries each hook key exactly once.
 schema_upgrade "${release}" --dry-run=server --set-string externalDatabase.sslMode=verify-full \
-  --set-string externalDatabase.tls.existingSecret=smoke-database-ca >"${work_dir}/hook.yaml"
+  --set-string externalDatabase.tls.existingSecret=smoke-database-ca \
+  --set-json 'commonAnnotations={"team":"smoke"}' >"${work_dir}/hook.yaml"
 for expected in '"helm.sh/hook": pre-upgrade' 'args: ["schema-upgrade"]' 'automountServiceAccountToken: false' \
-  'name: DB_SSLROOTCERT' 'secretName: "smoke-database-ca"'; do
+  'name: DB_SSLROOTCERT' 'secretName: "smoke-database-ca"' 'team: smoke'; do
   grep -qF "${expected}" "${work_dir}/hook.yaml" || {
     printf 'the authorized schema-upgrade render lacks %s\n' "${expected}" >&2
     exit 1
   }
 done
+hook_keys="$(sed -n '/^kind: Job$/,/^spec:$/p' "${work_dir}/hook.yaml" | grep -c 'helm.sh/hook')"
+if [[ "${hook_keys}" != "3" ]]; then
+  printf 'the schema-upgrade Job must carry each of its three hook keys once, found %s\n' "${hook_keys}" >&2
+  exit 1
+fi
 echo "PASS allowed: schema-upgrade hook renders once every Server is stopped"
 
 schema_upgrade "${release}" --wait --timeout 5m
