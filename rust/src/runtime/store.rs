@@ -2618,6 +2618,34 @@ where
         Ok(response)
     }
 
+    /// `timeoutIfDeadlineExpired`: a workflow task report on a run whose
+    /// execution or run deadline has passed closes the run as timed out and
+    /// refuses the report with the completion's receipt (`409`, outcome
+    /// `completed`, `run_status` `failed`, reason `run_timed_out`). PHP SDK
+    /// 3.6.1 recognises that receipt, and does not recognise a timeout refusal
+    /// shaped as `waiting_for_history` (Server #794). Completions, failures
+    /// and history waits all use it. A run still inside its deadlines gets its
+    /// transaction back unchanged.
+    async fn close_expired_run(
+        &self,
+        mut tx: Transaction<'static, DB>,
+        run: &DB::Row,
+        task: &DB::Row,
+        attempt: &Value,
+    ) -> Result<Transaction<'static, DB>> {
+        let expired = [DB::optional_instant(run, "execution_deadline_at")?, DB::optional_instant(run, "run_deadline_at")?]
+            .into_iter()
+            .flatten()
+            .any(|deadline| deadline <= now());
+        if !expired {
+            return Ok(tx);
+        }
+        let response = Self::time_out_run(&mut tx, run, task, attempt).await?;
+        tx.commit().await?;
+        self.wake.notify_waiters();
+        Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response })
+    }
+
     pub(crate) async fn fail_workflow_task(
         &self,
         task_id: &str,
@@ -2704,6 +2732,10 @@ where
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id).await?;
+        // Server #794: a failure or history wait reported after the run's
+        // deadline closes the run as timed out, with the receipt a completion
+        // gets. Published 2.11.8 acknowledged the wait and left the run waiting.
+        let mut tx = self.close_expired_run(tx, &run, &task, &body["workflow_task_attempt"]).await?;
         let mut payload = DB::document_row(&task, "payload")?;
         // Published PHP retries a failed task as it is, with any signal or
         // update it carries. A waiting acknowledgement of a signal task
@@ -3103,16 +3135,7 @@ where
         let run = Self::active_run(&mut tx, &run_id).await?;
         // `timeoutIfDeadlineExpired`: published PHP applies a run's deadlines
         // when one of its workflow tasks completes, and closes the run.
-        if [DB::optional_instant(&run, "execution_deadline_at")?, DB::optional_instant(&run, "run_deadline_at")?]
-            .into_iter()
-            .flatten()
-            .any(|deadline| deadline <= now())
-        {
-            let response = Self::time_out_run(&mut tx, &run, &task, &body["workflow_task_attempt"]).await?;
-            tx.commit().await?;
-            self.wake.notify_waiters();
-            return Err(super::RuntimeError::Protocol { status: StatusCode::CONFLICT, response });
-        }
+        let mut tx = self.close_expired_run(tx, &run, &task, &body["workflow_task_attempt"]).await?;
         // Workflow #930: the deadline close above is never metered. Before
         // the worker's first write, its local activities' exact events and
         // rows (other commands at one event) must fit the limits; then the

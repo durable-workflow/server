@@ -77,3 +77,98 @@ async fn workflow_task_before_the_deadline_completes_normally() {
     assert!(events_of(&history, "WorkflowTimedOut").is_empty());
     assert_eq!(events_of(&history, "WorkflowCompleted").len(), 1);
 }
+
+// Server #794: a failure or history wait reported after the run's deadline
+// closes the run as timed out, and the worker gets the same receipt a
+// completion gets (PHP SDK 3.6.1 does not recognise a timeout refusal shaped
+// as `waiting_for_history`). Published 2.11.8
+// acknowledged the wait and left the run waiting.
+#[tokio::test]
+async fn reports_after_a_deadline_time_out_the_run_with_the_completion_receipt() {
+    let waiting = json!({"type":"WorkflowTaskWaitingForHistory","message":"history is not ready yet"});
+    let failure = json!({"type":"RuntimeException","message":"worker failed"});
+    for kind in ["run", "execution"] {
+        let mut receipts = Vec::new();
+        for report in ["waiting", "failure", "completion"] {
+            let database = TestDatabase::new().await;
+            let app = router(database.open().await.unwrap());
+            register(&app, "worker", json!(["echo"]), json!([])).await;
+            let workflow_id = format!("deadline-{kind}-{report}");
+            let (status, started) = request(&app, "POST", "/api/workflows", json!({"workflow_id":workflow_id,"workflow_type":"echo",
+                "task_queue":"test","input":envelope(Payload::Array(vec![])),format!("{kind}_timeout_seconds"):600})).await;
+            assert_eq!(status, StatusCode::CREATED, "{started}");
+            let task = poll(&app, "worker", "workflow").await;
+            if kind == "run" {
+                database.execute("UPDATE workflow_runs SET run_deadline_at='2000-01-01 00:00:00'").await;
+            } else {
+                database.execute("UPDATE workflow_runs SET execution_deadline_at='2000-01-01 00:00:00'").await;
+            }
+            let task_id = task["task_id"].as_str().unwrap();
+            let fail_path = format!("/api/worker/workflow-tasks/{task_id}/fail");
+            let fail_body = |failure: &Value| json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"failure":failure});
+            let history_before = run_history(&app, &json!(workflow_id), &started["run_id"]).await;
+            let mut stale = fail_body(&waiting);
+            stale["workflow_task_attempt"] = json!(task["workflow_task_attempt"].as_i64().unwrap() + 1);
+            let (status, refused) = request(&app, "POST", &fail_path, stale).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{kind} {report}: {refused}");
+            assert_eq!(run_history(&app, &json!(workflow_id), &started["run_id"]).await, history_before, "a stale attempt changes nothing");
+
+            let (status, mut receipt) = match report {
+                "waiting" => request(&app, "POST", &fail_path, fail_body(&waiting)).await,
+                "failure" => request(&app, "POST", &fail_path, fail_body(&failure)).await,
+                _ => finish_task(&app, &task, json!([{"type":"complete_workflow","result":envelope(Payload::Long(2))}])).await,
+            };
+            assert_eq!(status, StatusCode::CONFLICT, "{kind} {report}: {receipt}");
+            assert_eq!(receipt["task_id"], task["task_id"], "{receipt}");
+            assert_eq!(receipt["workflow_task_attempt"], task["workflow_task_attempt"], "{receipt}");
+            assert_eq!(receipt["run_id"], started["run_id"], "{receipt}");
+            assert_eq!(receipt["outcome"], "completed", "{receipt}");
+            assert_eq!(receipt["recorded"], false, "{receipt}");
+            assert_eq!(receipt["run_status"], "failed", "{receipt}");
+            assert_eq!(receipt["reason"], "run_timed_out", "{receipt}");
+            assert_eq!(receipt["created_task_ids"], json!([]), "{receipt}");
+            assert!(receipt["protocol_version"].is_string() && receipt["server_capabilities"].is_object(), "{receipt}");
+            let (_, described) = request(&app, "GET", &format!("/api/workflows/{workflow_id}"), Value::Null).await;
+            assert_eq!((described["status"].as_str(), described["closed_reason"].as_str()), (Some("failed"), Some("timed_out")), "{described}");
+            let history = run_history(&app, &json!(workflow_id), &started["run_id"]).await;
+            let timed_out = events_of(&history, "WorkflowTimedOut");
+            assert_eq!(timed_out.len(), 1, "{history}");
+            assert_eq!(timed_out[0]["payload"]["timeout_kind"], format!("{kind}_timeout"));
+            assert!(poll(&app, "worker", "workflow").await.is_null(), "no workflow task stays open");
+            let (status, replay) = request(&app, "POST", &fail_path, fail_body(&waiting)).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{replay}");
+            let history = run_history(&app, &json!(workflow_id), &started["run_id"]).await;
+            assert_eq!(events_of(&history, "WorkflowTimedOut").len(), 1, "a replay adds no second timeout");
+            for field in ["task_id", "run_id"] {
+                receipt[field] = Value::Null;
+            }
+            receipts.push(receipt);
+        }
+        assert_eq!(receipts[0], receipts[2], "{kind}: a history wait gets the completion's receipt");
+        assert_eq!(receipts[1], receipts[2], "{kind}: a failure gets the completion's receipt");
+    }
+}
+
+// Before the deadline a history wait and a failure are acknowledged as usual.
+#[tokio::test]
+async fn reports_before_a_deadline_are_acknowledged() {
+    for (kind, failure, outcome) in [
+        ("run", json!({"type":"WorkflowTaskWaitingForHistory","message":"history is not ready yet"}), "waiting_for_history"),
+        ("execution", json!({"type":"RuntimeException","message":"worker failed"}), "failed"),
+    ] {
+        let database = TestDatabase::new().await;
+        let app = router(database.open().await.unwrap());
+        register(&app, "worker", json!(["echo"]), json!([])).await;
+        let workflow_id = format!("in-time-{kind}");
+        let (status, started) = request(&app, "POST", "/api/workflows", json!({"workflow_id":workflow_id,"workflow_type":"echo",
+            "task_queue":"test","input":envelope(Payload::Array(vec![])),format!("{kind}_timeout_seconds"):600})).await;
+        assert_eq!(status, StatusCode::CREATED, "{started}");
+        let task = poll(&app, "worker", "workflow").await;
+        let (status, answer) = request(&app, "POST", &format!("/api/worker/workflow-tasks/{}/fail", task["task_id"].as_str().unwrap()),
+            json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"failure":failure})).await;
+        assert_eq!(status, StatusCode::OK, "{kind}: {answer}");
+        assert_eq!((answer["outcome"].as_str(), answer["recorded"].as_bool()), (Some(outcome), Some(true)), "{answer}");
+        let history = run_history(&app, &json!(workflow_id), &started["run_id"]).await;
+        assert!(events_of(&history, "WorkflowTimedOut").is_empty(), "{history}");
+    }
+}
