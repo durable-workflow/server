@@ -58,9 +58,10 @@ release moves `3.Y`, `3` and `latest` forward to itself; a PHP 2.x release
 after it moves only `2` and `2.Y`. Release candidates (`X.Y.Z-rc.N`) move no
 rolling tag. From `3.0.0-rc.3` they are published to both registries; the
 first two candidates were GHCR-only and published as
-`ghcr.io/durable-workflow/server-native`; the current one is `3.0.0-rc.2`,
-index
-`sha256:f54e89d775dbf7c6074f37836c6bb0b25f94869d23711b0706e9547c3edecb29`. It
+`ghcr.io/durable-workflow/server-native`. The current one is `3.0.0-rc.3`
+(source `04cad60ed661db2c9e961d85e7a132d82ee62e46`), index
+`sha256:899b404b02f856cb582c5e77a95882a3f9928781083d1e7a3fe569f3ff978d6b`
+in both registries. It
 reads the same `DB_*` settings as the PHP image. A published image (a
 release candidate or final release) needs no opt-in; only a development
 build without a release version requires `DW_RUST_EXPERIMENTAL=1`.
