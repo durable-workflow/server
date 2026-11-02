@@ -212,4 +212,31 @@ grep -q 'RELEASE_IMAGE_KNOWN_TAGS: ${{ steps.rolling.outputs.release_inventory }
   || fail "the PHP promoter must use the resolver's inventory."
 awk '/- name: Promote rolling image aliases/,/run: scripts\/ci\/promote-release-image-rolling-tags.sh/' .github/workflows/release.yml \
   | grep -q RELEASE_IMAGE_TAG_SOURCE_URL && fail "the PHP promoter must not read the tags again."
+# The dispatch verifier: the release tag's own ref, at its commit, on main.
+dispatch=scripts/ci/verify-native-release-dispatch.sh
+dispatch_scratch=$(mktemp -d)
+printf '#!/bin/sh\necho "${COMPARE_STATUS:-ahead}"\n' > "$dispatch_scratch/gh"
+chmod +x "$dispatch_scratch/gh"
+commit=0123456789abcdef0123456789abcdef01234567
+other=fedcba9876543210fedcba9876543210fedcba98
+ok_dispatch=(RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh")
+expect "dispatch from refs/tags/native-3.0.2, not refs/heads/main" "${ok_dispatch[@]}" DISPATCH_REF=refs/heads/main bash "$dispatch"
+expect "dispatch from refs/tags/native-3.0.2, not refs/tags/native-3.0.1" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.1 bash "$dispatch"
+expect "is not RELEASE_COMMIT" RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$other DISPATCH_REF=refs/tags/native-3.0.2 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" bash "$dispatch"
+expect "must be native-X.Y.Z" "${ok_dispatch[@]}" RELEASE_TAG=3.0.2 DISPATCH_REF=refs/tags/3.0.2 bash "$dispatch"
+for status in behind diverged; do
+  expect "is not on main (compare status: $status)" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch"
+done
+for status in ahead identical; do
+  env -i PATH="$PATH" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch" >/dev/null \
+    || fail "the dispatch verifier must accept a release commit main contains ($status)."
+done
+rm -rf "$dispatch_scratch"
+# Every job is gated on the release tag's own ref, and the plan job verifies it first.
+test "$(grep -c "^    if: github.ref == 'refs/heads/main'" .github/workflows/native-release.yml)" = 0 \
+  || fail "native-release.yml must not run from main."
+test "$(grep -c "^    if: github.ref == format('refs/tags/{0}', inputs.tag)" .github/workflows/native-release.yml)" -ge 3 \
+  || fail "native-release.yml jobs must be gated on the release tag ref."
+grep -q 'run: scripts/ci/verify-native-release-dispatch.sh' .github/workflows/native-release.yml \
+  || fail "the plan job must run the dispatch verifier."
 printf 'Native release tags: %d release.yml pattern(s) checked; verifier, publisher and rolling tags behave as intended.\n' "${#patterns[@]}"
