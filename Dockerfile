@@ -2,6 +2,13 @@
 FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS composer
 FROM node:22.23.4-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS node
 
+# Composer trust hook (central .github#237, SDK-PHP #223). A cooperative CI
+# build passes the reviewed central verifier as build context
+# dwf_composer_trust, the authenticated CA bundle as secret dwf_ci_ca, and
+# DW_CI_CA_SHA256 plus its source bindings as build arguments. This empty
+# default stage keeps ordinary builds, which pass none of them, unchanged.
+FROM scratch AS dwf_composer_trust
+
 FROM composer AS phpredis-source
 
 ARG PHPREDIS_VERSION=6.3.0
@@ -118,20 +125,68 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && server-verify-brotli
 
-RUN php scripts/ci/prepare-release-workflow-composer-metadata.php \
+# With DW_CI_CA_SHA256 set, the Composer request below must run against the
+# authenticated bundle and an empty additional-root directory, verified by
+# the central verifier in this same RUN, after composer.json takes its final
+# form. A missing hook input refuses the build before any request. The
+# secret, verifier and empty root directory are mounts, so none of them
+# reaches the image.
+ARG DW_CI_CA_SHA256=
+ARG DW_SERVER_SOURCE_COMMIT=
+ARG DW_SERVER_DOCKERFILE_SHA256=
+RUN --mount=type=bind,from=dwf_composer_trust,target=/dwf-composer-trust,readonly \
+    --mount=type=secret,id=dwf_ci_ca,required=false \
+    --mount=type=tmpfs,target=/dwf-composer-roots \
+    set -eu; \
+    php scripts/ci/prepare-release-workflow-composer-metadata.php; \
+    if [ -n "${DW_CI_CA_SHA256}" ]; then \
+      refuse() { echo "Composer trust hook: $1" >&2; exit 1; }; \
+      [ -s /run/secrets/dwf_ci_ca ] || refuse 'secret dwf_ci_ca is required'; \
+      [ -f /dwf-composer-trust/verify.php ] || refuse 'build context dwf_composer_trust is required'; \
+      printf '%s' "${DW_SERVER_SOURCE_COMMIT}" | grep -Eqx '[0-9a-f]{40}' || refuse 'DW_SERVER_SOURCE_COMMIT must be a full commit'; \
+      printf '%s' "${DW_SERVER_DOCKERFILE_SHA256}" | grep -Eqx '[0-9a-f]{64}' || refuse 'DW_SERVER_DOCKERFILE_SHA256 must be a sha256'; \
+      [ -z "$(ls -A /dwf-composer-roots)" ] || refuse 'the additional-root directory must be empty'; \
+      export SSL_CERT_FILE=/run/secrets/dwf_ci_ca CURL_CA_BUNDLE=/run/secrets/dwf_ci_ca \
+        GIT_SSL_CAINFO=/run/secrets/dwf_ci_ca COMPOSER_CAFILE=/run/secrets/dwf_ci_ca \
+        SSL_CERT_DIR=/dwf-composer-roots GIT_SSL_CAPATH=/dwf-composer-roots COMPOSER_CAPATH=/dwf-composer-roots \
+        DW_CI_CA_SHA256; \
+      echo "Composer trust hook: source ${DW_SERVER_SOURCE_COMMIT} dockerfile ${DW_SERVER_DOCKERFILE_SHA256}"; \
+      php /dwf-composer-trust/verify.php /usr/bin/composer "$PWD"; \
+    fi \
     && composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \
     && cp composer.json /tmp/release-composer.json \
     && cp composer.lock /tmp/release-composer.lock \
     && test -f /workflow/.package-provenance
 
 COPY . .
-RUN cp /tmp/release-composer.json composer.json \
-    && cp /tmp/release-composer.lock composer.lock \
-    && rm -f /tmp/release-composer.json /tmp/release-composer.lock \
-    && install -m 0664 /dev/null database/database.sqlite \
-    && composer dump-autoload --optimize \
-    && cmp /workflow/.package-provenance vendor/durable-workflow/workflow/.package-provenance \
-    && cp vendor/durable-workflow/workflow/.package-provenance /app/.package-provenance
+# dump-autoload can run Composer scripts and plugins, and the previous RUN's
+# trust settings have expired, so the hook is applied again here, after the
+# final composer.json and composer.lock are restored.
+RUN --mount=type=bind,from=dwf_composer_trust,target=/dwf-composer-trust,readonly \
+    --mount=type=secret,id=dwf_ci_ca,required=false \
+    --mount=type=tmpfs,target=/dwf-composer-roots \
+    set -eu; \
+    cp /tmp/release-composer.json composer.json; \
+    cp /tmp/release-composer.lock composer.lock; \
+    rm -f /tmp/release-composer.json /tmp/release-composer.lock; \
+    install -m 0664 /dev/null database/database.sqlite; \
+    if [ -n "${DW_CI_CA_SHA256}" ]; then \
+      refuse() { echo "Composer trust hook: $1" >&2; exit 1; }; \
+      [ -s /run/secrets/dwf_ci_ca ] || refuse 'secret dwf_ci_ca is required'; \
+      [ -f /dwf-composer-trust/verify.php ] || refuse 'build context dwf_composer_trust is required'; \
+      printf '%s' "${DW_SERVER_SOURCE_COMMIT}" | grep -Eqx '[0-9a-f]{40}' || refuse 'DW_SERVER_SOURCE_COMMIT must be a full commit'; \
+      printf '%s' "${DW_SERVER_DOCKERFILE_SHA256}" | grep -Eqx '[0-9a-f]{64}' || refuse 'DW_SERVER_DOCKERFILE_SHA256 must be a sha256'; \
+      [ -z "$(ls -A /dwf-composer-roots)" ] || refuse 'the additional-root directory must be empty'; \
+      export SSL_CERT_FILE=/run/secrets/dwf_ci_ca CURL_CA_BUNDLE=/run/secrets/dwf_ci_ca \
+        GIT_SSL_CAINFO=/run/secrets/dwf_ci_ca COMPOSER_CAFILE=/run/secrets/dwf_ci_ca \
+        SSL_CERT_DIR=/dwf-composer-roots GIT_SSL_CAPATH=/dwf-composer-roots COMPOSER_CAPATH=/dwf-composer-roots \
+        DW_CI_CA_SHA256; \
+      echo "Composer trust hook: source ${DW_SERVER_SOURCE_COMMIT} dockerfile ${DW_SERVER_DOCKERFILE_SHA256}"; \
+      php /dwf-composer-trust/verify.php /usr/bin/composer "$PWD"; \
+    fi; \
+    composer dump-autoload --optimize; \
+    cmp /workflow/.package-provenance vendor/durable-workflow/workflow/.package-provenance; \
+    cp vendor/durable-workflow/workflow/.package-provenance /app/.package-provenance
 
 # ── Production image ─────────────────────────────────────────────────
 COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap
