@@ -283,6 +283,13 @@ Upgradable versions: 7 (`3.0.0-rc.1`, `3.0.0-rc.2`) to 8. Released step
 files never change; `0007_checksum.txt` pins the version 7 migration each
 backend recorded.
 
+Schema policy for releases: 3.0.0 uses schema version 8. Patch releases in a
+minor line (3.0.x) keep that line's schema version, so replacing the image is
+enough to apply one. A schema change ships only in a new minor release (3.1.0
+and later) and always needs the explicit, backed-up `schema-upgrade` step
+above; startup never upgrades. Each minor release's notes say whether its
+schema changed.
+
 ## First HTTP execution slice
 
 Build with `cargo build --locked` in the same container/mount setup. Run the
