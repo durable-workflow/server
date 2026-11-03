@@ -40,10 +40,23 @@ export function checkLateWorkflowCompletion(fixture, observation, workflowId) {
   equal(state.heartbeat_while_leased.status, 409, 'late lease renewal refused while the new claim holds the lease');
   equal(body(state.heartbeat_while_leased), body(state.while_leased), 'renewal refusal matches the completion refusal');
 
-  for (const key of ['after_completion', 'heartbeat_after_completion', 'failure_after_completion']) {
+  // Published PHP's ownership guard (lines 4737-4775 at tag 2.11.8) sends
+  // neither `recorded` nor `run_id` here; it reports them only from its rarer
+  // post-guard engine outcome. Native adds the not-recorded receipt to every
+  // refused report (server#994), naming the run from the task row. Lease
+  // renewals record nothing either way and keep the published body.
+  const {implementation} = state;
+  assert.ok(implementation === null || implementation === 'rust', `published PHP or native, not ${implementation}`);
+  if (implementation === 'rust') {
+    assert.ok(typeof state.peer_run_id === 'string' && state.peer_run_id !== '', 'authoritative run id');
+  }
+  const receipt = implementation === 'rust' ? {recorded: false, run_id: state.peer_run_id} : {};
+  const notLeased = {...fence, error: 'Workflow task is not currently leased.', reason: 'task_not_leased',
+    task_status: 'completed'};
+  for (const [key, expected] of [['after_completion', {...notLeased, ...receipt}],
+    ['heartbeat_after_completion', notLeased], ['failure_after_completion', {...notLeased, ...receipt}]]) {
     equal(state[key].status, 409, `${key} refused`);
-    equal(body(state[key]), {...fence, error: 'Workflow task is not currently leased.', reason: 'task_not_leased',
-      task_status: 'completed'}, `${key}: the completed task is not leased`);
+    equal(body(state[key]), expected, `${key}: the completed task is not leased (${implementation ?? 'php'})`);
   }
   equal(state.history_while_open.map(event => event.event_type), definition.expected_events.slice(0, 3),
     'late requests recorded nothing while the run was open');
@@ -56,7 +69,7 @@ export function checkLateWorkflowCompletion(fixture, observation, workflowId) {
   equal(closedFields, {task_id: lastReplaced.task_id, workflow_task_attempt: 1, error: 'Workflow run is already closed.',
     reason: 'run_closed', stop_reason: 'run_completed', cancel_requested: false, can_continue: false,
     run_status: 'completed', run_closed_reason: 'completed', task_status: 'completed', lease_owner: worker,
-    lease_expires_at: null}, 'run closed refusal: the completed task keeps its owner and has no lease expiry');
+    lease_expires_at: null, ...receipt}, 'run closed refusal: the completed task keeps its owner and has no lease expiry');
   equal(state.history.map(event => event.event_type), definition.expected_events, 'one completion recorded');
   return projection;
 }

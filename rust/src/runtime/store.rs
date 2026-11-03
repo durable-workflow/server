@@ -2699,9 +2699,13 @@ where
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
+            .await
+            .map_err(|error| Self::not_recorded(&task, &body, error))?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let run = Self::active_run(&mut tx, &run_id).await?;
+        let run = Self::active_run(&mut tx, &run_id)
+            .await
+            .map_err(|error| Self::not_recorded(&task, &body, error))?;
         // Server #794: a failure or history wait reported after the run's
         // deadline closes the run as timed out, with the receipt a completion
         // gets. Published 2.11.8 acknowledged the wait and left the run waiting.
@@ -3038,7 +3042,9 @@ where
                 "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
             );
         }
-        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await?;
+        Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
+            .await
+            .map_err(|error| Self::not_recorded(&task, &body, error))?;
         // PHP admits cancellation scopes before it guards worker-session
         // commands, and guards both before validating streams.
         Self::cancellation_scope_admission(&mut tx, &task, &body, commands, protocol).await?;
@@ -3086,9 +3092,20 @@ where
             exceptions = super::local_activities::exceptions(&local, transition_codec.clone()).await?;
         }
         if let Some(checkpoint) = checkpoint {
+            // Server #994: Core's refused checkpoint for a run that closed
+            // after the guard is the same not-recorded receipt.
+            let identity = (DB::string(&task, "id")?, DB::string(&task, "workflow_run_id")?, DB::string(&task, "status")?);
+            let (receipt_task, receipt_run, receipt_status) = &identity;
+            let attempt = body["workflow_task_attempt"].clone();
             return self
                 .checkpoint_prefix(tx, task, &body, commands, checkpoint, transition_codec, &external, &local, &exceptions, limits, signal)
-                .await;
+                .await
+                .map(|answer| {
+                    super::workflow_task_guard::not_recorded_answer(answer, receipt_task, &attempt, receipt_run, receipt_status)
+                })
+                .map_err(|error| {
+                    super::workflow_task_guard::not_recorded(error, receipt_task, &attempt, receipt_run, receipt_status)
+                });
         }
         // `parseCommands`: at most one terminal command, anywhere in the
         // batch. It applies after every other command.
@@ -3096,7 +3113,9 @@ where
             return Err(refuse(StatusCode::CONFLICT, "invalid_commands"));
         }
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let run = Self::active_run(&mut tx, &run_id).await?;
+        let run = Self::active_run(&mut tx, &run_id)
+            .await
+            .map_err(|error| Self::not_recorded(&task, &body, error))?;
         // `timeoutIfDeadlineExpired`: published PHP applies a run's deadlines
         // when one of its workflow tasks completes, and closes the run.
         let mut tx = self.close_expired_run(tx, &run, &task, &body["workflow_task_attempt"]).await?;
@@ -4044,6 +4063,30 @@ where
             return Ok(false);
         }
         Err(refuse(StatusCode::CONFLICT, "conflicting_completion"))
+    }
+
+    /// Server #994: a workflow task completion, failure or scope checkpoint
+    /// that the ownership guard or the open-run check refuses
+    /// `task_not_leased` or `run_closed` has written nothing (its transaction
+    /// is dropped), so its 409 carries the full not-recorded receipt:
+    /// `recorded: false` with the request's `workflow_task_attempt` and this
+    /// task row's own `task_id` and `run_id`, on top of the refusal's fields.
+    /// Workers settle on these fields alone and never infer them from the
+    /// reason. Every other refusal and error is returned as is.
+    fn not_recorded(task: &DB::Row, body: &Value, error: super::RuntimeError) -> super::RuntimeError {
+        let fields = (|| -> Result<(String, String, String)> {
+            Ok((DB::string(task, "id")?, DB::string(task, "workflow_run_id")?, DB::string(task, "status")?))
+        })();
+        match fields {
+            Ok((task_id, run_id, task_status)) => super::workflow_task_guard::not_recorded(
+                error,
+                &task_id,
+                &body["workflow_task_attempt"],
+                &run_id,
+                &task_status,
+            ),
+            Err(read) => read,
+        }
     }
 
     /// PHP's workflow task ownership guard, in PHP's order: a task that is

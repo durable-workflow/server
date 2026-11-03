@@ -93,15 +93,19 @@ async fn a_replaced_workflow_claim_is_refused_with_the_published_ownership_field
             closed_at.ends_with('Z') && closed_at.len() == 27,
             "{action}: {refused}"
         );
-        assert_eq!(
-            refused,
-            with(
-                json!({"error":"Workflow run is already closed.","reason":"run_closed","stop_reason":"run_completed",
-                "cancel_requested":false,"can_continue":false,"run_status":"completed","run_closed_reason":"completed",
-                "run_closed_at":closed_at,"task_status":"completed","lease_owner":"late-worker","lease_expires_at":null})
-            ),
-            "{action}"
+        let mut expected = with(
+            json!({"error":"Workflow run is already closed.","reason":"run_closed","stop_reason":"run_completed",
+            "cancel_requested":false,"can_continue":false,"run_status":"completed","run_closed_reason":"completed",
+            "run_closed_at":closed_at,"task_status":"completed","lease_owner":"late-worker","lease_expires_at":null}),
         );
+        // Server #994: a refused report also carries the full not-recorded
+        // receipt; a renewal keeps the guard body.
+        if action != "heartbeat" {
+            let fields = expected.as_object_mut().unwrap();
+            fields.insert("recorded".into(), json!(false));
+            fields.insert("run_id".into(), run["run_id"].clone());
+        }
+        assert_eq!(refused, expected, "{action}");
     }
     assert_eq!(
         request(&app, "GET", &history_path, Value::Null).await.1,
