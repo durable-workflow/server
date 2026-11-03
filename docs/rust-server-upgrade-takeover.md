@@ -4,14 +4,17 @@
 database to the native 3.x server, once and in place. It is backup-first and
 one-way: it checks that the database still matches a backup you have
 verified, and after it commits, PHP refuses the database. The command ships
-in the native 3.0.x images. Use 3.0.4, the release whose published image
-passed the installed acceptance below.
+in every native 3.0.x release. Use
+[3.0.4](https://github.com/durable-workflow/server/releases/tag/3.0.4), the
+release whose published image passed the installed runs below.
 
 > **What has been accepted, and what has not.** Security accepted the
 > published 3.0.4 image's takeover on SQLite, installed against a real
-> database written by published PHP 2.11.8. PostgreSQL, MySQL and MariaDB are
-> qualified by the exact-source CI matrix for 3.0.4, not by an installed run
-> of the published image. Each backend has the evidence listed under
+> database written by published PHP 2.11.8. Further installed runs of the
+> same image on MySQL 8.0 and PostgreSQL 17 passed, but Security has not
+> reviewed them. MariaDB, and every backend's full cohort matrix, are
+> qualified only by the exact-source CI matrix for 3.0.4. All the installed
+> runs were on arm64. Each backend has the evidence listed under
 > [Status and scope](#status-and-scope), and nothing beyond it. The takeover
 > covers only the layouts, backends and state in that section; everything
 > else is refused. Backup-first and a stopped PHP are mandatory on every
@@ -25,7 +28,7 @@ The design follows under [Design](#design).
 
 ## Status and scope
 
-The evidence for 3.0.4 comes in three separate parts. None of them is an
+The evidence for 3.0.4 comes in four separate parts. None of them is an
 installed run of the published image on every backend.
 
 1. **Installed published-image acceptance: SQLite, arm64.** Security ran the
@@ -47,7 +50,23 @@ installed run of the published image on every backend.
    fingerprint. The outcome was `pass`, with normalized receipt SHA-256
    `67bfcf0719699810144358e948621e6dcf536aba51bf95894df6d346fabd0f07`
    ([Security's receipt](https://github.com/durable-workflow/server/pull/992#issuecomment-6600663947)).
-2. **Exact-source CI matrix: every listed backend.** The *Shared Server
+2. **Installed published-image runs: MySQL 8.0 and PostgreSQL 17, arm64.**
+   The same published 3.0.4 image took over databases written by published
+   PHP 2.11.8 running its own `docker-compose.published.yml` (MySQL 8.0.46,
+   and PostgreSQL 17.11 substituted for MySQL), with a supplementary SQLite
+   run. The operator followed an earlier version of this page, and the
+   corrections it found are in the commands below. The PHP-era work was
+   written by a published Python SDK worker (`durable-workflow` 2.13.0)
+   that kept running through the handoff. One worker authenticated with
+   `DW_WORKER_TOKEN`, the other with a runtime credential PHP had issued.
+   Under native, both reconnected without a restart. A timer, a signal, an
+   activity in flight across the stop, new runs and a cron schedule resumed,
+   and a PHP-issued schedule-list page token was accepted on PostgreSQL. PHP
+   refused the database afterwards. On restored MySQL copies the run also
+   exercised the post-marker refusals and resume described under
+   [Refusals](#refusals). Security has not reviewed these runs
+   ([evidence](https://github.com/durable-workflow/server/pull/992#issuecomment-6600980478)).
+3. **Exact-source CI matrix: every listed backend.** The *Shared Server
    fixtures* workflow runs a debug build of the release source on SQLite,
    PostgreSQL, MySQL and MariaDB, with the cohorts in the table below. It backs
    up a database written by a published PHP image and takes over a restored
@@ -71,7 +90,7 @@ installed run of the published image on every backend.
    and the 3.0.2 source
    ([41562369513](https://github.com/durable-workflow/server/actions/runs/41562369513)).
    These are source builds, not the published image.
-3. **Published Compose smoke: amd64 and arm64.** Run
+4. **Published Compose smoke: amd64 and arm64.** Run
    [41615283003](https://github.com/durable-workflow/server/actions/runs/41615283003)
    started the published `durableworkflow/server:3.0.4` Compose default on
    linux/amd64 and linux/arm64. It checked a fresh native installation's
@@ -80,7 +99,7 @@ installed run of the published image on every backend.
 
 | Covered | How |
 | --- | --- |
-| Databases created by published PHP 2.8.0, 2.9.7, 2.11.1, 2.11.3, 2.11.7 and 2.11.8 | Exact-source CI end to end on SQLite, two PostgreSQL images (one is PostgreSQL 17), two MySQL 8 images (one is 8.0) and MariaDB 10.11. Each run inspects, fingerprints, backs up and restores, and takes over. It then resumes a timer, an activity, a signal and an expired lease, refuses the stale attempt, and checks PHP's refusal afterwards (`scripts/conformance/server-parity/upgrade-source-profile.sh`). The installed published-image acceptance covers PHP 2.11.8 on SQLite (arm64) only. |
+| Databases created by published PHP 2.8.0, 2.9.7, 2.11.1, 2.11.3, 2.11.7 and 2.11.8 | Exact-source CI end to end on SQLite, two PostgreSQL images (one is PostgreSQL 17), two MySQL 8 images (one is 8.0) and MariaDB 10.11. Each run inspects, fingerprints, backs up and restores, and takes over. It then resumes a timer, an activity, a signal and an expired lease, refuses the stale attempt, and checks PHP's refusal afterwards (`scripts/conformance/server-parity/upgrade-source-profile.sh`). The installed published-image runs cover PHP 2.11.8 only: on SQLite (Security's acceptance), and on MySQL 8.0 and PostgreSQL 17 (not reviewed by Security), all on arm64. |
 | 2.11.4 and 2.11.5 | They add no migration, so their databases have the 2.11.3 layout that is tested above. |
 | 2.9.7 databases later migrated by 2.11.1, 2.11.3 or 2.11.8 (the `-from-2.9.7` layouts) | Catalogs captured from real migrated databases, plus backend qualification tests on PostgreSQL, MySQL and MariaDB (`rust/src/runtime/{postgres,mysql}.rs`) and SQLite unit tests. No end-to-end cohort. |
 | The 2.5.14 layout (`source_layout: "frozen"`) | Backend qualification tests and SQLite unit tests on a database built from that layout. No end-to-end cohort from a real 2.5.14 installation. |
@@ -93,8 +112,10 @@ accepted the exact head of
 
 **What is not covered.**
 
-- No installed run of the published image on PostgreSQL, MySQL or MariaDB,
-  and none on amd64. Those backends rest on the exact-source CI matrix.
+- No installed run of the published image on MariaDB, on amd64, or from a
+  PHP release other than 2.11.8. Security has not reviewed the installed
+  MySQL and PostgreSQL runs. Everything else rests on the exact-source CI
+  matrix.
 - Database histories other than those above are accepted only when
   inspection matches a recorded layout exactly. Otherwise they are refused.
 - Some state is always refused (see [Before you start](#before-you-start)):
@@ -138,26 +159,35 @@ start on a fresh native database and never take over a PHP one.
   migration job. Takeover reads every row twice. Plan the window from
   `elapsed_ms` in a fingerprint report. Fingerprint and takeover each have a
   one-hour limit, and the read-only inspections 30 seconds.
-- **A backup you can restore**, using the
-  [backup procedure](self-hosted-backup-and-restore.md), and a second
-  database (or file) to restore it into. On MySQL and MariaDB this backup is
-  also the only way back from a refusal after the marker (see
-  [Refusals](#refusals)).
+- **A backup you can restore**, taken with PHP stopped as step 3 shows, and a
+  second database (or file) to restore it into. On MySQL and MariaDB this
+  backup is also the only way back from a refusal after the marker (see
+  [Refusals](#refusals)). Do not use the backup hold from the general
+  [backup procedure](self-hosted-backup-and-restore.md) here (see step 3).
 - **Database rights.** The inspections and fingerprints can use a read-only
   role. On PostgreSQL the takeover needs the role that owns the tables, because
   it locks every table `ACCESS EXCLUSIVE` and runs DDL. On MySQL and MariaDB it
   needs DDL rights and the `PROCESS` privilege, so it can check that no other
-  session uses the database.
+  session uses the database. The published Compose's MySQL user (`workflow`)
+  owns the tables but has no `PROCESS`, so take over as `root` there (step 4).
+  Fingerprinting the restored copy needs a role that can read it (step 3).
 - **PHP's queue settings.** The takeover binds each queued PHP job to its
   durable task, so it needs the values PHP ran with:
 
   | Variable | Value |
   | --- | --- |
-  | `DW_RUST_UPGRADE_QUEUE_CONNECTION` | The Laravel queue connection whose `jobs` table is in this database, normally `database`. |
-  | `DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION` | PHP's `QUEUE_CONNECTION`. |
+  | `DW_RUST_UPGRADE_QUEUE_CONNECTION` | The Laravel queue connection whose `jobs` table is in this database: `database`. |
+  | `DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION` | PHP's `QUEUE_CONNECTION`: `redis` on the published `docker-compose.published.yml`, `database` if PHP queued in the database. |
   | `DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE` | The default queue name on that connection, normally `default`. |
 
-  `upgrade-queue-inspect` and `upgrade-takeover` require all three.
+  `upgrade-queue-inspect` and `upgrade-takeover` require all three. When PHP
+  queued in Redis, as the published Compose does, the `jobs` table is empty,
+  `upgrade-queue-inspect` reports `known_subset_bound` with `jobs: 0`, and
+  there is nothing to bind. The jobs held in Redis are not carried over and
+  are not needed. Native drives every workflow task, activity and timer from
+  the durable rows in the database, and the installed runs saw timers fire
+  under native on SQLite, MySQL and PostgreSQL. Native does not use Redis;
+  keep PHP's Redis with the backup until you no longer need PHP.
 - **PHP's serving settings**, to start native with afterwards: the tokens,
   the runtime-credentials switch and the application key (see
   [Environment](#environment)).
@@ -180,34 +210,44 @@ start on a fresh native database and never take over a PHP one.
 The native image carries every command. Native releases publish to the PHP
 image's repositories, `ghcr.io/durable-workflow/server` and
 `durableworkflow/server`, as major version 3. Every command uses one exact
-image: the multi-architecture index digest from that release's notes, never a
-tag. A tag can move between steps; a digest cannot. Keep the digest with the
+image: the multi-architecture index digest from the
+[release notes](https://github.com/durable-workflow/server/releases/tag/3.0.4)
+(for 3.0.4,
+`sha256:013010476b78f37038ac09d9498a95cdbf5ae7896111c321b2d4a2aac2f81f6b`,
+the same in both registries), never a tag. A tag can move between steps; a digest cannot. Keep the digest with the
 backup. A published image needs no opt-in. Only a development build without
 a release version requires `DW_RUST_EXPERIMENTAL=1`.
 
 ### Environment
 
-Define the environment once, in one bash session, and use it for every
-command. `-e NAME` without a value passes `NAME` from the shell's environment,
+Define the environment once, in one bash session, in the directory that
+holds PHP's `docker-compose.published.yml`, and use it for every command. The
+examples follow that published Compose topology: services `server`,
+`worker`, `scheduler`, `mysql` and `redis` on the Compose project's default
+network. Adjust the names if yours differ. `-e NAME` without a value passes `NAME` from the shell's environment,
 so no credential appears on a command line. Docker leaves out a variable that
 is unset in the shell, so leave unset (not empty) any setting PHP did not
 use. Read each secret without echoing it, for example
 `read -rs DB_PASSWORD; export DB_PASSWORD`.
 
 ```sh
-export IMAGE=ghcr.io/durable-workflow/server@sha256:<index digest from the release notes>
+export IMAGE=durableworkflow/server@sha256:013010476b78f37038ac09d9498a95cdbf5ae7896111c321b2d4a2aac2f81f6b
 docker pull "$IMAGE"
+dc="docker compose -f docker-compose.published.yml"
+net=<compose project>_default   # the network PHP's services share; see docker network ls
 
-# The database, under the same DB_* names and values PHP used. Shown for
-# PostgreSQL; MySQL is DB_CONNECTION=mysql (or mariadb) and DB_PORT=3306.
-export DB_CONNECTION=pgsql DB_HOST=db DB_PORT=5432 DB_DATABASE=workflow DB_USERNAME=workflow
+# The database, under the same DB_* names and values PHP used. Shown for the
+# published Compose's MySQL; PostgreSQL is DB_CONNECTION=pgsql, DB_HOST=postgres
+# (your service name) and DB_PORT=5432; MariaDB is DB_CONNECTION=mariadb.
+export DB_CONNECTION=mysql DB_HOST=mysql DB_PORT=3306 DB_DATABASE=durable_workflow DB_USERNAME=workflow
 read -rs DB_PASSWORD; export DB_PASSWORD
-db="-e DB_CONNECTION -e DB_HOST -e DB_PORT -e DB_DATABASE -e DB_USERNAME -e DB_PASSWORD"
+db="--network $net -e DB_CONNECTION -e DB_HOST -e DB_PORT -e DB_DATABASE -e DB_USERNAME -e DB_PASSWORD"
 # If PHP set them, export them too and append to db: -e DB_URL -e DB_SSLMODE -e DB_SSLROOTCERT -e MYSQL_ATTR_SSL_CA
 
 # PHP's queue binding, for upgrade-queue-inspect and upgrade-takeover.
+# DEFAULT_CONNECTION is PHP's QUEUE_CONNECTION: redis on the published Compose.
 queues="-e DW_RUST_UPGRADE_QUEUE_CONNECTION=database \
-  -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=database \
+  -e DW_RUST_UPGRADE_QUEUE_DEFAULT_CONNECTION=redis \
   -e DW_RUST_UPGRADE_QUEUE_DEFAULT_QUEUE=default"
 
 # Native's serving environment: exactly what PHP served with.
@@ -225,8 +265,9 @@ serve="$db -e DW_AUTH_TOKEN -e DW_WORKER_TOKEN -e DW_OPERATOR_TOKEN -e DW_ADMIN_
   -e DW_RUNTIME_CREDENTIALS_ENABLED -e DW_SERVER_KEY"
 ```
 
-Add `--network <name>` to every command when the database is only reachable
-on a Docker network.
+`db` carries `--network`, so every command reaches the database by its
+Compose service name. Drop it if your database is reachable from the default
+bridge.
 
 What the serving settings preserve, as native reads them
 (`rust/src/main.rs`, `rust/src/runtime/schedule_list.rs`):
@@ -261,13 +302,25 @@ separate database (for example `DB_DATABASE=workflow_rehearsal`) or a copied
 SQLite file. Its fingerprint equals the backup's, so the takeover accepts it,
 and the live database is never touched. The native you start on the copy
 resumes PHP-era work: timers fire and expired leases are redelivered. Run it
-with no production workers connected and on a port nothing else uses, then
-remove the copy.
+with no production workers connected, on a port nothing else uses and without
+the `--network-alias` from step 5, so no worker reaches it. Then remove the
+copy.
 
 ### Step by step
 
 1. **Stop PHP.** Stop every PHP role that can write: HTTP, queue workers, the
-   scheduler and any bootstrap. Keep them stopped.
+   scheduler and any bootstrap. Keep them stopped. Leave the database
+   running.
+
+   ```sh
+   $dc stop server worker scheduler
+   ```
+
+   The `server` exits 0. The queue worker and the scheduler do not stop on
+   Compose's default signal within its 10-second grace and exit 137 when
+   Compose kills them. That is expected: the fingerprints in step 3 show
+   whether anything changed afterwards. Then confirm that nothing else
+   writes: no other PHP container or job can reach the database.
 2. **Inspect.** Each command prints one JSON report and must say
    `"status":"inspected"` with a `source_layout` (one of `frozen`,
    `php-2.8.0`, `php-2.9.7`, `php-2.11.1`, `php-2.11.3`, `php-2.11.8` or a
@@ -286,20 +339,68 @@ remove the copy.
    `upgrade_source_payload_metadata_unqualified`, so find the actual cause in
    the report's `*_inspection` sections. A refusal before any report prints
    only a reason (see [Refusals](#refusals)).
-3. **Back up and prove the backup.** Back up with the
-   [existing procedure](self-hosted-backup-and-restore.md), restore it into a
-   separate database (here `workflow_restored`), and fingerprint both. The
-   two `fingerprint` values (`sha256:` and 64 hex digits) must be equal. That
-   proves the backup restores to exactly the stopped source. Fingerprint
-   with the same database server version as the source.
+3. **Back up and prove the backup.** With PHP stopped, dump the database,
+   restore the dump into a new database (here `workflow_restored`) on the same
+   database server, and fingerprint both. The two `fingerprint` values
+   (`sha256:` and 64 hex digits) must be equal. That proves the backup
+   restores to exactly the stopped source.
+
+   Do not take the backup hold from the general
+   [backup procedure](self-hosted-backup-and-restore.md). Its
+   `external-payloads:backup-hold` command needs a running PHP role, and its
+   acquire and release write to the database, so the fingerprints would no
+   longer match. The hold protects external payload objects, and the takeover
+   refuses every external payload reference, so a plain dump is the whole
+   backup.
+
+   MySQL on the published Compose. The `mysql` container already holds the
+   passwords in its environment, so none appears on a command line. Dump as
+   PHP's user, then create the restored database as `root` and let PHP's user
+   read it. Without that grant, its fingerprint fails with
+   `upgrade_fingerprint_unavailable`.
+
+   ```sh
+   $dc exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" exec mysqldump -u"$MYSQL_USER" \
+     --single-transaction --quick --no-tablespaces "$MYSQL_DATABASE"' > workflow-backup.sql
+   tail -n 1 workflow-backup.sql   # must read: -- Dump completed on ...
+   $dc exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot' <<SQL
+   CREATE DATABASE workflow_restored CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   GRANT SELECT ON workflow_restored.* TO '$DB_USERNAME'@'%';
+   SQL
+   $dc exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot workflow_restored' \
+     < workflow-backup.sql
+   ```
+
+   PostgreSQL, here a Compose service `postgres` whose `POSTGRES_USER` is
+   PHP's role (a superuser). If PHP's role cannot create databases, run
+   `createdb` and `pg_restore` as an administrator, then grant PHP's role
+   `CONNECT` on `workflow_restored`, `USAGE` on its `public` schema and
+   `SELECT` on its tables.
+
+   ```sh
+   $dc exec -T postgres pg_dump -Fc -U "$DB_USERNAME" "$DB_DATABASE" > workflow-backup.dump
+   $dc exec -T postgres createdb -U "$DB_USERNAME" workflow_restored
+   $dc exec -T postgres pg_restore -U "$DB_USERNAME" --no-owner --exit-on-error \
+     -d workflow_restored < workflow-backup.dump
+   ```
+
+   Then fingerprint both, with the same database server for each:
 
    ```sh
    docker run --rm $db "$IMAGE" upgrade-fingerprint
    docker run --rm $db -e DB_DATABASE=workflow_restored "$IMAGE" upgrade-fingerprint
    ```
-4. **Take over** with that digest and the owner credentials (override
-   `DB_USERNAME` and `DB_PASSWORD` for this one command if PHP's role is not
-   the owner). The takeover checks the digest again before it converts
+
+   Keep the dump, the image digest and the fingerprint together, and copy the
+   dump off the host. SQLite is backed up by a file copy instead; see
+   [SQLite](#sqlite).
+4. **Take over** with that digest. On PostgreSQL use the role that owns the
+   tables (PHP's role on a typical install). On MySQL and MariaDB use a role
+   with DDL rights and `PROCESS`: on the published Compose that is `root`,
+   because PHP's `workflow` user has no `PROCESS` and the takeover refuses it
+   with `upgrade_source_sessions_unverifiable`. Override the user and password
+   for this one command through the environment, not on the command line.
+   The takeover checks the digest again before it converts
    anything, so a write after the backup refuses it. What a refusal leaves
    behind depends on the backend: on SQLite and PostgreSQL the database is
    unchanged; on MySQL and MariaDB a write that lands between the takeover's
@@ -308,16 +409,38 @@ remove the copy.
 
    ```sh
    export DW_UPGRADE_BACKUP_FINGERPRINT=sha256:<digest>
+   # PostgreSQL, as PHP's owning role:
    docker run --rm $db $queues -e DW_UPGRADE_BACKUP_FINGERPRINT "$IMAGE" upgrade-takeover
+   # MySQL on the published Compose, as root (password read, never echoed):
+   read -rs DB_ROOT_PASSWORD
+   DB_USERNAME=root DB_PASSWORD="$DB_ROOT_PASSWORD" \
+     docker run --rm $db $queues -e DW_UPGRADE_BACKUP_FINGERPRINT "$IMAGE" upgrade-takeover
    ```
+
+   On MySQL and MariaDB the takeover refuses with `upgrade_source_in_use`
+   while any other session is connected with this database selected. Close
+   consoles, pools and monitoring on it first. A session with no default
+   database is not counted, but the fingerprint check still refuses any
+   write it made.
 5. **Start native** on the taken-over database with the full serving
-   environment and its own storage volume.
+   environment and its own storage volume, at the address your workers and
+   clients used for PHP. On the published Compose they reach the `server`
+   service as `server:8080` on the project network, and through the host port
+   PHP published (`SERVER_PORT`, 8080 by default). With PHP's `server`
+   stopped, native takes both over. `$serve` includes `$db`, so it joins
+   `$net`; `--network-alias server` gives it PHP's name there. If clients
+   reached PHP through a reverse proxy, point the proxy's upstream at native
+   instead.
 
    ```sh
-   docker run -d --name durable-workflow-native $serve \
+   docker run -d --name durable-workflow-native $serve --network-alias server \
      -v durable-workflow-native-storage:/app/storage \
      -p 127.0.0.1:8080:8080 "$IMAGE"
    ```
+
+   Native runs with PHP's own database user; the root override in step 4 is
+   for the takeover only. Existing SDK workers reconnect on their own after
+   their connection backoff, without a restart.
 
    Native writes new local external payload objects under `/app/storage`.
    A new named volume starts with the image's ownership (UID and GID 1000), so
@@ -326,7 +449,8 @@ remove the copy.
    its objects, and it may hold other application state. Keep it with the
    backup.
 
-   This publishes the API on the host's loopback interface only. The API is
+   The example publishes the API on the host's loopback interface only; publish
+the port remote clients used on the interface they reach. The API is
    plain HTTP with bearer credentials. For remote access, publish it only to
    the intended private interface or network and terminate HTTPS in the
    reverse proxy the [Server reference](server-reference.md) describes. Never
@@ -361,7 +485,7 @@ takeover needs it writable again.
 
 ```sh
 vol="-v <php-database-volume>:/app/database"
-db="-e DB_CONNECTION=sqlite -e DB_DATABASE=/app/database/database.sqlite"
+db="--network $net -e DB_CONNECTION=sqlite -e DB_DATABASE=/app/database/database.sqlite"
 docker run --rm $vol $db "$IMAGE" upgrade-prepare-sqlite
 docker run --rm $vol:ro $db "$IMAGE" upgrade-inspect
 docker run --rm $vol:ro $db $queues "$IMAGE" upgrade-queue-inspect
@@ -369,17 +493,27 @@ docker run --rm $vol:ro $db "$IMAGE" upgrade-payload-inspect
 docker run --rm $vol:ro $db "$IMAGE" upgrade-fingerprint
 ```
 
-The backup is a byte copy of the prepared file. Fingerprint the copy the same
-way, from a read-only mount, and compare. Then take over, and start native
-with the serving environment, redefined so that it carries the SQLite `db`
-and the database volume:
+The backup is a byte copy of the prepared file, taken with PHP stopped. The
+copy below goes into a new volume, which starts with the image's UID and GID
+1000. Fingerprint the copy the same way, from a read-only mount, compare it
+with the source, and copy the file off the host as well:
+
+```sh
+docker run --rm -v <php-database-volume>:/src:ro -v workflow-restored:/app/database \
+  --entrypoint cp "$IMAGE" /src/database.sqlite /app/database/database.sqlite
+docker run --rm -v workflow-restored:/app/database:ro $db "$IMAGE" upgrade-fingerprint
+```
+
+Then take over the original, and start native with the serving environment.
+It is redefined so that it carries the SQLite `db`, and the database volume
+is added:
 
 ```sh
 export DW_UPGRADE_BACKUP_FINGERPRINT=sha256:<digest>
 docker run --rm $vol $db $queues -e DW_UPGRADE_BACKUP_FINGERPRINT "$IMAGE" upgrade-takeover
 serve="$db -e DW_AUTH_TOKEN -e DW_WORKER_TOKEN -e DW_OPERATOR_TOKEN -e DW_ADMIN_TOKEN \
   -e DW_RUNTIME_CREDENTIALS_ENABLED -e DW_SERVER_KEY"
-docker run -d --name durable-workflow-native $serve $vol \
+docker run -d --name durable-workflow-native $serve $vol --network-alias server \
   -v durable-workflow-native-storage:/app/storage \
   -p 127.0.0.1:8080:8080 "$IMAGE"
 ```
@@ -487,8 +621,8 @@ MySQL and MariaDB action when the marker exists.
 
 | Reason | Meaning | What to do |
 | --- | --- | --- |
-| `upgrade_source_in_use` | PostgreSQL: another session still holds a table after the short lock wait. MySQL/MariaDB: another session is connected to the database. SQLite (`upgrade-prepare-sqlite`): another process holds the file. | Stop it, including pools, consoles and monitoring, then rerun. Unchanged. After the marker: stop the session and rerun with the same digest; the fenced check then proves whether it wrote, and refuses with a mismatch if it did (then restore). |
-| `upgrade_source_sessions_unverifiable` | MySQL/MariaDB: the role lacks `PROCESS`, so other sessions are invisible. | Use a role with `PROCESS`. Unchanged. After the marker: grant it and rerun with the same digest. |
+| `upgrade_source_in_use` | PostgreSQL: another session still holds a table after the short lock wait. MySQL/MariaDB: another session is connected with this database selected (`PROCESSLIST.DB`). SQLite (`upgrade-prepare-sqlite`): another process holds the file. | Stop it, including pools, consoles and monitoring, then rerun. Unchanged. After the marker: stop the session and rerun with the same digest; the fenced check then proves whether it wrote, and refuses with a mismatch if it did (then restore). |
+| `upgrade_source_sessions_unverifiable` | MySQL/MariaDB: the role lacks `PROCESS`, so other sessions are invisible. The published Compose's `workflow` user has none. | Use a role with `PROCESS` (`root` on the published Compose, step 4). Unchanged. After the marker: grant it and rerun with the same digest. |
 | `upgrade_source_row_security_unqualified` | PostgreSQL: row-level security is enabled on a table, so the role may not see every row. | Disable it, or take over with a role that sees every row. Unchanged. |
 | `postgres_public_schema_required`, `existing_database_requires_qualified_takeover` | PostgreSQL: the role's current schema is not `public`, or relations exist outside `public`. | Take over a database whose PHP tables are all in `public`, with `public` as the role's schema. Unchanged. |
 | `upgrade_source_ownership_unknown` | MySQL/MariaDB: the role cannot tell whether native's marker table exists. | Use a role with rights on the whole database. Unchanged. |
@@ -541,8 +675,8 @@ digest) or the source changed after the first check (restore).
 | --- | --- | --- |
 | `upgrade_source_readonly_filesystem_required` | SQLite inspections and fingerprint: the file or its directory is on a writable mount. | Mount it `:ro`. |
 | `upgrade_inline_codec_budget_unavailable` | `upgrade-payload-inspect` could not set its decoder budget. | Rerun; report it if it repeats. |
-| `upgrade_inspection_unavailable`, `upgrade_fingerprint_unavailable`, `upgrade_prepare_unavailable` | Any failure that is not a refusal in an inspection, fingerprint or `upgrade-prepare-sqlite`. | Check connectivity and credentials, then rerun. These commands do not change the database (`upgrade-prepare-sqlite` only switches the journal mode). |
-| `native_takeover_incomplete` | Native startup, MySQL/MariaDB: a takeover wrote the marker and has not finished. | Resume with `upgrade-takeover` and the same digest, or restore. |
+| `upgrade_inspection_unavailable`, `upgrade_fingerprint_unavailable`, `upgrade_prepare_unavailable` | Any failure that is not a refusal in an inspection, fingerprint or `upgrade-prepare-sqlite`, including a role that cannot read the named database (such as `workflow_restored` before its grant in step 3). | Check connectivity and credentials, then rerun. These commands do not change the database (`upgrade-prepare-sqlite` only switches the journal mode). |
+| `native_takeover_incomplete` | Native startup, which prints it as `Error: Refused { status: 409, reason: "native_takeover_incomplete" }`; MySQL/MariaDB: a takeover wrote the marker and has not finished. | Resume with `upgrade-takeover` and the same digest, or restore. |
 | `existing_database_requires_qualified_takeover` | Native startup on a PHP database that was not taken over. | Take it over first, or point native at the right database. |
 
 ## Rollback
@@ -637,6 +771,11 @@ stop firing or lose fields under native, so its inspection is `unqualified`
 and takeover refuses with `upgrade_source_schedules_unsupported` before it
 converts anything. Deleted schedules keep only their audit history and do not block
 takeover.
+
+A schedule fires again under native from its next due time. A firing that
+fell due while PHP was stopped is not backfilled. In the installed MySQL run,
+a minute cron fired under PHP at 10:05, missed 10:06 during the stop, and
+fired under native at 10:07.
 
 ### Other refused or carried state
 
