@@ -2957,6 +2957,7 @@ where
                             "schedule_to_start_timeout",
                             "schedule_to_close_timeout",
                             "heartbeat_timeout",
+                            "cancellation_policy",
                         ],
                     )?;
                     text(command, "activity_type")?;
@@ -3090,27 +3091,19 @@ where
             cooperative_child |= super::children::policies(command)?.cooperative();
         }
         if cooperative_child {
-            let mut unavailable = Vec::new();
-            if !protocol
-                .and_then(|version| version.strip_prefix("1."))
-                .and_then(|minor| minor.parse::<u32>().ok())
-                .is_some_and(|minor| minor >= 20)
-            {
-                unavailable.push("request_protocol");
-            }
-            if !Self::claim_supports_cancellation(&task)? {
-                unavailable.push("worker_claim_capability");
-            }
-            if !unavailable.is_empty() {
-                return Err(super::RuntimeError::Protocol {
-                    status: StatusCode::CONFLICT,
-                    response: json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
-                        "worker_id": DB::optional_string(&task, "lease_owner")?, "outcome": "rejected", "recorded": false,
-                        "reason": "child_cancellation_policy_not_supported", "required_capability": "cooperative_cancellation",
-                        "minimum_protocol_version": "1.20", "requested_version": protocol, "unavailable": unavailable,
-                        "remediation": "Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer."}),
-                });
-            }
+            Self::cancellation_policy_guard(&task, task_id, &body, protocol, false, None, "child_cancellation_policy_not_supported",
+                "Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer.")?;
+        }
+        // `guardRemoteActivityCancellationPoliciesAvailable`: an explicit
+        // activity cancellation policy, any value, needs protocol 1.20 and a
+        // cooperative claim (Server #958).
+        if commands.iter().any(|command| command["type"] == "schedule_activity" && !command["cancellation_policy"].is_null()) {
+            // Native has no post-run authority for an abandoned activity yet:
+            // its task would be stranded once the run closes (Server #971).
+            let abandon = commands.iter().any(|command| command["type"] == "schedule_activity" && command["cancellation_policy"] == "abandon");
+            Self::cancellation_policy_guard(&task, task_id, &body, protocol, true,
+                abandon.then_some("installed_runtime_activity_policy"), "activity_cancellation_policy_not_supported",
+                "Use a runtime with remote activity cancellation policies and a cooperative worker claim on protocol 1.20 or newer.")?;
         }
         // `guardPortableWorkerAffinityCompletion`, then the normalizer's
         // local activity rules inside the transaction.
@@ -3444,6 +3437,9 @@ where
             // worker session; its snapshot and the scope's members read it
             // from there.
             let mut activity_options = activity_options;
+            if let Some(policy) = command.get("cancellation_policy").filter(|policy| !policy.is_null()) {
+                activity_options.get_or_insert_with(|| json!({}))["cancellation_policy"] = policy.clone();
+            }
             if let Some(scope) = command.get("cancellation_scope_id") {
                 activity_options.get_or_insert_with(|| json!({}))["cancellation_scope_id"] = scope.clone();
             }
@@ -4617,6 +4613,13 @@ where
                 if let Some(value) = options[field].as_str() {
                     payload["activity"][field] = json!(value);
                 }
+            }
+            // `ActivitySnapshot::fromExecution`: an abandoned activity names
+            // the lifetime it keeps after the run stops waiting.
+            if options["cancellation_policy"] == "abandon"
+                && let Some(deadline) = DB::optional_instant(activity, "schedule_to_close_deadline_at")?
+            {
+                payload["activity"]["schedule_to_close_deadline_at"] = json!(deadline.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string());
             }
         }
         // Released history readers retain the first claim and heartbeat across
