@@ -1,8 +1,12 @@
 # Rust Server storage and upgrade audit
 
 This is a source-audit checkpoint for [#325](https://github.com/durable-workflow/server/issues/325),
-not a qualified migration procedure. Rust takeover and stored-value conversion
-remain unimplemented. The PHP ownership fence is implemented in source by
+not a migration procedure, and it predates the takeover. Native 3.0.x
+ships `upgrade-takeover`; its evidence (an installed published 3.0.4
+acceptance on SQLite, the exact-source CI matrix for every listed backend),
+its scope and the commands are in the
+[takeover runbook](rust-server-upgrade-takeover.md). The text below is the
+original audit. The PHP ownership fence is implemented in source by
 [#331](https://github.com/durable-workflow/server/pull/331); the frozen published
 reference still lacks that fence. The reference is published Server `2.5.13`, source
 `f061d64277f09b11dd9a0844b958bfab6c8e998e`, with Workflow `2.5.4`, source
@@ -96,7 +100,9 @@ and takeover flag stays false.
    There is no mixed PHP/Rust fleet or PHP rollback after upgrade. Restoring a
    pre-upgrade backup is a separate recovery action with its own data boundary.
 
-All gates above remain open. The [takeover design](rust-server-upgrade-takeover.md)
-proposes how the takeover command proves the backup, excludes other writers and
-resumes after interruption. HTTP export/import remains a supported deployment
+These gates were written before the takeover existed. The
+[takeover runbook](rust-server-upgrade-takeover.md#status-and-scope) records
+the evidence now in place and what remains open. Its design section describes
+how the takeover command proves the backup, excludes other writers and resumes
+after interruption. HTTP export/import remains a supported deployment
 transfer surface, but it does not substitute for in-place upgrade qualification.
