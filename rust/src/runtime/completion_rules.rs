@@ -589,7 +589,7 @@ const FIELD_SCOPES: &[(&str, &[&str], &str)] = &[
     ("parent_close_policy", &["start_child_workflow"],
         "parent_close_policy declares how a child workflow reacts when its parent closes and only applies to a start_child_workflow command."),
     ("cancellation_policy", &["start_child_workflow", "schedule_activity"],
-        "cancellation_policy declares how an awaiting workflow handles child or remote activity cancellation. Explicit activity policies require protocol 1.20 and remote abandon requires a finite schedule_to_close_timeout."),
+        "cancellation_policy declares how an awaiting workflow handles child or remote activity cancellation. Explicit activity policies require protocol 1.20 and a cooperative claim; native admits try_cancel and wait_cancellation_completed, and refuses abandon until abandoned activities can outlive their run."),
     ("cancellation_scope_id", &["schedule_activity", "start_timer", "start_child_workflow", "open_signal_wait", "open_condition_wait"],
         "cancellation_scope_id records activity, timer, child or wait membership and requires candidate protocol 1.20."),
     ("cancellation_cleanup", &["start_timer"],

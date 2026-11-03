@@ -30,8 +30,8 @@ chart MINOR bump and an entry below.
 
 1. Read this guide for every chart-version increment you are crossing
    (e.g. for a `0.1.0 → 0.3.0` upgrade, read `0.2.0` and `0.3.0`).
-2. Back up the workflow database and snapshot Redis if your operator
-   recovery packet requires it (see
+2. Back up the workflow database (and in PHP mode snapshot Redis) if your
+   operator recovery packet requires it (see
    [Operator Operating Envelope](https://durable-workflow.github.io/docs/2.0/operator-operating-envelope)).
 3. Render a diff before applying:
 
@@ -51,9 +51,11 @@ chart MINOR bump and an entry below.
      --namespace durable-workflow \
      --atomic --wait --timeout 10m
    ```
-   The default Helm hook order runs the bootstrap Job before the new
-   server/worker pods take traffic. With Argo CD or Flux, the chart's
-   sync-wave / depends-on annotations enforce the same ordering.
+   In PHP mode the default Helm hook order runs the bootstrap Job before the
+   new server/worker pods take traffic. With Argo CD or Flux, the chart's
+   sync-wave / depends-on annotations enforce the same ordering. In native
+   mode each pod checks its own schema at startup. A release with a schema
+   change also needs the [native schema upgrade](../README.md#native-schema-upgrades).
 5. After the rollout, confirm the engine view matches the operator view:
 
    ```bash
@@ -66,6 +68,147 @@ chart MINOR bump and an entry below.
    shape your previous release advertised.
 
 ## Per-version migration notes
+
+### Chart 1.0.0 / Server 3.0.1 (native)
+
+The chart now runs the native 3.x Server by default. Native is one process
+per pod: it creates its schema in an empty database, checks it on every start
+and runs timers, repair, retention and schedules itself. Native mode renders
+one server Deployment and no worker Deployment, scheduler CronJob, migration
+Job or Redis wiring. PHP Server 2.x is frozen at 2.11.8, and the chart keeps
+it available as `runtime: php` for existing installations.
+
+New `runtime` value: `native`, `php`, or empty. Empty runs native on a new
+install. On an upgrade it stays native only when the live server Deployment
+carries the `workflows.durable-workflow.dev/runtime: native` annotation that
+chart 1.x writes. Every release installed by chart 0.x runs PHP, so its first
+upgrade to chart 1.x refuses to render until you choose. This also holds for
+`helm upgrade --reuse-values`, which keeps the 0.x defaults. A client-side dry
+run cannot read the live Deployment and refuses too. Use `--dry-run=server`
+(Helm 3.13 or later) or set `runtime`.
+
+**New installations.** Supply the database and a shared token
+(`auth.authToken` or `DW_AUTH_TOKEN` in `auth.existingSecret`). Redis is not
+needed. See the chart [README](../README.md).
+
+**Existing PHP installations that stay on PHP.** Add these values before
+upgrading the chart. Nothing else changes: PHP mode renders the same
+resources as chart 0.3.9.
+
+```yaml
+runtime: php
+image:
+  tag: "2.11.8"   # or the 2.x release you run
+```
+
+The chart refuses a 3.x or `latest` tag in PHP mode, and a 2.x tag in native
+mode. A digest pin is accepted in either mode, so pin a digest that matches
+the runtime.
+
+**Existing PHP installations that move to native.** Native takes over a PHP
+database once, in place, through the backup-first
+[native takeover runbook](../../../../docs/rust-server-upgrade-takeover.md).
+Takeover ships in 3.0.x and is planned for deprecation in the 3.1.x line, so
+move while running a 3.0.x native release. There is no PHP rollback after
+the takeover: recovery restores the verified backup into a new database for
+PHP. Native pods started on a PHP database refuse it and stay unready, so do
+not set `runtime: native` before the takeover completes.
+
+1. Upgrade to chart 1.x in PHP mode as above, with Server 2.5.14 or later
+   (2.11.8 recommended), and confirm the release is healthy.
+2. Stop every PHP role that can write and keep the chart from restarting
+   them. Wait until no server, worker, scheduler or migration pod remains.
+
+   ```bash
+   helm upgrade durable-workflow <chart> -f my-values.yaml \
+     --set runtime=php --set image.tag=2.11.8 \
+     --set server.replicaCount=0 --set server.autoscaling.enabled=false \
+     --set worker.replicaCount=0 --set worker.autoscaling.enabled=false \
+     --set scheduler.enabled=false --set bootstrap.enabled=false --wait
+   kubectl -n durable-workflow get pods
+   ```
+3. Follow the runbook's inspection, fingerprint, backup, restored-backup
+   fingerprint and `upgrade-takeover` steps with one native image digest. Run
+   each command as a one-off pod in the release namespace with the same
+   `DB_*` settings, reading the password from the release's database Secret
+   instead of a command line. For example:
+
+   ```yaml
+   apiVersion: batch/v1
+   kind: Job
+   metadata:
+     name: native-upgrade-inspect
+   spec:
+     backoffLimit: 0
+     template:
+       spec:
+         restartPolicy: Never
+         securityContext: {runAsNonRoot: true, runAsUser: 1000}
+         containers:
+           - name: inspect
+             image: docker.io/durableworkflow/server@sha256:<native index digest>
+             args: ["upgrade-inspect"]
+             envFrom:
+               - configMapRef: {name: durable-workflow-config}
+             env:
+               - name: DB_USERNAME
+                 valueFrom: {secretKeyRef: {name: durable-workflow-database, key: DB_USERNAME}}
+               - name: DB_PASSWORD
+                 valueFrom: {secretKeyRef: {name: durable-workflow-database, key: DB_PASSWORD}}
+   ```
+
+   Use your `externalDatabase.existingSecret` and its keys if you set one, and
+   mount the database CA Secret when you use database TLS. The queue
+   inspection and the takeover also need the `DW_RUST_UPGRADE_QUEUE_*`
+   values the runbook lists, and the takeover needs
+   `DW_UPGRADE_BACKUP_FINGERPRINT`.
+4. Switch the release to native with the same image and restore the replica
+   count. Set `auth.authToken` (or `DW_AUTH_TOKEN` in your existing Secret) and
+   remove `auth.principalTokens` and `DW_PRINCIPAL_TOKENS`, which native
+   refuses.
+
+   ```bash
+   helm upgrade durable-workflow <chart> -f my-values.yaml \
+     --set runtime=native --set image.tag=3.0.1 \
+     --set server.replicaCount=1 --wait
+   ```
+
+   More than one native replica needs `native.storage.existingClaim` on a
+   ReadWriteMany volume.
+
+   Helm removes the worker Deployment, scheduler CronJob, migration Job hook
+   and Redis Secret and updates the server Deployment in place. PHP-only
+   values such as `externalRedis`, `worker`, `scheduler` and `bootstrap` are
+   ignored in native mode. Check `/api/ready` and run a workflow canary.
+
+**GitOps.** Argo CD and other controllers that render with `helm template`
+cannot see the live release, so an empty `runtime` always renders native for
+them. Set `runtime` explicitly in GitOps values before you move to chart 1.x.
+
+**Native settings.**
+- A native install runs one replica by default. More than one replica, or
+  autoscaling, needs `native.storage.existingClaim` on a ReadWriteMany
+  volume, because payload objects are pod-local. The chart refuses it without
+  one.
+- `native.terminationGracePeriodSeconds` (default 65) outlasts the longest
+  worker poll a client may request (60 seconds), so pods drain open polls on
+  shutdown.
+- Liveness is a TCP check on the `http` port (`native.livenessProbe`), because
+  `/api/health` fails during a database outage. Readiness stays on
+  `/api/ready`.
+- `native.schemaUpgrade.enabled` runs the image's `schema-upgrade` command as
+  an opt-in `pre-upgrade` hook during `helm upgrade` only, once live state
+  proves every Server is stopped. GitOps and `helm template` users follow the
+  manual path. See [Native schema upgrades](../README.md#native-schema-upgrades).
+- The chart refuses SQLite in both runtimes.
+- The chart refuses label and annotation values that set keys under
+  `workflows.durable-workflow.dev/` or the `helm.sh/hook` keys, which it sets
+  itself. Remove any such key from `commonAnnotations`, `commonLabels` or a
+  role's `podAnnotations`/`podLabels` before upgrading. A user key that
+  collides with another chart-set key is now dropped in favor of the chart's
+  value instead of rendering twice.
+- Native ignores `config.auth.backwardCompatible` and the metrics and
+  application name settings, and accepts only the token auth driver.
 
 ### Chart 0.3.9 / Server 2.11.8
 

@@ -1,6 +1,38 @@
 Durable Workflow {{ .Chart.AppVersion }} (chart {{ .Chart.Version }}) was installed
 into namespace "{{ .Release.Namespace }}" as release "{{ .Release.Name }}".
 
+{{- if include "durable-workflow.isNative" . }}
+What just happened
+------------------
+This release runs the native Server (runtime=native). Each pod is one process
+that serves the API, checks its database schema at startup and runs timers,
+repair, retention and schedules itself. There is no worker Deployment,
+scheduler CronJob, migration Job or Redis.
+{{- if .Values.server.enabled }}
+
+The API Deployment "{{ include "durable-workflow.serverDeploymentName" . }}"
+{{- if .Values.server.autoscaling.enabled }} scales between {{ .Values.server.autoscaling.minReplicas }} and {{ .Values.server.autoscaling.maxReplicas }} replicas
+{{- else }} runs {{ include "durable-workflow.serverReplicas" . }} replicas
+{{- end }} behind the Service
+"{{ include "durable-workflow.serverDeploymentName" . }}" on port {{ .Values.server.service.port }}.
+{{- end }}
+
+Each pod holds up to four database connections. A newer native release with a
+schema change needs the explicit schema upgrade in the chart's UPGRADING.md:
+stop every Server, back up the database, then upgrade with
+native.schemaUpgrade.enabled=true.
+{{- if not (get (default (dict) (get (default (dict) .Values.native) "storage")) "existingClaim") }}
+
+External payload objects are stored in an emptyDir and are lost when a pod is
+replaced. Before a namespace enables external payload storage, set
+native.storage.existingClaim (ReadWriteMany when more than one replica runs).
+{{- end }}
+
+Verify the deployment
+---------------------
+  kubectl -n {{ .Release.Namespace }} get pods,svc,pdb
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "durable-workflow.serverDeploymentName" . }}
+{{- else }}
 What just happened
 ------------------
 {{- if .Values.bootstrap.enabled }}
@@ -10,7 +42,7 @@ What just happened
 {{- end }}
 {{- if .Values.server.enabled }}
 2. The API Deployment "{{ include "durable-workflow.serverDeploymentName" . }}"
-   came up with {{ .Values.server.replicaCount }} replicas behind the
+   came up with {{ include "durable-workflow.serverReplicas" . }} replicas behind the
    ClusterIP Service "{{ include "durable-workflow.serverDeploymentName" . }}"
    on port {{ .Values.server.service.port }}.
 {{- end }}
@@ -31,6 +63,7 @@ Verify the deployment
   kubectl -n {{ .Release.Namespace }} get pods,svc,pdb
   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "durable-workflow.serverDeploymentName" . }}
   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "durable-workflow.workerDeploymentName" . }}
+{{- end }}
 
 Probe the readiness contract (must return 200 once migrations finish):
 
@@ -45,7 +78,9 @@ If you have an admin token, confirm the topology manifest:
 What you still own
 ------------------
 * External MySQL/PostgreSQL: {{ .Values.externalDatabase.host }}:{{ .Values.externalDatabase.port }} ({{ .Values.externalDatabase.connection }})
+{{- if include "durable-workflow.isPhp" . }}
 * External Redis: {{ .Values.externalRedis.host }}:{{ .Values.externalRedis.port }}
+{{- end }}
 * TLS termination, ingress, and request logging — left to your platform.
 * Backup/restore, recovery-packet rehearsal, and disaster-recovery runbooks
   per https://durable-workflow.github.io/docs/2.0/operator-operating-envelope
