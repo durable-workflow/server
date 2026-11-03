@@ -2,9 +2,8 @@
 
 [Server #325](https://github.com/durable-workflow/server/issues/325) requires a
 backup-first, sequential upgrade of an existing PHP database. This document
-describes the first executable preparation step, the read-only inspection.
-The takeover itself, and its qualified scope, are in the
-[takeover runbook](rust-server-upgrade-takeover.md).
+describes the first executable preparation step; production takeover remains
+unimplemented and unqualified.
 
 Takeover of a PHP database is planned for deprecation in the 3.1.x line; see
 [the takeover note](rust-server-upgrade-takeover.md#deprecation).
