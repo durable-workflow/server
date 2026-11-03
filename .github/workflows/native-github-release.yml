@@ -1,0 +1,74 @@
+name: Native GitHub Release
+
+# Creates the GitHub Release for a native release tag after its
+# native-release.yml run has published the image (Server #325). That run is
+# dispatched from the tag's own ref and holds no contents: write; this one
+# runs only from protected main, in the main-only github-release
+# Environment, and verifies what the run published before it writes:
+# the tag's commit is on main, the run is native-release.yml dispatched from
+# that tag at that commit and succeeded, both registries' exact version tags
+# name one index, and that index's build provenance was signed by
+# native-release.yml from the tag's ref at its commit in that run.
+#
+# The Release is titled with the plain version. A candidate is a prerelease;
+# a final release is Latest only when the live latest alias names its index
+# in both registries. The job holds the rolling-alias lock, so no alias
+# moves between that read and the write. An existing Release is left as it
+# is.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published native release tag: X.Y.Z or X.Y.Z-rc.N from major 3, or a historical native-<version>'
+        required: true
+        type: string
+      release_run_id:
+        description: 'Id of the successful native-release.yml run that published it'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DOCKERHUB_IMAGE: durableworkflow/server
+  GHCR_IMAGE: ghcr.io/durable-workflow/server
+
+jobs:
+  release:
+    name: Create the GitHub Release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: github-release
+    concurrency:
+      group: durable-workflow-server-rolling-aliases
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: read
+      actions: read
+      attestations: read
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the published release and create its GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+        run: bash scripts/ci/native-release-github-release.sh

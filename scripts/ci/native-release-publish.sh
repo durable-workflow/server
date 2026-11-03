@@ -11,8 +11,13 @@
 # exact digest passed its smoke test. Writes digest= to $GITHUB_OUTPUT.
 set -euo pipefail
 fail() { printf 'Native release publication failed: %s\n' "$1" >&2; exit 1; }
-[[ "${RELEASE_TAG:-}" =~ ^native-([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)$ ]] \
-  || fail "RELEASE_TAG must be native-<exact release version>."
+# A plain tag is native only from major 3, above every PHP release; native-
+# names the tags published before plain ones.
+release_label=${RELEASE_TAG:-}
+[[ "$release_label" == native-* || "$release_label" =~ ^([3-9]|[1-9][0-9]+)\. ]] \
+  || fail "RELEASE_TAG must be a native release version: X.Y.Z from major 3, or native-<version>."
+[[ "${release_label#native-}" =~ ^([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)$ ]] \
+  || fail "RELEASE_TAG must be a native release version: X.Y.Z from major 3, or native-<version>."
 image_tag=${BASH_REMATCH[1]}
 : "${GHCR_IMAGE:?}" "${DOCKERHUB_IMAGE:?}"
 # Only a release candidate may skip Docker Hub.

@@ -37,11 +37,11 @@ pub struct Runtime {
     /// `DW_AUTH_DRIVER=none` and `DW_RUNTIME_CREDENTIALS_ENABLED`.
     pub(crate) auth: AuthOptions,
     scheduler: Arc<TimerScheduler>,
-    signal_codec: Arc<Semaphore>,
+    pub(super) signal_codec: Arc<Semaphore>,
     // Codec work done while holding the transition lock takes this permit,
     // never `signal_codec`, so a transition never queues behind reads for
     // codec capacity.
-    transition_codec: Arc<Semaphore>,
+    pub(super) transition_codec: Arc<Semaphore>,
     pub(super) external: Arc<super::ExternalPayloadConfig>,
     pub(super) queries: Arc<super::QueryTaskConfig>,
     /// The package's signal, update and payload ceilings (DW_V2_LIMIT_*).
@@ -407,6 +407,7 @@ impl Runtime {
     }
     delegate!(change_backup_hold(action: super::backup_hold::Action, request: &super::backup_hold::Request) -> Result<Value>);
     delegate!(backup_hold_status(owner: Option<&str>) -> Result<Value>);
+    delegate!(claimed_task_signal(task_id: &str, body: Value) -> Result<Option<(String, String, String)>>);
     delegate!(retention_status(limit: i64) -> Result<Value>);
     delegate!(retention_pass(limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(activity_timeout_status(limit: i64) -> Result<Value>);
@@ -1539,10 +1540,20 @@ impl Runtime {
     delegate!(task_history(task_id: &str, body: Value, pages: super::history_pages::HistoryPages) -> Result<Value>);
     pub(crate) async fn fail_workflow_task(&self, task_id: &str, body: Value) -> Result<Value> {
         let codec = self.transition_codec.clone();
+        // Of the failures, only a waiting acknowledgement applies the task's
+        // signal (Server #979).
+        // Only a failure the store accepts in full can apply the signal, so
+        // a malformed one writes nothing.
+        let well_formed = super::store::workflow_task_failure_shape(&body).is_ok();
+        let signal = if well_formed && super::store::waiting_acknowledgement(&body["failure"]) {
+            self.resolve_task_signal(task_id, &body).await?
+        } else {
+            None
+        };
         match &*self.storage {
-            Storage::Sqlite(store) => store.fail_workflow_task(task_id, body, codec).await,
-            Storage::Postgres(store) => store.fail_workflow_task(task_id, body, codec).await,
-            Storage::MySql(store) => store.fail_workflow_task(task_id, body, codec).await,
+            Storage::Sqlite(store) => store.fail_workflow_task(task_id, body, codec, signal.as_ref()).await,
+            Storage::Postgres(store) => store.fail_workflow_task(task_id, body, codec, signal.as_ref()).await,
+            Storage::MySql(store) => store.fail_workflow_task(task_id, body, codec, signal.as_ref()).await,
         }
     }
     pub(crate) async fn complete_workflow(
@@ -1588,6 +1599,9 @@ impl Runtime {
         }
         self.check_command_payloads(&body).await?;
         let external = self.prepare_command_payloads(&body).await?;
+        // A resumed signal is resolved before the transaction that applies
+        // it (Server #979).
+        let signal = self.resolve_task_signal(task_id, &body).await?;
         let body = super::completion_rules::canonical_payloads(body)?;
         if let Some(commands) = body["commands"].as_array() {
             for command in commands
@@ -1630,17 +1644,17 @@ impl Runtime {
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint, signal.as_ref())
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint, signal.as_ref())
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint)
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint, signal.as_ref())
                     .await
             }
         }

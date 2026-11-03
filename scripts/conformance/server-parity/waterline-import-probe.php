@@ -283,6 +283,18 @@ function finishHttpWaterlineImport(Client $admin, array $fixture, string $workfl
             // general history export, which this fixture does not qualify.
             unset($export['response']['timeline'], $export['response']['waits'], $export['response']['selected_run'],
                 $export['response']['links']['projection_source']);
+            // Native exports carry Core 2.17.0's retained-run pruning state
+            // (Server #976), which the recorded PHP 2.11 export predates; the
+            // retention tests own that contract. Only the retained values are
+            // dropped, so a pruned or malformed state still fails the
+            // comparison.
+            $workflow = $export['response']['workflow'] ?? null;
+            if (is_array($workflow)
+                && ($workflow['details_state'] ?? null) === 'retained'
+                && array_key_exists('details_pruned_at', $workflow)
+                && $workflow['details_pruned_at'] === null) {
+                unset($export['response']['workflow']['details_state'], $export['response']['workflow']['details_pruned_at']);
+            }
         }
         // The summary's history size counts the source id, namespace and
         // slug the prefix carries; record it without them, so recordings

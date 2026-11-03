@@ -379,9 +379,19 @@ where
         expected: &Reference,
         uri: &str,
     ) -> Result<()> {
+        Self::claim_external_for(tx, self.namespace.as_ref(), expected, uri).await
+    }
+
+    /// `claim_external_in` for a transaction step that names its namespace.
+    pub(super) async fn claim_external_for(
+        tx: &mut Transaction<'_, DB>,
+        namespace: &str,
+        expected: &Reference,
+        uri: &str,
+    ) -> Result<()> {
         Self::payload_object_lock(tx, uri).await?;
         let row = Self::query("SELECT * FROM runtime_external_payloads WHERE id=$1 AND namespace=$2 AND upload_status='ready'")
-            .bind(&expected.reference_id).bind(self.namespace.as_ref()).fetch_optional(&mut **tx).await?
+            .bind(&expected.reference_id).bind(namespace).fetch_optional(&mut **tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "external_payload_not_found"))?;
         Self::match_payload(&row, expected, Some(uri))?;
         let timestamp = now();
@@ -392,7 +402,7 @@ where
         }
         Self::query("UPDATE runtime_external_payloads SET retained_at=COALESCE(retained_at,$1),expires_at=NULL,last_fetched_at=$2,updated_at=$3 WHERE id=$4 AND namespace=$5")
             .bind(DB::bind_time(timestamp)).bind(DB::bind_time(timestamp)).bind(DB::bind_time(timestamp))
-            .bind(&expected.reference_id).bind(self.namespace.as_ref()).execute(&mut **tx).await?;
+            .bind(&expected.reference_id).bind(namespace).execute(&mut **tx).await?;
         Ok(())
     }
 

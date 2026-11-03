@@ -227,6 +227,19 @@ fn query_refusal(status: StatusCode, workflow_id: &str, run_id: &str, name: &str
     }
 }
 
+/// `QueryTaskQueueFullException`, answered as PHP does: 429 with the query
+/// refusal body, and no Retry-After.
+fn queue_full(workflow_id: &str, run_id: &str, name: &str, queue: &str, namespace: &str, limit: usize) -> super::RuntimeError {
+    query_refusal(
+        StatusCode::TOO_MANY_REQUESTS,
+        workflow_id,
+        run_id,
+        name,
+        "query_task_queue_full",
+        &format!("Query task queue [{queue}] in namespace [{namespace}] reached the configured pending limit of {limit}."),
+    )
+}
+
 /// A query refused because no worker can take it.
 fn route_refusal(workflow_id: &str, run_id: &str, name: &str, route: &super::query_route::QueryRoute) -> super::RuntimeError {
     query_refusal(
@@ -732,17 +745,14 @@ where
             .await?;
         let cutoff = (leased != 0).then_some(observed);
         let entries = self.query_entries(&mut tx).await?;
-        if entries.len() >= MAX_ENTRIES
-            || entries
-                .iter()
-                .filter(|(_, v)| matches!(v["status"].as_str(), Some("pending" | "leased")))
-                .count()
-                >= MAX_PENDING
-        {
-            return Err(refuse(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "query_task_queue_full",
-            ));
+        let pending = entries
+            .iter()
+            .filter(|(_, v)| matches!(v["status"].as_str(), Some("pending" | "leased")))
+            .count();
+        let queue = DB::string(&run, "queue")?;
+        if entries.len() >= MAX_ENTRIES || pending >= MAX_PENDING {
+            let limit = if pending >= MAX_PENDING { MAX_PENDING } else { MAX_ENTRIES };
+            return Err(queue_full(workflow_id, &run_id, name, &queue, self.namespace.as_ref(), limit));
         }
         // Native delivers one bounded history page; a run already past it
         // cannot be queried.
@@ -788,7 +798,12 @@ where
             .bind(authority::expiration(&task)?)
             .execute(&mut *tx)
             .await?;
-        Self::list_open(&mut tx, self.namespace.as_ref(), &task_id).await?;
+        match Self::list_open(&mut tx, self.namespace.as_ref(), &task_id).await {
+            Err(super::RuntimeError::Refused { reason: "query_task_queue_full", .. }) => {
+                return Err(queue_full(workflow_id, &run_id, name, &queue, self.namespace.as_ref(), MAX_ENTRIES));
+            }
+            other => other?,
+        }
         Self::file_expiry(&mut tx, &key, authority::expiration(&task)?).await?;
         tx.commit().await?;
         self.wake.notify_waiters();

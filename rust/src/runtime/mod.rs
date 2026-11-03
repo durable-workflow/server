@@ -59,6 +59,7 @@ mod execution;
 mod external_config;
 mod external_registry;
 mod external_resolution;
+mod signal_payloads;
 mod external_transport;
 mod external_wait_summary;
 mod failure_commands;
@@ -124,6 +125,8 @@ mod schedule_dst;
 pub(crate) mod schedule_spec;
 pub(crate) mod schedule_zones;
 mod schedule_backfill;
+#[cfg(test)]
+mod schedule_burst_tests;
 mod schedule_execution;
 mod schedule_http;
 mod run_diagnostics;

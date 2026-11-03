@@ -171,6 +171,7 @@ store_methods! {
         local: &std::collections::BTreeMap<usize, super::local_activities::Record>,
         exceptions: &std::collections::BTreeMap<usize, String>,
         limits: super::memo_limits::StructuralLimits,
+        signal: Option<&super::signal_payloads::ResolvedSignal>,
     ) -> Result<Value> {
         let task_id = DB::string(&task, "id")?;
         // Server: the claim must be the cooperative claim it issued.
@@ -267,7 +268,7 @@ store_methods! {
         // Metered like a completion (Workflow #930).
         tx.meter = Some(super::history_meter::Meter::new(&limits, &task_id, &body["workflow_task_attempt"]));
         // Core answers its own refusals as a refused checkpoint.
-        match Self::apply_task_signal(&mut tx, &run_id, &task_id, &task, transition_codec, true, commands).await {
+        match Self::apply_task_signal(&mut tx, &run_id, &task_id, &task, transition_codec, true, commands, signal).await {
             Ok(()) => {}
             Err(RuntimeError::Refused { reason, .. }) => {
                 tx.rollback().await?;

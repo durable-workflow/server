@@ -11,10 +11,12 @@ name: durable-workflow-server
 # server's Compose file is docker-compose.php.yml; to keep running PHP, use
 # that file (or pin a 2.x release of this one).
 #
-# The default image is the current native release. Set DW_SERVER_IMAGE to run
+# The default image is the native release this commit is tagged as: a final
+# release's commit moves it (verify-native-release-dispatch.sh refuses a
+# release whose default names another image). Set DW_SERVER_IMAGE to run
 # any other native image, by tag or digest; pin a digest for production
 # change control.
-x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.0.1}
+x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.0.5}
 
 services:
   server:
