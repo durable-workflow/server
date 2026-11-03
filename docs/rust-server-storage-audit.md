@@ -2,8 +2,9 @@
 
 This is a source-audit checkpoint for [#325](https://github.com/durable-workflow/server/issues/325),
 not a migration procedure, and it predates the takeover. Native 3.0.x
-ships `upgrade-takeover`, which is not yet qualified on a published image;
-what CI covers, what remains open and the commands are in the
+ships `upgrade-takeover`; its evidence (an installed published 3.0.4
+acceptance on SQLite, the exact-source CI matrix for every listed backend),
+its scope and the commands are in the
 [takeover runbook](rust-server-upgrade-takeover.md). The text below is the
 original audit. The PHP ownership fence is implemented in source by
 [#331](https://github.com/durable-workflow/server/pull/331); the frozen published
@@ -101,7 +102,7 @@ and takeover flag stays false.
 
 These gates were written before the takeover existed. The
 [takeover runbook](rust-server-upgrade-takeover.md#status-and-scope) records
-what CI now covers and what remains open. Its design section describes
+the evidence now in place and what remains open. Its design section describes
 how the takeover command proves the backup, excludes other writers and resumes
 after interruption. HTTP export/import remains a supported deployment
 transfer surface, but it does not substitute for in-place upgrade qualification.

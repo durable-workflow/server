@@ -4,59 +4,86 @@
 database to the native 3.x server, once and in place. It is backup-first and
 one-way: it checks that the database still matches a backup you have
 verified, and after it commits, PHP refuses the database. The command ships
-in the native 3.0.0, 3.0.1 and 3.0.2 images.
+in the native 3.0.x images. Use 3.0.4, the release whose published image
+passed the installed acceptance below.
 
-> **Not yet qualified on a published image.** The command ships, and CI
-> qualifies it on source builds of the release for the PHP layouts and
-> database backends listed under [Status and scope](#status-and-scope). No
-> published 3.0.x image has yet taken over a real PHP installation in an
-> installed acceptance, and Security has not accepted the takeover boundary as
-> a whole. Source CI does not substitute for published-artifact conformance,
-> so this page is not a supported upgrade path yet.
+> **What has been accepted, and what has not.** Security accepted the
+> published 3.0.4 image's takeover on SQLite, installed against a real
+> database written by published PHP 2.11.8. PostgreSQL, MySQL and MariaDB are
+> qualified by the exact-source CI matrix for 3.0.4, not by an installed run
+> of the published image. Each backend has the evidence listed under
+> [Status and scope](#status-and-scope), and nothing beyond it. The takeover
+> covers only the layouts, backends and state in that section; everything
+> else is refused. Backup-first and a stopped PHP are mandatory on every
+> backend.
 >
-> Wait for that qualification to be recorded here before you take over a live
-> database. Until then, keep running PHP Server 2.11.8, or rehearse the
-> commands only on a restored copy of your backup (see
-> [Rehearsing on a restored copy](#rehearsing-on-a-restored-copy)).
+> Rehearse on a restored copy of your backup before you take over the live
+> database (see [Rehearsing on a restored copy](#rehearsing-on-a-restored-copy)).
 
-The commands, their environment, the success report and every refusal are
-documented below so a rehearsal can be run and reviewed, and so the installed
-acceptance exercises exactly this handoff. The design follows under
-[Design](#design).
+The commands, their environment, the success report and every refusal follow.
+The design follows under [Design](#design).
 
 ## Status and scope
 
-**What CI covers.** The *Shared Server fixtures* workflow runs a debug build of
-the release source. It backs up a database written by a published PHP image,
-takes over a restored copy, resumes the PHP-era work under native and checks
-that PHP then refuses the database. It passed on the 3.0.0 source in
-merge-group run
-[41459209091](https://github.com/durable-workflow/server/actions/runs/41459209091)
-and on the 3.0.2 source in run
-[41562369513](https://github.com/durable-workflow/server/actions/runs/41562369513).
-These are source builds, not the published images.
+The evidence for 3.0.4 comes in three separate parts. None of them is an
+installed run of the published image on every backend.
+
+1. **Installed published-image acceptance: SQLite, arm64.** Security ran the
+   published 3.0.4 image (index
+   `sha256:013010476b78f37038ac09d9498a95cdbf5ae7896111c321b2d4a2aac2f81f6b`,
+   arm64 child
+   `sha256:c097590daee46a9ff0d4f5207e6a9a2b5dcb4826e30c8df60876b3be97b976d8`,
+   revision `1f4ef0c7a745e1ebdc07cd38761cd3f666a36158`) against a SQLite
+   database that published PHP 2.11.8 (index
+   `sha256:3848d5d5cd1b23bd2881e3fdecea64cc44b72e6fb812e577c2db6d0872d065dd`)
+   created and populated with a pending activity, a timer, a signal and an
+   expiring lease. The run covered the commands on this page in order:
+   `upgrade-prepare-sqlite`, the three inspections (layout `php-2.11.8`), and
+   equal fingerprints for the source, the byte-copy backup and the restored
+   copy. It took over the restored copy only, then started native from the
+   same image. The PHP-era activity, timer, signal and expired lease resumed
+   and completed, with stale attempts refused. Afterwards PHP 2.11.8 refused
+   the converted copy, and the untouched original still had its pre-backup
+   fingerprint. The outcome was `pass`, with normalized receipt SHA-256
+   `67bfcf0719699810144358e948621e6dcf536aba51bf95894df6d346fabd0f07`
+   ([Security's receipt](https://github.com/durable-workflow/server/pull/992#issuecomment-6600663947)).
+2. **Exact-source CI matrix: every listed backend.** The *Shared Server
+   fixtures* workflow runs a debug build of the release source on SQLite,
+   PostgreSQL, MySQL and MariaDB, with the cohorts in the table below. It backs
+   up a database written by a published PHP image and takes over a restored
+   copy. It resumes the PHP-era work under native and checks that PHP then
+   refuses the database. On the exact 3.0.4 source
+   (`1f4ef0c7a745e1ebdc07cd38761cd3f666a36158`) it passed in merge-group run
+   [41597054274](https://github.com/durable-workflow/server/actions/runs/41597054274).
+   Earlier passes were on the 3.0.0 source
+   ([41459209091](https://github.com/durable-workflow/server/actions/runs/41459209091))
+   and the 3.0.2 source
+   ([41562369513](https://github.com/durable-workflow/server/actions/runs/41562369513)).
+   These are source builds, not the published image.
+3. **Published Compose smoke: amd64 and arm64.** Run
+   [41615283003](https://github.com/durable-workflow/server/actions/runs/41615283003)
+   started the published `durableworkflow/server:3.0.4` Compose default on
+   linux/amd64 and linux/arm64. It checked a fresh native installation's
+   startup and release readiness, not a takeover
+   ([Security's readback](https://github.com/durable-workflow/server/pull/991#issuecomment-6600658066)).
 
 | Covered | How |
 | --- | --- |
-| Databases created by published PHP 2.8.0, 2.9.7, 2.11.1, 2.11.3, 2.11.7 and 2.11.8 | End to end on SQLite, two PostgreSQL images (one is PostgreSQL 17), two MySQL 8 images (one is 8.0) and MariaDB 10.11: inspect, fingerprint, back up and restore, take over, resume a timer, an activity, a signal and an expired lease, refuse the stale attempt, and PHP's refusal afterwards (`scripts/conformance/server-parity/upgrade-source-profile.sh`). |
+| Databases created by published PHP 2.8.0, 2.9.7, 2.11.1, 2.11.3, 2.11.7 and 2.11.8 | Exact-source CI end to end on SQLite, two PostgreSQL images (one is PostgreSQL 17), two MySQL 8 images (one is 8.0) and MariaDB 10.11. Each run inspects, fingerprints, backs up and restores, and takes over. It then resumes a timer, an activity, a signal and an expired lease, refuses the stale attempt, and checks PHP's refusal afterwards (`scripts/conformance/server-parity/upgrade-source-profile.sh`). The installed published-image acceptance covers PHP 2.11.8 on SQLite (arm64) only. |
 | 2.11.4 and 2.11.5 | They add no migration, so their databases have the 2.11.3 layout that is tested above. |
 | 2.9.7 databases later migrated by 2.11.1, 2.11.3 or 2.11.8 (the `-from-2.9.7` layouts) | Catalogs captured from real migrated databases, plus backend qualification tests on PostgreSQL, MySQL and MariaDB (`rust/src/runtime/{postgres,mysql}.rs`) and SQLite unit tests. No end-to-end cohort. |
 | The 2.5.14 layout (`source_layout: "frozen"`) | Backend qualification tests and SQLite unit tests on a database built from that layout. No end-to-end cohort from a real 2.5.14 installation. |
 | Sources PHP wrote through Laravel's `mariadb` connection (`+mariadb-driver` layouts) | Derived from their one known difference, the backup-hold owner column, and covered by a MariaDB backend qualification test. Not captured separately for 2.11.8. |
-| Refusals and interruption | SQLite and PostgreSQL: a refusal or a kill before commit rolls the whole takeover back, and a rerun with the same digest gives the same result. MySQL and MariaDB: refusals before the marker leave the database unchanged, and a takeover killed before the marker row or after journal steps 1, 3, 8 and 9 resumes with the same digest to the same result. A refusal after the MySQL or MariaDB marker leaves the marker in place; see [Refusals](#refusals). |
+| Refusals and interruption | SQLite and PostgreSQL: a refusal or a kill before commit rolls the whole takeover back, and a rerun with the same digest gives the same result. MySQL and MariaDB: refusals before the marker leave the database unchanged. A takeover killed before the marker row, or after journal steps 1, 3, 8 and 9, resumes with the same digest to the same result. A refusal after the MySQL or MariaDB marker leaves the marker in place; see [Refusals](#refusals). |
 
 Security reviewed the 2.11.8 layout change and its refusal boundary, and
 accepted the exact head of
 [#921](https://github.com/durable-workflow/server/pull/921#issuecomment-6561043224).
-That acceptance covers that change, not the takeover as a whole.
 
-**What is not qualified yet.**
+**What is not covered.**
 
-- No installed acceptance has run `upgrade-takeover` from a *published* 3.0.x
-  image against a real PHP installation, including the native start that
-  follows it. The release smoke test only checks that the commands are present
-  and refuse a missing source. There is no independent Security acceptance of
-  the takeover as a whole.
+- No installed run of the published image on PostgreSQL, MySQL or MariaDB,
+  and none on amd64. Those backends rest on the exact-source CI matrix.
 - Database histories other than those above are accepted only when
   inspection matches a recorded layout exactly. Otherwise they are refused.
 - Some state is always refused (see [Before you start](#before-you-start)):
@@ -529,7 +556,7 @@ in [schema upgrades](../rust/README.md#native-schema-upgrades).
 ## Design
 
 The rest of this page records how the takeover works and why. The commands
-above are what a rehearsal, and the installed acceptance, run.
+above are the procedure; the installed acceptance ran them on SQLite.
 
 ### Shape
 
