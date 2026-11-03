@@ -831,6 +831,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backend_unavailability_keeps_the_occurrence_without_recording() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = sqlite_store(&directory.path().join("schedule.sqlite")).await;
+        let occurrence = due_schedule(&store, "outage", 4).await;
+        let key: String = sqlx::query_scalar("SELECT id FROM workflow_schedules WHERE schedule_id='outage'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        // A backend-wide outage observed by one admission, settled while the
+        // database is reachable again: it must still not be recorded as this
+        // schedule's failure or consume the occurrence.
+        for error in [sqlx::Error::PoolTimedOut, sqlx::Error::PoolClosed] {
+            let error = RuntimeError::from(error);
+            assert_eq!(
+                super::super::worker_incarnations::transient_reason(&error),
+                Some("backend_unavailable")
+            );
+            assert!(store.settle_failed_admission(&key, error).await.is_err());
+        }
+        let after = store.describe_schedule("outage").await.unwrap();
+        assert_eq!(after["failures_count"], 0, "an outage is retried, not recorded");
+        assert_eq!(after["info"]["recent_actions"], json!([]));
+        assert_eq!(instant(&after["next_fire_at"]), occurrence, "the original occurrence is kept");
+        store.close().await;
+    }
+
+    #[tokio::test]
     async fn lock_pressure_keeps_the_occurrence_and_fails_the_tick_without_recording() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("schedule.sqlite");
