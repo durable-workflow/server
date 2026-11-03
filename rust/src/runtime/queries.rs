@@ -19,6 +19,18 @@ use tokio::sync::Semaphore;
 const PREFIX: &str = "dw-native-query:";
 const MAX_PENDING: usize = 16;
 pub(super) const MAX_ENTRIES: usize = 64;
+/// One row per namespace listing its open query task ids (Server #964).
+const OPEN_PREFIX: &str = "dw-native-query-open:";
+/// Receipts filed by the minute their rows expire, and the sweep's watermark.
+const EXPIRY_PREFIX: &str = "dw-native-query-expiry:";
+const EXPIRY_MARK: &str = "dw-native-query-expiry-mark";
+/// The one-time cutover of 3.0.1 query rows.
+const CUTOVER_MARK: &str = "dw-native-query-cutover";
+const PAGE_KEYS: usize = 128;
+const SWEEP_MINUTES: usize = 30;
+const SWEEP_PAGES: usize = 2;
+/// Bookkeeping rows never expire on their own.
+const BOOKKEEPING_EXPIRATION: i64 = i64::MAX / 2;
 const SNAPSHOT_BYTES: usize = 1024 * 1024;
 pub(super) const ARGUMENT_BYTES: usize = 64 * 1024;
 pub(super) const RESULT_BYTES: usize = 256 * 1024;
@@ -68,6 +80,26 @@ fn poll_result(task: Option<Value>, status: &str) -> Value {
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
+/// An open set's ids: unique canonical ULIDs, at most `MAX_ENTRIES`, and
+/// none from a row that names another namespace.
+fn listed_ids(set: &Value, namespace: &str) -> Vec<String> {
+    if set["namespace"] != namespace {
+        return vec![];
+    }
+    let mut ids: Vec<String> = vec![];
+    for id in set["ids"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if ids.len() < MAX_ENTRIES && canonical_id(id) && !ids.iter().any(|seen| seen == id) {
+            ids.push(id.to_owned());
+        }
+    }
+    ids
+}
+
+/// A query task id as native writes it: a ULID in its canonical text.
+fn canonical_id(id: &str) -> bool {
+    id.parse::<ulid::Ulid>().is_ok_and(|parsed| parsed.to_string() == id)
+}
+
 fn key(id: &str) -> Result<String> {
     // A task ID cannot address another application's cache key.
     if id.parse::<ulid::Ulid>().is_err() {
@@ -302,37 +334,278 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// The namespace's open query tasks (pending or leased), at most
+    /// `MAX_ENTRIES`, read by key from the namespace's open set. An answered,
+    /// failed or timed-out task keeps its receipt, readable by key, until it
+    /// expires, but holds no queue capacity, as in PHP, whose admission counts
+    /// only pending task ids (Server #964). Nothing here scans the cache
+    /// table: every read is by primary key, with a fixed bound per call.
     pub(super) async fn query_entries(
         &self,
         tx: &mut Transaction<'_, DB>,
     ) -> Result<Vec<(String, Value)>> {
-        let rows = Self::query(DB::QUERY_CACHE_SCAN)
-            .bind(self.namespace.to_string())
-            .fetch_all(&mut **tx)
-            .await?;
+        Self::cut_over_query_rows(tx).await?;
+        Self::sweep_query_receipts(tx).await?;
+        let namespace = self.namespace.as_ref();
+        let listed = Self::open_set(tx, namespace).await?;
         let mut entries = vec![];
-        for row in rows {
-            let key = DB::string(&row, "key")?;
+        let mut open = vec![];
+        for id in &listed {
+            let key = key(id)?;
+            let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&mut **tx).await? else {
+                continue;
+            };
             if DB::number(&row, "expiration")? <= now() {
-                Self::query(DB::QUERY_CACHE_DELETE)
-                    .bind(&key)
-                    .execute(&mut **tx)
-                    .await?;
+                Self::query(DB::QUERY_CACHE_DELETE).bind(&key).execute(&mut **tx).await?;
                 continue;
             }
             let mut task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+            // A member must be this namespace's task under its own id.
+            if task["query_task_id"] != id.as_str() || task["namespace"] != namespace {
+                continue;
+            }
             if authority::expire(&mut task, authority::now())? {
                 Self::put_query(tx, &key, &task, authority::expiration(&task)?).await?;
             }
-            entries.push((key, task));
+            if matches!(task["status"].as_str(), Some("pending" | "leased")) {
+                open.push(id.clone());
+                entries.push((key, task));
+            }
         }
-        if entries.len() > MAX_ENTRIES {
-            return Err(refuse(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "query_task_queue_full",
-            ));
+        if open != listed {
+            Self::write_open_set(tx, namespace, &open).await?;
         }
         Ok(entries)
+    }
+
+    /// The open-set row's key: one per namespace, from a digest so any
+    /// namespace name fits the cache key column. The row also names its
+    /// namespace in full.
+    fn open_set_key(namespace: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let digest: String = Sha256::digest(namespace.as_bytes()).iter().take(16).map(|byte| format!("{byte:02x}")).collect();
+        format!("{OPEN_PREFIX}{digest}")
+    }
+
+    /// The namespace's listed open task ids: unique canonical ULIDs, at most
+    /// `MAX_ENTRIES`. A row naming another namespace, or none, lists nothing.
+    async fn open_set(tx: &mut Transaction<'_, DB>, namespace: &str) -> Result<Vec<String>> {
+        let Some(set) = Self::cache_document(tx, &Self::open_set_key(namespace)).await? else {
+            return Ok(vec![]);
+        };
+        Ok(listed_ids(&set, namespace))
+    }
+
+    /// Open tasks of this namespace on `queue` a poll could claim now: read
+    /// lock-free from the namespace's open set, every row by key (Server
+    /// #964). Only a readiness hint; the claim decides under the lock.
+    pub(super) async fn ready_query_keys(&self, queue: &str) -> Result<Vec<String>> {
+        let namespace = self.namespace.as_ref();
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(Self::open_set_key(namespace)).fetch_optional(&self.pool).await? else {
+            return Ok(vec![]);
+        };
+        let set: Value = serde_json::from_str(&DB::string(&row, "value")?).unwrap_or(Value::Null);
+        let at = super::store::now();
+        let wire_now = authority::wire(at);
+        let mut ready = vec![];
+        for id in listed_ids(&set, namespace) {
+            let key = key(&id)?;
+            let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&self.pool).await? else {
+                continue;
+            };
+            if DB::number(&row, "expiration")? <= at.timestamp() {
+                continue;
+            }
+            let Ok(task) = serde_json::from_str::<Value>(&DB::string(&row, "value")?) else {
+                continue;
+            };
+            let after = |field: &str| task[field].as_str().is_some_and(|time| time > wire_now.as_str());
+            let claimable = match task["status"].as_str() {
+                Some("pending") => true,
+                Some("leased") => !after("lease_expires_at"),
+                _ => false,
+            };
+            if task["query_task_id"] == id.as_str() && task["namespace"] == namespace && task["task_queue"] == queue
+                && after("query_deadline_at") && claimable
+            {
+                ready.push(key);
+            }
+        }
+        Ok(ready)
+    }
+
+    async fn write_open_set(tx: &mut Transaction<'_, DB>, namespace: &str, ids: &[String]) -> Result<()> {
+        Self::put_cache_document(tx, &Self::open_set_key(namespace), &json!({"namespace": namespace, "ids": ids})).await
+    }
+
+    /// Adds an open task to its namespace's set, at most `MAX_ENTRIES`.
+    async fn list_open(tx: &mut Transaction<'_, DB>, namespace: &str, id: &str) -> Result<()> {
+        let mut ids = Self::open_set(tx, namespace).await?;
+        if !ids.iter().any(|listed| listed == id) {
+            if ids.len() >= MAX_ENTRIES {
+                return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "query_task_queue_full"));
+            }
+            ids.push(id.to_owned());
+        }
+        Self::write_open_set(tx, namespace, &ids).await
+    }
+
+    /// A native bookkeeping row's document, by key.
+    async fn cache_document(tx: &mut Transaction<'_, DB>, key: &str) -> Result<Option<Value>> {
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&mut **tx).await? else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_str(&DB::string(&row, "value")?).ok())
+    }
+
+    async fn put_cache_document(tx: &mut Transaction<'_, DB>, key: &str, value: &Value) -> Result<()> {
+        // Bookkeeping rows never expire on their own; the sweep and the open
+        // set maintain them.
+        let expiration = BOOKKEEPING_EXPIRATION;
+        let updated = Self::query(DB::QUERY_CACHE_UPDATE)
+            .bind(value.to_string()).bind(expiration).bind(key)
+            .execute(&mut **tx).await?;
+        if DB::affected(updated) == 0 {
+            Self::query(DB::QUERY_CACHE_INSERT)
+                .bind(key).bind(value.to_string()).bind(expiration)
+                .execute(&mut **tx).await?;
+        }
+        Ok(())
+    }
+
+    /// Files a query row under the minute it expires, for the sweep: a minute
+    /// keeps pages of at most `PAGE_KEYS` keys, named by number.
+    async fn file_expiry(tx: &mut Transaction<'_, DB>, key: &str, expiration: i64) -> Result<()> {
+        // A row already expired goes now: its minute may be behind the sweep.
+        if expiration <= now() {
+            Self::query(DB::QUERY_CACHE_DELETE_EXPIRED).bind(key).bind(now()).execute(&mut **tx).await?;
+            return Ok(());
+        }
+        let minute = expiration.div_euclid(60);
+        let header_key = format!("{EXPIRY_PREFIX}{minute}");
+        let header = Self::cache_document(tx, &header_key).await?.unwrap_or_else(|| json!({"first": 0, "pages": 0}));
+        let first = header["first"].as_i64().unwrap_or(0).max(0);
+        let mut pages = header["pages"].as_i64().unwrap_or(0).max(first);
+        let mut page = if pages > first {
+            Self::cache_document(tx, &format!("{header_key}:{}", pages - 1)).await?
+        } else {
+            None
+        };
+        if page.as_ref().is_none_or(|page| page["keys"].as_array().is_none_or(|keys| keys.len() >= PAGE_KEYS)) {
+            pages += 1;
+            page = Some(json!({"keys": []}));
+        }
+        let mut page = page.unwrap_or_else(|| json!({"keys": []}));
+        if let Some(keys) = page["keys"].as_array_mut() {
+            keys.push(json!(key));
+        }
+        Self::put_cache_document(tx, &format!("{header_key}:{}", pages - 1), &page).await?;
+        Self::put_cache_document(tx, &header_key, &json!({"first": first, "pages": pages})).await
+    }
+
+    /// Deletes expired query rows, minute by minute behind a watermark: at
+    /// most `SWEEP_MINUTES` minutes, `SWEEP_PAGES` pages and their keys per
+    /// call, every one by key. A key that has not expired (its expiry moved)
+    /// is filed again under its own minute. Everything happens in the
+    /// caller's transaction, so a crash keeps or loses the whole step.
+    async fn sweep_query_receipts(tx: &mut Transaction<'_, DB>) -> Result<()> {
+        let current = now().div_euclid(60);
+        let Some(mark) = Self::cache_document(tx, EXPIRY_MARK).await?.and_then(|mark| mark["minute"].as_i64()) else {
+            // The first sweep starts here; earlier minutes hold nothing, as
+            // filing deletes a row that has already expired.
+            return Self::put_cache_document(tx, EXPIRY_MARK, &json!({"minute": current - 1})).await;
+        };
+        let mut minute = mark;
+        let mut pages_left = SWEEP_PAGES;
+        for _ in 0..SWEEP_MINUTES {
+            if minute + 1 >= current || pages_left == 0 {
+                break;
+            }
+            let header_key = format!("{EXPIRY_PREFIX}{}", minute + 1);
+            if let Some(header) = Self::cache_document(tx, &header_key).await? {
+                let pages = header["pages"].as_i64().unwrap_or(0).max(0);
+                let mut first = header["first"].as_i64().unwrap_or(0).clamp(0, pages);
+                while first < pages && pages_left > 0 {
+                    let page_key = format!("{header_key}:{first}");
+                    let keys = Self::cache_document(tx, &page_key).await?
+                        .and_then(|page| page["keys"].as_array().cloned())
+                        .unwrap_or_default();
+                    for key in keys.iter().filter_map(Value::as_str).take(PAGE_KEYS) {
+                        let deleted = Self::query(DB::QUERY_CACHE_DELETE_EXPIRED).bind(key).bind(now()).execute(&mut **tx).await?;
+                        if DB::affected(deleted) == 0
+                            && let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&mut **tx).await?
+                        {
+                            let expiration = DB::number(&row, "expiration")?;
+                            if expiration.div_euclid(60) > minute + 1 {
+                                Self::file_expiry(tx, key, expiration).await?;
+                            }
+                        }
+                    }
+                    Self::query(DB::QUERY_CACHE_DELETE).bind(&page_key).execute(&mut **tx).await?;
+                    first += 1;
+                    pages_left -= 1;
+                }
+                if first < pages {
+                    Self::put_cache_document(tx, &header_key, &json!({"first": first, "pages": pages})).await?;
+                    break;
+                }
+                Self::query(DB::QUERY_CACHE_DELETE).bind(&header_key).execute(&mut **tx).await?;
+            }
+            minute += 1;
+        }
+        if minute != mark {
+            Self::put_cache_document(tx, EXPIRY_MARK, &json!({"minute": minute})).await?;
+        }
+        Ok(())
+    }
+
+    /// 3.0.1 kept query rows without open sets or expiry files. Until the
+    /// cutover marker says it is done, each call reads one primary-key page
+    /// of the cache table (at most 64 rows, whatever their keys), lists those
+    /// rows' open tasks in their namespaces' sets and files every one for
+    /// expiry. It runs once for the whole server, never per namespace.
+    async fn cut_over_query_rows(tx: &mut Transaction<'_, DB>) -> Result<()> {
+        let marker = Self::cache_document(tx, CUTOVER_MARK).await?.unwrap_or_else(|| json!({"after": "", "done": false}));
+        if marker["done"] == true {
+            return Ok(());
+        }
+        let after = marker["after"].as_str().unwrap_or_default().to_owned();
+        let rows = Self::query(DB::QUERY_CACHE_PAGE).bind(&after).fetch_all(&mut **tx).await?;
+        let mut last = after;
+        for row in &rows {
+            let key = DB::string(row, "key")?;
+            last.clone_from(&key);
+            let Some(id) = key.strip_prefix("dw-native-query:") else {
+                continue;
+            };
+            let expiration = DB::number(row, "expiration")?;
+            // An expired row is deleted here and never listed.
+            Self::file_expiry(tx, &key, expiration).await?;
+            if expiration <= now() {
+                continue;
+            }
+            let Ok(mut task) = serde_json::from_str::<Value>(&DB::string(row, "value")?) else {
+                continue;
+            };
+            // A task past its deadline closes before it could take a slot.
+            if authority::expire(&mut task, authority::now())? {
+                Self::put_query(tx, &key, &task, authority::expiration(&task)?).await?;
+            }
+            if task["query_task_id"] == id
+                && canonical_id(id)
+                && matches!(task["status"].as_str(), Some("pending" | "leased"))
+                && let Some(namespace) = task["namespace"].as_str()
+            {
+                match Self::list_open(tx, namespace, id).await {
+                    // A full set leaves this task to its deadline; nothing
+                    // else may pass silently, so the page rolls back.
+                    Err(super::RuntimeError::Refused { reason: "query_task_queue_full", .. }) => {}
+                    other => other?,
+                }
+            }
+        }
+        let done = rows.len() < 64;
+        Self::put_cache_document(tx, CUTOVER_MARK, &json!({"after": last, "done": done})).await
     }
 
     async fn put_query(
@@ -515,6 +788,8 @@ where
             .bind(authority::expiration(&task)?)
             .execute(&mut *tx)
             .await?;
+        Self::list_open(&mut tx, self.namespace.as_ref(), &task_id).await?;
+        Self::file_expiry(&mut tx, &key, authority::expiration(&task)?).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
         // Never hold the transition lock or a pooled connection across the wait.
@@ -814,16 +1089,7 @@ where
         {
             return Ok(true);
         }
-        let at = super::store::now();
-        let query_now = authority::wire(at);
-        let candidates = Self::query(DB::POLL_WAKE_QUERIES_SQL)
-            .bind(at.timestamp())
-            .bind(self.namespace.as_ref())
-            .bind(text(body, "task_queue")?)
-            .bind(query_now.clone())
-            .bind(query_now)
-            .fetch_all(&self.pool)
-            .await?;
+        let candidates = self.ready_query_keys(text(body, "task_queue")?).await?;
         if candidates.is_empty() {
             return Ok(false);
         }
@@ -833,7 +1099,7 @@ where
         let mut ready = false;
         for candidate in candidates {
             let Some(row) = Self::query(DB::QUERY_CACHE_GET)
-                .bind(DB::string(&candidate, "id")?)
+                .bind(&candidate)
                 .fetch_optional(&mut *read)
                 .await?
             else {

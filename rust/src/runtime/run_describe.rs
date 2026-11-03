@@ -308,6 +308,13 @@ where
         fields.insert("actions".into(), actions(current, terminal, archived, query_servable));
         fields.insert("updates_scope".into(), json!("selected_run"));
         fields.insert("updates".into(), json!(self.update_diagnostics(&run_id).await?));
+        // `terminalFailurePayload`: a failed run's failure, last (Server #967).
+        let mut tx = self.begin_read().await?;
+        let failure = Self::terminal_failure_describe(&mut tx, &run_id, DB::string(run, "status")?.as_str()).await?;
+        tx.commit().await?;
+        for (key, value) in failure.into_iter().flatten() {
+            fields.insert(key.into(), value);
+        }
         Ok(fields)
     }
 }

@@ -1,5 +1,6 @@
 {{- include "durable-workflow.validateExternalPersistence" . }}
 {{- include "durable-workflow.validateDatabaseTlsVolumes" . }}
+{{- include "durable-workflow.validateReservedMetadata" . }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -12,10 +13,14 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 data:
+  {{- if include "durable-workflow.isPhp" . }}
   APP_NAME: {{ .Values.config.appName | quote }}
-  APP_VERSION: {{ default .Chart.AppVersion .Values.config.appVersion | quote }}
+  {{- with include "durable-workflow.phpAppVersion" . }}
+  APP_VERSION: {{ . | quote }}
+  {{- end }}
   APP_ENV: {{ .Values.config.appEnv | quote }}
   APP_DEBUG: {{ .Values.config.appDebug | quote }}
+  {{- end }}
   DB_CONNECTION: {{ .Values.externalDatabase.connection | quote }}
   DB_HOST: {{ .Values.externalDatabase.host | quote }}
   DB_PORT: {{ .Values.externalDatabase.port | quote }}
@@ -29,6 +34,7 @@ data:
   {{- if .Values.externalDatabase.tls.existingSecret }}
   DB_SSLROOTCERT: {{ include "durable-workflow.databaseTlsCaPath" . | quote }}
   {{- end }}
+  {{- if include "durable-workflow.isPhp" . }}
   REDIS_HOST: {{ .Values.externalRedis.host | quote }}
   REDIS_PORT: {{ .Values.externalRedis.port | quote }}
   REDIS_DB: {{ .Values.externalRedis.database | quote }}
@@ -40,6 +46,11 @@ data:
   DW_AUTH_DRIVER: {{ .Values.config.auth.driver | quote }}
   DW_AUTH_BACKWARD_COMPATIBLE: {{ .Values.config.auth.backwardCompatible | quote }}
   DW_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT: {{ .Values.config.metrics.workflowTaskFailureTypeLimit | quote }}
+  {{- else }}
+  {{- /* The native Server has no Redis, queue or cache and always accepts
+  DW_AUTH_TOKEN for every role, so the PHP-only settings are left out. */}}
+  DW_AUTH_DRIVER: {{ .Values.config.auth.driver | quote }}
+  {{- end }}
   {{- range $k, $v := .Values.config.extraEnv }}
   {{ $k }}: {{ $v | quote }}
   {{- end }}

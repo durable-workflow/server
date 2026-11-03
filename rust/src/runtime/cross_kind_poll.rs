@@ -71,19 +71,12 @@ where
         if kind != "query" {
             // Query timing uses the immutable UTC6 authority fields. This
             // readiness hint still grants no claim or execution authority.
-            let query_now = super::query_authority::wire(at);
+            // Read by key from the namespace's open set (Server #964).
             ready.extend(
-                Self::query(DB::POLL_WAKE_QUERIES_SQL)
-                    .bind(at.timestamp())
-                    .bind(self.namespace.as_ref())
-                    .bind(text(body, "task_queue")?)
-                    .bind(query_now.clone())
-                    .bind(query_now)
-                    .fetch_all(&self.pool)
+                self.ready_query_keys(text(body, "task_queue")?)
                     .await?
-                    .iter()
-                    .map(|row| DB::string(row, "id").map(|id| format!("query:{id}")))
-                    .collect::<Result<Vec<_>>>()?,
+                    .into_iter()
+                    .map(|key| format!("query:{key}")),
             );
         }
         Ok(Some(PollWakeSnapshot {

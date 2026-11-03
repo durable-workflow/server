@@ -202,3 +202,85 @@ async fn duplicate_polls_with_one_request_id_share_one_claim() {
     runtime.close().await;
     database.remove().await;
 }
+
+// An answered query keeps its receipt but holds no queue capacity (Server
+// #964): more sequential queries than the cache's open-task bound (64) all
+// succeed against one run, as against published PHP.
+#[tokio::test]
+async fn answered_queries_release_queue_capacity() {
+    let (database, runtime, app, path) = queryable("sequential-queries").await;
+    for index in 0..80 {
+        let caller = admit_query(&app, &path);
+        let (claimed, _) = poll_waiting(&app, &format!("sequential-{index}"), 5).await;
+        let task = claimed["task"].clone();
+        assert!(task.is_object(), "query {index} was not claimed: {claimed}");
+        finish_query(&app, &task).await;
+        let (status, answer) = caller.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "query {index}: {answer}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Retained receipts hold no capacity and cost no scan (Server #964): with
+// thousands of answered tasks already in the cache, as 3.0.1 left them,
+// later queries are admitted, claimed and answered as usual, while the
+// one-time cutover files the old rows a bounded page at a time.
+#[tokio::test]
+async fn thousands_of_retained_receipts_leave_queries_unaffected() {
+    let (database, runtime, app, path) = queryable("many-receipts").await;
+    let expires = chrono::Utc::now().timestamp() + 3600;
+    let rows: Vec<String> = (0..3000)
+        .map(|_| {
+            let id = ulid::Ulid::new().to_string();
+            format!("('dw-native-query:{id}','{{\"query_task_id\":\"{id}\",\"namespace\":\"default\",\"status\":\"completed\"}}',{expires})")
+        })
+        .collect();
+    for chunk in rows.chunks(500) {
+        // Column order is the cache table's: key, value, expiration.
+        database.execute(sqlx::AssertSqlSafe(format!("INSERT INTO dw_query_cache VALUES {}", chunk.join(",")))).await;
+    }
+    for index in 0..20 {
+        let caller = admit_query(&app, &path);
+        let (claimed, _) = poll_waiting(&app, &format!("receipts-{index}"), 5).await;
+        let task = claimed["task"].clone();
+        assert!(task.is_object(), "query {index} was not claimed: {claimed}");
+        finish_query(&app, &task).await;
+        let (status, answer) = caller.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "query {index}: {answer}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+// The cutover never lists a 3.0.1 row that can no longer be answered (Server
+// #964): an expired row is deleted, and a pending row past its query
+// deadline closes first. Otherwise 128 such rows would fill the namespace's
+// open set and refuse the live queries below as query_task_queue_full.
+#[tokio::test]
+async fn the_cutover_lists_only_answerable_rows() {
+    let (database, runtime, app, path) = queryable("stale-cutover").await;
+    let now = chrono::Utc::now();
+    let wire = |time: chrono::DateTime<chrono::Utc>| time.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
+    let row = |expiration: i64| {
+        let id = ulid::Ulid::new().to_string();
+        let task = format!(
+            "{{\"query_task_id\":\"{id}\",\"namespace\":\"default\",\"task_queue\":\"test\",\"status\":\"pending\",\"query_admitted_at\":\"{}\",\"query_deadline_at\":\"{}\",\"receipt_expires_at\":\"{}\"}}",
+            wire(now - chrono::Duration::seconds(600)), wire(now - chrono::Duration::seconds(300)), wire(now + chrono::Duration::seconds(3600)));
+        format!("('dw-native-query:{id}','{task}',{expiration})")
+    };
+    let mut rows: Vec<String> = (0..64).map(|_| row(now.timestamp() - 30)).collect();
+    rows.extend((0..64).map(|_| row(now.timestamp() + 3600)));
+    database.execute(sqlx::AssertSqlSafe(format!("INSERT INTO dw_query_cache VALUES {}", rows.join(",")))).await;
+    for index in 0..3 {
+        let caller = admit_query(&app, &path);
+        let (claimed, _) = poll_waiting(&app, &format!("stale-{index}"), 5).await;
+        let task = claimed["task"].clone();
+        assert!(task.is_object(), "query {index} was not claimed: {claimed}");
+        finish_query(&app, &task).await;
+        let (status, answer) = caller.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "query {index}: {answer}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}
