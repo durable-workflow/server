@@ -312,6 +312,17 @@ async fn the_offline_command_never_initializes_a_database() {
         TestDatabase::Sqlite(dir) => assert!(!dir.path().join("runtime.sqlite").exists(), "the command created a database"),
         _ => assert_eq!(table_counts(&fresh).await, Vec::<(String, i64)>::new(), "the command created tables"),
     }
+    // Counterfactual: the server's own open initializes that same database,
+    // and the command then serves it.
+    fresh.open().await.unwrap().close().await;
+    let (ok, body, stderr) = console(&fresh, &["status"]).await;
+    assert!(ok, "{stderr}");
+    assert_eq!(body["owner"], Value::Null);
+
+    // A database that changes under the command, losing its marker or part of
+    // its schema, is refused and never repaired: there is no bootstrap path.
+    database_refuses_without_repair(&fresh, "DROP TABLE dw_query_cache", "dw_query_cache").await;
+    database_refuses_without_repair(&fresh, "DROP TABLE dw_server_schema", "dw_server_schema").await;
 
     // An existing SQLite file that is not a native database is refused
     // unchanged.
@@ -325,4 +336,17 @@ async fn the_offline_command_never_initializes_a_database() {
     assert!(!output.status.success());
     assert_eq!(first_line(&output.stderr), "native_schema_not_initialized");
     assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0, "the command wrote to a non-native database");
+}
+
+/// Change `database` with `sql`, then check the command refuses it and leaves
+/// `table` missing.
+async fn database_refuses_without_repair(database: &TestDatabase, sql: &'static str, table: &str) {
+    database.execute(sql).await;
+    for args in [["status"].as_slice(), &["release", "--owner", OWNER]] {
+        let (ok, body, stderr) = console(database, args).await;
+        assert!(!ok && body.is_null(), "{sql}: {args:?} succeeded: {body}");
+        assert!(!stderr.is_empty(), "{sql}: no refusal reason");
+    }
+    let tables: Vec<String> = table_counts(database).await.into_iter().map(|(name, _)| name).collect();
+    assert!(!tables.iter().any(|name| name == table), "{sql}: the command recreated {table}");
 }

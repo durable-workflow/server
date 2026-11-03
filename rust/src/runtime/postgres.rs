@@ -390,6 +390,37 @@ impl PostgresStorage {
         Ok(Self { pool })
     }
 
+    /// Open an initialized native database for an offline console command
+    /// (Server #973). There is no bootstrap path: under the bootstrap
+    /// advisory lock, the pool's own connection must find the native marker
+    /// and the exact schema, or the database is refused as it is.
+    pub(super) async fn open_existing(connect_options: PgConnectOptions) -> Result<PgPool> {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(options(connect_options))
+            .await?;
+        let result = async {
+            let mut tx = pool.begin().await?;
+            sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676162)")
+                .execute(&mut *tx)
+                .await?;
+            verify_scope(&mut tx).await?;
+            if !marked(&mut tx).await? {
+                return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
+            }
+            verify(&mut tx).await?;
+            tx.commit().await?;
+            Ok::<_, super::RuntimeError>(())
+        }
+        .await;
+        if let Err(error) = result {
+            pool.close().await;
+            return Err(error);
+        }
+        Ok(pool)
+    }
+
     /// Upgrade an earlier native schema version to this one, in one
     /// transaction under the bootstrap advisory lock. Returns the version
     /// found; a current database is only verified.

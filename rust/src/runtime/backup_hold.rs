@@ -238,22 +238,19 @@ pub fn command(args: &[String]) -> Result<Command> {
 
 /// `backup-hold` against a native SQLite database that already exists.
 pub async fn console_sqlite(database: &str, command: &Command) -> Result<Value> {
-    let store = super::store::Store::new(super::sqlite::open_initialized(database).await?);
+    let store = super::store::Store::new(super::sqlite::open_existing(database).await?);
     store.run_backup_hold_command(command).await
 }
 
-/// `backup-hold` against an initialized native PostgreSQL database; an empty
-/// or foreign database is refused before the writable pool opens.
+/// `backup-hold` against an initialized native PostgreSQL database.
 pub async fn console_postgres(options: sqlx::postgres::PgConnectOptions, command: &Command) -> Result<Value> {
-    super::postgres::PostgresStorage::check(options.clone()).await?;
-    let store = super::store::Store::new(super::postgres::PostgresStorage::open(options).await?.into_pool());
+    let store = super::store::Store::new(super::postgres::PostgresStorage::open_existing(options).await?);
     store.run_backup_hold_command(command).await
 }
 
 /// `backup-hold` against an initialized native MySQL or MariaDB database.
 pub async fn console_mysql(options: sqlx::mysql::MySqlConnectOptions, command: &Command) -> Result<Value> {
-    super::mysql::MySqlStorage::check(options.clone()).await?;
-    let store = super::store::Store::new(super::mysql::MySqlStorage::open(options).await?.into_pool());
+    let store = super::store::Store::new(super::mysql::MySqlStorage::open_existing(options).await?);
     store.run_backup_hold_command(command).await
 }
 

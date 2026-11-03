@@ -26,10 +26,11 @@ pub(super) async fn open(database: &str) -> Result<SqlitePool> {
     unreachable!("the final startup attempt always returns")
 }
 
-/// Open a database that is already native, for an offline console command:
-/// a missing, empty or foreign file is refused before any write, so the
-/// command never bootstraps a schema.
-pub(super) async fn open_initialized(database: &str) -> Result<SqlitePool> {
+/// Open an initialized native database for an offline console command
+/// (Server #973). There is no bootstrap path: the file is never created or
+/// switched to WAL, and the pool's own connection must find the native marker
+/// and the exact schema, or the database is refused as it is.
+pub(super) async fn open_existing(database: &str) -> Result<SqlitePool> {
     if database.is_empty() || database.contains('?') || database.contains(':') {
         return Err(refuse(
             StatusCode::BAD_REQUEST,
@@ -40,19 +41,31 @@ pub(super) async fn open_initialized(database: &str) -> Result<SqlitePool> {
     if !path.exists() {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
     }
-    let mut preflight = SqliteConnection::connect_with(
-        &SqliteConnectOptions::new()
-            .filename(path)
-            .read_only(true)
-            .foreign_keys(false),
-    )
-    .await?;
-    let initialized = inspect(&mut preflight).await;
-    preflight.close().await?;
-    if !initialized? {
-        return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(false)
+                .synchronous(SqliteSynchronous::Full)
+                .foreign_keys(true)
+                .busy_timeout(Duration::from_secs(5)),
+        )
+        .await?;
+    let result = async {
+        let mut connection = pool.acquire().await?;
+        if !inspect(&mut connection).await? {
+            return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
+        }
+        Ok::<_, super::RuntimeError>(())
     }
-    open(database).await
+    .await;
+    if let Err(error) = result {
+        pool.close().await;
+        return Err(error);
+    }
+    Ok(pool)
 }
 
 async fn open_once(database: &str) -> Result<SqlitePool> {
