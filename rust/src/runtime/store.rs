@@ -1547,6 +1547,7 @@ where
         transition_codec: Arc<Semaphore>,
         checkpoint: bool,
         commands: &[Value],
+        resolved: Option<&super::signal_payloads::ResolvedSignal>,
     ) -> Result<()> {
         let payload = DB::document_row(task, "payload")?;
         if payload["resume_source_kind"] != "workflow_signal" {
@@ -1613,10 +1614,14 @@ where
         // (`markConditionWaitSignalConsumed`).
         let record_sequence = if applies { sequence } else { condition.and_then(|wait| wait.sequence) };
         if applies || record_sequence.is_some() {
+            // Arguments stored by reference were resolved before this
+            // transaction, for exactly this reference (Server #979).
+            let stored = DB::string(&signal, "arguments")?;
+            let resolved = resolved.filter(|resolved| resolved.signal_id == signal_id && resolved.stored == stored);
             let prepared = prepare_control_arguments(
                 transition_codec,
                 name.clone(),
-                DB::string(&signal, "arguments")?,
+                resolved.map_or(stored, |resolved| resolved.arguments.clone()),
                 "invalid_signal_arguments",
                 false,
             )
@@ -1659,7 +1664,16 @@ where
                 if let (Some(sequence), Some(id)) = (sequence, wait_id.as_deref()) {
                     Self::cancel_wait_timeout(tx, run_id, &json!({"sequence":sequence,"signal_wait_id":id}), task_id, applied_at).await?;
                 }
-                let mut applied = json!({"workflow_command_id":command_id,"signal_id":signal_id,"signal_name":name,"value":wire(&prepared.value)});
+                // A value above the threshold is recorded by reference, as
+                // `externalizeForNamespace` stores it.
+                let value = match resolved.and_then(|resolved| resolved.value.as_ref()) {
+                    Some(value) => {
+                        Self::claim_external_for(tx, &value.namespace, &value.reference, &value.uri).await?;
+                        wire(&value.stored)
+                    }
+                    None => wire(&prepared.value),
+                };
+                let mut applied = json!({"workflow_command_id":command_id,"signal_id":signal_id,"signal_name":name,"value":value});
                 if let Some(wait_id) = &wait_id {
                     applied["signal_wait_id"] = json!(wait_id);
                 }
@@ -2651,62 +2665,18 @@ where
         task_id: &str,
         body: Value,
         transition_codec: Arc<Semaphore>,
+        signal: Option<&super::signal_payloads::ResolvedSignal>,
     ) -> Result<Value> {
         // Waiting acknowledgement, ordinary retry and a persisted range block
         // are distinct transitions. Other replay blockers remain explicit gates.
-        text(&body, "lease_owner")?;
-        if body["workflow_task_attempt"]
-            .as_i64()
-            .is_none_or(|attempt| attempt < 1)
-        {
-            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
-        }
-        let failure = body["failure"].as_object().ok_or_else(|| {
-            refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_workflow_task_failure",
-            )
-        })?;
-        let message = failure
-            .get("message")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "invalid_workflow_task_failure",
-                )
-            })?;
-        for (field, limit) in [("type", 512), ("reason", 191), ("stack_trace", usize::MAX)] {
-            if failure.get(field).is_some_and(|value| {
-                !value.is_null()
-                    && value
-                        .as_str()
-                        .is_none_or(|text| text.chars().count() > limit)
-            }) {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "invalid_workflow_task_failure",
-                ));
-            }
-        }
-        if failure.get("sequence").is_some_and(|value| {
-            !value.is_null() && value.as_i64().is_none_or(|sequence| sequence < 1)
-        }) {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_workflow_task_failure",
-            ));
-        }
+        let failure = workflow_task_failure_shape(&body)?;
+        let message = failure["message"].as_str().unwrap_or_default();
         let kind = failure
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
-        let waiting = kind.eq_ignore_ascii_case("WorkflowTaskWaitingForHistory")
-            || format!("{kind} {message}")
-                .to_ascii_lowercase()
-                .contains("workflow task waiting for scheduled history");
+        let waiting = waiting_acknowledgement(&body["failure"]);
         let range_blocked = !waiting
             && (failure
                 .get("reason")
@@ -2839,7 +2809,7 @@ where
         }
         // `acknowledgeWorkflowTaskWaitingForHistory` completes a signal task
         // through the bridge, which records its signal as applied.
-        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, &[]).await?;
+        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, &[], signal).await?;
         payload["waiting_for_history_acknowledged"] = json!(true);
         tx.summary_changed(&run_id);
         payload["waiting_for_history_message"] = json!(message);
@@ -2883,6 +2853,7 @@ where
         protocol: Option<&str>,
         limits: super::memo_limits::StructuralLimits,
         checkpoint: Option<&super::scope_checkpoint::Checkpoint>,
+        signal: Option<&super::signal_payloads::ResolvedSignal>,
     ) -> Result<Value> {
         let transition_codec_for_streams = transition_codec.clone();
         // `commands` is required and non-empty, with no count limit of its
@@ -3116,7 +3087,7 @@ where
         }
         if let Some(checkpoint) = checkpoint {
             return self
-                .checkpoint_prefix(tx, task, &body, commands, checkpoint, transition_codec, &external, &local, &exceptions, limits)
+                .checkpoint_prefix(tx, task, &body, commands, checkpoint, transition_codec, &external, &local, &exceptions, limits, signal)
                 .await;
         }
         // `parseCommands`: at most one terminal command, anywhere in the
@@ -3195,7 +3166,7 @@ where
         let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         // The tasks this batch's commands create, in order, as PHP reports them.
         let mut created = Vec::new();
-        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, commands).await?;
+        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, commands, signal).await?;
         // Published parseCommands applies every other command first, whatever
         // the terminal command's position in the batch.
         let apply = Apply {
@@ -4764,6 +4735,46 @@ where
 /// no timeout, as in published PHP.
 /// `request` arguments come from a control-plane `input`, which PHP refuses
 /// as validation of `input.blob`; stored arguments keep `invalid`.
+/// The workflow task failure request PHP accepts: a lease owner, an
+/// attempt of at least 1, and a failure with a message and bounded optional
+/// fields. Returns the failure.
+pub(super) fn workflow_task_failure_shape(body: &Value) -> Result<&serde_json::Map<String, Value>> {
+    let invalid = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_workflow_task_failure");
+    text(body, "lease_owner")?;
+    if body["workflow_task_attempt"].as_i64().is_none_or(|attempt| attempt < 1) {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
+    }
+    let failure = body["failure"].as_object().ok_or_else(invalid)?;
+    if failure.get("message").and_then(Value::as_str).is_none_or(|message| message.trim().is_empty()) {
+        return Err(invalid());
+    }
+    for (field, limit) in [("type", 512), ("reason", 191), ("stack_trace", usize::MAX)] {
+        if failure.get(field).is_some_and(|value| {
+            !value.is_null() && value.as_str().is_none_or(|text| text.chars().count() > limit)
+        }) {
+            return Err(invalid());
+        }
+    }
+    if failure.get("sequence").is_some_and(|value| !value.is_null() && value.as_i64().is_none_or(|sequence| sequence < 1)) {
+        return Err(invalid());
+    }
+    Ok(failure)
+}
+
+/// A workflow task failure that acknowledges a wait for history
+/// (`WorkflowTaskWaitingForHistory`), by its type or message.
+pub(super) fn waiting_acknowledgement(failure: &Value) -> bool {
+    let kind = failure["type"]
+        .as_str()
+        .unwrap_or("")
+        .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
+    let message = failure["message"].as_str().unwrap_or("");
+    kind.eq_ignore_ascii_case("WorkflowTaskWaitingForHistory")
+        || format!("{kind} {message}")
+            .to_ascii_lowercase()
+            .contains("workflow task waiting for scheduled history")
+}
+
 pub(super) async fn prepare_control_arguments(
     semaphore: Arc<Semaphore>,
     name: String,

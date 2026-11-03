@@ -59,6 +59,7 @@ mod execution;
 mod external_config;
 mod external_registry;
 mod external_resolution;
+mod signal_payloads;
 mod external_transport;
 mod external_wait_summary;
 mod failure_commands;
