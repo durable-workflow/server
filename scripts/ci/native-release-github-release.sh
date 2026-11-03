@@ -77,22 +77,6 @@ invocations=$("$gh_bin" attestation verify "oci://$GHCR_IMAGE@$index" --repo "$r
 grep -qE "^https://github\.com/$repo/actions/runs/$run_id/attempts/[0-9]+$" <<<"$invocations" \
   || fail "the provenance of $index names no attempt of run $run_id."
 
-# An existing Release is accepted only when its public record is this
-# verified release: tag, plain title, candidate state, index, commit and run.
-# It is never edited, so a rerun cannot move Latest; any other Release stops
-# the step.
-if existing=$("$gh_bin" release view "$tag" --repo "$repo" --json tagName,name,isPrerelease,body 2>/dev/null); then
-  candidate=false
-  [[ "$version" == *-* ]] && candidate=true
-  jq -e --arg tag "$tag" --arg title "$version" --argjson candidate "$candidate" --arg index "$index" --arg commit "$commit" \
-    --arg run "https://github.com/$repo/actions/runs/$run_id" '
-      .tagName == $tag and .name == $title and .isPrerelease == $candidate
-      and (.body | contains($index)) and (.body | contains($commit)) and (.body | contains($run))' \
-    <<<"$existing" >/dev/null \
-    || fail "Release $tag exists but does not record this verified release (tag, title, candidate state, index, commit and run)."
-  printf 'Release %s already records this verified release; left unchanged.\n' "$tag"
-  exit 0
-fi
 
 # The digest the latest alias names now; empty when it does not exist.
 latest_digest() {
@@ -118,6 +102,27 @@ fi
 
 notes=$(printf 'Durable Workflow Server %s.\n\n| | |\n| --- | --- |\n| Git tag | `%s` → `%s` |\n| Image index | `%s` in `%s` and `%s` |\n| Release run | https://github.com/%s/actions/runs/%s |\n' \
   "$version" "$tag" "$commit" "$index" "$DOCKERHUB_IMAGE" "$GHCR_IMAGE" "$repo" "$run_id")
+# An existing Release is accepted only when it is exactly the Release this
+# step would publish: published (not a draft), tag, plain title, candidate
+# state and these exact notes, and Latest exactly when the live alias says
+# so, read under the same lock. It is never edited, so a rerun cannot move
+# Latest; any other Release stops the step.
+if existing=$("$gh_bin" release view "$tag" --repo "$repo" --json tagName,name,isDraft,isPrerelease,body 2>/dev/null); then
+  candidate=false
+  [[ "$version" == *-* ]] && candidate=true
+  jq -e --arg tag "$tag" --arg title "$version" --argjson candidate "$candidate" --arg notes "$notes" '
+      .tagName == $tag and .name == $title and .isDraft == false and .isPrerelease == $candidate
+      and ((.body // "") | sub("\\s+$"; "")) == ($notes | sub("\\s+$"; ""))' \
+    <<<"$existing" >/dev/null \
+    || fail "Release $tag exists but is not exactly this verified release (draft, tag, title, candidate state or notes)."
+  current=$("$gh_bin" api "repos/$repo/releases/latest" --jq .tag_name) || fail "cannot read the Latest Release."
+  if [[ "$latest" == true && "$current" != "$tag" ]] || [[ "$latest" != true && "$current" == "$tag" ]]; then
+    fail "Release $tag exists, but Latest is $current where the latest alias calls for $([[ "$latest" == true ]] && echo "$tag" || echo "another release")."
+  fi
+  printf 'Release %s is exactly this verified release; left unchanged.\n' "$tag"
+  exit 0
+fi
+
 args=(release create "$tag" --repo "$repo" --verify-tag --title "$version" --notes "$notes")
 if [[ "$version" == *-* ]]; then
   args+=(--prerelease --latest=false)
