@@ -125,6 +125,8 @@ mod schedule_dst;
 pub(crate) mod schedule_spec;
 pub(crate) mod schedule_zones;
 mod schedule_backfill;
+#[cfg(test)]
+mod schedule_burst_tests;
 mod schedule_execution;
 mod schedule_http;
 mod run_diagnostics;
