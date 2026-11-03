@@ -2781,13 +2781,27 @@ async fn queries_bound_abandoned_requests_reclaim_expired_entries_and_deliver_wo
         .unwrap()
         .unwrap()
         .unwrap();
+    // PHP answers a full queue 429 with its query refusal body.
     assert_eq!(
         rejected.0,
-        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::TOO_MANY_REQUESTS,
         "{}",
         rejected.1
     );
     assert_eq!(rejected.1["reason"], "query_task_queue_full");
+    assert_eq!(
+        (&rejected.1["workflow_id"], &rejected.1["query_name"], &rejected.1["target_scope"], &rejected.1["result"]),
+        (&json!("bounded-queries"), &json!("state"), &json!("instance"), &Value::Null),
+        "{}",
+        rejected.1
+    );
+    assert!(rejected.1["run_id"].as_str().is_some_and(|id| !id.is_empty()), "{}", rejected.1);
+    assert_eq!(
+        rejected.1["message"],
+        "Query task queue [test] in namespace [default] reached the configured pending limit of 16.",
+        "{}",
+        rejected.1
+    );
     requests.abort_all();
     while requests.join_next().await.is_some() {}
     assert_eq!(
