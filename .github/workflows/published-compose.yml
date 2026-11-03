@@ -5,6 +5,7 @@ on:
     paths:
       - docker-compose.published.yml
       - scripts/smoke-published-compose.sh
+      - scripts/ci/select-published-compose-image.sh
       - .github/workflows/published-compose.yml
   workflow_dispatch:
     inputs:

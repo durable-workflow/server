@@ -426,7 +426,7 @@ done
 # when Docker Hub has it; latest only for a pull request whose default is not
 # published yet; anything else fails.
 select=scripts/ci/select-published-compose-image.sh
-printf '#!/usr/bin/env bash\nprintf "%%s" "${HUB_STATUS:-200}"\n' > "$dispatch_scratch/curl"
+printf '#!/usr/bin/env bash\nprintf "%%s" "${HUB_STATUS:-200}"\nexit "${CURL_EXIT:-0}"\n' > "$dispatch_scratch/curl"
 chmod +x "$dispatch_scratch/curl"
 selected() { # event, compose file [, VAR=value ...] -> the selected image, "default" or FAILED
   local event=$1 compose=$2; shift 2
@@ -441,12 +441,16 @@ want_image "unpublished default on a pull request" "$(selected pull_request "$(c
 want_image "unpublished default on dispatch" "$(selected workflow_dispatch "$(compose_for 3.0.3)" HUB_STATUS=404)" FAILED
 want_image "Docker Hub error" "$(selected pull_request "$(compose_for 3.0.3)" HUB_STATUS=503)" FAILED
 want_image "Docker Hub unreachable" "$(selected pull_request "$(compose_for 3.0.3)" HUB_STATUS=000)" FAILED
+want_image "a lookup that printed 200 but failed" "$(selected pull_request "$(compose_for 3.0.2)" HUB_STATUS=200 CURL_EXIT=7)" FAILED
+want_image "a lookup that printed 404 but failed" "$(selected pull_request "$(compose_for 3.0.3)" HUB_STATUS=404 CURL_EXIT=28)" FAILED
 for bad in duplicate latest unofficial empty; do
   want_image "$bad default" "$(selected pull_request "$dispatch_scratch/$bad.yml")" FAILED
 done
 want_image "missing file" "$(selected pull_request "$dispatch_scratch/missing.yml")" FAILED
 want_image "manual input" "$(selected workflow_dispatch "$dispatch_scratch/duplicate.yml" INPUT_SERVER_IMAGE=ghcr.io/durable-workflow/server@sha256:abc)" "ghcr.io/durable-workflow/server@sha256:abc"
 grep -q -- '--connect-timeout 10 --max-time 20' "$select" || fail "the Docker Hub lookup must be bounded."
+grep -q '^      - scripts/ci/select-published-compose-image.sh$' .github/workflows/published-compose.yml \
+  || fail "a change to the selector must run the published Compose smoke."
 grep -q '^        run: scripts/ci/select-published-compose-image.sh$' .github/workflows/published-compose.yml \
   || fail "the published Compose smoke must select its image with select-published-compose-image.sh."
 rm -rf "$dispatch_scratch"
