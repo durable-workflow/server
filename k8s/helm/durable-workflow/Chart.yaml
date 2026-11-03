@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 1.0.2
+version: 1.0.3
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.0.4"
+appVersion: "3.0.5"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,16 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.0.4"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.0.5"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: Default image changes from native Server 3.0.2 to 3.0.4. No template, values contract or schema change. 3.0.3 was stopped before publication, so 3.0.4 follows 3.0.2.
+      description: Default image changes from native Server 3.0.4 to 3.0.5. No template, values contract or schema change.
     - kind: fixed
-      description: "Server 3.0.4 fixes the known issue in 3.0.1 and 3.0.2 (server#979): with namespace external payload storage enabled, a signal whose arguments exceed the threshold no longer leaves its run waiting, so signal arguments no longer need to stay below the threshold."
+      description: "Server 3.0.5 keeps one schedule whose start always fails with a non-transient database error from stopping every other due schedule, the repair pass and readiness; the failure is recorded and the schedule moves to its next occurrence (server#955)."
     - kind: fixed
-      description: Server 3.0.4 answers a full query queue with HTTP 429 (query_task_queue_full), as the PHP Server does (server#975).
-    - kind: fixed
-      description: "Server 3.0.4 marks the history export of a retention-pruned run as incomplete instead of complete with no events (server#977). https://github.com/durable-workflow/server/releases/tag/3.0.4"
+      description: "Server 3.0.5 answers a late or refused workflow-task report (task_not_leased or run_closed) with the full not-recorded receipt: recorded false, task_id, workflow_task_attempt and run_id (server#994). https://github.com/durable-workflow/server/releases/tag/3.0.5"

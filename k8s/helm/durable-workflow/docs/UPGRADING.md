@@ -69,6 +69,29 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.0.3 / Server 3.0.5 (native)
+
+The default image changes from native Server 3.0.4 to 3.0.5
+(`image.tag: "3.0.5"`), so the rendered Deployment runs the new image. No
+template, values contract or values schema changes, and the native schema is
+unchanged (version 8), so an upgrade from chart 1.0.2, 1.0.1 or 1.0.0 needs no
+schema-upgrade job.
+
+Server 3.0.5 has two fixes:
+
+- A schedule whose start always fails with a non-transient database error no
+  longer stops every other due schedule, the repair pass and readiness. The
+  failure is recorded on the schedule, which moves to its next occurrence;
+  lock pressure and an unavailable database are still retried
+  ([server#955](https://github.com/durable-workflow/server/issues/955)).
+- A late or refused workflow-task report (`task_not_leased` or `run_closed`)
+  is answered with the full not-recorded receipt: `recorded: false`, `task_id`,
+  `workflow_task_attempt` and `run_id`. Workers can then tell that nothing was
+  recorded for exactly that task and keep polling
+  ([server#994](https://github.com/durable-workflow/server/issues/994)).
+
+See the [3.0.5 release](https://github.com/durable-workflow/server/releases/tag/3.0.5).
+
 ### Chart 1.0.2 / Server 3.0.4 (native)
 
 The default image changes from native Server 3.0.2 to 3.0.4
