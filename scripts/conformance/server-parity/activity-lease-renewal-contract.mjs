@@ -13,6 +13,15 @@ function at(value, label) {
   return millis;
 }
 
+// A UTC microsecond timestamp `seconds` earlier, exactly.
+function earlier(value, seconds) {
+  assert.match(value, MICROS, `a UTC microsecond timestamp, got ${value}`);
+  const [whole, fraction] = value.slice(0, -1).split('.');
+  const micros = BigInt(Date.parse(`${whole}Z`)) * 1000n + BigInt(fraction) - BigInt(seconds) * 1000000n;
+  const date = new Date(Number(micros / 1000000n) * 1000).toISOString().slice(0, 19);
+  return `${date}.${String(micros % 1000000n).padStart(6, '0')}Z`;
+}
+
 // Reviewed runtime activity lease renewal (ActivityTaskController::renewLease
 // over Workflow's ActivityLeaseRenewal). Identities, times and leases come
 // from the observation; their relations and every other field are exact.
@@ -47,7 +56,14 @@ export function checkActivityLeaseRenewal(fixture, observation, workflowId) {
   equal(state.renewed.status, 200, 'renewal accepted');
   const {lease_expires_at: lease, server_time: serverTime, heartbeat_deadline_at: heartbeatDeadline, protocol_version: _p,
     ...renewed} = state.renewed.response;
-  equal(renewed, {...attempt(live), last_heartbeat_at: null, lease_renewed: true, task_id: live.task_id, worker_session: null},
+  // Published PHP replies null before the first heartbeat. Native's accepted
+  // renewal carries the compatibility projection published PHP SDK 3.8.0
+  // needs (Server #985): exactly the heartbeat deadline minus its timeout,
+  // never stored (status below still reads null).
+  assert.ok(state.implementation === null || state.implementation === undefined || state.implementation === 'rust',
+    'published PHP or native');
+  const progress = state.implementation === 'rust' ? earlier(heartbeatDeadline, definition.heartbeat_timeout) : null;
+  equal(renewed, {...attempt(live), last_heartbeat_at: progress, lease_renewed: true, task_id: live.task_id, worker_session: null},
     'renewal status');
   assert.match(lease, MICROS, 'lease in UTC microseconds');
   assert.match(serverTime, MICROS, 'server time in UTC microseconds');

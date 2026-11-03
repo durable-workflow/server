@@ -58,13 +58,14 @@ async fn renewal_extends_only_the_live_lease() {
     let lease = renewed.as_object_mut().unwrap().remove("lease_expires_at").unwrap();
     let server_time = renewed.as_object_mut().unwrap().remove("server_time").unwrap();
     let heartbeat_deadline = renewed.as_object_mut().unwrap().remove("heartbeat_deadline_at").unwrap();
+    let progress = renewed.as_object_mut().unwrap().remove("last_heartbeat_at").unwrap();
     assert_eq!(renewed, json!({
         "can_continue":true,"cancel_requested":false,"reason":null,"heartbeat_recorded":false,
         "workflow_instance_id":"lease-live","workflow_run_id":started["run_id"],"workflow_task_id":activity["task_id"],
         "activity_execution_id":activity["activity_execution_id"],"activity_attempt_id":activity["activity_attempt_id"],
         "attempt_number":1,"run_status":"waiting","run_closed_reason":null,"run_closed_at":null,
         "activity_status":"running","attempt_status":"running","task_status":"leased",
-        "lease_owner":activity["lease_owner"],"last_heartbeat_at":null,
+        "lease_owner":activity["lease_owner"],
         "lease_renewed":true,"task_id":activity["task_id"],"worker_session":null}));
     let micros = |value: &Value| {
         let text = value.as_str().unwrap();
@@ -75,6 +76,10 @@ async fn renewal_extends_only_the_live_lease() {
     assert_eq!(micros(&lease), time + chrono::Duration::seconds(300), "the lease runs the configured 300 s from now");
     assert!(lease.as_str().unwrap() > status_before.1["lease_expires_at"].as_str().unwrap());
     assert_eq!(heartbeat_deadline, status_before.1["deadlines"]["heartbeat"], "progress deadlines never move");
+    // Server #985: published PHP 2.11.x replies null here. Native's accepted
+    // renewal carries the compatibility projection PHP SDK 3.8.0 needs:
+    // exactly the deadline minus the 60 s heartbeat timeout.
+    assert_eq!(micros(&progress), micros(&heartbeat_deadline) - chrono::Duration::seconds(60), "{progress}");
 
     let status_after = request_protocol(&app, "POST", &path(&activity, "status"), own(&activity), "1.20").await;
     let instant = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap();
@@ -171,4 +176,97 @@ async fn renewal_cannot_revive_an_expired_or_closed_run() {
     assert_eq!([&expired["lease_renewed"], &expired["can_continue"]], [&json!(false), &json!(false)]);
     let status = request_protocol(&app, "POST", &path(&activity, "status"), own(&activity), "1.20").await;
     assert_eq!(status.1["can_continue"], false, "an expired lease stays expired: {}", status.1);
+}
+
+async fn rows(database: &TestDatabase, sql: String) -> i64 {
+    task_retry::rows(database, Box::leak(sql.into_boxed_str())).await
+}
+
+fn stamp(value: &Value) -> chrono::DateTime<chrono::FixedOffset> {
+    let text = value.as_str().unwrap_or_else(|| panic!("a timestamp, got {value}"));
+    assert!(text.ends_with('Z') && text.len() == 27, "UTC with six fractional digits: {text}");
+    chrono::DateTime::parse_from_rfc3339(text).unwrap()
+}
+
+// Server #985: native's accepted renewal reports the compatibility
+// projection published PHP SDK 3.8.0 needs before the first heartbeat. It is
+// response only: nothing is stored or recorded, the heartbeat deadline stays,
+// and a real heartbeat replaces it.
+#[tokio::test]
+async fn the_renewal_projection_is_response_only_and_a_heartbeat_replaces_it() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "lease-worker", json!(["echo"]), json!(["lease_activity"])).await;
+    let (started, _, activity) = claim(&app, "projected").await;
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+
+    let (code, renewed) = renew(&app, &activity, own(&activity)).await;
+    assert_eq!(code, StatusCode::OK, "{renewed}");
+    assert_eq!((renewed["lease_renewed"].clone(), renewed["heartbeat_recorded"].clone()), (json!(true), json!(false)), "{renewed}");
+    let deadline = stamp(&renewed["heartbeat_deadline_at"]);
+    assert_eq!(deadline, stamp(&activity["deadlines"]["heartbeat"]), "the claim's heartbeat deadline stays");
+    assert_eq!(stamp(&renewed["last_heartbeat_at"]), deadline - chrono::Duration::seconds(60), "{renewed}");
+
+    // Nothing was stored or recorded.
+    let attempt = activity["activity_attempt_id"].as_str().unwrap();
+    let execution = activity["activity_execution_id"].as_str().unwrap();
+    assert_eq!(rows(&database, format!("SELECT COUNT(*) FROM activity_attempts WHERE id='{attempt}' AND last_heartbeat_at IS NULL")).await, 1);
+    assert_eq!(rows(&database, format!("SELECT COUNT(*) FROM activity_executions WHERE id='{execution}' AND last_heartbeat_at IS NULL")).await, 1);
+    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, history, "no history");
+    let (_, status) = request_protocol(&app, "POST", &path(&activity, "status"), own(&activity), "1.20").await;
+    assert_eq!(status["last_heartbeat_at"], Value::Null, "status reports only stored progress");
+
+    // A real heartbeat is stored, and renewal reports it from then on.
+    let (code, beat) = request_protocol(&app, "POST", &path(&activity, "heartbeat"), own(&activity), "1.20").await;
+    assert_eq!((code, beat["heartbeat_recorded"].clone()), (StatusCode::OK, json!(true)), "{beat}");
+    let (code, after) = renew(&app, &activity, own(&activity)).await;
+    assert_eq!(code, StatusCode::OK, "{after}");
+    assert_eq!(stamp(&after["last_heartbeat_at"]), stamp(&beat["last_heartbeat_at"]), "the stored heartbeat wins: {after}");
+    assert_eq!(stamp(&after["heartbeat_deadline_at"]) - stamp(&after["last_heartbeat_at"]), chrono::Duration::seconds(60));
+    runtime.close().await;
+}
+
+// Without a heartbeat timeout there is no baseline and nothing to project.
+#[tokio::test]
+async fn without_a_heartbeat_timeout_renewal_reports_no_progress() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "lease-worker", json!(["echo"]), json!(["lease_activity"])).await;
+    let started = start(&app, "no-heartbeat-timeout").await;
+    let workflow = poll(&app, "lease-worker", "workflow").await;
+    let mut command = lease_activity();
+    command.as_object_mut().unwrap().remove("heartbeat_timeout");
+    assert_eq!(finish_task(&app, &workflow, json!([command])).await.0, StatusCode::OK);
+    let activity = poll(&app, "lease-worker", "activity").await;
+    assert_eq!(activity["run_id"], started["run_id"]);
+    let (code, renewed) = renew(&app, &activity, own(&activity)).await;
+    assert_eq!(code, StatusCode::OK, "{renewed}");
+    assert_eq!((renewed["last_heartbeat_at"].clone(), renewed["heartbeat_deadline_at"].clone()), (Value::Null, Value::Null), "{renewed}");
+    runtime.close().await;
+}
+
+// The projection never keeps an activity alive: its heartbeat deadline still
+// times it out without a real heartbeat, and the refused renewal then reports
+// only stored progress.
+#[tokio::test]
+async fn renewals_do_not_keep_an_activity_past_its_heartbeat_deadline() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "lease-worker", json!(["echo"]), json!(["lease_activity"])).await;
+    let (_, _, activity) = claim(&app, "heartbeat-expired").await;
+    assert_eq!(renew(&app, &activity, own(&activity)).await.0, StatusCode::OK);
+    let execution = activity["activity_execution_id"].as_str().unwrap();
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "UPDATE activity_executions SET heartbeat_deadline_at='2000-01-01 00:00:00' WHERE id='{execution}'"))).await;
+    let (status, pass) = request(&app, "POST", "/api/system/activity-timeouts/pass", json!({"execution_ids":[execution]})).await;
+    assert_eq!(status, StatusCode::OK, "{pass}");
+    assert_eq!(rows(&database, format!("SELECT COUNT(*) FROM activity_executions WHERE id='{execution}' AND status='running'")).await, 0,
+        "the heartbeat deadline timed the activity out: {pass}");
+    let (code, refused) = renew(&app, &activity, own(&activity)).await;
+    assert_ne!(code, StatusCode::OK, "{refused}");
+    assert_eq!((refused["can_continue"].clone(), refused["last_heartbeat_at"].clone()), (json!(false), Value::Null), "{refused}");
+    runtime.close().await;
 }

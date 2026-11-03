@@ -84,7 +84,11 @@ function finishHttpActivityLeaseRenewal(Client $admin, array $fixture, string $w
     $history = static fn (array $claimed): array => array_column($ok($raw('GET',
         '/api/workflows/'.$claimed['workflow_id'].'/runs/'.$claimed['run_id'].'/history', null), 200, 'history')['events'] ?? [], 'event_type');
 
-    $state = ['applicable' => true, 'namespace' => $namespace];
+    // Native's accepted renewal carries a compatibility projection (Server
+    // #985); the contract tells the two servers apart by this field.
+    $info = $raw('GET', '/api/cluster/info');
+    $state = ['applicable' => true, 'namespace' => $namespace,
+        'implementation' => is_array($info['response'] ?? null) ? ($info['response']['implementation'] ?? null) : null];
     $live = $state['live'] = $claim('live');
     $state['status_before'] = $status($live);
     $state['history_before'] = $history($live);

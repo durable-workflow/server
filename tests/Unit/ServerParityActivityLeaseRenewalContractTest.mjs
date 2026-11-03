@@ -108,3 +108,29 @@ for (const [label, mutate] of [
     assert.throws(() => checkActivityLeaseRenewal(fixture, value, id));
   });
 }
+
+// Server #985: native's accepted renewal reports the compatibility
+// projection, exactly the heartbeat deadline minus the 60 s timeout; the
+// published PHP observation keeps null.
+const native = (progress) => {
+  const state = observation();
+  state.activity_lease_renewal.implementation = 'rust';
+  state.activity_lease_renewal.renewed.response.last_heartbeat_at = progress;
+  return state;
+};
+
+test('native renewal carries exactly the deadline minus the heartbeat timeout', () => {
+  assert.equal(definition.heartbeat_timeout, 60);
+  assert.deepStrictEqual(checkActivityLeaseRenewal(fixture, native('2026-10-22T20:47:11.939526Z'), id),
+    {scope: 'activity_lease_renewal', lease_seconds: 300});
+});
+
+for (const [name, state] of [
+  ['native without the projection', native(null)],
+  ['native projection a microsecond off', native('2026-10-22T20:47:11.939527Z')],
+  ['native projection across the timeout', native('2026-10-22T20:48:11.939526Z')],
+  ['published PHP with a projection', (() => { const s = observation(); s.activity_lease_renewal.renewed.response.last_heartbeat_at = '2026-10-22T20:47:11.939526Z'; return s; })()],
+  ['native storing the projection in status', (() => { const s = native('2026-10-22T20:47:11.939526Z'); s.activity_lease_renewal.status_after.response.last_heartbeat_at = '2026-10-22T20:47:11.939526Z'; return s; })()],
+]) test(`lease renewal refuses ${name}`, () => {
+  assert.throws(() => checkActivityLeaseRenewal(fixture, state, id));
+});
