@@ -109,3 +109,86 @@ async fn activity_timeout_status_reports_no_expired_executions_like_php() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{invalid}");
     assert_eq!(messages(&invalid, "limit"), json!(["The limit field must be an integer."]));
 }
+
+async fn export(app: &Router, workflow: &str, run: &str) -> Value {
+    let (status, bundle) = request(app, "GET", &format!("/api/workflows/{workflow}/runs/{run}/history/export"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{bundle}");
+    bundle
+}
+
+/// Core 2.17.0's retained-run pruning state (workflow#856, server#976): a run
+/// whose details retention cleanup pruned exports as incomplete, with its
+/// state and a dedupe key that cannot match the full export taken before,
+/// and import refuses it. An unpruned run only gains `details_state`.
+#[tokio::test]
+async fn a_pruned_run_exports_as_incomplete_and_import_refuses_it() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let completed = completed_run(&app, "pruned-completed").await;
+    let failed = start(&app, "pruned-failed").await["run_id"].as_str().unwrap().to_owned();
+    let task = poll(&app, "worker", "workflow").await;
+    assert_eq!(finish_task(&app, &task, json!([{"type":"fail_workflow","message":"boom"}])).await.0, StatusCode::OK);
+    let kept = completed_run(&app, "retained-completed").await;
+
+    let mut before = Vec::new();
+    for (workflow, run, status) in [("pruned-completed", &completed, "completed"), ("pruned-failed", &failed, "failed")] {
+        let bundle = export(&app, workflow, run).await;
+        assert_eq!(bundle["history_complete"], true, "{bundle}");
+        assert_eq!([&bundle["workflow"]["status"], &bundle["workflow"]["details_state"], &bundle["workflow"]["details_pruned_at"]],
+            [&json!(status), &json!("retained"), &Value::Null]);
+        assert!(!bundle["history_events"].as_array().unwrap().is_empty(), "{bundle}");
+        before.push(bundle);
+    }
+    let kept_before = export(&app, "retained-completed", &kept).await;
+
+    let (status, pruned) = request(&app, "POST", PASS, json!({"run_ids":[completed, failed]})).await;
+    assert_eq!(status, StatusCode::OK, "{pruned}");
+    assert_eq!(pruned["pruned"], 2, "{pruned}");
+
+    for ((workflow, run, status), before) in
+        [("pruned-completed", &completed, "completed"), ("pruned-failed", &failed, "failed")].into_iter().zip(&before)
+    {
+        let bundle = export(&app, workflow, run).await;
+        let pruned_at = bundle["workflow"]["details_pruned_at"].as_str().unwrap_or_else(|| panic!("{bundle}")).to_owned();
+        assert_eq!(bundle["history_complete"], false, "{bundle}");
+        assert_eq!([&bundle["workflow"]["status"], &bundle["workflow"]["details_state"]], [&json!(status), &json!("pruned")]);
+        assert_eq!(bundle["history_events"], json!([]), "{bundle}");
+        // The full export's key, marked with the pruning time.
+        assert_eq!(bundle["dedupe_key"], json!(format!("{}:details-pruned:{pruned_at}", before["dedupe_key"].as_str().unwrap())));
+        assert_ne!(bundle["dedupe_key"], before["dedupe_key"]);
+
+        // Import runs the verifier and the terminal-history rule; both refuse.
+        let (status, report) = request(&app, "POST", "/api/workflows/import/embedded-v2",
+            json!({"bundle": bundle, "dry_run": true})).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{report}");
+        fn rules(value: &Value, found: &mut Vec<String>) {
+            match value {
+                Value::Object(map) => {
+                    if let Some(rule) = map.get("rule").and_then(Value::as_str) {
+                        found.push(rule.to_owned());
+                    }
+                    map.values().for_each(|value| rules(value, found));
+                }
+                Value::Array(items) => items.iter().for_each(|value| rules(value, found)),
+                _ => {}
+            }
+        }
+        let mut all = Vec::new();
+        rules(&report, &mut all);
+        for rule in ["workflow.terminal_history_incomplete", "history.details_pruned"] {
+            assert!(all.iter().any(|seen| seen == rule), "{rule} missing from {report}");
+        }
+    }
+
+    // An unpruned run's export only gains the retained state.
+    let mut kept_after = export(&app, "retained-completed", &kept).await;
+    let mut kept_before = kept_before;
+    for bundle in [&mut kept_after, &mut kept_before] {
+        for field in ["exported_at", "integrity"] {
+            bundle.as_object_mut().unwrap().remove(field);
+        }
+    }
+    assert_eq!(kept_after, kept_before);
+    assert_eq!([&kept_after["workflow"]["details_state"], &kept_after["workflow"]["details_pruned_at"]], [&json!("retained"), &Value::Null]);
+}

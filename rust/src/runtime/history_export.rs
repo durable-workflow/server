@@ -63,7 +63,7 @@ pub(super) const RUN: &[(&str, Column)] = &[
     ("queue", Text), ("last_history_sequence", Int), ("started_at", Time), ("closed_at", Time), ("archived_at", Time),
     ("archive_command_id", Text), ("archive_reason", Text), ("last_progress_at", Time), ("updated_at", Time),
     ("current_run_id", Text), ("instance_business_key", Text), ("instance_visibility_labels", Json), ("continuations", Int),
-    ("import_source", Text), ("imported_at", Time), ("import_dedupe_key", Text),
+    ("import_source", Text), ("imported_at", Time), ("import_dedupe_key", Text), ("details_pruned_at", Time),
 ];
 pub(super) const RUN_SQL: &str = "SELECT r.*,i.current_run_id,i.business_key AS instance_business_key,i.visibility_labels AS instance_visibility_labels,(SELECT COUNT(*) FROM workflow_links l WHERE l.child_workflow_instance_id=r.workflow_instance_id AND l.link_type='continue_as_new') AS continuations FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=$2 AND r.namespace=$3";
 pub(super) const SUMMARY: &[(&str, Column)] = &[
@@ -249,6 +249,8 @@ fn workflow(rows: &Rows) -> Value {
         "started_at": or(&summary["started_at"], &run["started_at"]),
         "closed_at": or(&summary["closed_at"], &run["closed_at"]),
         "last_progress_at": run["last_progress_at"],
+        "details_state": if run["details_pruned_at"].is_null() { "retained" } else { "pruned" },
+        "details_pruned_at": run["details_pruned_at"],
     })
 }
 
@@ -667,13 +669,22 @@ fn projection_metadata(rows: &Rows) -> Value {
 pub(super) fn bundle(rows: &Rows, exported_at: &str, signing: Option<&Signing>) -> Value {
     let run = &rows.run;
     let terminal = matches!(run["status"].as_str(), Some("completed" | "failed" | "cancelled" | "terminated"));
+    // Retention cleanup deletes a pruned run's history (Core 2.17.0), so its
+    // export never claims to be complete.
+    let pruned_at = text(&run["details_pruned_at"]);
     let progress = or(&run["last_progress_at"], &run["updated_at"]);
-    let dedupe_key = format!(
+    let mut dedupe_key = format!(
         "{}:{}:{}",
         text(&run["id"]).unwrap_or_default(),
         run["last_history_sequence"].as_i64().unwrap_or(0),
         text(&progress).unwrap_or("unknown")
     );
+    // Pruning leaves the sequence and progress time unchanged, so the key is
+    // marked: a post-prune export must not match the earlier full export.
+    if let Some(pruned_at) = pruned_at {
+        dedupe_key.push_str(":details-pruned:");
+        dedupe_key.push_str(pruned_at);
+    }
     let activities: Vec<Value> =
         rows.executions.iter().map(|execution| activity(execution, &rows.events, &rows.attempts)).collect();
     let timers = timers(&rows.events);
@@ -683,7 +694,7 @@ pub(super) fn bundle(rows: &Rows, exported_at: &str, signing: Option<&Signing>) 
     let waits = super::export_waits::waits(rows, &timers);
     let mut bundle = json!({
         "schema": SCHEMA, "schema_version": 2, "exported_at": exported_at, "dedupe_key": dedupe_key,
-        "history_complete": terminal, "workflow": workflow(rows), "payloads": payloads(run), "summary": summary(rows),
+        "history_complete": terminal && pruned_at.is_none(), "workflow": workflow(rows), "payloads": payloads(run), "summary": summary(rows),
         "selected_run": {"waits_projection_source": "workflow_run_waits",
             "timeline_projection_source": "workflow_run_timeline_entries_rebuilt",
             "timers_projection_source": "workflow_run_timer_entries_rebuilt", "timers_projection_rebuild_reasons": [],

@@ -64,6 +64,7 @@ pub(super) fn verify(bundle: &PhpArray, signing_key: Option<&str>, configured_ke
     check_schema(bundle, &mut findings);
     check_required_sections(bundle, &mut findings);
     let memo_entries = check_run_references(&root, &mut findings);
+    check_retained_details(&root, &mut findings);
     check_payload_manifest(&root, &mut findings);
     check_history_events(&root, &mut findings);
     check_command_history_consistency(&root, &mut findings);
@@ -203,6 +204,23 @@ fn check_run_references(bundle: &Php, findings: &mut Findings) -> Option<Vec<(St
             Some("workflow.last_history_sequence".into()), json!({"last_history_sequence":last,"highest_history_sequence":highest}));
     }
     entries
+}
+
+/// `checkRetainedDetails` (Core 2.17.0): a run whose details retention
+/// cleanup pruned has no history to replay or import, whatever its other
+/// fields say.
+fn check_retained_details(bundle: &Php, findings: &mut Findings) {
+    let empty = Php::Array(PhpArray::default());
+    let workflow = bundle.get("workflow").filter(|value| value.is_array()).unwrap_or(&empty);
+    if workflow.get("details_state").and_then(Php::str) != Some("pruned") {
+        return;
+    }
+    let pruned_at = string_value(workflow.get("details_pruned_at"));
+    findings.add("history.details_pruned", ERROR,
+        format!("Retention cleanup pruned this run's details{}; the bundle has no history to replay or import.",
+            pruned_at.map(|at| format!(" at {at}")).unwrap_or_default()),
+        Some("workflow.details_state".into()),
+        json!({"details_pruned_at": pruned_at, "history_complete": bundle.get("history_complete").map(Php::to_json)}));
 }
 
 fn check_payload_manifest(bundle: &Php, findings: &mut Findings) {
