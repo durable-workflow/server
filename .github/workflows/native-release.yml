@@ -5,8 +5,9 @@ name: Native release candidate
 # before plain tags (Server #325). PHP Server releases are 2.x and earlier, and
 # the PHP Release workflow refuses any other tag, so a native tag never starts
 # a PHP release; the image tag is the version without any native- prefix.
-# After both registries publish and a final release's aliases move, the
-# Release job creates the GitHub Release (a candidate as a prerelease). Each architecture builds on its own runner and pushes by
+# Its GitHub Release is created afterwards from protected main by
+# native-github-release.yml, which verifies what this run published; this
+# workflow holds no contents: write. Each architecture builds on its own runner and pushes by
 # digest only; that exact digest is pulled back and smoke-tested there, so a
 # failed smoke leaves no tag. The publish job then refuses tags that already
 # exist, gives both smoked digests
@@ -400,51 +401,3 @@ jobs:
           INDEX_DIGEST: ${{ needs.publish.outputs.digest }}
           RELEASE_IMAGE_TAG_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
         run: bash scripts/ci/native-release-rolling-tags.sh
-
-  release:
-    name: Create the GitHub Release
-    # Only after both registries publish and a final release's aliases move,
-    # so the release page never runs ahead of the images. It holds the
-    # rolling-alias lock and marks a final Latest only when the live latest
-    # alias names its index, so GitHub Latest never moves behind the
-    # registry, whichever order concurrent releases finish in.
-    needs: [plan, publish, aliases]
-    if: github.ref == format('refs/tags/{0}', inputs.tag)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # The tag-restricted Environment guards the write token, as for every
-    # publishing job.
-    environment: dockerhub-native
-    concurrency:
-      group: durable-workflow-server-rolling-aliases
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      packages: read
-    steps:
-      - name: Check out trusted release tooling
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create or confirm the release for this tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_COMMIT: ${{ inputs.release_commit }}
-          VERSION: ${{ needs.plan.outputs.version }}
-          INDEX_DIGEST: ${{ needs.publish.outputs.digest }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: bash scripts/ci/native-release-github-release.sh
