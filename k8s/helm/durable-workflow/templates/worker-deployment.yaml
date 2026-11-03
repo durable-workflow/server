@@ -1,5 +1,5 @@
 {{- include "durable-workflow.validateMemoPayloadTransition" . }}
-{{- if .Values.worker.enabled }}
+{{- if and (include "durable-workflow.isPhp" .) .Values.worker.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,12 +8,10 @@ metadata:
   labels:
     {{- include "durable-workflow.componentLabels" (dict "context" . "component" "worker") | nindent 4 }}
   annotations:
+    {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.commonAnnotations) "chart" (list (include "durable-workflow.argoWorkloadAnnotations" .) (include "durable-workflow.fluxDependsOnAnnotation" .))) | nindent 4 }}
     workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}
     {{- include "durable-workflow.argoWorkloadAnnotations" . | nindent 4 }}
     {{- include "durable-workflow.fluxDependsOnAnnotation" . | nindent 4 }}
-    {{- with .Values.commonAnnotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
 spec:
   {{- if not .Values.worker.autoscaling.enabled }}
   replicas: {{ .Values.worker.replicaCount }}
@@ -28,16 +26,12 @@ spec:
   template:
     metadata:
       labels:
+        {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.worker.podLabels) "chart" (list (include "durable-workflow.componentSelectorLabels" (dict "context" . "component" "worker")))) | nindent 8 }}
         {{- include "durable-workflow.componentSelectorLabels" (dict "context" . "component" "worker") | nindent 8 }}
-        {{- with .Values.worker.podLabels }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
       annotations:
+        {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.worker.podAnnotations) "chart" (list (include "durable-workflow.configChecksumAnnotations" .))) | nindent 8 }}
         workflows.durable-workflow.dev/memo-payload-storage: {{ include "durable-workflow.targetMemoPayloadStorage" . | quote }}
         {{- include "durable-workflow.configChecksumAnnotations" . | nindent 8 }}
-        {{- with .Values.worker.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
     spec:
       serviceAccountName: {{ include "durable-workflow.serviceAccountName" . }}
       {{- with .Values.image.pullSecrets }}

@@ -215,3 +215,151 @@ async fn a_restored_lapsed_hold_is_released_by_its_recorded_owner() {
     let (code, body) = change(&router, "release", json!({"owner": OTHER})).await;
     assert_eq!((code, &body["reason"]), (StatusCode::CONFLICT, &json!("backup_hold_not_owned")), "{body}");
 }
+
+/// The offline `backup-hold` command (Server #973), run as its own process
+/// with only the DB settings: (succeeded, printed report, first stderr
+/// line: the refusal reason; main's own error line follows it).
+async fn console(database: &TestDatabase, args: &[&str]) -> (bool, Value, String) {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"));
+    command.env_clear().env("DW_RUST_EXPERIMENTAL", "1").arg("backup-hold").args(args);
+    match database {
+        TestDatabase::Sqlite(dir) => command.env("DB_CONNECTION", "sqlite").env("DB_DATABASE", dir.path().join("runtime.sqlite")),
+        TestDatabase::Postgres { url, .. } => command.env("DB_CONNECTION", "pgsql").env("DB_URL", url),
+        TestDatabase::MySql { url, .. } => command.env("DB_CONNECTION", "mysql").env("DB_URL", url),
+    };
+    // Waiting on the child blocks, so it runs on the blocking pool.
+    let output = tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    (output.status.success(), serde_json::from_str(stdout.trim()).unwrap_or(Value::Null), first_line(&output.stderr))
+}
+
+fn first_line(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr).lines().next().unwrap_or_default().to_owned()
+}
+
+/// The hold row as stored, as text, for comparing before and after a read.
+async fn hold_rows(database: &TestDatabase) -> Vec<(String, String)> {
+    text_rows(database,
+        "SELECT COALESCE(owner,'')||'|'||COALESCE(acquired_at,''), COALESCE(expires_at,'') FROM runtime_external_payload_backup_hold",
+        "SELECT COALESCE(owner::text,'')||'|'||COALESCE(acquired_at::text,''), COALESCE(expires_at::text,'') FROM runtime_external_payload_backup_hold",
+        "SELECT CONCAT(COALESCE(owner,''),'|',COALESCE(CAST(acquired_at AS CHAR),'')), COALESCE(CAST(expires_at AS CHAR),'') FROM runtime_external_payload_backup_hold").await
+}
+
+#[tokio::test]
+async fn the_offline_command_releases_a_restored_hold_before_any_server_starts() {
+    let temp = tempfile::tempdir().unwrap();
+    let (database, runtime, router) = setup(ExternalPayloadConfig::default(), &temp.path().join("objects")).await;
+
+    // Native schemas start without the hold row. Inspect reports no hold and
+    // still leaves no row.
+    let (ok, body, stderr) = console(&database, &["inspect"]).await;
+    assert!(ok, "{stderr}");
+    assert_eq!(body["schema"], "durable-workflow.external-payload-backup-hold.v1");
+    assert_eq!([&body["active"], &body["owner"], &body["expires_at"]], [&json!(false), &Value::Null, &Value::Null]);
+    assert!(body["database_time"].is_string(), "{body}");
+    assert_eq!(hold_rows(&database).await, Vec::<(String, String)>::new(), "inspect created the hold row");
+
+    // A restored snapshot carries the capturing backup's hold, long expired.
+    let (code, body) = change(&router, "acquire", json!({"owner": OWNER, "ttl": 3600})).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    database.execute("UPDATE runtime_external_payload_backup_hold SET acquired_at='2000-01-01 00:00:00',expires_at='2000-01-01 01:00:00'").await;
+    // The cell is offline: no Server process holds the database.
+    drop(router);
+    runtime.close().await;
+
+    let restored = hold_rows(&database).await;
+    let (ok, body, stderr) = console(&database, &["inspect"]).await;
+    assert!(ok, "{stderr}");
+    assert_eq!([&body["active"], &body["owner"], &body["acquired_at"], &body["expires_at"]],
+        [&json!(false), &json!(OWNER), &json!("2000-01-01 00:00:00"), &json!("2000-01-01 01:00:00")]);
+    assert_eq!(hold_rows(&database).await, restored, "inspect changed the hold row");
+
+    // Only the recorded owner releases it, in either option form, and a
+    // second release reports the same released hold.
+    assert_eq!(console(&database, &["release", "--owner", OTHER]).await.2, "backup_hold_not_owned");
+    assert_eq!(hold_rows(&database).await, restored);
+    let owner_option = format!("--owner={OWNER}");
+    for args in [vec!["release", "--owner", OWNER], vec!["release", owner_option.as_str()]] {
+        let (ok, body, stderr) = console(&database, &args).await;
+        assert!(ok, "{stderr}");
+        assert_eq!([&body["active"], &body["owner"], &body["acquired_at"], &body["expires_at"]],
+            [&json!(false), &json!(OWNER), &json!("2000-01-01 00:00:00"), &Value::Null]);
+    }
+    let (ok, body, _) = console(&database, &["inspect"]).await;
+    assert!(ok);
+    assert_eq!([&body["owner"], &body["expires_at"]], [&json!(OWNER), &Value::Null]);
+
+    // Only release and inspect exist offline; everything else is refused
+    // before the database is opened.
+    for (args, refusal) in [
+        (vec!["release"], "backup_hold_command_invalid"),
+        (vec!["release", "--owner"], "backup_hold_command_invalid"),
+        (vec!["release", "--owner", OWNER, "--owner", OTHER], "backup_hold_command_invalid"),
+        (vec!["release", "--owner", OWNER, "--ttl", "60"], "backup_hold_command_invalid"),
+        (vec!["release", "--force"], "backup_hold_command_invalid"),
+        (vec!["release", "--owner", "not-a-uuid"], "The owner field must be a valid UUID."),
+        (vec!["inspect", "--owner", OWNER], "backup_hold_command_invalid"),
+        (vec!["acquire", "--owner", OTHER], "backup_hold_action_invalid"),
+        (vec!["renew", "--owner", OWNER], "backup_hold_action_invalid"),
+        (vec!["status"], "backup_hold_action_invalid"),
+        (vec![], "backup_hold_action_invalid"),
+    ] {
+        let (ok, body, stderr) = console(&database, &args).await;
+        assert!(!ok && body.is_null(), "{args:?} succeeded: {body}");
+        assert_eq!(stderr, refusal, "{args:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_offline_command_never_initializes_a_database() {
+    // A database with no native schema is refused, and left without one.
+    let fresh = TestDatabase::new().await;
+    for args in [["inspect"].as_slice(), &["release", "--owner", OWNER]] {
+        let (ok, _, stderr) = console(&fresh, args).await;
+        assert!(!ok);
+        assert_eq!(stderr, "native_schema_not_initialized", "{args:?}");
+    }
+    match &fresh {
+        TestDatabase::Sqlite(dir) => assert!(!dir.path().join("runtime.sqlite").exists(), "the command created a database"),
+        _ => assert_eq!(table_counts(&fresh).await, Vec::<(String, i64)>::new(), "the command created tables"),
+    }
+    // Counterfactual: the server's own open initializes that same database,
+    // and the command then serves it.
+    fresh.open().await.unwrap().close().await;
+    let (ok, body, stderr) = console(&fresh, &["inspect"]).await;
+    assert!(ok, "{stderr}");
+    assert_eq!(body["owner"], Value::Null);
+
+    // A database that changes under the command, losing its marker or part of
+    // its schema, is refused and never repaired: there is no bootstrap path.
+    database_refuses_without_repair(&fresh, "DROP TABLE dw_query_cache", "dw_query_cache").await;
+    database_refuses_without_repair(&fresh, "DROP TABLE dw_server_schema", "dw_server_schema").await;
+
+    // An existing SQLite file that is not a native database is refused
+    // unchanged.
+    let temp = tempfile::tempdir().unwrap();
+    let empty = temp.path().join("empty.sqlite");
+    std::fs::write(&empty, b"").unwrap();
+    for args in [["inspect"].as_slice(), &["release", "--owner", OWNER]] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"));
+        command.env_clear().env("DW_RUST_EXPERIMENTAL", "1").env("DB_CONNECTION", "sqlite").env("DB_DATABASE", &empty)
+            .arg("backup-hold").args(args);
+        let output = tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
+        assert!(!output.status.success());
+        assert_eq!(first_line(&output.stderr), "native_schema_not_initialized");
+        assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0, "the command wrote to a non-native database");
+    }
+}
+
+/// Change `database` with `sql`, then check the command refuses it and leaves
+/// `table` missing.
+async fn database_refuses_without_repair(database: &TestDatabase, sql: &'static str, table: &str) {
+    database.execute(sql).await;
+    for args in [["inspect"].as_slice(), &["release", "--owner", OWNER]] {
+        let (ok, body, stderr) = console(database, args).await;
+        assert!(!ok && body.is_null(), "{sql}: {args:?} succeeded: {body}");
+        assert!(!stderr.is_empty(), "{sql}: no refusal reason");
+    }
+    let tables: Vec<String> = table_counts(database).await.into_iter().map(|(name, _)| name).collect();
+    assert!(!tables.iter().any(|name| name == table), "{sql}: the command recreated {table}");
+}

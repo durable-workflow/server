@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Helm-chart kind smoke. Mirrors scripts/k8s-kind-smoke.sh but exercises the
-# self-serve chart at k8s/helm/durable-workflow/ end-to-end:
+# self-serve chart at k8s/helm/durable-workflow/ end-to-end in PHP mode:
 #   1. build a server image and load it into kind
 #   2. provision in-cluster MySQL + Redis (the chart never bundles them)
 #   3. helm install the chart
@@ -229,6 +229,10 @@ apply_dependencies
 app_key="base64:$(openssl rand -base64 32)"
 install_values="${artifact_dir}/install-values.yaml"
 cat >"${install_values}" <<EOF
+# The PHP 2.x Server built from this checkout. The chart defaults to native;
+# scripts/helm-chart-native-kind-smoke.sh covers that runtime.
+runtime: php
+
 image:
   registry: $(echo "${image}" | awk -F/ '{print $1}')
   repository: $(echo "${image}" | sed -E 's#^[^/]+/([^:]+).*#\1#')

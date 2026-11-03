@@ -44,17 +44,21 @@ export async function sourceRelease(repositoryRoot = defaultRepositoryRoot) {
     fail(`source release schema must be ${schema}`);
   }
 
+  const server = exact(
+    object(record.server, 'source release server').version,
+    serverVersion,
+    'source release server.version',
+  );
+  const chart = object(record.helm_chart, 'source release helm_chart');
   return {
-    serverVersion: exact(
-      object(record.server, 'source release server').version,
-      serverVersion,
-      'source release server.version',
-    ),
-    chartVersion: exact(
-      object(record.helm_chart, 'source release helm_chart').version,
-      serverVersion,
-      'source release helm_chart.version',
-    ),
+    serverVersion: server,
+    chartVersion: exact(chart.version, serverVersion, 'source release helm_chart.version'),
+    // The Server image the Helm chart packages. Chart 1.x packages the native
+    // Server while server.version stays the frozen PHP release, so the two
+    // differ. Older records without the field package server.version.
+    chartAppVersion: chart.app_version === undefined
+      ? server
+      : exact(chart.app_version, serverVersion, 'source release helm_chart.app_version'),
   };
 }
 
@@ -274,7 +278,7 @@ const consumers = [
       rendered = replaceExactly(
         rendered,
         new RegExp(`^(appVersion:\\s*["'])${serverVersion}(["']\\s*)$`, 'm'),
-        (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
+        (_match, prefix, suffix) => `${prefix}${release.chartAppVersion}${suffix}`,
         1,
         this.path,
         'top-level appVersion',
@@ -282,29 +286,31 @@ const consumers = [
       return replaceExactly(
         rendered,
         new RegExp(`^(  dev\\.durable-workflow\\.image-reference:\\s*["']docker\\.io/durableworkflow/server:)${serverVersion}(["']\\s*)$`, 'm'),
-        (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
+        (_match, prefix, suffix) => `${prefix}${release.chartAppVersion}${suffix}`,
         1,
         this.path,
         'release image annotation',
       );
     },
   },
+  // The chart default and its README name the image the chart packages.
+  // The PHP-mode examples and CI fixtures pin the frozen PHP release.
   ...[
-    'k8s/helm/durable-workflow/values.yaml',
-    'k8s/helm/durable-workflow/README.md',
-    'k8s/helm/examples/values-dev.yaml',
-    'k8s/helm/examples/values-external-secrets-operator.yaml',
-    'k8s/helm/examples/values-production-existing-secrets.yaml',
-    'k8s/helm/durable-workflow/ci/existing-secrets-values.yaml',
-    'k8s/helm/durable-workflow/ci/inline-secrets-values.yaml',
-    'k8s/helm/durable-workflow/ci/ingress-and-hpa-values.yaml',
-  ].map((path) => ({
+    ['k8s/helm/durable-workflow/values.yaml', 'chartAppVersion'],
+    ['k8s/helm/durable-workflow/README.md', 'chartAppVersion'],
+    ['k8s/helm/examples/values-dev.yaml', 'serverVersion'],
+    ['k8s/helm/examples/values-external-secrets-operator.yaml', 'serverVersion'],
+    ['k8s/helm/examples/values-production-existing-secrets.yaml', 'serverVersion'],
+    ['k8s/helm/durable-workflow/ci/existing-secrets-values.yaml', 'serverVersion'],
+    ['k8s/helm/durable-workflow/ci/inline-secrets-values.yaml', 'serverVersion'],
+    ['k8s/helm/durable-workflow/ci/ingress-and-hpa-values.yaml', 'serverVersion'],
+  ].map(([path, version]) => ({
     path,
     render(source, release) {
       return replaceExactly(
         source,
-        new RegExp(`^(  tag:\\s*["'])${serverVersion}(["']\\s*)$`, 'm'),
-        (_match, prefix, suffix) => `${prefix}${release.serverVersion}${suffix}`,
+        new RegExp(String.raw`^( {2}tag:\s*["'])${serverVersion}(["']\s*)$`, 'gm'),
+        (_match, prefix, suffix) => `${prefix}${release[version]}${suffix}`,
         1,
         path,
         'generated image tag',
@@ -381,7 +387,7 @@ async function synchronize(repositoryRoot, write) {
 
 function usage() {
   process.stderr.write(
-    'Usage: node scripts/ci/sync-source-release.mjs (--check | --write | --print <server-version|chart-version> | --print-legacy-server-version) [--root <repository>]\n',
+    'Usage: node scripts/ci/sync-source-release.mjs (--check | --write | --print <server-version|chart-version|chart-app-version> | --print-legacy-server-version) [--root <repository>]\n',
   );
 }
 
@@ -412,6 +418,7 @@ async function main() {
     const fields = {
       'server-version': release.serverVersion,
       'chart-version': release.chartVersion,
+      'chart-app-version': release.chartAppVersion,
     };
     if (!Object.hasOwn(fields, args[1])) {
       usage();

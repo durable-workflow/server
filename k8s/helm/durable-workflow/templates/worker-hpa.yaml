@@ -1,4 +1,4 @@
-{{- if and .Values.worker.enabled .Values.worker.autoscaling.enabled }}
+{{- if and (include "durable-workflow.isPhp" .) .Values.worker.enabled .Values.worker.autoscaling.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

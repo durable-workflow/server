@@ -107,7 +107,8 @@ use super::memo_limits::COMMAND_BATCH_SIZE as PARALLEL_SPAN_LIMIT;
 /// The reasons `CooperativeCancellationDelivery::validate` returns.
 /// `DefaultWorkflowTaskBridge::deliverCancellation` answers each with its
 /// full delivery body under 409: the task and run, no delivery.
-const VALIDATION_REASONS: [&str; 8] = [
+const VALIDATION_REASONS: [&str; 9] = [
+    "cancellation_activity_abandon_not_supported",
     "cancellation_request_mismatch",
     "cancellation_request_history_missing",
     "cancellation_delivery_mismatch",
@@ -219,6 +220,46 @@ where
             "delivery_sequence":DB::optional_number(run,"cancellation_delivery_sequence")?,
             "delivered_at":DB::optional_instant(run,"cancellation_delivered_at")?.map(timestamp),
             "history_refresh_page_token":"MA=="})))
+    }
+
+    /// The completion guard for an explicit child or activity cancellation
+    /// policy: protocol 1.20 (strictly `1.N` for an activity) and a
+    /// cooperative claim, else PHP's 409 naming what is unavailable.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn cancellation_policy_guard(
+        task: &DB::Row,
+        task_id: &str,
+        body: &Value,
+        protocol: Option<&str>,
+        strict_minor: bool,
+        runtime_gap: Option<&'static str>,
+        reason: &'static str,
+        remediation: &'static str,
+    ) -> Result<()> {
+        let mut unavailable = Vec::new();
+        if !protocol
+            .and_then(|version| version.strip_prefix("1."))
+            .filter(|minor| !strict_minor || !minor.contains('.'))
+            .and_then(|minor| minor.parse::<u32>().ok())
+            .is_some_and(|minor| minor >= 20)
+        {
+            unavailable.push("request_protocol");
+        }
+        if !Self::claim_supports_cancellation(task)? {
+            unavailable.push("worker_claim_capability");
+        }
+        unavailable.extend(runtime_gap);
+        if unavailable.is_empty() {
+            return Ok(());
+        }
+        Err(RuntimeError::Protocol {
+            status: StatusCode::CONFLICT,
+            response: json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"],
+                "worker_id": DB::optional_string(task, "lease_owner")?, "outcome": "rejected", "recorded": false,
+                "reason": reason, "required_capability": "cooperative_cancellation",
+                "minimum_protocol_version": "1.20", "requested_version": protocol, "unavailable": unavailable,
+                "remediation": remediation}),
+        })
     }
 
     pub(super) fn claim_supports_cancellation(task: &DB::Row) -> Result<bool> {
@@ -410,12 +451,15 @@ where
                 "cancellation_delivery_sequence_mismatch",
             )));
         }
+        // Activities whose `wait_cancellation_completed` policy holds this
+        // delivery until their workers acknowledge the stop (Server #958).
+        let mut waits: Vec<String> = Vec::new();
         if call_kind == "parallel" {
             // `parallelEligibility`; a boundary at the next sequence has no
             // authored member yet.
             if sequence < next {
                 let members = Self::parallel_members(&mut tx, &run_id, sequence, span, request_sequence).await.map_err(refusal)?;
-                Self::cancel_members(&mut tx, &run, request_id, task_id, &members).await?;
+                waits.extend(Self::cancel_members(&mut tx, &run, request_id, task_id, &members).await.map_err(refusal)?);
             }
         } else if call_kind == "selection_handle" {
             // `validateCallBoundary` for a handle: it is awaited at the next
@@ -437,7 +481,7 @@ where
                 }
                 vec![(start, kind)]
             };
-            Self::cancel_members(&mut tx, &run, request_id, task_id, &members).await?;
+            waits.extend(Self::cancel_members(&mut tx, &run, request_id, task_id, &members).await.map_err(refusal)?);
         } else if call_kind == "child" {
             if sequence < next {
                 let boundary = Self::validate_child_cancellation_boundary(
@@ -467,17 +511,16 @@ where
                 }
             }
         } else if call_kind == "activity" {
-            // `validateCallBoundary`, then `cancelOpenWaitAtSequence` with
-            // the default `try_cancel` policy: an open activity at the
-            // sequence is cancelled under the request, and one that resolved
-            // after the request takes the delivery as it is. Native records
-            // no explicit activity cancellation policy, so it has no waiting
-            // or abandoning delivery.
+            // `validateCallBoundary`, then `cancelOpenWaitAtSequence` under
+            // the activity's own cancellation policy: an open activity at the
+            // sequence is cancelled under the request (or left running when
+            // abandoned), and one that resolved after the request takes the
+            // delivery as it is.
             Self::validate_call_boundary(&mut tx, &run_id, sequence, call_kind, sequence < next, request_sequence)
                 .await
                 .map_err(refusal)?;
             if sequence < next {
-                Self::deliver_activity_cancellation(&mut tx, &run_id, request_id, sequence, now()).await?;
+                waits.extend(Self::cancel_activity_member(&mut tx, &run_id, request_id, sequence).await.map_err(refusal)?);
             }
         } else if matches!(call_kind, "condition" | "signal") {
             if sequence < next {
@@ -507,6 +550,29 @@ where
             {
                 Self::cancel_root_timer(&mut tx, &run, request_id, &timer, Some(task_id), now()).await?;
             }
+        }
+        if !waits.is_empty() {
+            // `ActivityCancellationWait::prepare`: the delivery waits, the
+            // claim is released, and the run waits for the stop receipts. The
+            // task keeps the wait so a receipt can resume it.
+            let mut held = DB::optional_document_row(&task, "payload")?.unwrap_or_else(|| json!({}));
+            if !held.is_object() {
+                held = json!({});
+            }
+            held["cancellation_activity_wait"] = json!({"request_id":request_id,
+                "root_request_id":requested["cancellation"]["root_request_id"],
+                "cleanup_deadline_at":requested["cancellation"]["cleanup_deadline_at"],"execution_ids":waits});
+            let at = now();
+            Self::query("UPDATE workflow_runs SET status='waiting',last_progress_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(at)).bind(&run_id).execute(&mut *tx).await?;
+            Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL,payload=$1 WHERE id=$2")
+                .bind(DB::document(&held)).bind(task_id).execute(&mut *tx).await?;
+            tx.summary_changed(&run_id);
+            tx.commit().await?;
+            self.wake.notify_waiters();
+            return Ok(json!({"delivered":false,"task_id":task_id,"workflow_run_id":run_id,"request_id":null,
+                "sequence":null,"call_kind":null,"sequence_span":null,"operation_sequence":null,
+                "operation_sequence_span":null,"reason":"cancellation_waiting_for_activity","claim_released":true}));
         }
         let at = now();
         let expires = self.cancellation_lease_expiry(&run)?;
@@ -546,6 +612,144 @@ where
         .await?;
         tx.commit().await?;
         Ok(response)
+    }
+
+    /// `cancelOpenWaitAtSequence` for an activity under its own
+    /// `cancellation_policy` (Server #958), `try_cancel` unless its options
+    /// name another:
+    /// - `try_cancel` cancels the live attempt and the delivery proceeds;
+    /// - `wait_cancellation_completed` cancels it too, and returns the
+    ///   execution while its worker has not acknowledged the stop;
+    /// - `abandon` leaves the activity running, which needs its finite
+    ///   schedule-to-close deadline (`ActivityAbandonment::prepare`).
+    async fn cancel_activity_member(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        request_id: &str,
+        sequence: i64,
+    ) -> Result<Option<String>> {
+        let Some(activity) = Self::query("SELECT id,status,activity_options,schedule_to_close_deadline_at FROM activity_executions WHERE workflow_run_id=$1 AND sequence=$2")
+            .bind(run_id).bind(sequence).fetch_optional(&mut **tx).await?
+        else {
+            return Ok(None);
+        };
+        let execution = DB::string(&activity, "id")?;
+        let policy = DB::optional_document_row(&activity, "activity_options")?
+            .and_then(|options| options["cancellation_policy"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "try_cancel".to_owned());
+        match policy.as_str() {
+            "abandon" => {
+                if matches!(DB::string(&activity, "status")?.as_str(), "pending" | "running")
+                    && DB::optional_instant(&activity, "schedule_to_close_deadline_at")?.is_none()
+                {
+                    return Err(refuse(StatusCode::CONFLICT, "cancellation_activity_abandon_not_supported"));
+                }
+                Ok(None)
+            }
+            "wait_cancellation_completed" => {
+                Self::deliver_activity_cancellation(tx, run_id, request_id, sequence, now()).await?;
+                Ok((!Self::activity_cancellation_resolved(tx, run_id, request_id, &execution).await?).then_some(execution))
+            }
+            _ => {
+                Self::deliver_activity_cancellation(tx, run_id, request_id, sequence, now()).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// `ActivityCancellationWait::resume`: after a stop receipt, a whole-run
+    /// delivery held for its activities wakes with one ready workflow task,
+    /// once every activity it waits on has resolved. Only while the run still
+    /// waits on this request, before its cleanup deadline and before any
+    /// delivery, and when no workflow task is open. Returns whether it woke.
+    pub(super) async fn resume_activity_cancellation_wait(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        request_id: &str,
+        execution: &str,
+        receipt_event: &str,
+    ) -> Result<bool> {
+        let Some(run) = Self::query("SELECT status,queue,cancellation_request_command_id,cancellation_deadline_at,cancellation_delivery_sequence FROM workflow_runs WHERE id=$1")
+            .bind(run_id).fetch_optional(&mut **tx).await?
+        else {
+            return Ok(false);
+        };
+        if DB::string(&run, "status")? != "waiting"
+            || DB::optional_string(&run, "cancellation_request_command_id")?.as_deref() != Some(request_id)
+            || DB::optional_number(&run, "cancellation_delivery_sequence")?.is_some()
+            || DB::optional_instant(&run, "cancellation_deadline_at")?.is_none_or(|deadline| deadline <= now())
+        {
+            return Ok(false);
+        }
+        if Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased')")
+            .bind(run_id).fetch_one(&mut **tx).await? > 0
+        {
+            return Ok(false);
+        }
+        // The latest held delivery for this request names what it waits on.
+        let mut waiting = None;
+        for row in Self::query("SELECT payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='completed' ORDER BY created_at DESC,id DESC LIMIT 20")
+            .bind(run_id).fetch_all(&mut **tx).await?
+        {
+            let payload = DB::optional_document_row(&row, "payload")?.unwrap_or(Value::Null);
+            if payload["cancellation_activity_wait"]["request_id"] == request_id {
+                waiting = Some(payload["cancellation_activity_wait"]["execution_ids"].clone());
+                break;
+            }
+        }
+        let Some(executions) = waiting.as_ref().and_then(Value::as_array) else {
+            return Ok(false);
+        };
+        if !executions.iter().any(|id| id == execution) {
+            return Ok(false);
+        }
+        for id in executions.iter().filter_map(Value::as_str) {
+            if !Self::activity_cancellation_resolved(tx, run_id, request_id, id).await? {
+                return Ok(false);
+            }
+        }
+        let queue = DB::string(&run, "queue")?;
+        Self::create_task_dispatched(tx, run_id, &queue, "workflow", json!({"resume_source_kind":"activity_cancellation_acknowledged",
+            "resume_source_id":receipt_event,"workflow_command_id":request_id}), false).await?;
+        Ok(true)
+    }
+
+    /// `ActivityCancellationCompletion::resolved` for one execution under
+    /// the request: it resolved before this request cancelled it, it was
+    /// cancelled before any attempt started, or the cancelled attempt's
+    /// worker acknowledged the stop.
+    pub(super) async fn activity_cancellation_resolved(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        request_id: &str,
+        execution: &str,
+    ) -> Result<bool> {
+        let mut attempt = None;
+        let mut cancelled = false;
+        for row in Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND workflow_command_id=$2 AND event_type IN ('ActivityCancelled','ActivityCancellationAcknowledged')")
+            .bind(run_id).bind(request_id).fetch_all(&mut **tx).await?
+        {
+            let payload = DB::document_row(&row, "payload")?;
+            if payload["activity_execution_id"] != execution {
+                continue;
+            }
+            match DB::string(&row, "event_type")?.as_str() {
+                "ActivityCancelled" => {
+                    cancelled = true;
+                    attempt = payload["activity_attempt_id"].as_str().map(str::to_owned);
+                }
+                _ => {}
+            }
+        }
+        let Some(attempt) = attempt.filter(|_| cancelled) else {
+            return Ok(true);
+        };
+        let acknowledged = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND workflow_command_id=$2 AND event_type='ActivityCancellationAcknowledged'")
+            .bind(run_id).bind(request_id).fetch_all(&mut **tx).await?
+            .iter()
+            .filter_map(|row| DB::document_row(row, "payload").ok())
+            .any(|payload| payload["activity_execution_id"] == execution && payload["activity_attempt_id"] == attempt.as_str());
+        Ok(acknowledged)
     }
 
     /// `ActivityCancellation::record` for a cooperative request: the open
@@ -716,19 +920,20 @@ where
     }
 
     /// `cancelOpenWaitAtSequence` for each member, in sequence order: a
-    /// pending timer is cancelled, and an open activity is cancelled under
-    /// the request with the default `try_cancel` policy.
+    /// pending timer is cancelled, and an open activity is handled under its
+    /// own cancellation policy. Returns the activities the delivery waits on.
     async fn cancel_members(
         tx: &mut Transaction<'_, DB>,
         run: &DB::Row,
         request_id: &str,
         task_id: &str,
         members: &[(i64, &'static str)],
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let run_id = DB::string(run, "id")?;
+        let mut waits = Vec::new();
         for (member, kind) in members {
             if *kind == "activity" {
-                Self::deliver_activity_cancellation(tx, &run_id, request_id, *member, now()).await?;
+                waits.extend(Self::cancel_activity_member(tx, &run_id, request_id, *member).await?);
             } else if let Some(timer) = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence=$2")
                 .bind(&run_id).bind(*member).fetch_optional(&mut **tx).await?
                 && DB::string(&timer, "status")? == "pending"
@@ -736,7 +941,7 @@ where
                 Self::cancel_root_timer(tx, run, request_id, &timer, Some(task_id), now()).await?;
             }
         }
-        Ok(())
+        Ok(waits)
     }
 
     /// `validateCallBoundary` for an activity or timer call. Every typed step

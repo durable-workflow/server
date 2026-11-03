@@ -1,4 +1,8 @@
-{{- if and .Values.server.enabled .Values.server.pdb.enabled }}
+{{- /* In native mode the budget renders only when more than one pod can
+run: minAvailable 1 on a single replica would block every voluntary eviction,
+including node drains. */}}
+{{- $multiple := or .Values.server.autoscaling.enabled (gt (int (include "durable-workflow.serverReplicas" .)) 1) }}
+{{- if and .Values.server.enabled .Values.server.pdb.enabled (or (include "durable-workflow.isPhp" .) $multiple) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
