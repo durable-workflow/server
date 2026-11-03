@@ -69,6 +69,27 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.0.2 / Server 3.0.4 (native)
+
+The default image changes from native Server 3.0.2 to 3.0.4
+(`image.tag: "3.0.4"`), so the rendered Deployment runs the new image. No
+template, values contract or values schema changes, and the native schema is
+unchanged (version 8), so an upgrade from chart 1.0.1 or 1.0.0 needs no
+schema-upgrade job. Server 3.0.3 was stopped before it was published, so 3.0.4
+follows 3.0.2 directly.
+
+Server 3.0.4 fixes the known issue listed for 3.0.2 and 3.0.1
+([server#979](https://github.com/durable-workflow/server/issues/979)): when a
+namespace has external payload storage enabled, a signal whose arguments exceed
+the storage threshold is now applied instead of leaving its run waiting, so
+signal arguments no longer need to stay below the threshold. It also answers a
+full query queue with HTTP 429 (`query_task_queue_full`), as the PHP Server
+does ([server#975](https://github.com/durable-workflow/server/pull/975)), and
+marks the history export of a run whose details retention cleanup pruned as
+incomplete, instead of complete with no events
+([server#977](https://github.com/durable-workflow/server/pull/977)). See the
+[3.0.4 release](https://github.com/durable-workflow/server/releases/tag/3.0.4).
+
 ### Chart 1.0.1 / Server 3.0.2 (native)
 
 The default image changes to native Server 3.0.2 (`image.tag: "3.0.2"`), so
