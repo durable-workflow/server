@@ -8,6 +8,7 @@ use App\Models\WorkflowDurableStreamItem;
 use App\Models\WorkflowNamespace;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\NamespaceExternalPayloadStorage;
+use App\Support\RuntimeExternalPayloadDeletions;
 use App\Support\RuntimeExternalPayloadException;
 use App\Support\RuntimeExternalPayloadObjectLock;
 use App\Support\RuntimeExternalPayloadRegistry;
@@ -598,9 +599,25 @@ class WorkflowStreamPayloadRaceTest extends TestCase
         $this->assertSame($objectDeleted ? 1 : 0, $result['external_payloads_deleted'], json_encode($result));
     }
 
+    /**
+     * Cleanup commits the object's last registration together with a durable
+     * deletion intent; the provider deletion runs after that commit. On
+     * SQLite the after-commit step can lose the write lock to the writer the
+     * test has just released (an immediate busy snapshot error) and leave the
+     * intent for the next cleanup pass (#970). Bytes may outlive the commit
+     * only with that intent pending, and that pass must remove both.
+     */
     private function assertObjectDeleted(array $object): void
     {
-        $this->assertFileDoesNotExist(rawurldecode((string) parse_url($object['uri'], PHP_URL_PATH)));
+        $path = rawurldecode((string) parse_url($object['uri'], PHP_URL_PATH));
+        $intents = static fn (): int => DB::table('runtime_external_payload_deletions')
+            ->where('storage_uri', $object['uri'])->count();
+        if (is_file($path)) {
+            $this->assertSame(1, $intents(), 'surviving bytes need a pending deletion intent');
+            app(RuntimeExternalPayloadDeletions::class)->retryPending('default', 10);
+        }
+        $this->assertFileDoesNotExist($path);
+        $this->assertSame(0, $intents());
         $this->assertSame(0, RuntimeExternalPayload::query()->where('storage_uri', $object['uri'])->count());
     }
 
