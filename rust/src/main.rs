@@ -245,6 +245,42 @@ fn main() -> Result<(), Box<dyn Error>> {
         .block_on(run())
 }
 
+/// `backup-hold release --owner <uuid>` and `backup-hold inspect`: what a
+/// restore runs before any Server process starts (Server #973). It opens only
+/// an initialized native database from the DB settings, `inspect` read-only,
+/// prints the v1 report, and on refusal prints the reason and exits non-zero.
+async fn backup_hold_command() -> Result<(), Box<dyn Error>> {
+    use durable_workflow_server::runtime::backup_hold;
+    let args: Vec<String> = env::args().skip(2).collect();
+    let backend = env::var("DB_CONNECTION").unwrap_or_default();
+    let result = match backup_hold::command(&args) {
+        Err(error) => Err(error),
+        Ok(command) => match backend.as_str() {
+            "sqlite" => {
+                let path = env::var("DB_DATABASE").map_err(|_| "DB_DATABASE is required")?;
+                backup_hold::console_sqlite(&path, &command).await
+            }
+            "pgsql" => backup_hold::console_postgres(postgres_options()?, &command).await,
+            "mysql" | "mariadb" => backup_hold::console_mysql(mysql_options()?, &command).await,
+            _ => {
+                return Err(
+                    "backup-hold requires DB_CONNECTION=sqlite, pgsql, mysql or mariadb".into(),
+                );
+            }
+        },
+    };
+    match result {
+        Ok(report) => {
+            println!("{report}");
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("{}", backup_hold::console_failure(&error));
+            Err("backup hold command refused".into())
+        }
+    }
+}
+
 /// A release build carries the version of its `native-` tag, built in as
 /// `DW_SERVER_VERSION`, and starts without the opt-in. A development build
 /// (no release version) still requires `DW_RUST_EXPERIMENTAL=1`, so an
@@ -256,6 +292,9 @@ fn release_build() -> bool {
 async fn run() -> Result<(), Box<dyn Error>> {
     if !release_build() && env::var("DW_RUST_EXPERIMENTAL").as_deref() != Ok("1") {
         return Err("Rust development build requires DW_RUST_EXPERIMENTAL=1; release builds do not".into());
+    }
+    if env::args().nth(1).as_deref() == Some("backup-hold") {
+        return backup_hold_command().await;
     }
     if let Some(command) = env::args().nth(1) {
         if env::args().count() != 2
