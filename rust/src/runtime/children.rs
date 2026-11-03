@@ -405,9 +405,11 @@ where
 
     /// The parent's start turn (Server #966): one fresh workflow task, created
     /// with the completion that committed an `await: "started"` child start,
-    /// unless that completion closed the parent or the parent already has a
-    /// workflow task waiting for it. Its poll carries the committed
-    /// `ChildWorkflowScheduled` and `ChildRunStarted` history.
+    /// unless that completion closed the parent. As for a child's resolution
+    /// (`child_parent_resume`), only a ready workflow task that replays the
+    /// parent can carry the committed `ChildWorkflowScheduled` and
+    /// `ChildRunStarted` history instead: an update task does not replay the
+    /// workflow, and a leased task may have read history before the start.
     pub(super) async fn child_start_turn(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -419,13 +421,18 @@ where
             .bind(run_id)
             .fetch_one(&mut **tx)
             .await?;
-        let waiting = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status IN ('ready','leased') AND id<>$2")
+        if open == 0 {
+            return Ok(None);
+        }
+        let ready = Self::query("SELECT payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' AND id<>$2 ORDER BY id LIMIT 1001")
             .bind(run_id)
             .bind(task_id)
-            .fetch_one(&mut **tx)
+            .fetch_all(&mut **tx)
             .await?;
-        if open == 0 || waiting != 0 {
-            return Ok(None);
+        for task in &ready {
+            if DB::document_row(task, "payload")?["workflow_update_id"].as_str().is_none() {
+                return Ok(None);
+            }
         }
         Self::create_task(tx, run_id, queue, "workflow", turn).await.map(Some)
     }

@@ -30,7 +30,8 @@ fn child(mode: Option<&str>) -> Value {
 /// `worker` takes parents on the default queue and `child-worker` children
 /// on their own, so a parent poll never claims a child.
 async fn workers(app: &Router) {
-    register(app, "worker", json!(["echo"]), json!([])).await;
+    // The parent worker also takes the `set` update and `finish` signal.
+    update_worker(app, "worker").await;
     let (status, body) = request(app, "POST", "/api/worker/register", json!({"worker_id":"child-worker","task_queue":"children",
         "runtime":"php","supported_workflow_types":["child"],"supported_activity_types":[]})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -172,6 +173,114 @@ async fn an_unknown_await_is_refused_before_any_child_and_the_capability_is_adve
     let (status, info) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{info}");
     assert_eq!(info["capabilities"]["child_workflow_start_turn"], true, "{info}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+async fn update_task_count(database: &TestDatabase, run: &Value) -> i64 {
+    let run = run.as_str().unwrap();
+    count(database, format!("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id='{run}' AND task_type='workflow' AND payload LIKE '%workflow_update_id%'")).await
+}
+
+// An update accepted while the parent's task is claimed gets its own task
+// at that task's completion. It does not replay the workflow, so it cannot
+// stand in for the start turn: the parent gets both.
+#[tokio::test]
+async fn an_update_task_does_not_replace_the_start_turn() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    workers(&app).await;
+    let started = start(&app, "updated-turn").await;
+    let first = poll(&app, "worker", "workflow").await;
+    let (status, update) = request(&app, "POST", "/api/workflows/updated-turn/update/set", json!({"input":[5]})).await;
+    assert!(status.is_success(), "{update}");
+    let (status, body) = finish_task(&app, &first, json!([child(Some("started"))])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut turns = Vec::new();
+    for _ in 0..2 {
+        turns.push(poll(&app, "worker", "workflow").await);
+    }
+    let root: Vec<&Value> = turns.iter().filter(|task| task["workflow_update_id"].is_null()).collect();
+    assert_eq!(root.len(), 1, "one root start turn beside the update task: {turns:?}");
+    assert_eq!(events(root[0], "ChildRunStarted").len(), 1, "{}", root[0]);
+    assert!(turns.iter().any(|task| task["workflow_update_id"].is_string()), "the update task remains: {turns:?}");
+    assert!(update_task_count(&database, &started["run_id"]).await >= 1);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// A ready root task, here a declared signal's, replays the parent with the
+// committed start in its history, so it carries the turn and none is added.
+#[tokio::test]
+async fn a_ready_root_task_carries_the_start_turn() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    workers(&app).await;
+    let started = start(&app, "signalled-turn").await;
+    let first = poll(&app, "worker", "workflow").await;
+    let (status, body) = request(&app, "POST", "/api/workflows/signalled-turn/signal/finish", json!({"input":[1]})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let (status, body) = finish_task(&app, &first, json!([child(Some("started"))])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(parent_tasks(&database, &started["run_id"]).await, 2, "the signal's task carries the turn: {body}");
+    let carried = poll(&app, "worker", "workflow").await;
+    assert_eq!(carried["run_id"], started["run_id"]);
+    assert_eq!(events(&carried, "ChildRunStarted").len(), 1, "{carried}");
+    assert!(poll(&app, "worker", "workflow").await.is_null(), "no second root turn");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// A leased task's worker may have read history before the start, so it is
+// not taken as the turn.
+#[tokio::test]
+async fn a_leased_task_does_not_replace_the_start_turn() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    workers(&app).await;
+    let started = start(&app, "leased-turn").await;
+    let first = poll(&app, "worker", "workflow").await;
+    let run = started["run_id"].as_str().unwrap();
+    // Another root task of the run, claimed elsewhere before the start.
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,payload,queue,lease_owner,lease_expires_at,attempt_count,available_at,created_at,updated_at) \
+         SELECT '01M6FZZZZZZZZZZZZZZZZZZZZZ',workflow_run_id,namespace,'workflow','leased',payload,queue,'elsewhere','2037-01-01 00:00:00',1,available_at,created_at,updated_at \
+         FROM workflow_tasks WHERE id='{}'", first["task_id"].as_str().unwrap()))).await;
+    let (status, body) = finish_task(&app, &first, json!([child(Some("started"))])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(parent_tasks(&database, &started["run_id"]).await, 3, "the claim, the leased task and a fresh turn: {body}");
+    let turn = poll(&app, "worker", "workflow").await;
+    assert_eq!(turn["run_id"], json!(run), "a fresh start turn beside the leased task: {body}");
+    assert_ne!(turn["task_id"], "01M6FZZZZZZZZZZZZZZZZZZZZZ", "not the leased task");
+    assert_eq!(events(&turn, "ChildRunStarted").len(), 1, "{turn}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// The child finishes before the start turn is claimed: the ready turn
+// carries the resolution too, with no second task and no stuck parent.
+#[tokio::test]
+async fn a_child_finishing_before_the_turn_is_claimed_resolves_in_that_turn() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    workers(&app).await;
+    let started = start(&app, "fast-child").await;
+    let first = poll(&app, "worker", "workflow").await;
+    let (status, body) = finish_task(&app, &first, json!([child(Some("started"))])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let child_task = child_poll(&app).await;
+    let (status, body) = finish_task(&app, &child_task, json!([{"type":"complete_workflow","result":envelope(Payload::Long(3))}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(parent_tasks(&database, &started["run_id"]).await, 2, "the ready turn is the resume too");
+    let turn = poll(&app, "worker", "workflow").await;
+    assert_eq!((events(&turn, "ChildRunStarted").len(), events(&turn, "ChildRunCompleted").len()), (1, 1), "{turn}");
+    let (status, body) = finish_task(&app, &turn, json!([{"type":"complete_workflow","result":envelope(Payload::Long(3))}])).await;
+    assert_eq!((status, body["run_status"].clone()), (StatusCode::OK, json!("completed")), "{body}");
+    assert!(poll(&app, "worker", "workflow").await.is_null());
     runtime.close().await;
     database.remove().await;
 }
