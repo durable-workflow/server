@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 1.0.0
+version: 1.0.1
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.0.1"
+appVersion: "3.0.2"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,16 +30,12 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.0.1"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.0.2"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: Run the native 3.x Server by default as one Deployment with no worker, scheduler, migration job or Redis.
-    - kind: added
-      description: Add runtime=php so existing PHP 2.x installs keep their worker, scheduler and bootstrap job.
-    - kind: added
-      description: Add an opt-in pre-upgrade job that runs the native schema-upgrade command while every Server is stopped.
+      description: Default image changes to native Server 3.0.2 (query queue wedge, failed-run describe fields, offline backup-hold release and inspect). No template, values contract or schema change.
     - kind: changed
-      description: Refuse to move an existing PHP release to native unless runtime is set explicitly.
+      description: "Known issue in Server 3.0.2 and 3.0.1 (server#979, fixed in 3.0.3): with namespace external payload storage enabled, a signal whose arguments exceed the threshold leaves its run waiting. Keep signal arguments below the threshold until 3.0.3. https://github.com/durable-workflow/server/releases/tag/native-3.0.2"

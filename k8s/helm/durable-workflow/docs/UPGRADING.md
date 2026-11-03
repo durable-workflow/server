@@ -69,6 +69,26 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.0.1 / Server 3.0.2 (native)
+
+The default image changes to native Server 3.0.2 (`image.tag: "3.0.2"`), so
+the rendered Deployment runs the new image. No template, values contract or
+values schema changes, and the native schema is unchanged (version 8), so an
+upgrade from chart 1.0.0 needs no schema-upgrade job. Server 3.0.2 fixes
+queries that stopped being answered after about 63 sequential queries, adds
+the terminal failure to a failed run's describe, applies activity
+cancellation policies on whole-run delivery, and adds the offline
+`backup-hold release` and `backup-hold inspect` commands used during a
+restore. See the
+[3.0.2 release](https://github.com/durable-workflow/server/releases/tag/native-3.0.2).
+
+Known issue in Server 3.0.2, also present in 3.0.1
+([server#979](https://github.com/durable-workflow/server/issues/979), fixed in
+3.0.3): when a namespace has external payload storage enabled, a signal whose
+arguments exceed the storage threshold fails when it is applied and leaves its
+run waiting. Until the chart moves to Server 3.0.3, keep signal arguments below
+the threshold if your workflows send signals that large.
+
 ### Chart 1.0.0 / Server 3.0.1 (native)
 
 The chart now runs the native 3.x Server by default. Native is one process
