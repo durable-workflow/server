@@ -1,7 +1,10 @@
 use super::*;
 
+/// The cache's query task rows, without native's bookkeeping rows (open
+/// sets and expiry pages, which share the table).
 async fn query_entries(database: &TestDatabase) -> i64 {
-    let sql = "SELECT COUNT(*) FROM dw_query_cache";
+    let sql = "SELECT COUNT(*) FROM dw_query_cache WHERE substr(\"key\",1,16)='dw-native-query:'";
+    let mysql = "SELECT COUNT(*) FROM dw_query_cache WHERE LEFT(`key`,16)='dw-native-query:'";
     match database {
         TestDatabase::Sqlite(dir) => {
             let pool = sqlx::SqlitePool::connect(&format!(
@@ -28,7 +31,7 @@ async fn query_entries(database: &TestDatabase) -> i64 {
                 .connect_with(options.as_ref().clone())
                 .await
                 .unwrap();
-            let count = sqlx::query_scalar(sql).fetch_one(&pool).await.unwrap();
+            let count = sqlx::query_scalar(mysql).fetch_one(&pool).await.unwrap();
             pool.close().await;
             count
         }

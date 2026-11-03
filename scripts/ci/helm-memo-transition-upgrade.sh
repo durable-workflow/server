@@ -9,10 +9,12 @@ fixture="${chart_path}/ci/inline-secrets-values.yaml"
 storage_annotation="workflows.durable-workflow.dev/memo-payload-storage"
 temporary_directory="$(mktemp -d)"
 stub_chart="${temporary_directory}/stub"
-successor_tag="$(sed -nE 's/^appVersion:[[:space:]]*"([^"]+)"/\1/p' "${chart_path}/Chart.yaml")"
+# The memo transition guard is PHP-only. Chart 1.x packages the native Server,
+# so the PHP successor is the 2.x release the PHP fixture pins, not appVersion.
+successor_tag="$(sed -nE 's/^  tag:[[:space:]]*"([^"]+)"/\1/p' "${fixture}")"
 
-if [[ -z "${successor_tag}" ]]; then
-    printf 'could not resolve the successor image tag from %s/Chart.yaml\n' "${chart_path}" >&2
+if [[ ! "${successor_tag}" =~ ^2\. ]]; then
+    printf 'could not resolve a PHP 2.x successor image tag from %s\n' "${fixture}" >&2
     exit 1
 fi
 

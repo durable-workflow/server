@@ -1,0 +1,35 @@
+# Development reference values for the native Server. Inline secrets are
+# acceptable here because the deployment is short-lived and not
+# internet-facing. DO NOT use this shape in production.
+#
+# The chart's default image is the native Server it packages. Native needs
+# only a database: no Redis, worker, scheduler or migration Job.
+
+externalDatabase:
+  connection: mysql
+  host: mysql.dev.svc.cluster.local
+  port: 3306
+  database: durable_workflow
+  auth:
+    username: workflow
+    password: dev-only-password
+
+auth:
+  serverKey: "base64:dev-server-key-change-me"
+  # Required. Native accepts this shared token for every role.
+  authToken: "dev-shared-token"
+  workerToken: "dev-worker-token"
+  operatorToken: "dev-operator-token"
+  adminToken: "dev-admin-token"
+
+server:
+  replicaCount: 1
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

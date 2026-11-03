@@ -135,7 +135,10 @@ def source_release_metadata(
         schema = record["schema"]
         server_version = record["server"]["version"]
         chart_version = record["helm_chart"]["version"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        # The Server image the chart packages. Chart 1.x packages the native
+        # Server while server.version stays the frozen PHP release.
+        chart_app_version = record["helm_chart"].get("app_version", server_version)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as error:
         raise ReleaseError(f"source release manifest is invalid: {error}") from error
     if schema != "durable-workflow.server.source-release/v1":
         raise ReleaseError(f"source release manifest uses unsupported schema {schema}")
@@ -143,11 +146,17 @@ def source_release_metadata(
         raise ReleaseError("source release Server version is not SemVer")
     if not isinstance(chart_version, str) or SEMVER_PATTERN.fullmatch(chart_version) is None:
         raise ReleaseError("source release Helm chart version is not SemVer")
-    return {"server_version": server_version, "chart_version": chart_version}
+    if not isinstance(chart_app_version, str) or SEMVER_PATTERN.fullmatch(chart_app_version) is None:
+        raise ReleaseError("source release Helm chart app_version is not SemVer")
+    return {
+        "server_version": server_version,
+        "chart_version": chart_version,
+        "chart_app_version": chart_app_version,
+    }
 
 
 def onboarding_server_version() -> str:
-    return source_release_metadata()["server_version"]
+    return source_release_metadata()["chart_app_version"]
 
 
 def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
@@ -178,10 +187,10 @@ def validate_source(chart_path: Path = DEFAULT_CHART_PATH) -> dict[str, Any]:
             f"got {metadata['version']} and {source_release['chart_version']}. "
             "Run node scripts/ci/sync-source-release.mjs --write"
         )
-    if metadata["app_version"] != source_release["server_version"]:
+    if metadata["app_version"] != source_release["chart_app_version"]:
         raise ReleaseError(
             "Chart.yaml.appVersion must match the authoritative Server source release; "
-            f"got {metadata['app_version']} and {source_release['server_version']}. "
+            f"got {metadata['app_version']} and {source_release['chart_app_version']}. "
             "Run node scripts/ci/sync-source-release.mjs --write"
         )
     return metadata
@@ -263,6 +272,8 @@ def helm_value_arguments() -> list[str]:
         "--set-string",
         "auth.serverKey=base64:bm90LWEtc2VjcmV0",
         "--set-string",
+        "auth.authToken=not-a-secret",
+        "--set-string",
         "auth.workerToken=not-a-secret",
         "--set-string",
         "auth.operatorToken=not-a-secret",
@@ -285,6 +296,8 @@ def helm_fixture_value_arguments() -> list[str]:
         "externalRedis.host=redis.durable-workflow.svc.cluster.local",
         "--set-string",
         "auth.serverKey=base64:bm90LWEtc2VjcmV0",
+        "--set-string",
+        "auth.authToken=not-a-secret",
         "--set-string",
         "auth.workerToken=not-a-secret",
         "--set-string",

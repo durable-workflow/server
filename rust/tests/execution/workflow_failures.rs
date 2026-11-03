@@ -633,3 +633,39 @@ async fn workflow_failure_rolls_back_child_and_parent_when_parent_notification_f
     runtime.close().await;
     database.remove().await;
 }
+
+// Describe of a failed run carries its terminal failure, as published PHP's
+// formatRun does (Server #967): `error`, `failure`, `exception` and
+// `failures`, from the typed WorkflowFailed event.
+#[tokio::test]
+async fn a_failed_runs_describe_carries_its_terminal_failure() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "failure-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "workflow-failure-describe").await;
+    let task = poll(&app, "failure-worker", "workflow").await;
+    let accepted = finish_task(&app, &task, json!([command()])).await;
+    assert_eq!(accepted.0, StatusCode::OK, "{}", accepted.1);
+    let (status, described) = request(&app, "GET",
+        &format!("/api/workflows/workflow-failure-describe/runs/{}", run["run_id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    let failure = &described["failure"];
+    assert_eq!(described["error"], "inner failure λ");
+    assert_eq!(failure["message"], "inner failure λ");
+    assert_eq!(failure["exception_type"], "domain-v1");
+    assert_eq!(failure["exception_class"], "DomainException");
+    assert_eq!(failure["non_retryable"], true);
+    assert_eq!(failure["source_kind"], "workflow_run");
+    assert_eq!(failure["source_id"], run["run_id"]);
+    assert_eq!(described["exception"], json!({"type":"domain-v1","class":"DomainException","message":"inner failure λ"}));
+    assert_eq!(described["exception"], failure["exception"]);
+    assert_eq!(described["failures"], failure["failures"]);
+    assert_eq!(described["failures"][0]["history_authority"], "typed_history");
+    // The four fields close the run description, in PHP's order, before the
+    // control-plane envelope the response adds.
+    let keys: Vec<&String> = described.as_object().unwrap().keys().filter(|key| *key != "control_plane").collect();
+    assert_eq!(keys[keys.len() - 4..], ["error", "failure", "exception", "failures"]);
+    runtime.close().await;
+    database.remove().await;
+}

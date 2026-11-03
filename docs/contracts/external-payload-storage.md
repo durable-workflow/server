@@ -261,6 +261,25 @@ curl -fsS "$SERVER/api/system/external-payload-backup-hold?owner=$BACKUP_ID" \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'X-Durable-Workflow-Control-Plane-Version: 2'
 ```
 
+A restore that is still offline, with no Server process running, uses the
+native image's two console commands instead. They read only the database
+settings (`DB_CONNECTION` and its connection variables), open only an already
+initialized native database, never create or change its schema, print the
+same JSON report, and start no listener or workers:
+
+```sh
+# The hold as stored, read-only: no lock, no row created, no write.
+docker run --rm --env-file db.env "$SERVER_IMAGE" backup-hold inspect
+# Release the restored hold by its recorded owner; repeating it is harmless.
+docker run --rm --env-file db.env "$SERVER_IMAGE" \
+  backup-hold release --owner="$BACKUP_ID"
+```
+
+On refusal they print the reason (`backup_hold_not_owned`,
+`native_schema_not_initialized`, or the owner validation message) and exit
+non-zero. Acquire, renew and owner-scoped status stay on the endpoints, while
+the Server runs.
+
 Each answers the command's JSON report. Where a command exits unsuccessfully,
 the endpoint answers 409: `backup_hold_owned_elsewhere` when another backup
 holds the hold, and `backup_hold_not_owned` when the owner's hold expired, was

@@ -1,0 +1,45 @@
+# CI fixture: the native Server with PostgreSQL, existing Secrets, ingress,
+# autoscaling and the shared payload claim that more than one replica needs.
+# The schema-upgrade hook renders only during a live helm upgrade, so the kind
+# smoke covers it instead of this fixture.
+runtime: native
+
+externalDatabase:
+  connection: pgsql
+  host: db.example.internal
+  port: 5432
+  database: durable_workflow
+  existingSecret: durable-workflow-db-credentials
+
+auth:
+  existingSecret: durable-workflow-app-credentials
+
+native:
+  storage:
+    existingClaim: durable-workflow-payloads
+
+server:
+  replicaCount: 3
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: workflow.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: workflow-tls
+        hosts:
+          - workflow.example.com
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 8
+
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          team: platform-ingress

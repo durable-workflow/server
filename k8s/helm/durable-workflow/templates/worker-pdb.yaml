@@ -1,4 +1,4 @@
-{{- if and .Values.worker.enabled .Values.worker.pdb.enabled }}
+{{- if and (include "durable-workflow.isPhp" .) .Values.worker.enabled .Values.worker.pdb.enabled }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
