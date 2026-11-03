@@ -305,3 +305,30 @@ async fn a_command_after_an_update_completion_takes_the_following_sequence() {
             "{update} {marker_event}");
     }
 }
+
+// A checkpoint keeps its claim, so a child start turn (Server #966) has no
+// turn to give there: the prefix is refused before any child starts. The
+// same start without the flag still checkpoints.
+#[tokio::test]
+async fn a_prefix_refuses_a_child_start_turn() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "scope-worker", json!(["cooperative_cancellation"])).await;
+    let run = start(&app, "scope-child-turn").await;
+    let task = claim(&app, "scope-worker").await;
+    let child = |mode: Option<&str>| {
+        let mut command = json!({"type":"start_child_workflow","workflow_type":"child","arguments":envelope(Payload::Array(vec![]))});
+        if let Some(mode) = mode {
+            command["await"] = json!(mode);
+        }
+        command
+    };
+    let (status, refused) = checkpoint(&app, &task,
+        json!({"checkpoint_id":"turn","start_sequence":1,"commands":[child(Some("started"))]}), "1.20").await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("child_start_turn_not_at_checkpoint")), "{refused}");
+    assert!(!history_types(&run_history(&app, &run["workflow_id"], &run["run_id"]).await).contains(&"ChildWorkflowScheduled".to_owned()));
+    let (status, receipt) = checkpoint(&app, &task,
+        json!({"checkpoint_id":"turn","start_sequence":1,"commands":[child(Some("result"))]}), "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert!(history_types(&run_history(&app, &run["workflow_id"], &run["run_id"]).await).contains(&"ChildWorkflowScheduled".to_owned()));
+}

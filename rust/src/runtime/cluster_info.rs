@@ -61,6 +61,7 @@ pub(super) fn capabilities() -> Value {
         "activity_retry_policy",
         "child_workflow_retry_policy",
         "child_workflow_timeouts",
+        "child_workflow_start_turn",
         "parent_close_policy",
         "non_retryable_failures",
         "worker_sessions",
@@ -152,7 +153,9 @@ mod tests {
             "workflow_update_runtime_contract", "waterline_v1_projection", "embedded_v2_import"] {
             assert!(caps.get(name).is_some(), "{name}");
         }
-        assert_eq!(caps.as_object().unwrap().len(), 56);
+        // PHP's names plus native's child start turn (Server #966).
+        assert_eq!(caps.as_object().unwrap().len(), 57);
+        assert_eq!(caps["child_workflow_start_turn"], json!(true));
         assert_eq!(caps["response_compression"], json!([]));
         assert_eq!(caps["timer_runtime_contract"], json!(false));
         assert_eq!(caps["principal_attribution_contract"], json!(true));
