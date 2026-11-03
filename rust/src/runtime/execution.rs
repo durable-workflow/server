@@ -1542,11 +1542,9 @@ impl Runtime {
         let codec = self.transition_codec.clone();
         // Of the failures, only a waiting acknowledgement applies the task's
         // signal (Server #979).
-        // The body must be one the store accepts, so a malformed failure
-        // writes nothing.
-        let well_formed = body["failure"]["message"].as_str().is_some_and(|message| !message.trim().is_empty())
-            && body["workflow_task_attempt"].as_i64().is_some_and(|attempt| attempt >= 1)
-            && body["lease_owner"].is_string();
+        // Only a failure the store accepts in full can apply the signal, so
+        // a malformed one writes nothing.
+        let well_formed = super::store::workflow_task_failure_shape(&body).is_ok();
         let signal = if well_formed && super::store::waiting_acknowledgement(&body["failure"]) {
             self.resolve_task_signal(task_id, &body).await?
         } else {

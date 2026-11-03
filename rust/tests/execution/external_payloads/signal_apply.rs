@@ -104,7 +104,18 @@ async fn requests_without_the_claim_write_nothing_and_a_retry_reuses_its_value()
         assert_ne!(status, StatusCode::OK, "{body}");
     }
     let path = format!("/api/worker/workflow-tasks/{}/fail", task["task_id"].as_str().unwrap());
-    for failure in [json!({"type":"WorkflowTaskWaitingForHistory"}), json!({"type":"WorkflowTaskWaitingForHistory","message":" "})] {
+    // Every field the store checks: a failure it refuses writes nothing,
+    // even with the live claim and a waiting message.
+    let waiting = |extra: Value| {
+        let mut failure = json!({"type":"WorkflowTaskWaitingForHistory","message":"Workflow task waiting for scheduled history."});
+        for (key, value) in extra.as_object().unwrap() {
+            failure[key] = value.clone();
+        }
+        failure
+    };
+    for failure in [json!({"type":"WorkflowTaskWaitingForHistory"}), json!({"type":"WorkflowTaskWaitingForHistory","message":" "}),
+        waiting(json!({"stack_trace":7})), waiting(json!({"reason":"r".repeat(192)})), waiting(json!({"sequence":0})),
+        waiting(json!({"sequence":"1"})), json!({"type":["WorkflowTaskWaitingForHistory"],"message":"Workflow task waiting for scheduled history."})] {
         let (status, body) = json_request(&app, "POST", &path, "worker-token",
             json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"failure":failure})).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");

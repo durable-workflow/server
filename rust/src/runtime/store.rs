@@ -2669,50 +2669,8 @@ where
     ) -> Result<Value> {
         // Waiting acknowledgement, ordinary retry and a persisted range block
         // are distinct transitions. Other replay blockers remain explicit gates.
-        text(&body, "lease_owner")?;
-        if body["workflow_task_attempt"]
-            .as_i64()
-            .is_none_or(|attempt| attempt < 1)
-        {
-            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
-        }
-        let failure = body["failure"].as_object().ok_or_else(|| {
-            refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_workflow_task_failure",
-            )
-        })?;
-        let message = failure
-            .get("message")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "invalid_workflow_task_failure",
-                )
-            })?;
-        for (field, limit) in [("type", 512), ("reason", 191), ("stack_trace", usize::MAX)] {
-            if failure.get(field).is_some_and(|value| {
-                !value.is_null()
-                    && value
-                        .as_str()
-                        .is_none_or(|text| text.chars().count() > limit)
-            }) {
-                return Err(refuse(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "invalid_workflow_task_failure",
-                ));
-            }
-        }
-        if failure.get("sequence").is_some_and(|value| {
-            !value.is_null() && value.as_i64().is_none_or(|sequence| sequence < 1)
-        }) {
-            return Err(refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_workflow_task_failure",
-            ));
-        }
+        let failure = workflow_task_failure_shape(&body)?;
+        let message = failure["message"].as_str().unwrap_or_default();
         let kind = failure
             .get("type")
             .and_then(Value::as_str)
@@ -4777,6 +4735,32 @@ where
 /// no timeout, as in published PHP.
 /// `request` arguments come from a control-plane `input`, which PHP refuses
 /// as validation of `input.blob`; stored arguments keep `invalid`.
+/// The workflow task failure request PHP accepts: a lease owner, an
+/// attempt of at least 1, and a failure with a message and bounded optional
+/// fields. Returns the failure.
+pub(super) fn workflow_task_failure_shape(body: &Value) -> Result<&serde_json::Map<String, Value>> {
+    let invalid = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_workflow_task_failure");
+    text(body, "lease_owner")?;
+    if body["workflow_task_attempt"].as_i64().is_none_or(|attempt| attempt < 1) {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
+    }
+    let failure = body["failure"].as_object().ok_or_else(invalid)?;
+    if failure.get("message").and_then(Value::as_str).is_none_or(|message| message.trim().is_empty()) {
+        return Err(invalid());
+    }
+    for (field, limit) in [("type", 512), ("reason", 191), ("stack_trace", usize::MAX)] {
+        if failure.get(field).is_some_and(|value| {
+            !value.is_null() && value.as_str().is_none_or(|text| text.chars().count() > limit)
+        }) {
+            return Err(invalid());
+        }
+    }
+    if failure.get("sequence").is_some_and(|value| !value.is_null() && value.as_i64().is_none_or(|sequence| sequence < 1)) {
+        return Err(invalid());
+    }
+    Ok(failure)
+}
+
 /// A workflow task failure that acknowledges a wait for history
 /// (`WorkflowTaskWaitingForHistory`), by its type or message.
 pub(super) fn waiting_acknowledgement(failure: &Value) -> bool {

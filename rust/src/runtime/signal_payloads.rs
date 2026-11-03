@@ -38,14 +38,6 @@ pub(crate) struct StoredValue {
     pub(super) namespace: String,
 }
 
-/// A signal value's reference id, fixed by the signal and the value's
-/// digest: `ep_` and a ULID-shaped 128-bit prefix of their SHA-256.
-fn value_reference_id(signal_id: &str, sha256: &str) -> String {
-    let digest = Sha256::digest(format!("signal-value:{signal_id}:{sha256}").as_bytes());
-    let bytes: [u8; 16] = digest[..16].try_into().expect("a 16-byte prefix");
-    format!("ep_{}", ulid::Ulid::from_bytes(bytes))
-}
-
 fn unavailable() -> super::RuntimeError {
     refuse(StatusCode::SERVICE_UNAVAILABLE, "external_payload_unavailable")
 }
@@ -85,7 +77,7 @@ impl Runtime {
             )
             .await?;
             let value = match storage {
-                Some((local, threshold)) => self.store_large_value(local, threshold, &signal_id, &prepared.value).await?,
+                Some((local, threshold)) => self.store_large_value(local, threshold, &prepared.value).await?,
                 None => None,
             };
             Ok((by_reference || value.is_some()).then(|| ResolvedSignal { signal_id, stored: stored.clone(), arguments, value }))
@@ -134,14 +126,13 @@ impl Runtime {
 
     /// `externalizeForNamespace`: a value above the namespace's threshold is
     /// written to its storage and registered, unclaimed until the applying
-    /// transaction records it. A value at or below it stays inline. The
-    /// reference is fixed by the signal and the value's bytes, so a retried
-    /// request registers the same object again instead of a new one.
+    /// transaction records it. A value at or below it stays inline. Local
+    /// objects are content-addressed and registered by their storage URI, so
+    /// a retried request finds the same registration instead of adding one.
     async fn store_large_value(
         &self,
         local: crate::external_payload::LocalStorage,
         threshold: i64,
-        signal_id: &str,
         value: &str,
     ) -> Result<Option<StoredValue>> {
         if i64::try_from(value.len()).unwrap_or(i64::MAX) <= threshold {
@@ -151,7 +142,9 @@ impl Runtime {
         let sha256 = hex(Sha256::digest(&payload));
         let expected = Reference {
             schema: REFERENCE_SCHEMA,
-            reference_id: value_reference_id(signal_id, &sha256),
+            // The registry keeps an existing registration of the same
+            // content-addressed object and assigns its own id otherwise.
+            reference_id: format!("ep_{}", super::store::id()),
             codec: "avro",
             size_bytes: i64::try_from(payload.len()).map_err(|_| unavailable())?,
             sha256,
