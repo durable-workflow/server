@@ -15,9 +15,10 @@
 # when the latest alias names its index in both registries, read live right
 # before the release is created. The caller holds the rolling-alias lock
 # across this step, so no alias moves between the read and the write. A
-# release candidate is a prerelease and never Latest. An existing release is
-# left unchanged, so a rerun cannot move Latest either. Any failed read
-# stops the step before it writes.
+# release candidate is a prerelease and never Latest. An existing Release
+# that records exactly this verified release is left unchanged, so a rerun
+# cannot move Latest either; any other existing Release is refused. Any
+# failed read stops the step before it writes.
 #
 # Env: RELEASE_TAG, RELEASE_RUN_ID, GITHUB_REPOSITORY, GHCR_IMAGE,
 # DOCKERHUB_IMAGE. GH and DOCKER override the gh and docker commands.
@@ -37,11 +38,6 @@ fi
 version=${tag#native-}
 run_id=${RELEASE_RUN_ID:-}
 [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || fail "RELEASE_RUN_ID must be the release run's numeric id."
-
-if "$gh_bin" release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-  printf 'Release %s already exists; left unchanged.\n' "$tag"
-  exit 0
-fi
 
 # The tag's commit, through an annotated tag object if there is one.
 object=$("$gh_bin" api "repos/$repo/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha') \
@@ -80,6 +76,23 @@ invocations=$("$gh_bin" attestation verify "oci://$GHCR_IMAGE@$index" --repo "$r
   || fail "the provenance of $index does not verify for $tag at $commit."
 grep -qE "^https://github\.com/$repo/actions/runs/$run_id/attempts/[0-9]+$" <<<"$invocations" \
   || fail "the provenance of $index names no attempt of run $run_id."
+
+# An existing Release is accepted only when its public record is this
+# verified release: tag, plain title, candidate state, index, commit and run.
+# It is never edited, so a rerun cannot move Latest; any other Release stops
+# the step.
+if existing=$("$gh_bin" release view "$tag" --repo "$repo" --json tagName,name,isPrerelease,body 2>/dev/null); then
+  candidate=false
+  [[ "$version" == *-* ]] && candidate=true
+  jq -e --arg tag "$tag" --arg title "$version" --argjson candidate "$candidate" --arg index "$index" --arg commit "$commit" \
+    --arg run "https://github.com/$repo/actions/runs/$run_id" '
+      .tagName == $tag and .name == $title and .isPrerelease == $candidate
+      and (.body | contains($index)) and (.body | contains($commit)) and (.body | contains($run))' \
+    <<<"$existing" >/dev/null \
+    || fail "Release $tag exists but does not record this verified release (tag, title, candidate state, index, commit and run)."
+  printf 'Release %s already records this verified release; left unchanged.\n' "$tag"
+  exit 0
+fi
 
 # The digest the latest alias names now; empty when it does not exist.
 latest_digest() {

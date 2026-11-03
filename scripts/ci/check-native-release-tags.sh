@@ -133,7 +133,7 @@ commit=0123456789abcdef0123456789abcdef01234567
 cat > "$scratch/gh" <<'FAKE'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "release view") [[ -n "${EXISTING:-}" ]]; exit ;;
+  "release view") [[ -n "${EXISTING:-}" ]] || exit 1; printf '%s\n' "$EXISTING"; exit 0 ;;
   "release create") printf '%s\n' "$*" >> "$GH_LOG"; exit 0 ;;
   "attestation verify")
     printf '%s\n' "$*" > "$GH_ATTEST_LOG"
@@ -196,7 +196,22 @@ want_release "no latest alias yet" "$(gh_release 3.0.2 "")" "--latest=false"
 want_release "candidate" "$(gh_release 3.1.0-rc.1 "$ours")" "--prerelease --latest=false"
 want_release "native- final that owns latest" "$(gh_release native-3.0.2 "$ours")" "--latest"
 want_release "annotated tag" "$(gh_release 3.0.2 "$ours" TAG_OBJECT="tag 89abcdef0123456789abcdef0123456789abcdef")" "--latest"
-want_release "rerun of an existing release" "$(gh_release 3.1.0 "$ours" EXISTING=yes)" "none"
+# An existing Release is checked after every binding: one recording exactly
+# this verified release is left unchanged; any other is refused unedited.
+existing() { # tag, title, prerelease, index, commit, run
+  jq -cn --arg tag "$1" --arg title "$2" --argjson pre "$3" --arg body "index $4 commit $5 run https://github.com/example/server/actions/runs/$6" \
+    '{tagName:$tag,name:$title,isPrerelease:$pre,body:$body}'
+}
+want_release "rerun of the same release" "$(gh_release 3.1.0 "$ours" EXISTING="$(existing 3.1.0 3.1.0 false "$index" "$commit" 41)")" "none"
+want_release "rerun of the same candidate" "$(gh_release 3.1.0-rc.1 "$ours" EXISTING="$(existing 3.1.0-rc.1 3.1.0-rc.1 true "$index" "$commit" 41)")" "none"
+want_release "existing release of another run" "$(gh_release 3.1.0 "$ours" EXISTING="$(existing 3.1.0 3.1.0 false "$index" "$commit" 42)")" "FAILED"
+want_release "existing release of another index" "$(gh_release 3.1.0 "$ours" EXISTING="$(existing 3.1.0 3.1.0 false "$newer_index" "$commit" 41)")" "FAILED"
+want_release "existing release of another commit" "$(gh_release 3.1.0 "$ours" EXISTING="$(existing 3.1.0 3.1.0 false "$index" fedcba9876543210fedcba9876543210fedcba98 41)")" "FAILED"
+want_release "existing release with another title" "$(gh_release 3.1.0 "$ours" EXISTING="$(existing 3.1.0 native-3.1.0 false "$index" "$commit" 41)")" "FAILED"
+want_release "existing final marked prerelease" "$(gh_release 3.1.0 "$ours" EXISTING="$(existing 3.1.0 3.1.0 true "$index" "$commit" 41)")" "FAILED"
+# The bindings come first: an existing Release does not excuse a failed one.
+want_release "existing release, unverifiable provenance" "$(gh_release 3.1.0 "$ours" ATTEST=fail EXISTING="$(existing 3.1.0 3.1.0 false "$index" "$commit" 41)")" "FAILED"
+want_release "existing release, commit off main" "$(gh_release 3.1.0 "$ours" COMPARE=diverged EXISTING="$(existing 3.1.0 3.1.0 false "$index" "$commit" 41)")" "FAILED"
 # Every binding fails closed, before any write.
 want_release "unreadable latest alias" "$(gh_release 3.0.2 $'ghcr.io/example/native unreadable\nexample/native '"$index")" "FAILED"
 want_release "a PHP tag" "$(gh_release 2.11.9 "$ours")" "FAILED"
