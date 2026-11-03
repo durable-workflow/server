@@ -86,9 +86,9 @@ function finishHttpActivityLeaseRenewal(Client $admin, array $fixture, string $w
 
     // Native's accepted renewal carries a compatibility projection (Server
     // #985); the contract tells the two servers apart by this field.
-    $info = $raw('GET', '/api/cluster/info');
-    $state = ['applicable' => true, 'namespace' => $namespace,
-        'implementation' => is_array($info['response'] ?? null) ? ($info['response']['implementation'] ?? null) : null];
+    // A failed read stops the probe rather than reading as published PHP.
+    $info = $ok($raw('GET', '/api/cluster/info'), 200, 'cluster info');
+    $state = ['applicable' => true, 'namespace' => $namespace, 'implementation' => $info['implementation'] ?? null];
     $live = $state['live'] = $claim('live');
     $state['status_before'] = $status($live);
     $state['history_before'] = $history($live);

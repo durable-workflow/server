@@ -145,6 +145,19 @@ store_methods! {
         if code != StatusCode::OK {
             return Err(worker(code, status));
         }
+        // Server #985: only this accepted renewal carries the compatibility
+        // projection, while no heartbeat is stored; every refusal above
+        // reports stored progress only.
+        if status["lease_renewed"] == true
+            && status["last_heartbeat_at"].is_null()
+            && let Some(activity) = &rows.activity
+        {
+            let policy = DB::optional_document_row(activity, "retry_policy")?.unwrap_or(Value::Null);
+            let deadline = DB::optional_instant(activity, "heartbeat_deadline_at")?;
+            if let Some(progress) = super::activity_deadlines::renewal_progress_projection(deadline, &policy) {
+                status["last_heartbeat_at"] = json!(micros(progress));
+            }
+        }
         status["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
         status["server_capabilities"] = capabilities();
         Ok(status)
@@ -231,19 +244,6 @@ store_methods! {
         let (activity, run, task) = (rows.activity.as_ref(), rows.run.as_ref(), rows.task.as_ref());
         let first = |values: [Option<String>; 2]| values.into_iter().flatten().next();
         let time = |values: [Option<DateTime<Utc>>; 2]| values.into_iter().flatten().next().map(micros);
-        // Server #985: an accepted renewal carries the compatibility
-        // projection; every other reply reports only a stored heartbeat.
-        let stored = instant(attempt, "last_heartbeat_at")?.or(instant(activity, "last_heartbeat_at")?);
-        let last_heartbeat_at = if can_continue {
-            let policy = match activity {
-                Some(activity) => DB::optional_document_row(activity, "retry_policy")?.unwrap_or(Value::Null),
-                None => Value::Null,
-            };
-            super::activity_deadlines::renewal_progress_projection(stored, instant(activity, "heartbeat_deadline_at")?, &policy)
-        } else {
-            stored
-        }
-        .map(micros);
         Ok(json!({
             "can_continue": can_continue,
             "cancel_requested": cancel_requested,
@@ -263,7 +263,7 @@ store_methods! {
             "task_status": text(task, "status")?,
             "lease_owner": first([text(attempt, "lease_owner")?, text(task, "lease_owner")?]),
             "lease_expires_at": time([instant(attempt, "lease_expires_at")?, instant(task, "lease_expires_at")?]),
-            "last_heartbeat_at": last_heartbeat_at,
+            "last_heartbeat_at": time([instant(attempt, "last_heartbeat_at")?, instant(activity, "last_heartbeat_at")?]),
             "heartbeat_deadline_at": time([instant(activity, "heartbeat_deadline_at")?, None]),
         }))
     }

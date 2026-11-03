@@ -715,16 +715,13 @@ mod tests {
 /// deadline was measured from and refuses a renewal reply without it.
 /// Published PHP Server 2.11.8 (Workflow 2.15.12) replies null there, as
 /// native does everywhere else. This is not a heartbeat and not PHP parity:
-/// nothing is persisted or recorded, the deadline does not move, and a stored
-/// heartbeat always wins. It is exactly `heartbeat_deadline_at` minus
+/// nothing is persisted or recorded, the deadline does not move, and the
+/// caller applies it only while no heartbeat is stored. It is exactly `heartbeat_deadline_at` minus
 /// `heartbeat_timeout`, and none when the activity has no heartbeat timeout.
 pub(super) fn renewal_progress_projection(
-    last: Option<chrono::DateTime<chrono::Utc>>,
     deadline: Option<chrono::DateTime<chrono::Utc>>,
     policy: &serde_json::Value,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    last.or_else(|| {
-        let timeout = policy["heartbeat_timeout"].as_i64().filter(|seconds| *seconds > 0)?;
-        deadline?.checked_sub_signed(chrono::Duration::seconds(timeout))
-    })
+    let timeout = policy["heartbeat_timeout"].as_i64().filter(|seconds| *seconds > 0)?;
+    deadline?.checked_sub_signed(chrono::Duration::seconds(timeout))
 }

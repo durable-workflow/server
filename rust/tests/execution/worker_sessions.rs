@@ -466,3 +466,38 @@ async fn a_same_id_replacement_reacquires_a_session_through_an_activity_claim() 
     assert_eq!((status, shown["session"]["status"].clone(), shown["session"]["failure_reason"].clone()),
         (StatusCode::OK, json!("active"), Value::Null), "{shown}");
 }
+
+// Server #985: a renewal the worker session refuses is not an accepted
+// renewal, so it never carries the compatibility projection, even on an
+// activity with a heartbeat timeout and no heartbeat yet.
+#[tokio::test]
+async fn a_session_refused_renewal_reports_no_projected_progress() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    session_worker(&app, "author", json!(["worker_sessions"])).await;
+    session_worker(&app, "gpu-a", json!(["worker_sessions", "gpu"])).await;
+    start(&app, "session-projection").await;
+    let task = poll(&app, "author", "workflow").await;
+    let mut command = bound(json!({"session_id":"projected","requirements":["gpu"],"lease_seconds":90,"max_concurrent_activities":1}));
+    command["heartbeat_timeout"] = json!(60);
+    command["start_to_close_timeout"] = json!(300);
+    let (status, done) = finish_task(&app, &task, json!([command])).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let activity = poll(&app, "gpu-a", "activity").await;
+    let own = json!({"activity_attempt_id":activity["activity_attempt_id"],"lease_owner":"gpu-a"});
+    let path = format!("/api/worker/activity-tasks/{}/renew-lease", activity["task_id"].as_str().unwrap());
+
+    // While the session is live, the accepted renewal carries the projection.
+    let (status, renewed) = request_protocol(&app, "POST", &path, own.clone(), "1.20").await;
+    assert_eq!((status, renewed["lease_renewed"].clone()), (StatusCode::OK, json!(true)), "{renewed}");
+    assert!(renewed["last_heartbeat_at"].is_string(), "{renewed}");
+
+    // Once the session is closed, the refused renewal reports stored progress
+    // only: none.
+    let (status, _) = request(&app, "DELETE", "/api/worker/sessions/projected", json!({"worker_id":"gpu-a"})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, refused) = request_protocol(&app, "POST", &path, own, "1.20").await;
+    assert_eq!((status, refused["lease_renewed"].clone(), refused["can_continue"].clone()),
+        (StatusCode::CONFLICT, json!(false), json!(false)), "{refused}");
+    assert_eq!(refused["last_heartbeat_at"], Value::Null, "{refused}");
+}
