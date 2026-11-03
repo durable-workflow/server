@@ -370,6 +370,8 @@ mod key_order;
 mod activity_result_repeats;
 #[path = "execution/task_fairness.rs"]
 mod task_fairness;
+#[path = "execution/worker_protocol_envelope.rs"]
+mod worker_protocol_envelope;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
@@ -1123,10 +1125,54 @@ async fn request_protocol(
         .unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
     let status = response.status();
+    let header = response
+        .headers()
+        .get("x-durable-workflow-protocol-version")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let body = to_bytes(response.into_body(), 4 * 1024 * 1024)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&body).unwrap())
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    if path.starts_with("/api/worker/") {
+        worker_envelope_sweep(method, path, status, header.as_deref(), &body);
+    }
+    (status, body)
+}
+
+/// Every worker-plane JSON object answer this suite sees carries the
+/// `protocol_version` body member its header advertises, plus
+/// `server_capabilities`, as PHP's `WorkerProtocol::json` guarantees
+/// (server#1001). With `DW_WORKER_ENVELOPE_SWEEP` set to a file, each
+/// answer's shape is also recorded there, for a before/after comparison.
+fn worker_envelope_sweep(method: &str, path: &str, status: StatusCode, header: Option<&str>, body: &Value) {
+    let Some(members) = body.as_object() else {
+        return;
+    };
+    if let Ok(file) = std::env::var("DW_WORKER_ENVELOPE_SWEEP") {
+        use std::io::Write;
+        let route = path
+            .split('/')
+            .map(|segment| if segment.len() >= 20 && segment.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') { "{id}" } else { segment })
+            .collect::<Vec<_>>()
+            .join("/");
+        let route = route.split('?').next().unwrap_or_default();
+        let mut keys: Vec<&String> = members.keys().collect();
+        keys.sort();
+        let record = json!({"method": method, "route": route, "status": status.as_u16(), "keys": keys,
+            "protocol_version": members.get("protocol_version"),
+            "server_capabilities": members.get("server_capabilities").map(|value| value.to_string())});
+        // Tests run in parallel: one locked write per record keeps lines whole.
+        static SWEEP_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SWEEP_FILE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut out = std::fs::OpenOptions::new().create(true).append(true).open(file).unwrap();
+        out.write_all(format!("{record}\n").as_bytes()).unwrap();
+    }
+    assert_eq!(header, Some("1.20"), "{method} {path}: worker protocol header");
+    assert_eq!(members.get("protocol_version").and_then(Value::as_str), header,
+        "{method} {path} {status}: body protocol_version must echo the header: {body}");
+    assert!(members.get("server_capabilities").is_some_and(Value::is_object),
+        "{method} {path} {status}: body server_capabilities: {body}");
 }
 
 async fn register(app: &Router, worker: &str, workflows: Value, activities: Value) {

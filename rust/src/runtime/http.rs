@@ -692,10 +692,73 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     if response.extensions().get::<super::external_transport::TypedRefusal>().is_some() && (worker || route.is_some()) {
         response = typed_refusal_envelope(response, route, worker).await;
     }
+    if worker {
+        response = worker_protocol_envelope(response).await;
+    }
     response
         .headers_mut()
         .insert(header, HeaderValue::from_static(version));
     response
+}
+
+/// The largest worker answer whose envelope is completed here. Bigger or
+/// unsized bodies pass through unchanged rather than being buffered.
+const WORKER_ENVELOPE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// PHP's `WorkerProtocol::json`: every worker-plane JSON object answer
+/// carries `protocol_version` and `server_capabilities`, each added only when
+/// the handler left it out (`??=`), so a value already present is never
+/// changed (server#1001). The body's bytes are kept and the missing members
+/// are appended before its closing brace, as PHP appends them; numbers are
+/// never re-serialized.
+async fn worker_protocol_envelope(response: Response) -> Response {
+    use axum::body::HttpBody as _;
+    let json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json"));
+    let size = response.body().size_hint().exact();
+    if !json || !size.is_some_and(|size| size <= WORKER_ENVELOPE_MAX_BYTES) {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, WORKER_ENVELOPE_MAX_BYTES as usize).await else {
+        // An exact-sized in-memory body cannot fail to collect.
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"reason":"worker_response_unavailable"}))).into_response();
+    };
+    match complete_worker_envelope(&bytes) {
+        Some(completed) => {
+            parts.headers.remove(header::CONTENT_LENGTH);
+            Response::from_parts(parts, Body::from(completed))
+        }
+        None => Response::from_parts(parts, Body::from(bytes)),
+    }
+}
+
+/// The body with any missing envelope member appended, or `None` when it is
+/// not a JSON object or already has both members.
+fn complete_worker_envelope(bytes: &[u8]) -> Option<Vec<u8>> {
+    // Only the member names are read; values are skipped unparsed.
+    let members: std::collections::HashMap<String, serde::de::IgnoredAny> = serde_json::from_slice(bytes).ok()?;
+    let mut missing = Vec::new();
+    if !members.contains_key("protocol_version") {
+        missing.push(format!("\"protocol_version\":{}", json!(super::WORKER_PROTOCOL_VERSION)));
+    }
+    if !members.contains_key("server_capabilities") {
+        missing.push(format!("\"server_capabilities\":{}", capabilities()));
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    let end = bytes.iter().rposition(|byte| *byte == b'}')?;
+    let mut completed = bytes[..end].to_vec();
+    if !members.is_empty() {
+        completed.push(b',');
+    }
+    completed.extend_from_slice(missing.join(",").as_bytes());
+    completed.extend_from_slice(&bytes[end..]);
+    Some(completed)
 }
 
 /// PHP renders a typed external payload error through `WorkerProtocol` or
@@ -2893,4 +2956,51 @@ async fn unavailable() -> Response {
         "rust_capability_not_implemented",
     )
     .into_response()
+}
+
+#[cfg(test)]
+mod worker_envelope_tests {
+    use super::*;
+
+    fn complete(text: &str) -> Option<String> {
+        complete_worker_envelope(text.as_bytes()).map(|bytes| String::from_utf8(bytes).unwrap())
+    }
+
+    #[test]
+    fn missing_members_are_appended_and_present_ones_untouched() {
+        let completed = complete(r#"{"task":null,"poll_status":"empty"}"#).unwrap();
+        let body: Value = serde_json::from_str(&completed).unwrap();
+        assert_eq!(body["protocol_version"], super::super::WORKER_PROTOCOL_VERSION);
+        assert_eq!(body["server_capabilities"], capabilities());
+        // The original members keep their exact bytes and order.
+        assert!(completed.starts_with(r#"{"task":null,"poll_status":"empty","protocol_version":"#));
+        // A handler's own server_capabilities is kept; only the version is added.
+        let completed = complete(r#"{"task":null,"server_capabilities":{"own":true}}"#).unwrap();
+        let body: Value = serde_json::from_str(&completed).unwrap();
+        assert_eq!(body["server_capabilities"], json!({"own": true}));
+        assert_eq!(body["protocol_version"], super::super::WORKER_PROTOCOL_VERSION);
+        // A handler's own protocol_version is never replaced.
+        let completed = complete(r#"{"protocol_version":"1.7","x":1}"#).unwrap();
+        let body: Value = serde_json::from_str(&completed).unwrap();
+        assert_eq!(body["protocol_version"], "1.7");
+    }
+
+    #[test]
+    fn complete_bodies_and_non_objects_are_left_alone() {
+        assert_eq!(complete(r#"{"protocol_version":"1.20","server_capabilities":{}}"#), None);
+        for body in [r#"[1,2]"#, r#""text""#, "42", "null", "{not json", ""] {
+            assert_eq!(complete(body), None, "{body}");
+        }
+    }
+
+    #[test]
+    fn numbers_and_whitespace_keep_their_bytes() {
+        // Re-serializing would turn these into 1.1 and a rounded float.
+        let completed = complete("{\"a\":1.10,\"big\":123456789012345678901234567890} \n").unwrap();
+        assert!(completed.starts_with("{\"a\":1.10,\"big\":123456789012345678901234567890,\"protocol_version\":"));
+        assert!(completed.ends_with("} \n"));
+        let completed = complete("{}").unwrap();
+        assert!(completed.starts_with("{\"protocol_version\":"));
+        serde_json::from_str::<Value>(&completed).unwrap();
+    }
 }

@@ -219,7 +219,11 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
                 if outcome == "heartbeat" {
                     assert_eq!(status.1["can_continue"], false);
                     assert_eq!(status.1["heartbeat_recorded"], false);
-                    assert_eq!(status.1["protocol_version"], "1.19");
+                    // The server's advertised version, not the 1.19 request's:
+                    // PHP 2.11.8's heartbeat answers (ActivityTaskController
+                    // lines 865 and 903) set no protocol_version, so
+                    // WorkerProtocol::json supplies the server's (server#1001).
+                    assert_eq!(status.1["protocol_version"], "1.20");
                 }
             }
         }

@@ -34,6 +34,12 @@ async fn a_pending_count_past_its_limit_refuses_the_whole_completion() {
         // The first command meets a limit of one; the second passes it.
         let (status, body) = finish_task(&app, &task, json!([command(kind), command(kind)])).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{kind}: {body}");
+        // The worker envelope PHP's WorkerProtocol::json adds (server#1001),
+        // then the refusal's own members exactly.
+        let mut body = body;
+        let members = body.as_object_mut().unwrap();
+        assert_eq!(members.remove("protocol_version"), Some(json!("1.20")), "{kind}");
+        assert!(members.remove("server_capabilities").is_some_and(|capabilities| capabilities.is_object()), "{kind}");
         assert_eq!(body, json!({"task_id":task["task_id"],"workflow_task_attempt":task["workflow_task_attempt"],
             "outcome":"rejected","recorded":false,"error":format!("Structural limit exceeded: 1 {noun} (limit 1)."),
             "reason":"structural_limit_exceeded","limit_kind":limit_kind,"current_value":1,"configured_limit":1}), "{kind}");
