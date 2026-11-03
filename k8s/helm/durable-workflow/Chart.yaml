@@ -40,4 +40,4 @@ annotations:
     - kind: fixed
       description: "Server 3.0.5 keeps one schedule whose start always fails with a non-transient database error from stopping every other due schedule, the repair pass and readiness; the failure is recorded and the schedule moves to its next occurrence (server#955)."
     - kind: fixed
-      description: "Server 3.0.5 answers a late or refused workflow-task report (task_not_leased or run_closed) with the full not-recorded receipt: recorded false, task_id, workflow_task_attempt and run_id (server#994). https://github.com/durable-workflow/server/releases/tag/3.0.5"
+      description: "Server 3.0.5 answers a late or refused workflow-task report (task_not_leased or run_closed) with the full not-recorded receipt: recorded false, task_id, workflow_task_attempt and run_id (server#994). Workers settle such a refusal only once their SDK validates this receipt; that SDK support is released separately. https://github.com/durable-workflow/server/releases/tag/3.0.5"

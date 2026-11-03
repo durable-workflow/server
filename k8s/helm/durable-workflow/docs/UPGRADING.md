@@ -86,9 +86,14 @@ Server 3.0.5 has two fixes:
   ([server#955](https://github.com/durable-workflow/server/issues/955)).
 - A late or refused workflow-task report (`task_not_leased` or `run_closed`)
   is answered with the full not-recorded receipt: `recorded: false`, `task_id`,
-  `workflow_task_attempt` and `run_id`. Workers can then tell that nothing was
-  recorded for exactly that task and keep polling
-  ([server#994](https://github.com/durable-workflow/server/issues/994)).
+  `workflow_task_attempt` and `run_id`
+  ([server#994](https://github.com/durable-workflow/server/issues/994)). This
+  is the Server side of the contract only. A worker treats the refusal as
+  settled only if its SDK checks that receipt against the exact task, attempt
+  and run it reported. Until an SDK release does that for a refusal, the
+  worker's behavior on it is unchanged; for example, Rust SDK settlement of
+  `run_closed` is not yet released
+  ([sdk-rust#170](https://github.com/durable-workflow/sdk-rust/issues/170)).
 
 See the [3.0.5 release](https://github.com/durable-workflow/server/releases/tag/3.0.5).
 
