@@ -57,6 +57,22 @@ jobs:
         run: |
           if [ -n "$INPUT_SERVER_IMAGE" ]; then
             echo "DW_SERVER_IMAGE=$INPUT_SERVER_IMAGE" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # A release commit moves the default to the release it will be
+          # tagged as, before that image is published. Only then, a pull
+          # request smokes the Compose file with the current latest release;
+          # any other image that cannot be read still fails the smoke.
+          default="$(sed -n 's/^x-server-image: &server-image \${DW_SERVER_IMAGE:-\(.*\)}$/\1/p' docker-compose.published.yml)"
+          if [[ "$default" =~ ^durableworkflow/server:([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            status="$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/durableworkflow/server/tags/${BASH_REMATCH[1]}")"
+            if [ "$status" = 404 ]; then
+              echo "::notice::$default is not published yet; smoking the Compose file with durableworkflow/server:latest."
+              echo "DW_SERVER_IMAGE=durableworkflow/server:latest" >> "$GITHUB_ENV"
+            elif [ "$status" != 200 ]; then
+              echo "cannot tell whether $default is published (HTTP $status)" >&2
+              exit 1
+            fi
           fi
 
       - name: Smoke published Compose stack

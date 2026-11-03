@@ -362,9 +362,15 @@ dispatch=scripts/ci/verify-native-release-dispatch.sh
 dispatch_scratch=$(mktemp -d)
 printf '#!/bin/sh\necho "${COMPARE_STATUS:-ahead}"\n' > "$dispatch_scratch/gh"
 chmod +x "$dispatch_scratch/gh"
+# A final release's commit names its own image as the published Compose
+# default; each case reads a fixture of that file.
+compose_for() { # version -> a docker-compose.published.yml naming it
+  printf 'x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:%s}\n' "$1" > "$dispatch_scratch/compose-$1.yml"
+  printf '%s' "$dispatch_scratch/compose-$1.yml"
+}
 commit=0123456789abcdef0123456789abcdef01234567
 other=fedcba9876543210fedcba9876543210fedcba98
-ok_dispatch=(RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh")
+ok_dispatch=(RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" COMPOSE_FILE="$(compose_for 3.0.2)")
 expect "dispatch from refs/tags/native-3.0.2, not refs/heads/main" "${ok_dispatch[@]}" DISPATCH_REF=refs/heads/main bash "$dispatch"
 expect "dispatch from refs/tags/native-3.0.2, not refs/tags/native-3.0.1" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.1 bash "$dispatch"
 expect "is not RELEASE_COMMIT" RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$other DISPATCH_REF=refs/tags/native-3.0.2 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" bash "$dispatch"
@@ -373,7 +379,19 @@ for status in behind diverged; do
   expect "is not on main (compare status: $status)" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch"
 done
 plain_dispatch=(RELEASE_TAG=3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/3.0.2 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh")
-env -i PATH="$PATH" "${plain_dispatch[@]}" bash "$dispatch" >/dev/null || fail "the dispatch verifier must accept a plain 3.x tag."
+env -i PATH="$PATH" "${plain_dispatch[@]}" COMPOSE_FILE="$(compose_for 3.0.2)" bash "$dispatch" >/dev/null || fail "the dispatch verifier must accept a plain 3.x tag."
+# The Compose default must name the final release being dispatched.
+expect "defaults to durableworkflow/server:3.0.1, not durableworkflow/server:3.0.2" "${plain_dispatch[@]}" COMPOSE_FILE="$(compose_for 3.0.1)" bash "$dispatch"
+: > "$dispatch_scratch/empty.yml"
+expect "defaults to no image, not durableworkflow/server:3.0.2" "${plain_dispatch[@]}" COMPOSE_FILE="$dispatch_scratch/empty.yml" bash "$dispatch"
+expect "cannot read" "${plain_dispatch[@]}" COMPOSE_FILE="$dispatch_scratch/missing.yml" bash "$dispatch"
+# A candidate leaves the default on the last final release.
+env -i PATH="$PATH" RELEASE_TAG=3.1.0-rc.1 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/3.1.0-rc.1 GITHUB_REPOSITORY=example/server \
+  GH_CLI="$dispatch_scratch/gh" COMPOSE_FILE="$(compose_for 3.0.2)" bash "$dispatch" >/dev/null \
+  || fail "a candidate must not need its own Compose default."
+# This repository's own file names the release its commit is tagged as.
+grep -q '^x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:[0-9][0-9.]*}$' docker-compose.published.yml \
+  || fail "docker-compose.published.yml must default to one exact durableworkflow/server release."
 expect "must be X.Y.Z or X.Y.Z-rc.N from major 3" RELEASE_TAG=2.11.9 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/2.11.9 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" bash "$dispatch"
 for status in ahead identical; do
   env -i PATH="$PATH" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch" >/dev/null \

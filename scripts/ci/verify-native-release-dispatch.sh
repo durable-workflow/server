@@ -26,6 +26,17 @@ gh_cli="${GH_CLI:-gh}"
     || fail "the dispatched commit ${dispatch_sha:-(none)} is not RELEASE_COMMIT $release_commit."
 [[ "$repository" =~ ^[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+$ ]] \
     || fail "GITHUB_REPOSITORY must identify the release repository."
+# A final release's commit names its own image as the published Compose
+# default, so the tagged docker-compose.published.yml installs that release.
+# A candidate leaves the default on the last final release.
+version="${release_tag#native-}"
+if [[ "$version" != *-* ]]; then
+    compose="${COMPOSE_FILE:-docker-compose.published.yml}"
+    [ -f "$compose" ] || fail "cannot read $compose at the release commit."
+    default="$(sed -n 's/^x-server-image: &server-image \${DW_SERVER_IMAGE:-\(.*\)}$/\1/p' "$compose")"
+    [ "$default" = "durableworkflow/server:$version" ] \
+        || fail "$compose defaults to ${default:-no image}, not durableworkflow/server:$version; move the default in the release commit."
+fi
 if ! status="$("$gh_cli" api "repos/$repository/compare/$release_commit...main" --jq .status 2>/dev/null)"; then
     fail "cannot compare $release_commit with main."
 fi
