@@ -372,6 +372,8 @@ mod activity_result_repeats;
 mod task_fairness;
 #[path = "execution/worker_protocol_envelope.rs"]
 mod worker_protocol_envelope;
+#[path = "execution/child_start_turn.rs"]
+mod child_start_turn;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),

@@ -16,6 +16,19 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
+/// `start_child_workflow.await` (Server #966): the default waits for the
+/// child's result; `started` also gives the parent a turn when the start
+/// commits.
+pub(super) const AWAIT_RESULT: &str = "result";
+pub(super) const AWAIT_STARTED: &str = "started";
+
+/// A started child: its first workflow task, and the start turn payload a
+/// parent gets when it asked for one.
+pub(super) struct StartedChild {
+    pub(super) task: String,
+    pub(super) turn: Value,
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum ChildResolution<'a> {
     Completed(&'a str),
@@ -43,6 +56,7 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
             "retry_policy",
             "execution_timeout_seconds",
             "run_timeout_seconds",
+            "await",
         ],
     )?;
     if text(command, "workflow_type")?.len() > 191
@@ -297,7 +311,7 @@ where
         task_id: &str,
         command: &Value,
         sequence: i64,
-    ) -> Result<String> {
+    ) -> Result<StartedChild> {
         let parent_run = DB::string(parent, "id")?;
         let parent_instance = DB::string(parent, "workflow_instance_id")?;
         // Published PHP starts a child whatever else the parent has open:
@@ -382,7 +396,45 @@ where
             .bind(&parent_run)
             .execute(&mut **tx)
             .await?;
-        Ok(child_task)
+        // What a start turn names: this call, frozen at its first run.
+        let turn = json!({"workflow_wait_kind":"child_started","child_call_id":call,"child_workflow_run_id":child_run,
+            "resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,
+            "workflow_event_type":"ChildRunStarted"});
+        Ok(StartedChild { task: child_task, turn })
+    }
+
+    /// The parent's start turn (Server #966): one fresh workflow task, created
+    /// with the completion that committed an `await: "started"` child start,
+    /// unless that completion closed the parent. As for a child's resolution
+    /// (`child_parent_resume`), only a ready workflow task that replays the
+    /// parent can carry the committed `ChildWorkflowScheduled` and
+    /// `ChildRunStarted` history instead: an update task does not replay the
+    /// workflow, and a leased task may have read history before the start.
+    pub(super) async fn child_start_turn(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        task_id: &str,
+        queue: &str,
+        turn: Value,
+    ) -> Result<Option<String>> {
+        let open = Self::scalar("SELECT COUNT(*) FROM workflow_runs WHERE id=$1 AND status IN ('pending','running','waiting')")
+            .bind(run_id)
+            .fetch_one(&mut **tx)
+            .await?;
+        if open == 0 {
+            return Ok(None);
+        }
+        let ready = Self::query("SELECT payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' AND id<>$2 ORDER BY id LIMIT 1001")
+            .bind(run_id)
+            .bind(task_id)
+            .fetch_all(&mut **tx)
+            .await?;
+        for task in &ready {
+            if DB::document_row(task, "payload")?["workflow_update_id"].as_str().is_none() {
+                return Ok(None);
+            }
+        }
+        Self::create_task(tx, run_id, queue, "workflow", turn).await.map(Some)
     }
 
     pub(super) async fn complete_child(

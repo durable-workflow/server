@@ -276,6 +276,13 @@ store_methods! {
             }
             Err(error) => return Err(error),
         }
+        // A checkpoint keeps the parent's claim, so a child start turn has
+        // nothing to resume; it belongs to the task's completion (Server #966).
+        if commands.iter().any(|command| command["type"] == "start_child_workflow" && command["await"] == super::children::AWAIT_STARTED) {
+            tx.rollback().await?;
+            return refusal("child_start_turn_not_at_checkpoint");
+        }
+        let start_turn = std::sync::Mutex::new(None);
         let apply = super::store::Apply {
             run: &run,
             task: &task,
@@ -286,6 +293,7 @@ store_methods! {
             external,
             local,
             exceptions,
+            start_turn: &start_turn,
         };
         let mut created = Vec::new();
         for (index, command) in commands.iter().enumerate() {
