@@ -3188,6 +3188,7 @@ where
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, commands, signal).await?;
         // Published parseCommands applies every other command first, whatever
         // the terminal command's position in the batch.
+        let start_turn = std::sync::Mutex::new(None);
         let apply = Apply {
             run: &run,
             task: &task,
@@ -3198,6 +3199,7 @@ where
             external: &external,
             local: &local,
             exceptions: &exceptions,
+            start_turn: &start_turn,
         };
         let order = (0..commands.len())
             .filter(|index| !is_terminal(&commands[*index]))
@@ -3295,6 +3297,12 @@ where
         if let Some(next) = Self::next_message_task(&mut tx, &run_id, &DB::string(&run, "queue")?, attempted, false).await? {
             created.push(next);
         }
+        let start_turn = start_turn.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(turn) = start_turn
+            && let Some(next) = Self::child_start_turn(&mut tx, &run_id, task_id, &DB::string(&run, "queue")?, turn).await?
+        {
+            created.push(next);
+        }
         Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {"request": body, "created_task_ids": created}})).await?;
         // PHP's executor leaves every run a completed task did not close
         // waiting, even when the task recorded only markers or side effects.
@@ -3337,7 +3345,7 @@ where
         sequence_ref: &mut i64,
         created: &mut Vec<String>,
     ) -> Result<()> {
-        let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions } = *apply;
+        let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn } = *apply;
         let mut sequence = *sequence_ref;
         if matches!(
             command["type"].as_str(),
@@ -3352,7 +3360,12 @@ where
         } else if command["type"] == "start_child_workflow" {
             Self::guard_pending(tx, &run_id, super::memo_limits::Pending::Children, &limits, task_id, attempt).await?;
             sequence += 1;
-            created.push(Self::start_child(tx, &run, task_id, command, sequence).await?);
+            let started = Self::start_child(tx, &run, task_id, command, sequence).await?;
+            created.push(started.task);
+            if command["await"] == super::children::AWAIT_STARTED {
+                let mut turn = start_turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                turn.get_or_insert(started.turn);
+            }
         } else if command["type"] == super::local_activities::COMMAND {
             // `applyRecordLocalActivity`: one authored sequence.
             sequence += 1;
@@ -5071,6 +5084,9 @@ pub(super) struct Apply<'a, R> {
     pub(super) external: &'a super::external_resolution::PreparedCommands,
     pub(super) local: &'a std::collections::BTreeMap<usize, super::local_activities::Record>,
     pub(super) exceptions: &'a std::collections::BTreeMap<usize, String>,
+    /// The first child this batch started with `await: "started"`: the
+    /// parent's start turn (Server #966).
+    pub(super) start_turn: &'a std::sync::Mutex<Option<Value>>,
 }
 
 impl<R> Clone for Apply<'_, R> {
@@ -5195,7 +5211,8 @@ pub(crate) fn capabilities() -> Value {
         "sticky_execution": false, "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
-        "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true});
+        "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
+        "child_workflow_start_turn": true});
     value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
     value["supported_workflow_task_commands"]
         .as_array_mut()

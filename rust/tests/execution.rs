@@ -370,6 +370,8 @@ mod key_order;
 mod activity_result_repeats;
 #[path = "execution/task_fairness.rs"]
 mod task_fairness;
+#[path = "execution/child_start_turn.rs"]
+mod child_start_turn;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),

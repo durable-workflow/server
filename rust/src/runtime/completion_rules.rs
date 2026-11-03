@@ -494,6 +494,14 @@ fn controller_scopes(commands: &[Value]) -> Vec<(String, Vec<String>)> {
                 add(at(field), format!("{field} is only supported for schedule_activity commands."));
             }
         }
+        // Native's child start turn (Server #966): `result`, the default, or
+        // `started`.
+        if kind == "start_child_workflow"
+            && has_value(command, "await")
+            && !matches!(command["await"].as_str(), Some(super::children::AWAIT_RESULT | super::children::AWAIT_STARTED))
+        {
+            add(at("await"), "await must be result or started.".into());
+        }
         if has_value(command, "worker_session") && kind != "schedule_activity" {
             add(at("worker_session"), "worker_session is only supported for schedule_activity commands.".into());
         }
@@ -576,6 +584,8 @@ const FIELD_SCOPES: &[(&str, &[&str], &str)] = &[
         "failed_step_sequence identifies an uncaught activity failure and only applies to a fail_workflow command."),
     ("failed_activity_execution_id", &["fail_workflow"],
         "failed_activity_execution_id identifies an uncaught activity failure and only applies to a fail_workflow command."),
+    ("await", &["start_child_workflow"],
+        "await chooses whether a child start gives the parent its next turn when the start commits (started) or when the child resolves (result) and only applies to a start_child_workflow command."),
     ("parent_close_policy", &["start_child_workflow"],
         "parent_close_policy declares how a child workflow reacts when its parent closes and only applies to a start_child_workflow command."),
     ("cancellation_policy", &["start_child_workflow", "schedule_activity"],
@@ -760,7 +770,7 @@ const READS: &[(&str, &[&str])] = &[
         "cancellation_policy", "worker_session"]),
     ("start_timer", &["delay_seconds", "cancellation_cleanup"]),
     ("start_child_workflow", &["workflow_type", "arguments", "payload_codec", "connection", "queue", "retry_policy",
-        "execution_timeout_seconds", "run_timeout_seconds", "parent_close_policy", "cancellation_policy"]),
+        "execution_timeout_seconds", "run_timeout_seconds", "parent_close_policy", "cancellation_policy", "await"]),
     ("continue_as_new", &["arguments", "payload_codec", "workflow_type", "queue"]),
     ("complete_update", &["update_id", "result", "payload_codec"]),
     ("fail_update", &["update_id", "message", "exception_class", "exception_type", "non_retryable"]),
@@ -785,7 +795,7 @@ const SCOPED_FIELDS: &[&str] = &["retry_policy", "start_to_close_timeout", "sche
     "non_retryable", "exception", "failed_step_sequence", "failed_activity_execution_id", "timeout_kind",
     "parent_close_policy", "cancellation_scope_id", "cancellation_cleanup", "delay_seconds", "timeout_seconds",
     "payload_codec", "entries", "principal_subject", "principal_method", "principal_roles", "principal_tenant",
-    "principal_claims"];
+    "principal_claims", "await"];
 
 /// `optionalRetryPolicy` reads these keys and ignores the rest.
 const RETRY_POLICY_FIELDS: &[&str] = &["max_attempts", "backoff_seconds", "non_retryable_error_types"];

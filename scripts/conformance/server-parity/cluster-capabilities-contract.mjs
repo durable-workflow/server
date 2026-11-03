@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 // against published Server 2.11.7. Published PHP answers `expected` exactly.
 // Native (`implementation: "rust"`) answers it with the fixture's reviewed
 // `native_differences`, each naming a member native does not serve or does
-// not publish, and names the members it leaves out in `native_unqualified`.
+// not publish, and its reviewed `native_additions`, each a member published
+// PHP never had, and names the members it leaves out in `native_unqualified`.
 export function expectedFor(definition, implementation) {
   const expected = structuredClone(definition.expected);
   if (implementation !== 'rust') return expected;
@@ -15,6 +16,14 @@ export function expectedFor(definition, implementation) {
     const parent = keys.reduce((node, key) => node[key], expected);
     assert.ok(Object.hasOwn(parent, last), `reviewed native difference ${path} names a published member`);
     if (value === '{absent}') delete parent[last]; else parent[last] = value;
+  }
+  // Reviewed members only native serves, which published PHP never had.
+  for (const [path, {value}] of Object.entries(definition.native_additions ?? {})) {
+    const keys = path.split('.');
+    const last = keys.pop();
+    const parent = keys.reduce((node, key) => node[key], expected);
+    assert.ok(!Object.hasOwn(parent, last), `reviewed native addition ${path} is not a published member`);
+    parent[last] = value;
   }
   return expected;
 }

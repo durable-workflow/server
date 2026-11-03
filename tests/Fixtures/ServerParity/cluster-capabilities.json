@@ -337,6 +337,12 @@
         ],
         "reason": "Native names each member it leaves out."
       }
+    },
+    "native_additions": {
+      "capabilities.child_workflow_start_turn": {
+        "value": true,
+        "reason": "Native serves start_child_workflow await: \"started\", a parent turn when the child start commits (Server #966); published PHP 2.x has no such mode."
+      }
     }
   }
 }

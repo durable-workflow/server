@@ -34,7 +34,21 @@ test('every reviewed native difference names a published member and gives a reas
   assert.doesNotThrow(() => expectedFor(definition, 'rust'));
 });
 
+test('every reviewed native addition is a member published PHP lacks and gives a reason', () => {
+  for (const [path, addition] of Object.entries(definition.native_additions)) {
+    const member = path.split('.').pop();
+    assert.ok(!Object.hasOwn(definition.expected.capabilities, member), path);
+    assert.ok(typeof addition.reason === 'string' && addition.reason.length > 10, path);
+  }
+  assert.equal(expectedFor(definition, 'rust').capabilities.child_workflow_start_turn, true);
+  assert.ok(!Object.hasOwn(expectedFor(definition, null).capabilities, 'child_workflow_start_turn'), 'published PHP never had it');
+  const shadowing = structuredClone(definition);
+  shadowing.native_additions = {'capabilities.child_workflows': {value: false, reason: 'not an addition at all'}};
+  assert.throws(() => expectedFor(shadowing, 'rust'), /is not a published member/);
+});
+
 for (const [name, mutate] of [
+  ['native without its child start turn', state => { delete state.capabilities.child_workflow_start_turn; }],
   ['native copying a manifest flag it does not publish', state => { state.capabilities.timer_runtime_contract = true; }],
   ['native advertising response compression', state => { state.capabilities.response_compression = ['gzip']; }],
   ['native without its unqualified list', state => { state.native_unqualified = []; }],
