@@ -36,4 +36,6 @@ annotations:
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: Default to native Server 3.0.2, which fixes the query queue wedge, failed-run describe fields and adds offline backup-hold release and inspect. Schema unchanged.
+      description: Default image changes to native Server 3.0.2 (query queue wedge, failed-run describe fields, offline backup-hold release and inspect). No template, values contract or schema change.
+    - kind: changed
+      description: "Known issue in Server 3.0.2 and 3.0.1 (server#979, fixed in 3.0.3): with namespace external payload storage enabled, a signal whose arguments exceed the threshold leaves its run waiting. Keep signal arguments below the threshold until 3.0.3. https://github.com/durable-workflow/server/releases/tag/native-3.0.2"
