@@ -5,6 +5,8 @@ mod backup_hold;
 mod cleanup;
 #[path = "external_payloads/commands.rs"]
 mod commands;
+#[path = "external_payloads/signal_apply.rs"]
+mod signal_apply;
 #[path = "external_payloads/completion_uploads.rs"]
 mod completion_uploads;
 #[path = "external_payloads/retention.rs"]

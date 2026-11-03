@@ -321,31 +321,45 @@ async fn a_signal_stored_by_reference_applies_and_records_its_value_by_reference
     runtime.close().await;
 }
 
-/// A signal admitted inline is applied exactly as before: its value stays
-/// inline and no object is written.
+/// An inline signal is recorded against the namespace threshold too, as
+/// `externalizeForNamespace` records any value: above it by reference,
+/// at or below it inline, with no object written.
 #[tokio::test]
-async fn an_inline_signal_keeps_an_inline_value() {
+async fn an_inline_signal_value_follows_the_namespace_threshold() {
     let temp = tempfile::tempdir().unwrap();
-    let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &temp.path().join("objects")).await;
+    let root = temp.path().join("objects");
+    let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &root).await;
     let (status, body) = json_request(&app, "POST", "/api/worker/register", "worker-token", json!({"worker_id":"inline-worker",
         "task_queue":"inline-signal","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    let (status, started) = json_request(&app, "POST", "/api/workflows", "operator-token",
-        json!({"workflow_id":"inline-signal","workflow_type":"echo","task_queue":"inline-signal","input":[]})).await;
-    assert_eq!(status, StatusCode::CREATED, "{started}");
-    let first = poll_task(&app, "inline-worker", "inline-signal").await;
-    assert_eq!(complete(&app, &first, json!([{"type":"open_signal_wait","signal_name":"approve"}])).await.0, StatusCode::OK);
-    let blob = argument("yes");
-    let (status, body) = json_request(&app, "POST", "/api/workflows/inline-signal/signal/approve", "operator-token",
-        json!({"input":{"codec":"avro","blob":blob}})).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    let resumed = poll_task(&app, "inline-worker", "inline-signal").await;
-    let (status, body) = complete(&app, &resumed, json!([{"type":"complete_workflow","result":{"codec":"avro","blob":argument("done")}}])).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let (_, history) = json_request(&app, "GET", &format!("/api/workflows/inline-signal/runs/{}/history", started["run_id"].as_str().unwrap()),
-        "operator-token", Value::Null).await;
-    let value = durable_workflow_server::codec::ValueCodec::new().unwrap().encode(&Payload::String("yes".into())).unwrap();
-    assert_eq!(events(&history, "SignalApplied")[0]["payload"]["value"], json!({"codec":"avro","blob":value}));
-    assert_eq!(payload_rows(&database).await, 0);
+    let codec = durable_workflow_server::codec::ValueCodec::new().unwrap();
+    for (workflow, threshold, inline) in [("inline-above", 16, false), ("inline-below", 4096, true)] {
+        let (status, body) = json_request(&app, "PUT", "/api/namespaces/default/external-storage", "admin-token",
+            json!({"driver":"local","enabled":true,"threshold_bytes":threshold,"config":{"uri":format!("file://{}",root.display())}})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, started) = json_request(&app, "POST", "/api/workflows", "operator-token",
+            json!({"workflow_id":workflow,"workflow_type":"echo","task_queue":"inline-signal","input":[]})).await;
+        assert_eq!(status, StatusCode::CREATED, "{started}");
+        let first = poll_task(&app, "inline-worker", "inline-signal").await;
+        assert_eq!(complete(&app, &first, json!([{"type":"open_signal_wait","signal_name":"approve"}])).await.0, StatusCode::OK);
+        let before = payload_rows(&database).await;
+        let (status, body) = json_request(&app, "POST", &format!("/api/workflows/{workflow}/signal/approve"), "operator-token",
+            json!({"input":{"codec":"avro","blob":argument("yes")}})).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let resumed = poll_task(&app, "inline-worker", "inline-signal").await;
+        let (status, body) = complete(&app, &resumed, json!([{"type":"complete_workflow","result":{"codec":"avro","blob":argument("done")}}])).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, history) = json_request(&app, "GET", &format!("/api/workflows/{workflow}/runs/{}/history", started["run_id"].as_str().unwrap()),
+            "operator-token", Value::Null).await;
+        let value = codec.encode(&Payload::String("yes".into())).unwrap();
+        let recorded = &events(&history, "SignalApplied")[0]["payload"]["value"];
+        if inline {
+            assert_eq!(recorded, &json!({"codec":"avro","blob":value}), "{workflow}");
+            assert_eq!(payload_rows(&database).await, before, "{workflow}: no object");
+        } else {
+            assert_eq!(recorded["external_payload"]["sha256"], json!(digest(value.as_bytes())), "{workflow}: {recorded}");
+            assert_eq!((payload_rows(&database).await, unclaimed(&database).await), (before + 1, 0), "{workflow}");
+        }
+    }
     runtime.close().await;
 }

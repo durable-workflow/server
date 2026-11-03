@@ -41,7 +41,7 @@ pub struct Runtime {
     // Codec work done while holding the transition lock takes this permit,
     // never `signal_codec`, so a transition never queues behind reads for
     // codec capacity.
-    transition_codec: Arc<Semaphore>,
+    pub(super) transition_codec: Arc<Semaphore>,
     pub(super) external: Arc<super::ExternalPayloadConfig>,
     pub(super) queries: Arc<super::QueryTaskConfig>,
     /// The package's signal, update and payload ceilings (DW_V2_LIMIT_*).
@@ -407,7 +407,7 @@ impl Runtime {
     }
     delegate!(change_backup_hold(action: super::backup_hold::Action, request: &super::backup_hold::Request) -> Result<Value>);
     delegate!(backup_hold_status(owner: Option<&str>) -> Result<Value>);
-    delegate!(pending_task_signal(task_id: &str) -> Result<Option<(String, String, String)>>);
+    delegate!(claimed_task_signal(task_id: &str, body: Value) -> Result<Option<(String, String, String)>>);
     delegate!(retention_status(limit: i64) -> Result<Value>);
     delegate!(retention_pass(limit: i64, run_ids: Vec<String>) -> Result<(Value, bool)>);
     delegate!(activity_timeout_status(limit: i64) -> Result<Value>);
@@ -1540,8 +1540,18 @@ impl Runtime {
     delegate!(task_history(task_id: &str, body: Value, pages: super::history_pages::HistoryPages) -> Result<Value>);
     pub(crate) async fn fail_workflow_task(&self, task_id: &str, body: Value) -> Result<Value> {
         let codec = self.transition_codec.clone();
-        // A waiting acknowledgement applies the task's signal too (Server #979).
-        let signal = self.resolve_task_signal(task_id).await?;
+        // Of the failures, only a waiting acknowledgement applies the task's
+        // signal (Server #979).
+        // The body must be one the store accepts, so a malformed failure
+        // writes nothing.
+        let well_formed = body["failure"]["message"].as_str().is_some_and(|message| !message.trim().is_empty())
+            && body["workflow_task_attempt"].as_i64().is_some_and(|attempt| attempt >= 1)
+            && body["lease_owner"].is_string();
+        let signal = if well_formed && super::store::waiting_acknowledgement(&body["failure"]) {
+            self.resolve_task_signal(task_id, &body).await?
+        } else {
+            None
+        };
         match &*self.storage {
             Storage::Sqlite(store) => store.fail_workflow_task(task_id, body, codec, signal.as_ref()).await,
             Storage::Postgres(store) => store.fail_workflow_task(task_id, body, codec, signal.as_ref()).await,
@@ -1591,9 +1601,9 @@ impl Runtime {
         }
         self.check_command_payloads(&body).await?;
         let external = self.prepare_command_payloads(&body).await?;
-        // A resumed signal stored by reference is read before the
-        // transaction that applies it (Server #979).
-        let signal = self.resolve_task_signal(task_id).await?;
+        // A resumed signal is resolved before the transaction that applies
+        // it (Server #979).
+        let signal = self.resolve_task_signal(task_id, &body).await?;
         let body = super::completion_rules::canonical_payloads(body)?;
         if let Some(commands) = body["commands"].as_array() {
             for command in commands

@@ -38,6 +38,14 @@ pub(crate) struct StoredValue {
     pub(super) namespace: String,
 }
 
+/// A signal value's reference id, fixed by the signal and the value's
+/// digest: `ep_` and a ULID-shaped 128-bit prefix of their SHA-256.
+fn value_reference_id(signal_id: &str, sha256: &str) -> String {
+    let digest = Sha256::digest(format!("signal-value:{signal_id}:{sha256}").as_bytes());
+    let bytes: [u8; 16] = digest[..16].try_into().expect("a 16-byte prefix");
+    format!("ep_{}", ulid::Ulid::from_bytes(bytes))
+}
+
 fn unavailable() -> super::RuntimeError {
     refuse(StatusCode::SERVICE_UNAVAILABLE, "external_payload_unavailable")
 }
@@ -47,31 +55,52 @@ fn hex(digest: impl AsRef<[u8]>) -> String {
 }
 
 impl Runtime {
-    /// The task's signal, when it is still to be applied and its arguments
-    /// are stored by reference. Anything else is left to the transaction as
-    /// before.
-    pub(super) async fn resolve_task_signal(&self, task_id: &str) -> Result<Option<ResolvedSignal>> {
-        let Some((signal_id, name, stored)) = self.pending_task_signal(task_id).await? else {
+    /// The task's signal, resolved for the transaction that applies it:
+    /// arguments stored by reference are read back, and a value above the
+    /// namespace's threshold is stored by reference, however its arguments
+    /// arrived. Nothing is read or written unless `body` holds the task's
+    /// live claim, as the transaction's guard requires; otherwise the
+    /// transaction refuses the request exactly as before.
+    pub(super) async fn resolve_task_signal(&self, task_id: &str, body: &serde_json::Value) -> Result<Option<ResolvedSignal>> {
+        let Some((signal_id, name, stored)) = self.claimed_task_signal(task_id, body.clone()).await? else {
             return Ok(None);
         };
-        if !stored.starts_with(STORED_PREFIX) {
+        let by_reference = stored.starts_with(STORED_PREFIX);
+        let storage = self.value_storage().await?;
+        // An inline signal in a namespace that stores nothing by reference is
+        // applied as before, without any work here.
+        if !by_reference && storage.is_none() {
             return Ok(None);
         }
         let resolve = async {
-            let arguments = self.read_stored(&stored).await?;
+            let arguments = if by_reference { self.read_stored(&stored).await? } else { stored.clone() };
+            // Applying a signal is transition work: it never waits for read
+            // codec capacity.
             let prepared = super::store::prepare_control_arguments(
-                self.signal_codec.clone(),
+                self.transition_codec.clone(),
                 name,
                 arguments.clone(),
                 "invalid_signal_arguments",
                 false,
             )
             .await?;
-            let value = self.store_large_value(&prepared.value).await?;
-            Ok(Some(ResolvedSignal { signal_id, stored: stored.clone(), arguments, value }))
+            let value = match storage {
+                Some((local, threshold)) => self.store_large_value(local, threshold, &signal_id, &prepared.value).await?,
+                None => None,
+            };
+            Ok((by_reference || value.is_some()).then(|| ResolvedSignal { signal_id, stored: stored.clone(), arguments, value }))
         };
         // One deadline covers the read and any write, as for uploads.
         tokio::time::timeout(self.external.timeout, resolve).await.map_err(|_| unavailable())?
+    }
+
+    /// The namespace's enabled local storage and its threshold, or none.
+    async fn value_storage(&self) -> Result<Option<(crate::external_payload::LocalStorage, i64)>> {
+        let metadata = self.describe_namespace(self.namespace()).await?;
+        let policy = &metadata["external_payload_storage"];
+        Ok(super::external_transport::local_for(policy, self.namespace())
+            .await?
+            .map(|local| (local, super::payload_discovery::threshold(policy))))
     }
 
     /// The Avro blob a stored native reference stands for, fetched from the
@@ -105,24 +134,27 @@ impl Runtime {
 
     /// `externalizeForNamespace`: a value above the namespace's threshold is
     /// written to its storage and registered, unclaimed until the applying
-    /// transaction records it. A value at or below it stays inline.
-    async fn store_large_value(&self, value: &str) -> Result<Option<StoredValue>> {
-        let metadata = self.describe_namespace(self.namespace()).await?;
-        let policy = &metadata["external_payload_storage"];
-        let threshold = super::payload_discovery::threshold(policy);
-        let Some(local) = super::external_transport::local_for(policy, self.namespace()).await? else {
-            return Ok(None);
-        };
+    /// transaction records it. A value at or below it stays inline. The
+    /// reference is fixed by the signal and the value's bytes, so a retried
+    /// request registers the same object again instead of a new one.
+    async fn store_large_value(
+        &self,
+        local: crate::external_payload::LocalStorage,
+        threshold: i64,
+        signal_id: &str,
+        value: &str,
+    ) -> Result<Option<StoredValue>> {
         if i64::try_from(value.len()).unwrap_or(i64::MAX) <= threshold {
             return Ok(None);
         }
         let payload = value.as_bytes().to_vec();
+        let sha256 = hex(Sha256::digest(&payload));
         let expected = Reference {
             schema: REFERENCE_SCHEMA,
-            reference_id: format!("ep_{}", super::store::id()),
+            reference_id: value_reference_id(signal_id, &sha256),
             codec: "avro",
             size_bytes: i64::try_from(payload.len()).map_err(|_| unavailable())?,
-            sha256: hex(Sha256::digest(&payload)),
+            sha256,
         };
         let uri = local.uri_for(&expected).map_err(super::external_transport::snapshot_error)?;
         let snapshot = crate::external_payload::capture(
@@ -145,20 +177,28 @@ impl Runtime {
 }
 
 store_methods! {
-    /// The signal a workflow task resumes, while it is still received: its
-    /// id, name and stored arguments.
-    pub(super) async fn pending_task_signal(&self, task_id: &str) -> Result<Option<(String, String, String)>> {
-        let Some(task) = Self::query("SELECT payload FROM workflow_tasks WHERE id=$1 AND namespace=$2")
-            .bind(task_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+    /// The signal a workflow task resumes, while it is still received and
+    /// `body` holds the task's live claim (`workflow_task_guard`, read in one
+    /// snapshot): its id, name and stored arguments. A request without the
+    /// claim gets nothing here and is refused by the transaction as before.
+    pub(super) async fn claimed_task_signal(&self, task_id: &str, body: Value) -> Result<Option<(String, String, String)>> {
+        let mut tx = self.begin_read().await?;
+        let Some(task) = Self::query("SELECT * FROM workflow_tasks WHERE id=$1 AND namespace=$2 AND task_type='workflow'")
+            .bind(task_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
         else {
             return Ok(None);
         };
+        match Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds).await {
+            Ok(()) => {}
+            Err(super::RuntimeError::Refused { .. } | super::RuntimeError::Protocol { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        }
         let payload = DB::document_row(&task, "payload")?;
         let Some(signal_id) = payload["workflow_signal_id"].as_str().filter(|_| payload["resume_source_kind"] == "workflow_signal") else {
             return Ok(None);
         };
-        let Some(signal) = Self::query("SELECT signal_name,arguments FROM workflow_signal_records WHERE id=$1 AND status='received'")
-            .bind(signal_id).fetch_optional(&self.pool).await?
+        let Some(signal) = Self::query("SELECT signal_name,arguments FROM workflow_signal_records WHERE id=$1 AND workflow_run_id=$2 AND status='received'")
+            .bind(signal_id).bind(DB::string(&task, "workflow_run_id")?).fetch_optional(&mut *tx).await?
         else {
             return Ok(None);
         };

@@ -2718,10 +2718,7 @@ where
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
-        let waiting = kind.eq_ignore_ascii_case("WorkflowTaskWaitingForHistory")
-            || format!("{kind} {message}")
-                .to_ascii_lowercase()
-                .contains("workflow task waiting for scheduled history");
+        let waiting = waiting_acknowledgement(&body["failure"]);
         let range_blocked = !waiting
             && (failure
                 .get("reason")
@@ -4780,6 +4777,20 @@ where
 /// no timeout, as in published PHP.
 /// `request` arguments come from a control-plane `input`, which PHP refuses
 /// as validation of `input.blob`; stored arguments keep `invalid`.
+/// A workflow task failure that acknowledges a wait for history
+/// (`WorkflowTaskWaitingForHistory`), by its type or message.
+pub(super) fn waiting_acknowledgement(failure: &Value) -> bool {
+    let kind = failure["type"]
+        .as_str()
+        .unwrap_or("")
+        .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
+    let message = failure["message"].as_str().unwrap_or("");
+    kind.eq_ignore_ascii_case("WorkflowTaskWaitingForHistory")
+        || format!("{kind} {message}")
+            .to_ascii_lowercase()
+            .contains("workflow task waiting for scheduled history")
+}
+
 pub(super) async fn prepare_control_arguments(
     semaphore: Arc<Semaphore>,
     name: String,
