@@ -2,6 +2,10 @@
 # the deployment is short-lived and not internet-facing. DO NOT use this
 # shape in production.
 
+# PHP 2.x mode. The chart defaults to the native 3.x Server. This file keeps
+# an existing PHP installation on the frozen 2.x line.
+runtime: php
+
 image:
   tag: "2.11.8"
 

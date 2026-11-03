@@ -73,8 +73,8 @@ jobs:
           python -I -m pip install --only-binary :all: PyYAML==6.0.2
           python scripts/ci/test_database_tls_chart.py
 
-      - name: Check that native 3.x images are refused
-        run: python scripts/ci/test_helm_native_image_guard.py
+      - name: Check what each runtime renders and refuses
+        run: python scripts/ci/test_helm_runtime_modes.py
 
       - name: Render every CI fixture
         run: |
@@ -228,33 +228,42 @@ jobs:
           fi
           scripts/helm-chart-kind-smoke.sh
 
+      - name: Run native kind smoke script
+        env:
+          K8S_HELM_SMOKE_CLUSTER: ${{ env.HELM_CT_CLUSTER_NAME }}
+          K8S_HELM_SMOKE_REUSE_CLUSTER: "1"
+          K8S_HELM_NATIVE_SMOKE_ARTIFACT_DIR: ${{ runner.temp }}/helm-native-smoke
+        run: scripts/helm-chart-native-kind-smoke.sh
+
       - name: Print smoke diagnostics
         if: failure()
         run: |
-          artifact_dir="${{ runner.temp }}/helm-smoke"
-          if [ ! -d "${artifact_dir}" ]; then
-            echo "no smoke artifacts collected"
-            exit 0
-          fi
-
-          for file in \
-            helm-status.txt \
-            events.txt \
-            describe.txt \
-            resources.txt \
-            migration-job.log \
-            server.log \
-            worker.log \
-            mysql.log \
-            redis.log \
-            port-forward.log; do
-            path="${artifact_dir}/${file}"
-            if [ ! -f "${path}" ]; then
+          for artifact_dir in "${{ runner.temp }}/helm-smoke" "${{ runner.temp }}/helm-native-smoke"; do
+            if [ ! -d "${artifact_dir}" ]; then
+              echo "no smoke artifacts collected in ${artifact_dir}"
               continue
             fi
-            echo "::group::${file}"
-            tail -n 200 "${path}" || cat "${path}" || true
-            echo "::endgroup::"
+
+            for file in \
+              helm-status.txt \
+              events.txt \
+              describe.txt \
+              resources.txt \
+              migration-job.log \
+              schema-upgrade.log \
+              server.log \
+              worker.log \
+              mysql.log \
+              redis.log \
+              port-forward.log; do
+              path="${artifact_dir}/${file}"
+              if [ ! -f "${path}" ]; then
+                continue
+              fi
+              echo "::group::$(basename "${artifact_dir}")/${file}"
+              tail -n 200 "${path}" || cat "${path}" || true
+              echo "::endgroup::"
+            done
           done
 
       - name: Upload smoke artifacts
@@ -263,7 +272,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: helm-chart-kind-smoke
-          path: ${{ runner.temp }}/helm-smoke
+          path: |
+            ${{ runner.temp }}/helm-smoke
+            ${{ runner.temp }}/helm-native-smoke
           if-no-files-found: ignore
 
       - name: Clean up kind infrastructure

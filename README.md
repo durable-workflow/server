@@ -91,7 +91,7 @@ contract, so a workflow in one language can dispatch activities to another.
 | SQLite containers | Local evaluation with minimal infrastructure | [Official image and SQLite](docs/server-reference.md#official-image--sqlite) |
 | Compose with MySQL and Redis | Development and single-host production | [Compose deployment](docs/server-reference.md#official-image--compose) |
 | Small cluster | Multiple API nodes with external persistence | [Small-cluster contract](docs/small-cluster-validation.md) |
-| Kubernetes | Independently scalable API and worker pools | [Helm chart](k8s/helm/durable-workflow/README.md) |
+| Kubernetes | Native API replicas on Kubernetes, or the PHP 2.x shape for existing installs | [Helm chart](k8s/helm/durable-workflow/README.md) |
 | Active/passive regions | Operator-controlled regional failover | [Multi-region contract](docs/multi-region-validation.md) |
 
 Server supports SQLite for a single-node runtime and MySQL or PostgreSQL for

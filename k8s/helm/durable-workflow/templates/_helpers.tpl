@@ -28,15 +28,19 @@ Create a default fully qualified app name. Truncated at 63 chars per DNS-1123.
 {{/*
 Common labels applied to every resource.
 */}}
-{{- define "durable-workflow.labels" -}}
+{{- define "durable-workflow.chartLabels" -}}
 helm.sh/chart: {{ include "durable-workflow.chart" . }}
 {{ include "durable-workflow.selectorLabels" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: durable-workflow
-{{- with .Values.commonLabels }}
-{{ toYaml . }}
+{{- end -}}
+
+{{- define "durable-workflow.labels" -}}
+{{- with include "durable-workflow.userMetadata" (dict "maps" (list .Values.commonLabels) "chart" (list (include "durable-workflow.chartLabels" .) "app.kubernetes.io/component: chart")) }}
+{{ . }}
 {{- end }}
+{{ include "durable-workflow.chartLabels" . }}
 {{- end -}}
 
 {{/*
@@ -68,7 +72,64 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
 {{/*
+The Server runtime this release runs: "native" (the single-process 3.x
+Server) or "php" (the frozen 2.x Server with its worker, scheduler and
+migration Job). An explicit runtime value wins. Left empty, a new install runs
+native, and an upgrade stays native only when the live server Deployment
+carries the native runtime marker. Any other upgrade, such as a release that
+chart 0.x installed with PHP, must choose, so helm upgrade never moves a PHP
+installation to native on its own (server#946).
+*/}}
+{{- define "durable-workflow.runtime" -}}
+{{- $runtime := toString (default "" .Values.runtime) -}}
+{{- if $runtime -}}
+{{- if not (has $runtime (list "native" "php")) -}}
+{{- fail (printf "runtime %q is not supported. Use native or php." $runtime) -}}
+{{- end -}}
+{{- $runtime -}}
+{{- else if .Release.IsUpgrade -}}
+{{- $server := lookup "apps/v1" "Deployment" .Release.Namespace (include "durable-workflow.serverDeploymentName" .) -}}
+{{- $marker := "" -}}
+{{- if $server -}}
+{{- $marker = default "" (get (default (dict) $server.metadata.annotations) "workflows.durable-workflow.dev/runtime") -}}
+{{- end -}}
+{{- if eq $marker "native" -}}
+native
+{{- else if $server -}}
+{{- fail (printf "Release %s runs the PHP 2.x Server: its Deployment %s has no native runtime marker. This chart now defaults to the native 3.x Server but never switches an existing PHP release on its own. To stay on PHP, set runtime=php and pin image.tag to your 2.x release (the final one is 2.11.8). To move to native, take over the PHP database with the native image first, then set runtime=native. See docs/UPGRADING.md in the chart (durable-workflow/server#946)." .Release.Name $server.metadata.name) -}}
+{{- else -}}
+{{- fail (printf "Cannot confirm the runtime of release %s because its server Deployment is not visible (for example under a client-side dry run). Set runtime=native or runtime=php explicitly. See docs/UPGRADING.md in the chart (durable-workflow/server#946)." .Release.Name) -}}
+{{- end -}}
+{{- else -}}
+native
+{{- end -}}
+{{- end -}}
+
+{{- define "durable-workflow.isNative" -}}
+{{- if eq (include "durable-workflow.runtime" .) "native" -}}true{{- end -}}
+{{- end -}}
+
+{{- define "durable-workflow.isPhp" -}}
+{{- if eq (include "durable-workflow.runtime" .) "php" -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+The Server line an image tag names: "native" for 3.x and later and for the
+rolling latest tag, "php" for 2.x and earlier, empty for a custom tag.
+*/}}
+{{- define "durable-workflow.imageTagRuntime" -}}
+{{- $tag := toString . -}}
+{{- if or (eq $tag "latest") (regexMatch "^v?([3-9]|[1-9][0-9]+)(\\.|$)" $tag) -}}
+native
+{{- else if regexMatch "^v?[0-2](\\.|$)" $tag -}}
+php
+{{- end -}}
+{{- end -}}
+
+{{/*
 Image reference. Prefers digest over tag; tag falls back to .Chart.AppVersion.
+A tag must belong to the selected runtime: the native image has no artisan,
+queue worker or scheduler, and the PHP image cannot serve a native schema.
 */}}
 {{- define "durable-workflow.image" -}}
 {{- $registry := .Values.image.registry | default "docker.io" -}}
@@ -76,15 +137,28 @@ Image reference. Prefers digest over tag; tag falls back to .Chart.AppVersion.
 {{- if .Values.image.digest -}}
 {{- printf "%s/%s@%s" $registry $repo .Values.image.digest -}}
 {{- else -}}
-{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
-{{- /* This chart runs the PHP 2.x Server: a queue worker, a scheduler and a
-migration job that call server-entrypoint and artisan. The native 3.x image
-has none of them, so a 3.x tag would render workloads that fail at runtime
-(Server #946). The rolling tags 3, 3.0 and latest now point at native too. */ -}}
-{{- if or (eq (toString $tag) "latest") (regexMatch "^v?([3-9]|[1-9][0-9]+)(\\.|$)" (toString $tag)) -}}
-{{- fail (printf "image.tag %s selects the native 3.x Server; this chart runs PHP 2.x only until its native mode lands (durable-workflow/server#946). Use docker-compose.published.yml for native, or pin a 2.x tag." $tag) -}}
+{{- $tag := toString (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- $runtime := include "durable-workflow.runtime" . -}}
+{{- $tagRuntime := include "durable-workflow.imageTagRuntime" $tag -}}
+{{- if and (eq $runtime "php") (eq $tagRuntime "native") -}}
+{{- fail (printf "image.tag %s selects the native 3.x Server, but runtime is php, which runs PHP 2.x images only. Set runtime=native to run native, or pin a 2.x tag such as 2.11.8 to stay on PHP. See docs/UPGRADING.md in the chart (durable-workflow/server#946)." $tag) -}}
+{{- else if and (eq $runtime "native") (eq $tagRuntime "php") -}}
+{{- fail (printf "image.tag %s selects the PHP 2.x Server, but runtime is native. Set runtime=php to keep running PHP 2.x, or use a native 3.x tag. See docs/UPGRADING.md in the chart (durable-workflow/server#946)." $tag) -}}
 {{- end -}}
 {{- printf "%s/%s:%s" $registry $repo $tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+APP_VERSION for PHP roles: an explicit config.appVersion, else a 2.x image
+tag. Otherwise it is omitted and the PHP image reports its own source
+release, because the chart's appVersion names the native Server.
+*/}}
+{{- define "durable-workflow.phpAppVersion" -}}
+{{- if .Values.config.appVersion -}}
+{{- .Values.config.appVersion -}}
+{{- else if and (not .Values.image.digest) (eq (include "durable-workflow.imageTagRuntime" (toString .Values.image.tag)) "php") -}}
+{{- .Values.image.tag -}}
 {{- end -}}
 {{- end -}}
 
@@ -179,7 +253,7 @@ live execution image and storage-capability marker, never desired state or the
 chart version label as proof that an old execution has stopped.
 */}}
 {{- define "durable-workflow.validateMemoPayloadTransition" -}}
-{{- if .Release.IsUpgrade -}}
+{{- if and .Release.IsUpgrade (include "durable-workflow.isPhp" .) -}}
 {{- $targetImage := include "durable-workflow.image" . -}}
 {{- $targetStorage := include "durable-workflow.targetMemoPayloadStorage" . | trim -}}
 {{- if or (eq $targetStorage "unknown") (eq $targetStorage "envelope-v1") -}}
@@ -386,10 +460,13 @@ The chart deliberately refuses to render if these are missing — bundling a
 default in-cluster database would silently break the externals-first contract.
 */}}
 {{- define "durable-workflow.validateExternalPersistence" -}}
+{{- if and (include "durable-workflow.isPhp" .) (eq (toString .Values.externalDatabase.connection) "sqlite") -}}
+{{- fail "PHP mode does not run on SQLite. Use MySQL, MariaDB or PostgreSQL." -}}
+{{- end -}}
 {{- if not .Values.externalDatabase.host -}}
 {{- fail "externalDatabase.host is required. The chart does not bundle a database; point this at your managed MySQL/PostgreSQL endpoint. See k8s/helm/durable-workflow/README.md." -}}
 {{- end -}}
-{{- if not .Values.externalRedis.host -}}
+{{- if and (include "durable-workflow.isPhp" .) (not .Values.externalRedis.host) -}}
 {{- fail "externalRedis.host is required for the multi-node correctness contract. Point this at your managed Redis (ElastiCache, Memorystore, Sentinel, etc.). See k8s/helm/durable-workflow/README.md." -}}
 {{- end -}}
 {{- end -}}
@@ -408,7 +485,7 @@ Standard env block consumed by every workload. Wires:
     name: {{ include "durable-workflow.appSecretName" . }}
 {{- end -}}
 
-{{- define "durable-workflow.standardEnv" -}}
+{{- define "durable-workflow.databaseCredentialEnv" -}}
 - name: DB_USERNAME
   valueFrom:
     secretKeyRef:
@@ -419,6 +496,10 @@ Standard env block consumed by every workload. Wires:
     secretKeyRef:
       name: {{ include "durable-workflow.databaseSecretName" . }}
       key: {{ .Values.externalDatabase.existingSecretPasswordKey | default "DB_PASSWORD" }}
+{{- end -}}
+
+{{- define "durable-workflow.standardEnv" -}}
+{{ include "durable-workflow.databaseCredentialEnv" . }}
 - name: REDIS_USERNAME
   valueFrom:
     secretKeyRef:
@@ -455,8 +536,10 @@ not depend on regular resources Helm or Argo create afterward.
 {{- if eq (include "durable-workflow.bootstrapRunsBeforeResources" .) "true" }}
 - name: APP_NAME
   value: {{ .Values.config.appName | quote }}
+{{- with include "durable-workflow.phpAppVersion" . }}
 - name: APP_VERSION
-  value: {{ default .Chart.AppVersion .Values.config.appVersion | quote }}
+  value: {{ . | quote }}
+{{- end }}
 - name: APP_ENV
   value: {{ .Values.config.appEnv | quote }}
 - name: APP_DEBUG
@@ -614,4 +697,236 @@ argocd.argoproj.io/sync-wave: {{ .Values.argocd.workloadWave | quote }}
 {{- if .Values.flux.useDependsOn }}
 kustomize.toolkit.fluxcd.io/depends-on: {{ printf "%s/%s" .Release.Namespace (include "durable-workflow.bootstrapJobName" .) | quote }}
 {{- end }}
+{{- end -}}
+
+{{/*
+Native settings the binary would refuse at startup, refused here at render
+time instead so a broken rollout never starts. Each rule cites the native
+behavior it mirrors.
+*/}}
+{{- define "durable-workflow.validateNative" -}}
+{{- $native := default (dict) .Values.native -}}
+{{- if ne (toString .Values.config.auth.driver) "token" -}}
+{{- fail (printf "config.auth.driver %q is not supported by the native Server, which accepts only the token driver in a release image." (toString .Values.config.auth.driver)) -}}
+{{- end -}}
+{{- if .Values.auth.principalTokens -}}
+{{- fail "auth.principalTokens is not supported by the native Server, which refuses DW_PRINCIPAL_TOKENS at startup. Use auth.authToken with the role-scoped worker, operator and admin tokens." -}}
+{{- end -}}
+{{- if and (not .Values.auth.existingSecret) (not .Values.auth.authToken) -}}
+{{- fail "auth.authToken is required in native mode: the native Server refuses to start without DW_AUTH_TOKEN. Set auth.authToken, or put DW_AUTH_TOKEN in auth.existingSecret." -}}
+{{- end -}}
+{{- range $volume := default (list) .Values.server.extraVolumes -}}
+{{- if eq $volume.name "server-storage" -}}
+{{- fail "The server-storage volume name is reserved for native payload storage. Use native.storage.existingClaim." -}}
+{{- end -}}
+{{- end -}}
+{{- range $mount := default (list) .Values.server.extraVolumeMounts -}}
+{{- if or (eq $mount.name "server-storage") (eq (trimSuffix "/" $mount.mountPath) "/app/storage") -}}
+{{- fail "The server-storage volume and the /app/storage mount path are reserved for native payload storage. Use native.storage.existingClaim." -}}
+{{- end -}}
+{{- end -}}
+{{- $connection := toString .Values.externalDatabase.connection -}}
+{{- $extra := default (dict) .Values.config.extraEnv -}}
+{{- if or (eq $connection "sqlite") (eq (toString (get $extra "DB_CONNECTION")) "sqlite") (hasPrefix "sqlite" (toString (get $extra "DB_URL"))) -}}
+{{- fail "The chart does not run the native Server on SQLite yet: that needs exactly one replica on a ReadWriteOnce volume at /app/database, which this chart does not provision. Use MySQL, MariaDB or PostgreSQL, or run SQLite with docker-compose.published.yml." -}}
+{{- end -}}
+{{- if and (not (get (default (dict) (get $native "storage")) "existingClaim")) (or .Values.server.autoscaling.enabled (gt (int (include "durable-workflow.serverReplicas" .)) 1)) -}}
+{{- fail "More than one native Server replica (server.replicaCount above 1 or server.autoscaling.enabled) needs native.storage.existingClaim: native keeps external payload objects on pod-local disk, so one pod cannot read an upload another pod accepted. Set a ReadWriteMany claim, or run one replica." -}}
+{{- end -}}
+{{- $grace := int (default 65 (get $native "terminationGracePeriodSeconds")) -}}
+{{- $poll := get (default (dict) .Values.config.extraEnv) "DW_WORKER_POLL_TIMEOUT" -}}
+{{- if and $poll (le $grace (int $poll)) -}}
+{{- fail (printf "native.terminationGracePeriodSeconds (%d) must exceed DW_WORKER_POLL_TIMEOUT (%v): the native Server holds open worker polls for up to that long while it drains on SIGTERM." $grace $poll) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Authorize the native schema-upgrade hook. schema-upgrade mutates the database
+and needs every native Server stopped and a backup taken first
+(rust/README.md, Native schema upgrades). The hook therefore renders only in a
+real helm upgrade, and only when live cluster state proves the stop: the
+release's server Deployment is visible, carries the native runtime marker,
+has exactly zero replicas, has no HorizontalPodAutoscaler that could scale it
+back up, and no server pod of the release is still running. Anything lookup
+cannot prove, such as an install, helm template, a GitOps render or a
+client-side dry run, is refused rather than emitting an unchecked Job.
+*/}}
+{{- define "durable-workflow.validateNativeSchemaUpgradeAuthority" -}}
+{{- $manual := "Use the manual schema upgrade in the chart README (Native schema upgrades) instead: scale the Server to zero, back up the database, run schema-upgrade once as your own Job, then start the Server." -}}
+{{- if not .Release.IsUpgrade -}}
+{{- fail (printf "native.schemaUpgrade.enabled renders the schema-upgrade hook only during helm upgrade of a live native release, where the chart can check that every Server is stopped. This render is an install, helm template or GitOps render. %s" $manual) -}}
+{{- end -}}
+{{- $namespace := .Release.Namespace -}}
+{{- $name := include "durable-workflow.serverDeploymentName" . -}}
+{{- $server := lookup "apps/v1" "Deployment" $namespace $name -}}
+{{- if not $server -}}
+{{- fail (printf "native.schemaUpgrade.enabled needs to see the live Deployment %s to prove every Server is stopped, but it is not visible (for example under a client-side dry run). Run helm upgrade against the cluster, or %s" $name $manual) -}}
+{{- end -}}
+{{- $marker := default "" (get (default (dict) $server.metadata.annotations) "workflows.durable-workflow.dev/runtime") -}}
+{{- if ne $marker "native" -}}
+{{- fail (printf "native.schemaUpgrade.enabled upgrades a native schema, but Deployment %s does not carry the native runtime marker, so this release does not run native. A PHP database moves to native through the takeover runbook, never schema-upgrade." $name) -}}
+{{- end -}}
+{{- if or (not (hasKey $server.spec "replicas")) (ne (int (get $server.spec "replicas")) 0) -}}
+{{- fail (printf "native.schemaUpgrade.enabled needs every native Server stopped and a database backup first, but Deployment %s has %v replicas. Scale it to zero (server.replicaCount=0 with server.autoscaling.enabled=false), wait for its pods to exit, back up the database, then upgrade with native.schemaUpgrade.enabled=true." $name (default "unset" (get $server.spec "replicas"))) -}}
+{{- end -}}
+{{- if .Values.server.autoscaling.enabled -}}
+{{- fail "native.schemaUpgrade.enabled cannot run with server.autoscaling.enabled: the autoscaler could start a Server during the upgrade. Disable autoscaling for the schema upgrade and enable it again afterwards." -}}
+{{- end -}}
+{{- $autoscalers := lookup "autoscaling/v2" "HorizontalPodAutoscaler" $namespace "" -}}
+{{- range $hpa := default (list) $autoscalers.items -}}
+{{- $target := default (dict) $hpa.spec.scaleTargetRef -}}
+{{- if and (eq (default "" $target.kind) "Deployment") (eq (default "" $target.name) $name) -}}
+{{- fail (printf "native.schemaUpgrade.enabled needs every native Server stopped, but HorizontalPodAutoscaler %s targets Deployment %s and could start one. Remove it (server.autoscaling.enabled=false) before the schema upgrade." $hpa.metadata.name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- $pods := lookup "v1" "Pod" $namespace "" -}}
+{{- range $pod := default (list) $pods.items -}}
+{{- $labels := default (dict) $pod.metadata.labels -}}
+{{- $phase := default "Unknown" (get (default (dict) $pod.status) "phase") -}}
+{{- if and (eq (default "" (get $labels "app.kubernetes.io/instance")) $.Release.Name) (eq (default "" (get $labels "app.kubernetes.io/component")) "server") (not (has $phase (list "Succeeded" "Failed"))) -}}
+{{- fail (printf "native.schemaUpgrade.enabled needs every native Server stopped, but server pod %s is still in phase %s. Wait for it to exit before retrying." $pod.metadata.name $phase) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Database settings for the native schema-upgrade hook. They are inlined, as
+the PHP bootstrap hook's are, so the hook connects with this upgrade's values
+rather than the previous release's ConfigMap.
+*/}}
+{{- define "durable-workflow.nativeSchemaUpgradeEnv" -}}
+- name: DB_CONNECTION
+  value: {{ .Values.externalDatabase.connection | quote }}
+- name: DB_HOST
+  value: {{ .Values.externalDatabase.host | quote }}
+- name: DB_PORT
+  value: {{ .Values.externalDatabase.port | quote }}
+- name: DB_DATABASE
+  value: {{ .Values.externalDatabase.database | quote }}
+{{- with .Values.externalDatabase.socket }}
+- name: DB_SOCKET
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.externalDatabase.sslMode }}
+- name: DB_SSLMODE
+  value: {{ . | quote }}
+{{- end }}
+{{- if .Values.externalDatabase.tls.existingSecret }}
+- name: DB_SSLROOTCERT
+  value: {{ include "durable-workflow.databaseTlsCaPath" . | quote }}
+{{- end }}
+{{- range $k, $v := .Values.config.extraEnv }}
+- name: {{ $k }}
+  value: {{ $v | quote }}
+{{- end }}
+{{- if .Values.externalDatabase.existingSecret }}
+{{ include "durable-workflow.databaseCredentialEnv" . }}
+{{- else }}
+- name: DB_USERNAME
+  value: {{ required "externalDatabase.auth.username is required when externalDatabase.existingSecret is empty" .Values.externalDatabase.auth.username | quote }}
+- name: DB_PASSWORD
+  value: {{ required "externalDatabase.auth.password is required when externalDatabase.existingSecret is empty" .Values.externalDatabase.auth.password | quote }}
+{{- end }}
+{{- end -}}
+
+{{- define "durable-workflow.nativeSchemaUpgradeJobName" -}}
+{{ include "durable-workflow.componentName" (dict "context" . "component" "schema-upgrade") }}
+{{- end -}}
+
+{{/*
+Container resources for native pods: the configured requests and limits, plus
+an ephemeral-storage request and limit from native.ephemeralStorage unless the
+resources already name one. The payload emptyDir counts toward the pod's
+ephemeral storage, so the limit also bounds it.
+*/}}
+{{- define "durable-workflow.nativeResources" -}}
+{{- $resources := deepCopy (default (dict) .resources) -}}
+{{- $ephemeral := default (dict) .ephemeralStorage -}}
+{{- range $kind, $key := dict "requests" "request" "limits" "limit" -}}
+{{- $value := get $ephemeral $key -}}
+{{- if $value -}}
+{{- $section := default (dict) (get $resources $kind) -}}
+{{- if not (hasKey $section "ephemeral-storage") -}}
+{{- $_ := set $section "ephemeral-storage" $value -}}
+{{- end -}}
+{{- $_ := set $resources $kind $section -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml $resources -}}
+{{- end -}}
+
+{{/*
+The server replica count. Empty takes the runtime's default: one native pod,
+because more than one needs a shared payload claim, or two PHP pods as in
+chart 0.x. An explicit value, including 0, is used as given.
+*/}}
+{{- define "durable-workflow.serverReplicas" -}}
+{{- $replicas := .Values.server.replicaCount -}}
+{{- if or (kindIs "invalid" $replicas) (eq (toString $replicas) "") -}}
+{{- if include "durable-workflow.isNative" . -}}1{{- else -}}2{{- end -}}
+{{- else -}}
+{{- int $replicas -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Metadata keys only the chart may set: its authority markers, which the runtime
+selection, the memo transition guard and the schema-upgrade gate trust, and
+Helm's hook keys, which decide when a database-mutating Job runs.
+*/}}
+{{- define "durable-workflow.reservedMetadataKey" -}}
+{{- if or (hasPrefix "workflows.durable-workflow.dev/" .) (has . (list "helm.sh/hook" "helm.sh/hook-weight" "helm.sh/hook-delete-policy")) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Refuse any user-supplied label or annotation map that sets a reserved key.
+*/}}
+{{- define "durable-workflow.validateReservedMetadata" -}}
+{{- $maps := dict
+  "commonAnnotations" .Values.commonAnnotations
+  "commonLabels" .Values.commonLabels
+  "server.podAnnotations" .Values.server.podAnnotations
+  "server.podLabels" .Values.server.podLabels
+  "server.service.annotations" .Values.server.service.annotations
+  "server.ingress.annotations" .Values.server.ingress.annotations
+  "worker.podAnnotations" .Values.worker.podAnnotations
+  "worker.podLabels" .Values.worker.podLabels
+  "scheduler.podAnnotations" .Values.scheduler.podAnnotations
+  "scheduler.podLabels" .Values.scheduler.podLabels
+  "bootstrap.podAnnotations" .Values.bootstrap.podAnnotations
+  "bootstrap.podLabels" .Values.bootstrap.podLabels
+  "serviceAccount.annotations" .Values.serviceAccount.annotations -}}
+{{- range $path, $map := $maps -}}
+{{- range $key, $_ := default (dict) $map -}}
+{{- if include "durable-workflow.reservedMetadataKey" $key -}}
+{{- fail (printf "%s sets the reserved key %q. Keys under workflows.durable-workflow.dev/ and the helm.sh/hook keys are set only by the chart, which relies on them for the runtime, memo storage and schema-upgrade checks. Remove it." $path $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+User labels or annotations for one object: the given maps merged in order,
+without reserved keys and without any key the chart itself sets on that object
+("chart" holds the chart's own YAML for it). The caller emits the chart's keys
+after this output, so the rendered map has no duplicate key and a user value
+can never shadow a chart value, even if validateReservedMetadata were skipped.
+*/}}
+{{- define "durable-workflow.userMetadata" -}}
+{{- $merged := dict -}}
+{{- range $map := .maps -}}
+{{- $merged = mergeOverwrite $merged (deepCopy (default (dict) $map)) -}}
+{{- end -}}
+{{- $chart := dict -}}
+{{- range $yaml := default (list) .chart -}}
+{{- $chart = mergeOverwrite $chart (default (dict) (fromYaml $yaml)) -}}
+{{- end -}}
+{{- range $key := keys $merged -}}
+{{- if or (hasKey $chart $key) (include "durable-workflow.reservedMetadataKey" $key) -}}
+{{- $_ := unset $merged $key -}}
+{{- end -}}
+{{- end -}}
+{{- if $merged -}}
+{{- toYaml $merged -}}
+{{- end -}}
 {{- end -}}

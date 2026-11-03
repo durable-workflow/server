@@ -2,6 +2,7 @@
 
 import ast
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -474,7 +475,7 @@ esac
         source_release = RELEASE.source_release_metadata()
         self.assertGreater(RELEASE.semver_key(metadata["version"]), (0, 1, 0))
         self.assertEqual(metadata["version"], source_release["chart_version"])
-        self.assertEqual(metadata["app_version"], source_release["server_version"])
+        self.assertEqual(metadata["app_version"], source_release["chart_app_version"])
         self.assertEqual(
             metadata["image_reference"],
             f"docker.io/durableworkflow/server:{RELEASE.onboarding_server_version()}",
@@ -703,6 +704,32 @@ esac
         self.assertNotIn("database.example.invalid", arguments)
         self.assertNotIn("redis.example.invalid", arguments)
         self.assertNotIn("--dry-run=client", arguments)
+        # The default runtime is native, which refuses to start without a
+        # shared token.
+        self.assertIn("auth.authToken=not-a-secret", arguments)
+        self.assertIn("auth.authToken=not-a-secret", RELEASE.helm_value_arguments())
+
+    def test_chart_app_version_is_separate_from_the_frozen_php_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = Path(temporary) / "source-release.json"
+            base = {
+                "schema": "durable-workflow.server.source-release/v1",
+                "server": {"version": "2.11.8"},
+                "helm_chart": {"version": "1.0.0"},
+            }
+            record.write_text(json.dumps(base))
+            self.assertEqual(
+                RELEASE.source_release_metadata(record)["chart_app_version"], "2.11.8"
+            )
+            base["helm_chart"]["app_version"] = "3.0.1"
+            record.write_text(json.dumps(base))
+            metadata = RELEASE.source_release_metadata(record)
+            self.assertEqual(metadata["server_version"], "2.11.8")
+            self.assertEqual(metadata["chart_app_version"], "3.0.1")
+            base["helm_chart"]["app_version"] = "latest"
+            record.write_text(json.dumps(base))
+            with self.assertRaisesRegex(RELEASE.ReleaseError, "app_version is not SemVer"):
+                RELEASE.source_release_metadata(record)
 
     def test_public_install_and_source_smoke_share_the_fixture_manifest(self) -> None:
         fixture = "scripts/helm-chart-kind-fixtures.yaml"

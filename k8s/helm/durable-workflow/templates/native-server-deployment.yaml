@@ -1,0 +1,143 @@
+{{- /*
+Native 3.x Server. One process per pod serves the API, checks its schema at
+startup (bootstrapping an empty database, never upgrading an older one) and
+runs maintenance in process: timers, repair, retention and schedules
+(DW_RUST_MAINTENANCE_LOOP=1 in the image). There is no worker, scheduler,
+migration Job or Redis. The runtime annotation lets a later upgrade with an
+empty runtime value confirm that this release already runs native.
+*/ -}}
+{{- if and (include "durable-workflow.isNative" .) .Values.server.enabled }}
+{{- include "durable-workflow.validateNative" . }}
+{{- $native := default (dict) .Values.native }}
+{{- $storage := default (dict) (get $native "storage") }}
+{{- $resources := include "durable-workflow.nativeResources" (dict "resources" .Values.server.resources "ephemeralStorage" (get $native "ephemeralStorage")) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "durable-workflow.serverDeploymentName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "durable-workflow.componentLabels" (dict "context" . "component" "server") | nindent 4 }}
+  annotations:
+    {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.commonAnnotations) "chart" (list (include "durable-workflow.argoWorkloadAnnotations" .))) | nindent 4 }}
+    workflows.durable-workflow.dev/runtime: native
+    {{- include "durable-workflow.argoWorkloadAnnotations" . | nindent 4 }}
+spec:
+  {{- if not .Values.server.autoscaling.enabled }}
+  replicas: {{ include "durable-workflow.serverReplicas" . }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.server.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ .Values.server.progressDeadlineSeconds }}
+  minReadySeconds: {{ .Values.server.minReadySeconds }}
+  {{- with .Values.server.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "durable-workflow.componentSelectorLabels" (dict "context" . "component" "server") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.server.podLabels) "chart" (list (include "durable-workflow.componentSelectorLabels" (dict "context" . "component" "server")))) | nindent 8 }}
+        {{- include "durable-workflow.componentSelectorLabels" (dict "context" . "component" "server") | nindent 8 }}
+      annotations:
+        {{- include "durable-workflow.userMetadata" (dict "maps" (list .Values.server.podAnnotations) "chart" (list (include "durable-workflow.configChecksumAnnotations" .))) | nindent 8 }}
+        {{- include "durable-workflow.configChecksumAnnotations" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "durable-workflow.serviceAccountName" . }}
+      {{- /* The native Server never calls the Kubernetes API. */}}
+      automountServiceAccountToken: {{ ternary "true" "false" (eq (toString (get $native "automountServiceAccountToken")) "true") }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.server.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /* On SIGTERM native stops accepting work and holds open worker
+      polls until they end. A poll may ask for up to 60 seconds, so the grace
+      period must outlast that. */}}
+      terminationGracePeriodSeconds: {{ default 65 (get $native "terminationGracePeriodSeconds") }}
+      containers:
+        - name: server
+          image: {{ include "durable-workflow.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            {{- include "durable-workflow.standardEnvFrom" . | nindent 12 }}
+          env:
+            {{- include "durable-workflow.databaseCredentialEnv" . | nindent 12 }}
+            {{- with .Values.server.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- /* /api/health reports database liveness, so a liveness probe on
+          it would restart every pod during a database outage. Native mode
+          probes the listener instead and leaves database checks to
+          readiness. */}}
+          {{- with (get $native "livenessProbe") }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- $resources | nindent 12 }}
+          {{- with .Values.server.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: server-storage
+              mountPath: /app/storage
+            {{- include "durable-workflow.databaseTlsVolumeMount" . | nindent 12 }}
+            {{- with .Values.server.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.sidecars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        {{- /* Native keeps external payload objects on local disk under
+        /app/storage. Without a claim the objects live only as long as the pod. */}}
+        - name: server-storage
+          {{- with (get $storage "existingClaim") }}
+          persistentVolumeClaim:
+            claimName: {{ . | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- include "durable-workflow.databaseTlsVolume" . | nindent 8 }}
+        {{- with .Values.server.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
