@@ -16,8 +16,12 @@ expected() {
   if [[ -z "$label" || "$label" == "<no value>" ]]; then
     return 0
   fi
-  [[ "$label" =~ ^native-([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)$ ]] \
-    || fail "release tag label '$label' is not native-<X.Y.Z> or native-<X.Y.Z>-rc.<N>."
+  # A plain tag is native only from major 3, above every PHP release; the
+  # native- prefix stays valid for the tags published before plain ones.
+  [[ "$label" == native-* || "$label" =~ ^([3-9]|[1-9][0-9]+)\. ]] \
+    || fail "release tag label '$label' is not X.Y.Z (major 3 or later), X.Y.Z-rc.N, or a native- tag."
+  [[ "${label#native-}" =~ ^([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)$ ]] \
+    || fail "release tag label '$label' is not X.Y.Z (major 3 or later), X.Y.Z-rc.N, or a native- tag."
   printf '%s\n' "${BASH_REMATCH[1]}"
 }
 

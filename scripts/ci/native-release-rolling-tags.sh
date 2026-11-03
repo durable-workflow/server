@@ -26,8 +26,13 @@ set -euo pipefail
 fail() { printf 'Native rolling tags failed: %s\n' "$1" >&2; exit 1; }
 docker_bin=${DOCKER:-docker}
 
-[[ "${RELEASE_TAG:-}" =~ ^native-([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)$ ]] \
-  || fail "RELEASE_TAG must be native-<exact release version>."
+# A plain tag is native only from major 3, above every PHP release; native-
+# names the tags published before plain ones.
+release_label=${RELEASE_TAG:-}
+[[ "$release_label" == native-* || "$release_label" =~ ^([3-9]|[1-9][0-9]+)\. ]] \
+  || fail "RELEASE_TAG must be a native release version: X.Y.Z from major 3, or native-<version>."
+[[ "${release_label#native-}" =~ ^([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)$ ]] \
+  || fail "RELEASE_TAG must be a native release version: X.Y.Z from major 3, or native-<version>."
 version=${BASH_REMATCH[1]}
 if [[ -n "${BASH_REMATCH[2]}" ]]; then
   printf 'Native %s is not a final release; no rolling tag moves.\n' "$version"
@@ -56,8 +61,12 @@ else
   fail "set RELEASE_IMAGE_KNOWN_TAGS or RELEASE_IMAGE_TAG_SOURCE_URL."
 fi
 
-natives=$( { sed -n 's/^native-\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' <<<"$known"; printf '%s\n' "$version"; } | sort -u -V)
-php_latest=$(grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"$known" | sort -u -V | tail -n 1 || true)
+# Native finals: native-X.Y.Z tags and plain X.Y.Z from major 3. PHP finals:
+# plain X.Y.Z below major 3.
+natives=$( { sed -n 's/^native-\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' <<<"$known"
+  grep -E '^([3-9]|[1-9][0-9]+)\.[0-9]+\.[0-9]+$' <<<"$known" || true
+  printf '%s\n' "$version"; } | sort -u -V)
+php_latest=$(grep -E '^[0-2]\.[0-9]+\.[0-9]+$' <<<"$known" | sort -u -V | tail -n 1 || true)
 major=${version%%.*}
 minor=${version#*.}; minor="$major.${minor%%.*}"
 newer() { [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$1" ]]; }
