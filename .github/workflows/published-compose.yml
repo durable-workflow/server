@@ -5,6 +5,7 @@ on:
     paths:
       - docker-compose.published.yml
       - scripts/smoke-published-compose.sh
+      - scripts/ci/select-published-compose-image.sh
       - .github/workflows/published-compose.yml
   workflow_dispatch:
     inputs:
@@ -53,11 +54,9 @@ jobs:
 
       - name: Set Compose image selector
         env:
+          EVENT_NAME: ${{ github.event_name }}
           INPUT_SERVER_IMAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.server_image || '' }}
-        run: |
-          if [ -n "$INPUT_SERVER_IMAGE" ]; then
-            echo "DW_SERVER_IMAGE=$INPUT_SERVER_IMAGE" >> "$GITHUB_ENV"
-          fi
+        run: scripts/ci/select-published-compose-image.sh
 
       - name: Smoke published Compose stack
         env:

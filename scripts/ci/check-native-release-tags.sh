@@ -360,11 +360,27 @@ awk '/- name: Promote rolling image aliases/,/run: scripts\/ci\/promote-release-
 # The dispatch verifier: the release tag's own ref, at its commit, on main.
 dispatch=scripts/ci/verify-native-release-dispatch.sh
 dispatch_scratch=$(mktemp -d)
-printf '#!/bin/sh\necho "${COMPARE_STATUS:-ahead}"\n' > "$dispatch_scratch/gh"
+cat > "$dispatch_scratch/gh" <<'FAKE'
+#!/usr/bin/env bash
+# compare: COMPARE_STATUS; the release commit's first parent: PARENT_SHA;
+# docker-compose.published.yml at that parent: the file PARENT_COMPOSE names.
+case "$*" in
+  *"/compare/"*) echo "${COMPARE_STATUS:-ahead}" ;;
+  *"/commits/"*) [ -n "${PARENT_SHA:-}" ] || exit 1; echo "$PARENT_SHA" ;;
+  *"/contents/docker-compose.published.yml"*) [ -f "${PARENT_COMPOSE:-/nonexistent}" ] || exit 1; cat "$PARENT_COMPOSE" ;;
+  *) exit 1 ;;
+esac
+FAKE
 chmod +x "$dispatch_scratch/gh"
+# A final release's commit names its own image as the published Compose
+# default; each case reads a fixture of that file.
+compose_for() { # version -> a docker-compose.published.yml naming it
+  printf 'x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:%s}\n' "$1" > "$dispatch_scratch/compose-$1.yml"
+  printf '%s' "$dispatch_scratch/compose-$1.yml"
+}
 commit=0123456789abcdef0123456789abcdef01234567
 other=fedcba9876543210fedcba9876543210fedcba98
-ok_dispatch=(RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh")
+ok_dispatch=(RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" COMPOSE_FILE="$(compose_for 3.0.2)")
 expect "dispatch from refs/tags/native-3.0.2, not refs/heads/main" "${ok_dispatch[@]}" DISPATCH_REF=refs/heads/main bash "$dispatch"
 expect "dispatch from refs/tags/native-3.0.2, not refs/tags/native-3.0.1" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.1 bash "$dispatch"
 expect "is not RELEASE_COMMIT" RELEASE_TAG=native-3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$other DISPATCH_REF=refs/tags/native-3.0.2 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" bash "$dispatch"
@@ -373,12 +389,70 @@ for status in behind diverged; do
   expect "is not on main (compare status: $status)" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch"
 done
 plain_dispatch=(RELEASE_TAG=3.0.2 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/3.0.2 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh")
-env -i PATH="$PATH" "${plain_dispatch[@]}" bash "$dispatch" >/dev/null || fail "the dispatch verifier must accept a plain 3.x tag."
+env -i PATH="$PATH" "${plain_dispatch[@]}" COMPOSE_FILE="$(compose_for 3.0.2)" bash "$dispatch" >/dev/null || fail "the dispatch verifier must accept a plain 3.x tag."
+# The Compose default must name the final release being dispatched.
+expect "defaults to durableworkflow/server:3.0.1, not durableworkflow/server:3.0.2" "${plain_dispatch[@]}" COMPOSE_FILE="$(compose_for 3.0.1)" bash "$dispatch"
+: > "$dispatch_scratch/empty.yml"
+expect "must default to exactly one durableworkflow/server:X.Y.Z image" "${plain_dispatch[@]}" COMPOSE_FILE="$dispatch_scratch/empty.yml" bash "$dispatch"
+expect "cannot read" "${plain_dispatch[@]}" COMPOSE_FILE="$dispatch_scratch/missing.yml" bash "$dispatch"
+# A candidate keeps its first parent's default, exactly.
+parent=89abcdef0123456789abcdef0123456789abcdef
+candidate=(RELEASE_TAG=3.1.0-rc.1 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/3.1.0-rc.1 GITHUB_REPOSITORY=example/server
+  GH_CLI="$dispatch_scratch/gh" PARENT_SHA=$parent PARENT_COMPOSE="$(compose_for 3.0.2)")
+env -i PATH="$PATH" "${candidate[@]}" COMPOSE_FILE="$(compose_for 3.0.2)" bash "$dispatch" >/dev/null \
+  || fail "a candidate that keeps its parent's Compose default must pass."
+printf 'x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.0.2}\nx-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.0.2}\n' > "$dispatch_scratch/duplicate.yml"
+printf 'x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:latest}\n' > "$dispatch_scratch/latest.yml"
+printf 'x-server-image: &server-image ${DW_SERVER_IMAGE:-example/server:3.0.2}\n' > "$dispatch_scratch/unofficial.yml"
+expect "a candidate keeps the Compose default" "${candidate[@]}" COMPOSE_FILE="$(compose_for 3.1.0)" bash "$dispatch"
+expect "a candidate keeps the Compose default" "${candidate[@]}" COMPOSE_FILE="$(compose_for 3.0.9)" bash "$dispatch"
+for bad in duplicate latest unofficial empty; do
+  expect "must default to exactly one durableworkflow/server:X.Y.Z image" "${candidate[@]}" COMPOSE_FILE="$dispatch_scratch/$bad.yml" bash "$dispatch"
+  expect "must default to exactly one durableworkflow/server:X.Y.Z image" "${plain_dispatch[@]}" COMPOSE_FILE="$dispatch_scratch/$bad.yml" bash "$dispatch"
+done
+expect "a candidate keeps the Compose default" "${candidate[@]}" PARENT_COMPOSE="$dispatch_scratch/duplicate.yml" COMPOSE_FILE="$(compose_for 3.0.2)" bash "$dispatch"
+expect "cannot read the first parent" RELEASE_TAG=3.1.0-rc.1 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/3.1.0-rc.1 \
+  GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" COMPOSE_FILE="$(compose_for 3.0.2)" bash "$dispatch"
+expect "cannot read docker-compose.published.yml at $parent" "${candidate[@]}" PARENT_COMPOSE=/nonexistent COMPOSE_FILE="$(compose_for 3.0.2)" bash "$dispatch"
+# This repository's own file names the release its commit is tagged as.
+grep -q '^x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:[0-9][0-9.]*}$' docker-compose.published.yml \
+  || fail "docker-compose.published.yml must default to one exact durableworkflow/server release."
 expect "must be X.Y.Z or X.Y.Z-rc.N from major 3" RELEASE_TAG=2.11.9 RELEASE_COMMIT=$commit DISPATCH_SHA=$commit DISPATCH_REF=refs/tags/2.11.9 GITHUB_REPOSITORY=example/server GH_CLI="$dispatch_scratch/gh" bash "$dispatch"
 for status in ahead identical; do
   env -i PATH="$PATH" "${ok_dispatch[@]}" DISPATCH_REF=refs/tags/native-3.0.2 COMPARE_STATUS=$status bash "$dispatch" >/dev/null \
     || fail "the dispatch verifier must accept a release commit main contains ($status)."
 done
+# The published Compose smoke's image: one official default, smoked as is
+# when Docker Hub has it; latest only for a pull request whose default is not
+# published yet; anything else fails.
+select=scripts/ci/select-published-compose-image.sh
+printf '#!/usr/bin/env bash\nprintf "%%s" "${HUB_STATUS:-200}"\nexit "${CURL_EXIT:-0}"\n' > "$dispatch_scratch/curl"
+chmod +x "$dispatch_scratch/curl"
+selected() { # event, compose file [, VAR=value ...] -> the selected image, "default" or FAILED
+  local event=$1 compose=$2; shift 2
+  : > "$dispatch_scratch/github_env"
+  env -i PATH="$PATH" EVENT_NAME="$event" COMPOSE_FILE="$compose" CURL="$dispatch_scratch/curl" GITHUB_ENV="$dispatch_scratch/github_env" "$@" \
+    bash "$select" >/dev/null 2>&1 || { echo FAILED; return; }
+  sed -n 's/^DW_SERVER_IMAGE=//p' "$dispatch_scratch/github_env" | grep . || echo default
+}
+want_image() { test "$2" = "$3" || fail "$1: expected '$3', got '$2'."; }
+want_image "published default" "$(selected pull_request "$(compose_for 3.0.2)")" default
+want_image "unpublished default on a pull request" "$(selected pull_request "$(compose_for 3.0.3)" HUB_STATUS=404)" "durableworkflow/server:latest"
+want_image "unpublished default on dispatch" "$(selected workflow_dispatch "$(compose_for 3.0.3)" HUB_STATUS=404)" FAILED
+want_image "Docker Hub error" "$(selected pull_request "$(compose_for 3.0.3)" HUB_STATUS=503)" FAILED
+want_image "Docker Hub unreachable" "$(selected pull_request "$(compose_for 3.0.3)" HUB_STATUS=000)" FAILED
+want_image "a lookup that printed 200 but failed" "$(selected pull_request "$(compose_for 3.0.2)" HUB_STATUS=200 CURL_EXIT=7)" FAILED
+want_image "a lookup that printed 404 but failed" "$(selected pull_request "$(compose_for 3.0.3)" HUB_STATUS=404 CURL_EXIT=28)" FAILED
+for bad in duplicate latest unofficial empty; do
+  want_image "$bad default" "$(selected pull_request "$dispatch_scratch/$bad.yml")" FAILED
+done
+want_image "missing file" "$(selected pull_request "$dispatch_scratch/missing.yml")" FAILED
+want_image "manual input" "$(selected workflow_dispatch "$dispatch_scratch/duplicate.yml" INPUT_SERVER_IMAGE=ghcr.io/durable-workflow/server@sha256:abc)" "ghcr.io/durable-workflow/server@sha256:abc"
+grep -q -- '--connect-timeout 10 --max-time 20' "$select" || fail "the Docker Hub lookup must be bounded."
+grep -q '^      - scripts/ci/select-published-compose-image.sh$' .github/workflows/published-compose.yml \
+  || fail "a change to the selector must run the published Compose smoke."
+grep -q '^        run: scripts/ci/select-published-compose-image.sh$' .github/workflows/published-compose.yml \
+  || fail "the published Compose smoke must select its image with select-published-compose-image.sh."
 rm -rf "$dispatch_scratch"
 # Each job's own condition, exactly: plan has none, so a wrong ref fails in
 # its verifier rather than skipping every job; every publishing job is gated

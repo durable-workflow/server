@@ -26,6 +26,36 @@ gh_cli="${GH_CLI:-gh}"
     || fail "the dispatched commit ${dispatch_sha:-(none)} is not RELEASE_COMMIT $release_commit."
 [[ "$repository" =~ ^[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+$ ]] \
     || fail "GITHUB_REPOSITORY must identify the release repository."
+# The published Compose default at the release commit: exactly one official
+# durableworkflow/server:X.Y.Z image. A final release's commit names its own
+# version, so the tagged docker-compose.published.yml installs that release; a
+# candidate's commit keeps its first parent's default.
+compose_default() { # file -> the one official default, or nothing
+    local lines
+    lines="$(grep -c '^x-server-image:' "$1" || true)"
+    [ "$lines" = 1 ] || return 0
+    sed -n 's/^x-server-image: &server-image \${DW_SERVER_IMAGE:-\(durableworkflow\/server:[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)}$/\1/p' "$1"
+}
+version="${release_tag#native-}"
+compose="${COMPOSE_FILE:-docker-compose.published.yml}"
+[ -f "$compose" ] || fail "cannot read $compose at the release commit."
+default="$(compose_default "$compose")"
+[ -n "$default" ] || fail "$compose must default to exactly one durableworkflow/server:X.Y.Z image."
+if [[ "$version" != *-* ]]; then
+    [ "$default" = "durableworkflow/server:$version" ] \
+        || fail "$compose defaults to $default, not durableworkflow/server:$version; move the default in the release commit."
+else
+    parent_file="$(mktemp)"
+    trap 'rm -f "$parent_file"' EXIT
+    parent="$("$gh_cli" api "repos/$repository/commits/$release_commit" --jq '.parents[0].sha' 2>/dev/null)" \
+        || fail "cannot read the first parent of $release_commit."
+    [[ "$parent" =~ ^[0-9a-f]{40}$ ]] || fail "cannot read the first parent of $release_commit."
+    "$gh_cli" api -H 'Accept: application/vnd.github.raw' "repos/$repository/contents/docker-compose.published.yml?ref=$parent" \
+        > "$parent_file" 2>/dev/null || fail "cannot read docker-compose.published.yml at $parent."
+    previous="$(compose_default "$parent_file")"
+    [ -n "$previous" ] && [ "$default" = "$previous" ] \
+        || fail "a candidate keeps the Compose default: $compose defaults to $default, its first parent to ${previous:-no single official image}."
+fi
 if ! status="$("$gh_cli" api "repos/$repository/compare/$release_commit...main" --jq .status 2>/dev/null)"; then
     fail "cannot compare $release_commit with main."
 fi
