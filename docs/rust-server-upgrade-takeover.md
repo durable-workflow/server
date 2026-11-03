@@ -52,10 +52,21 @@ installed run of the published image on every backend.
    PostgreSQL, MySQL and MariaDB, with the cohorts in the table below. It backs
    up a database written by a published PHP image and takes over a restored
    copy. It resumes the PHP-era work under native and checks that PHP then
-   refuses the database. On the exact 3.0.4 source
-   (`1f4ef0c7a745e1ebdc07cd38761cd3f666a36158`) it passed in merge-group run
-   [41597054274](https://github.com/durable-workflow/server/actions/runs/41597054274).
-   Earlier passes were on the 3.0.0 source
+   refuses the database. For 3.0.4 the full matrix passed in merge-group run
+   [41578731039](https://github.com/durable-workflow/server/actions/runs/41578731039),
+   at commit `0d50047c1df4bb2adf905edaa779865abf080119`. Every SQLite,
+   PostgreSQL, MySQL 8 and MariaDB 10.11 cohort job ran and passed. That
+   commit is not the 3.0.4 revision (`1f4ef0c7a745e1ebdc07cd38761cd3f666a36158`),
+   but what the run tested is byte-identical to it: the `rust` tree is
+   `9eff268fbeeb2e77aed9a484a7ebf3c2aaf3e56e` in both, and so are the
+   `scripts/conformance/server-parity` tree
+   (`fa7ebe87acbb0eb381634098dcbae18b9a6b0545`) and the blobs of
+   `upgrade-source-profile.sh` (`a2f5ab19…`), `upgrade-source-author.php`
+   (`fa85db11…`), `upgrade-takeover-resume.php` (`20632f01…`) and
+   `.github/workflows/server-parity.yml` (`45c7effa…`). The commits differ
+   only in release and Compose files. The run on the 3.0.4 revision itself
+   skipped the backend jobs, because that change touched only the Compose
+   default, so it is not evidence. Earlier passes were on the 3.0.0 source
    ([41459209091](https://github.com/durable-workflow/server/actions/runs/41459209091))
    and the 3.0.2 source
    ([41562369513](https://github.com/durable-workflow/server/actions/runs/41562369513)).
