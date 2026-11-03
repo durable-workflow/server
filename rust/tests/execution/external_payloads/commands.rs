@@ -234,3 +234,118 @@ async fn described_commands_omit_only_an_oversized_stored_reference() {
     runtime.close().await;
     database.remove().await;
 }
+
+fn events<'a>(history: &'a Value, kind: &str) -> Vec<&'a Value> {
+    history["events"].as_array().unwrap().iter().filter(|event| event["event_type"] == kind).collect()
+}
+
+async fn payload_rows(database: &TestDatabase) -> i64 {
+    count(database, "SELECT COUNT(*) FROM runtime_external_payloads").await
+}
+
+async fn complete(app: &Router, task: &Value, commands: Value) -> (StatusCode, Value) {
+    json_request(app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
+        "worker-token", json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"commands":commands})).await
+}
+
+async fn poll_task(app: &Router, worker: &str, queue: &str) -> Value {
+    let (status, polled) = json_request(app, "POST", "/api/worker/workflow-tasks/poll", "worker-token",
+        json!({"worker_id":worker,"task_queue":queue,"timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    polled["task"].clone()
+}
+
+/// Server #979: a signal whose arguments are above the namespace's threshold
+/// is admitted by reference. Applying it reads the arguments back, and the
+/// signal value, above the threshold too, is recorded by reference
+/// (`externalizeForNamespace`). Before the fix the completion was refused as
+/// `invalid_signal_arguments` and the run stayed waiting. A start and an
+/// update of the same size are the controls.
+#[tokio::test]
+async fn a_signal_stored_by_reference_applies_and_records_its_value_by_reference() {
+    let temp = tempfile::tempdir().unwrap();
+    let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &temp.path().join("objects")).await;
+    let large = |fill: &str| fill.repeat(70_000);
+    let (status, body) = json_request(&app, "POST", "/api/worker/register", "worker-token", json!({"worker_id":"apply-worker",
+        "task_queue":"external-apply","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Control: a start of the same size, by reference.
+    let start = upload(&app, &argument(&large("s"))).await;
+    let (status, started) = json_request(&app, "POST", "/api/workflows", "operator-token",
+        json!({"workflow_id":"external-apply","workflow_type":"echo","task_queue":"external-apply",
+            "input":{"codec":"avro","external_payload":start}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let first = poll_task(&app, "apply-worker", "external-apply").await;
+    assert_eq!(first["arguments"], json!({"codec":"avro","external_payload":start}), "{first}");
+    let (status, body) = complete(&app, &first, json!([{"type":"open_signal_wait","signal_name":"approve"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let signal = upload(&app, &argument(&large("v"))).await;
+    let (status, body) = json_request(&app, "POST", "/api/workflows/external-apply/signal/approve", "operator-token",
+        json!({"input":{"codec":"avro","external_payload":signal}})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!((unclaimed(&database).await, payload_rows(&database).await), (0, 2));
+
+    // The signal applies; the run closes instead of staying waiting.
+    let resumed = poll_task(&app, "apply-worker", "external-apply").await;
+    assert_eq!(resumed["run_id"], started["run_id"], "{resumed}");
+    let (status, body) = complete(&app, &resumed, json!([{"type":"complete_workflow","result":{"codec":"avro","blob":argument("done")}}])).await;
+    assert_eq!((status, body["run_status"].clone()), (StatusCode::OK, json!("completed")), "{body}");
+
+    // The value is the single argument, stored and claimed by reference.
+    let value = durable_workflow_server::codec::ValueCodec::new().unwrap().encode(&Payload::String(large("v"))).unwrap();
+    let (_, history) = json_request(&app, "GET", &format!("/api/workflows/external-apply/runs/{}/history", started["run_id"].as_str().unwrap()),
+        "operator-token", Value::Null).await;
+    let applied = events(&history, "SignalApplied");
+    assert_eq!(applied.len(), 1, "{history}");
+    let reference = &applied[0]["payload"]["value"]["external_payload"];
+    assert_eq!(applied[0]["payload"]["value"]["codec"], "avro", "{}", applied[0]);
+    assert_eq!((reference["sha256"].as_str(), reference["size_bytes"].as_i64()),
+        (Some(digest(value.as_bytes()).as_str()), Some(value.len() as i64)), "{}", applied[0]);
+    assert_ne!(reference["reference_id"], signal["reference_id"], "a value object of its own");
+    assert_eq!((unclaimed(&database).await, payload_rows(&database).await), (0, 3));
+
+    // Control: an update of the same size, by reference, applies too.
+    waiting_run(&app, "external-apply-update", json!({"worker_id":"apply-update-worker","task_queue":"external-apply-update",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[],"capabilities":["workflow_updates"],
+        "workflow_command_contracts":{"echo":{"updates":["u"],"update_validators":[],"update_contracts":[{"name":"u","parameters":string_parameter()}]}}})).await;
+    let update = upload(&app, &argument(&large("u"))).await;
+    let (status, accepted) = json_request(&app, "POST", "/api/workflows/external-apply-update/update/u", "operator-token",
+        json!({"input":{"codec":"avro","external_payload":update},"wait_for":"accepted"})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let task = poll_task(&app, "apply-update-worker", "external-apply-update").await;
+    let (status, body) = complete(&app, &task, json!([{"type":"complete_update","update_id":accepted["update_id"],
+        "result":{"codec":"avro","blob":argument("updated")}}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    runtime.close().await;
+}
+
+/// A signal admitted inline is applied exactly as before: its value stays
+/// inline and no object is written.
+#[tokio::test]
+async fn an_inline_signal_keeps_an_inline_value() {
+    let temp = tempfile::tempdir().unwrap();
+    let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &temp.path().join("objects")).await;
+    let (status, body) = json_request(&app, "POST", "/api/worker/register", "worker-token", json!({"worker_id":"inline-worker",
+        "task_queue":"inline-signal","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, started) = json_request(&app, "POST", "/api/workflows", "operator-token",
+        json!({"workflow_id":"inline-signal","workflow_type":"echo","task_queue":"inline-signal","input":[]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let first = poll_task(&app, "inline-worker", "inline-signal").await;
+    assert_eq!(complete(&app, &first, json!([{"type":"open_signal_wait","signal_name":"approve"}])).await.0, StatusCode::OK);
+    let blob = argument("yes");
+    let (status, body) = json_request(&app, "POST", "/api/workflows/inline-signal/signal/approve", "operator-token",
+        json!({"input":{"codec":"avro","blob":blob}})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let resumed = poll_task(&app, "inline-worker", "inline-signal").await;
+    let (status, body) = complete(&app, &resumed, json!([{"type":"complete_workflow","result":{"codec":"avro","blob":argument("done")}}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, history) = json_request(&app, "GET", &format!("/api/workflows/inline-signal/runs/{}/history", started["run_id"].as_str().unwrap()),
+        "operator-token", Value::Null).await;
+    let value = durable_workflow_server::codec::ValueCodec::new().unwrap().encode(&Payload::String("yes".into())).unwrap();
+    assert_eq!(events(&history, "SignalApplied")[0]["payload"]["value"], json!({"codec":"avro","blob":value}));
+    assert_eq!(payload_rows(&database).await, 0);
+    runtime.close().await;
+}

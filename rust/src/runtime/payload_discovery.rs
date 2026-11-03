@@ -156,19 +156,25 @@ impl Runtime {
     }
 }
 
+/// The policy's `threshold_bytes` as PHP casts it: absent is the payload
+/// ceiling. A payload larger than this is stored by reference.
+pub(super) fn threshold(policy: &Value) -> i64 {
+    match &policy["threshold_bytes"] {
+        Value::Null => super::payload_limits::max_payload_bytes() as i64,
+        Value::Number(number) => number.as_i64().unwrap_or_else(|| number.as_f64().unwrap_or(0.0) as i64),
+        Value::String(text) => super::memo_limits::cast_integer(text),
+        Value::Bool(value) => i64::from(*value),
+        _ => 1,
+    }
+}
+
 /// `HealthController::externalPayloadStoragePolicy`. Native stores only the
 /// `local` driver; any other driver (carried over by a takeover) cannot resolve.
 fn storage_policy(policy: &Value) -> Value {
     let configured = policy.as_object().is_some_and(|map| !map.is_empty())
         || policy.as_array().is_some_and(|items| !items.is_empty());
     let enabled = configured && policy["enabled"] != false;
-    let threshold = match &policy["threshold_bytes"] {
-        Value::Null => super::payload_limits::max_payload_bytes() as i64,
-        Value::Number(number) => number.as_i64().unwrap_or_else(|| number.as_f64().unwrap_or(0.0) as i64),
-        Value::String(text) => super::memo_limits::cast_integer(text),
-        Value::Bool(value) => i64::from(*value),
-        _ => 1,
-    };
+    let threshold = threshold(policy);
     let resolved = enabled && policy["driver"] == "local";
     let status = match (configured, enabled, resolved) {
         (false, _, _) => "unconfigured",
