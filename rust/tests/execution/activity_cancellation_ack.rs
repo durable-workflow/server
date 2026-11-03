@@ -256,10 +256,15 @@ async fn a_waiting_activity_holds_the_run_delivery_until_its_stop_is_acknowledge
     assert!(resumed.is_object(), "the stop receipt resumes the run");
     let (status, delivered) = deliver(&app, &resumed, &request_id).await;
     assert_eq!((status, delivered["delivered"].clone()), (StatusCode::OK, json!(true)), "{delivered}");
-    let resumes = task_retry::rows(&database, Box::leak(format!(
-        "SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id='{}' AND payload LIKE '%activity_cancellation_acknowledged%'",
-        started["run_id"].as_str().unwrap()).into_boxed_str())).await;
-    assert_eq!(resumes, 1);
+    // Payloads read as text on each engine (PostgreSQL stores json, which
+    // has no LIKE), then counted here.
+    let run = started["run_id"].as_str().unwrap();
+    let payloads = text_rows(&database,
+        &format!("SELECT id, payload FROM workflow_tasks WHERE workflow_run_id='{run}'"),
+        &format!("SELECT id::text, payload::text FROM workflow_tasks WHERE workflow_run_id='{run}'"),
+        &format!("SELECT CAST(id AS CHAR), CAST(payload AS CHAR) FROM workflow_tasks WHERE workflow_run_id='{run}'")).await;
+    let resumes = payloads.iter().filter(|(_, payload)| payload.contains("activity_cancellation_acknowledged")).count();
+    assert_eq!(resumes, 1, "{payloads:?}");
     runtime.close().await;
     database.remove().await;
 }
