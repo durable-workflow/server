@@ -555,10 +555,7 @@ where
         for candidate in buffered {
             let key = DB::string(&candidate, "id")?;
             if let Err(error) = self.drain_one(&key).await {
-                if matches!(error, RuntimeError::Database(_)) {
-                    return Err(error);
-                }
-                self.record_failure(&key, &error.to_string()).await?;
+                self.settle_failed_admission(&key, error).await?;
             }
         }
         let due = Self::query("SELECT id,next_fire_at FROM workflow_schedules WHERE status='active' AND next_fire_at IS NOT NULL AND next_fire_at<=$1 ORDER BY next_fire_at,id LIMIT 100")
@@ -571,11 +568,38 @@ where
                 .await
             {
                 Ok(_) => self.wake.notify_waiters(),
-                Err(error @ RuntimeError::Database(_)) => return Err(error),
-                Err(error) => self.record_failure(&key, &error.to_string()).await?,
+                Err(error) => self.settle_failed_admission(&key, error).await?,
             }
         }
         Ok(())
+    }
+
+    /// One schedule's failed admission in a maintenance tick, as PHP's
+    /// `recordStartFailure` settles it (#955). A transient storage failure
+    /// (lock pressure or an unavailable backend) keeps the stored occurrence
+    /// and fails the tick, which retries it from durable state. Any other
+    /// failure is recorded, which moves the schedule to its next occurrence,
+    /// and the batch goes on. One schedule that always fails can then stop
+    /// neither the other schedules, the repair pass nor readiness.
+    async fn settle_failed_admission(&self, key: &str, error: RuntimeError) -> Result<()> {
+        if super::worker_incarnations::transient_reason(&error).is_some() {
+            return Err(error);
+        }
+        let reason = match &error {
+            // Database text can carry stored payloads. The schedule's visible
+            // actions get the HTTP surface's bounded reason, and the log gets
+            // only the bounded driver diagnostic.
+            RuntimeError::Database(_) | RuntimeError::Migration(_) => {
+                if let Some(diagnostic) = error.storage_diagnostic() {
+                    eprintln!("{diagnostic}");
+                }
+                "storage_unavailable".to_owned()
+            }
+            _ => error.to_string(),
+        };
+        // A failure to record it is a storage failure of its own: the tick
+        // fails and the occurrence is retried.
+        self.record_failure(key, &reason).await
     }
 
     /// One buffered action of the tick's first phase.
@@ -668,19 +692,13 @@ mod tests {
     use super::*;
     use crate::codec::{Value as Payload, ValueCodec};
 
-    #[tokio::test]
-    async fn failed_due_admission_rolls_back_start_and_retains_original_occurrence_and_quota() {
-        let directory = tempfile::tempdir().unwrap();
-        let file = directory.path().join("schedule.sqlite");
-        let pool = super::super::sqlite::open(file.to_str().unwrap())
-            .await
-            .unwrap();
-        let store = Store::<sqlx::Sqlite>::new(pool);
+    /// A one-run interval schedule whose stored occurrence is already due.
+    async fn due_schedule(store: &Store<sqlx::Sqlite>, schedule: &str, overdue_seconds: i64) -> DateTime<Utc> {
         let input = ValueCodec::new()
             .unwrap()
             .encode(&Payload::Array(vec![Payload::Long(9007199254740993)]))
             .unwrap();
-        let definition = schedules::definition(&json!({"schedule_id":"atomic-occurrence",
+        let definition = schedules::definition(&json!({"schedule_id":schedule,
             "spec":{"intervals":[{"every":"PT2S"}],"timezone":"UTC"},
             "action":{"workflow_type":"echo","task_queue":"test","input":{"codec":"avro","blob":input},
                 "execution_timeout_seconds":3600,"run_timeout_seconds":600},
@@ -690,16 +708,51 @@ mod tests {
             .create_schedule(definition, json!({"test":"original creation"}), json!({}))
             .await
             .unwrap();
-        // Make the stored occurrence due now.
-        let occurrence = now() - chrono::Duration::seconds(4);
-        sqlx::query("UPDATE workflow_schedules SET next_fire_at=?")
+        make_due(store, schedule, overdue_seconds).await
+    }
+
+    /// Makes the schedule's stored occurrence due and returns it, in whole
+    /// seconds as the schedule description reports it.
+    async fn make_due(store: &Store<sqlx::Sqlite>, schedule: &str, overdue_seconds: i64) -> DateTime<Utc> {
+        let occurrence = DateTime::from_timestamp(now().timestamp() - overdue_seconds, 0).unwrap();
+        sqlx::query("UPDATE workflow_schedules SET next_fire_at=? WHERE schedule_id=?")
             .bind(occurrence.format("%Y-%m-%d %H:%M:%S%.6f").to_string())
+            .bind(schedule)
             .execute(&store.pool)
             .await
             .unwrap();
-        sqlx::query("CREATE TRIGGER reject_schedule_audit BEFORE INSERT ON workflow_schedule_history_events WHEN NEW.event_type='ScheduleTriggered' BEGIN SELECT RAISE(ABORT,'injected schedule audit failure'); END")
+        occurrence
+    }
+
+    async fn count(store: &Store<sqlx::Sqlite>, table: &str) -> i64 {
+        // Compiled test-only table names, never request input.
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+    }
+
+    fn instant(value: &Value) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value.as_str().unwrap())
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    async fn sqlite_store(file: &std::path::Path) -> Store<sqlx::Sqlite> {
+        Store::<sqlx::Sqlite>::new(super::super::sqlite::open(file.to_str().unwrap()).await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn failed_due_admission_rolls_back_start_keeps_quota_and_records_the_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = sqlite_store(&directory.path().join("schedule.sqlite")).await;
+        due_schedule(&store, "atomic-occurrence", 4).await;
+        // A database failure that is not transient: the trigger aborts the
+        // admission's audit row (SQLITE_CONSTRAINT_TRIGGER).
+        sqlx::query("CREATE TRIGGER reject_schedule_audit BEFORE INSERT ON workflow_schedule_history_events WHEN NEW.event_type='ScheduleTriggered' BEGIN SELECT RAISE(ABORT,'injected schedule audit failure: secret payload'); END")
             .execute(&store.pool).await.unwrap();
-        assert!(store.fire_due_schedules().await.is_err());
+        let failed_at = now();
+        store.fire_due_schedules().await.unwrap();
         for table in [
             "workflow_instances",
             "workflow_runs",
@@ -707,59 +760,132 @@ mod tests {
             "workflow_commands",
             "workflow_history_events",
         ] {
-            // Compiled test-only table names, never request input.
-            let count: i64 =
-                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
-                    .fetch_one(&store.pool)
-                    .await
-                    .unwrap();
-            assert_eq!(
-                count, 0,
-                "partial {table} survived failed schedule admission"
-            );
+            assert_eq!(count(&store, table).await, 0, "partial {table} survived failed schedule admission");
         }
-        let before = store.describe_schedule("atomic-occurrence").await.unwrap();
-        assert_eq!(before["fires_count"], 0);
-        assert_eq!(before["remaining_actions"], 1);
-        assert_eq!(before["status"], "active");
-        assert_eq!(
-            chrono::DateTime::parse_from_rfc3339(before["next_fire_at"].as_str().unwrap()).unwrap(),
-            chrono::DateTime::parse_from_rfc3339(&iso8601(occurrence)).unwrap()
-        );
-        assert_eq!(
-            store
-                .schedule_history("atomic-occurrence", 0, 100)
-                .await
-                .unwrap()["events"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+        let after = store.describe_schedule("atomic-occurrence").await.unwrap();
+        assert_eq!(after["fires_count"], 0);
+        assert_eq!(after["remaining_actions"], 1, "the rolled-back start kept its quota");
+        assert_eq!(after["status"], "active");
+        assert_eq!(after["failures_count"], 1);
+        let recent = after["info"]["recent_actions"].as_array().unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0]["outcome"], "failed");
+        // The database's text, which can carry payloads, stays out of view.
+        assert_eq!(recent[0]["reason"], "storage_unavailable");
+        assert!(!after.to_string().contains("secret payload"));
+        // As PHP's recordFailure: the schedule moves to its next occurrence.
+        assert!(instant(&after["next_fire_at"]) > failed_at);
+        let history = store.schedule_history("atomic-occurrence", 0, 100).await.unwrap();
+        assert_eq!(history["events"].as_array().unwrap().len(), 1);
         sqlx::query("DROP TRIGGER reject_schedule_audit")
             .execute(&store.pool)
             .await
             .unwrap();
+        // The kept quota starts exactly one run at the next due occurrence.
+        let next = make_due(&store, "atomic-occurrence", 1).await;
         store.fire_due_schedules().await.unwrap();
+        make_due(&store, "atomic-occurrence", 1).await;
         store.fire_due_schedules().await.unwrap();
-        let history = store
-            .schedule_history("atomic-occurrence", 0, 100)
+        let history = store.schedule_history("atomic-occurrence", 0, 100).await.unwrap();
+        assert_eq!(history["events"].as_array().unwrap().len(), 3);
+        assert_eq!(history["events"][1]["payload"]["occurrence_time"], occurrence_text(next));
+        assert_eq!(history["events"][2]["payload"]["reason"], "max_runs_exhausted");
+        assert_eq!(count(&store, "workflow_runs").await, 1);
+        store.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_schedule_that_always_fails_does_not_stop_the_rest_of_the_batch() {
+        // #955: the failing schedule is first in due order on every tick.
+        let directory = tempfile::tempdir().unwrap();
+        let store = sqlite_store(&directory.path().join("schedule.sqlite")).await;
+        due_schedule(&store, "always-fails", 60).await;
+        due_schedule(&store, "healthy", 30).await;
+        let broken: String =
+            sqlx::query_scalar("SELECT id FROM workflow_schedules WHERE schedule_id='always-fails'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        // The id is a generated ULID, never request input.
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE TRIGGER reject_one_schedule BEFORE INSERT ON workflow_schedule_history_events WHEN NEW.event_type='ScheduleTriggered' AND NEW.workflow_schedule_id='{broken}' BEGIN SELECT RAISE(ABORT,'injected'); END")))
+            .execute(&store.pool).await.unwrap();
+        for _ in 0..3 {
+            store.fire_due_schedules().await.unwrap();
+            make_due(&store, "always-fails", 60).await;
+        }
+        // Its one allowed run ends it, so its row is read directly.
+        let (fires, failures): (i64, i64) = sqlx::query_as(
+            "SELECT fires_count,failures_count FROM workflow_schedules WHERE schedule_id='healthy'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(fires, 1, "the later schedule fired despite the failing one");
+        assert_eq!(failures, 0);
+        let failing = store.describe_schedule("always-fails").await.unwrap();
+        assert_eq!(failing["fires_count"], 0);
+        assert_eq!(failing["failures_count"], 3, "each tick recorded the failure and went on");
+        assert_eq!(failing["remaining_actions"], 1);
+        assert_eq!(count(&store, "workflow_runs").await, 1);
+        store.close().await;
+    }
+
+    #[tokio::test]
+    async fn lock_pressure_keeps_the_occurrence_and_fails_the_tick_without_recording() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("schedule.sqlite");
+        let store = sqlite_store(&file).await;
+        let occurrence = due_schedule(&store, "locked", 4).await;
+        store.close().await;
+        // The same database with a short busy wait, while another writer
+        // holds SQLite's single write lock: SQLITE_BUSY.
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&file)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .foreign_keys(true)
+            .busy_timeout(std::time::Duration::from_millis(50));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options.clone())
             .await
             .unwrap();
-        assert_eq!(history["events"].as_array().unwrap().len(), 3);
+        let store = Store::<sqlx::Sqlite>::new(pool);
+        let mut holder = <sqlx::SqliteConnection as sqlx::Connection>::connect_with(&options)
+            .await
+            .unwrap();
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut holder).await.unwrap();
+        let error = store.fire_due_schedules().await.unwrap_err();
         assert_eq!(
-            history["events"][1]["payload"]["occurrence_time"],
-            occurrence_text(occurrence)
+            super::super::worker_incarnations::transient_reason(&error),
+            Some("backend_lock_pressure")
         );
-        assert_eq!(
-            history["events"][2]["payload"]["reason"],
-            "max_runs_exhausted"
+        sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
+        let after = store.describe_schedule("locked").await.unwrap();
+        assert_eq!(after["failures_count"], 0, "lock pressure is retried, not recorded");
+        assert_eq!(after["info"]["recent_actions"], json!([]));
+        assert_eq!(instant(&after["next_fire_at"]), occurrence, "the original occurrence is kept");
+        // The same real BUSY error, settled once the lock is free again: the
+        // transient rule, not the held lock, is what keeps it unrecorded.
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut holder).await.unwrap();
+        let busy = RuntimeError::from(
+            sqlx::query("UPDATE workflow_schedules SET updated_at=updated_at")
+                .execute(&store.pool)
+                .await
+                .unwrap_err(),
         );
-        let runs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_runs")
+        sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
+        let key: String = sqlx::query_scalar("SELECT id FROM workflow_schedules WHERE schedule_id='locked'")
             .fetch_one(&store.pool)
             .await
             .unwrap();
-        assert_eq!(runs, 1);
+        assert!(store.settle_failed_admission(&key, busy).await.is_err());
+        let after = store.describe_schedule("locked").await.unwrap();
+        assert_eq!(after["failures_count"], 0);
+        assert_eq!(instant(&after["next_fire_at"]), occurrence);
+        // The next tick admits that same occurrence.
+        store.fire_due_schedules().await.unwrap();
+        let history = store.schedule_history("locked", 0, 100).await.unwrap();
+        assert_eq!(history["events"][1]["payload"]["occurrence_time"], occurrence_text(occurrence));
         store.close().await;
     }
 }
