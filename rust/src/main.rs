@@ -245,10 +245,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .block_on(run())
 }
 
-/// `backup-hold acquire|renew|release|status [--owner <uuid>] [--ttl <seconds>]`:
-/// PHP's `external-payloads:backup-hold`, offline (Server #973). It opens
-/// only an initialized native database from the DB settings, prints the v1
-/// report, and on refusal prints the reason and exits non-zero.
+/// `backup-hold release --owner <uuid>` and `backup-hold inspect`: what a
+/// restore runs before any Server process starts (Server #973). It opens only
+/// an initialized native database from the DB settings, `inspect` read-only,
+/// prints the v1 report, and on refusal prints the reason and exits non-zero.
 async fn backup_hold_command() -> Result<(), Box<dyn Error>> {
     use durable_workflow_server::runtime::backup_hold;
     let args: Vec<String> = env::args().skip(2).collect();

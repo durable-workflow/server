@@ -393,18 +393,24 @@ impl PostgresStorage {
     /// Open an initialized native database for an offline console command
     /// (Server #973). There is no bootstrap path: under the bootstrap
     /// advisory lock, the pool's own connection must find the native marker
-    /// and the exact schema, or the database is refused as it is.
-    pub(super) async fn open_existing(connect_options: PgConnectOptions) -> Result<PgPool> {
+    /// and the exact schema, or the database is refused as it is. A command
+    /// that only reads checks in a read-only transaction, without the lock.
+    pub(super) async fn open_existing(connect_options: PgConnectOptions, writable: bool) -> Result<PgPool> {
         let pool = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options(connect_options))
             .await?;
         let result = async {
-            let mut tx = pool.begin().await?;
-            sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676162)")
-                .execute(&mut *tx)
-                .await?;
+            let mut tx = if writable {
+                let mut tx = pool.begin().await?;
+                sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676162)")
+                    .execute(&mut *tx)
+                    .await?;
+                tx
+            } else {
+                pool.begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await?
+            };
             verify_scope(&mut tx).await?;
             if !marked(&mut tx).await? {
                 return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));

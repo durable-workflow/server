@@ -237,10 +237,29 @@ fn first_line(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr).lines().next().unwrap_or_default().to_owned()
 }
 
+/// The hold row as stored, as text, for comparing before and after a read.
+async fn hold_rows(database: &TestDatabase) -> Vec<(String, String)> {
+    text_rows(database,
+        "SELECT COALESCE(owner,'')||'|'||COALESCE(acquired_at,''), COALESCE(expires_at,'') FROM runtime_external_payload_backup_hold",
+        "SELECT COALESCE(owner::text,'')||'|'||COALESCE(acquired_at::text,''), COALESCE(expires_at::text,'') FROM runtime_external_payload_backup_hold",
+        "SELECT CONCAT(COALESCE(owner,''),'|',COALESCE(CAST(acquired_at AS CHAR),'')), COALESCE(CAST(expires_at AS CHAR),'') FROM runtime_external_payload_backup_hold").await
+}
+
 #[tokio::test]
 async fn the_offline_command_releases_a_restored_hold_before_any_server_starts() {
     let temp = tempfile::tempdir().unwrap();
     let (database, runtime, router) = setup(ExternalPayloadConfig::default(), &temp.path().join("objects")).await;
+
+    // Native schemas start without the hold row. Inspect reports no hold and
+    // still leaves no row.
+    let (ok, body, stderr) = console(&database, &["inspect"]).await;
+    assert!(ok, "{stderr}");
+    assert_eq!(body["schema"], "durable-workflow.external-payload-backup-hold.v1");
+    assert_eq!([&body["active"], &body["owner"], &body["expires_at"]], [&json!(false), &Value::Null, &Value::Null]);
+    assert!(body["database_time"].is_string(), "{body}");
+    assert_eq!(hold_rows(&database).await, Vec::<(String, String)>::new(), "inspect created the hold row");
+
+    // A restored snapshot carries the capturing backup's hold, long expired.
     let (code, body) = change(&router, "acquire", json!({"owner": OWNER, "ttl": 3600})).await;
     assert_eq!(code, StatusCode::OK, "{body}");
     database.execute("UPDATE runtime_external_payload_backup_hold SET acquired_at='2000-01-01 00:00:00',expires_at='2000-01-01 01:00:00'").await;
@@ -248,62 +267,54 @@ async fn the_offline_command_releases_a_restored_hold_before_any_server_starts()
     drop(router);
     runtime.close().await;
 
-    let (ok, body, stderr) = console(&database, &["status"]).await;
+    let restored = hold_rows(&database).await;
+    let (ok, body, stderr) = console(&database, &["inspect"]).await;
     assert!(ok, "{stderr}");
-    assert_eq!(body["schema"], "durable-workflow.external-payload-backup-hold.v1");
-    assert_eq!([&body["active"], &body["owner"]], [&json!(false), &json!(OWNER)]);
-    // A scoped status is refused once its owner no longer holds the hold.
-    assert_eq!(console(&database, &["status", "--owner", OWNER]).await.2, "backup_hold_not_owned");
+    assert_eq!([&body["active"], &body["owner"], &body["acquired_at"], &body["expires_at"]],
+        [&json!(false), &json!(OWNER), &json!("2000-01-01 00:00:00"), &json!("2000-01-01 01:00:00")]);
+    assert_eq!(hold_rows(&database).await, restored, "inspect changed the hold row");
 
     // Only the recorded owner releases it, in either option form, and a
     // second release reports the same released hold.
     assert_eq!(console(&database, &["release", "--owner", OTHER]).await.2, "backup_hold_not_owned");
-    for args in [["release", "--owner", OWNER].as_slice(), [&*format!("--owner={OWNER}")].as_slice()] {
-        let args: Vec<&str> = if args.len() == 1 { vec!["release", args[0]] } else { args.to_vec() };
+    assert_eq!(hold_rows(&database).await, restored);
+    let owner_option = format!("--owner={OWNER}");
+    for args in [vec!["release", "--owner", OWNER], vec!["release", owner_option.as_str()]] {
         let (ok, body, stderr) = console(&database, &args).await;
         assert!(ok, "{stderr}");
         assert_eq!([&body["active"], &body["owner"], &body["acquired_at"], &body["expires_at"]],
             [&json!(false), &json!(OWNER), &json!("2000-01-01 00:00:00"), &Value::Null]);
     }
+    let (ok, body, _) = console(&database, &["inspect"]).await;
+    assert!(ok);
+    assert_eq!([&body["owner"], &body["expires_at"]], [&json!(OWNER), &Value::Null]);
 
-    // PHP's validation, before the database is touched.
+    // Only release and inspect exist offline; everything else is refused
+    // before the database is opened.
     for (args, refusal) in [
-        (vec!["release"], "The owner field is required."),
-        (vec!["release", "--owner", "not-a-uuid"], "The owner field must be a valid UUID."),
-        (vec!["acquire", "--owner", OTHER, "--ttl", "3601"], "The ttl field must not be greater than 3600."),
-        (vec!["status", "--ttl", "soon"], "backup_hold_ttl_invalid"),
-        (vec!["inspect"], "backup_hold_action_invalid"),
-        (vec![], "backup_hold_action_invalid"),
-        (vec!["release", "--owner", OWNER, "--owner", OTHER], "backup_hold_command_invalid"),
+        (vec!["release"], "backup_hold_command_invalid"),
         (vec!["release", "--owner"], "backup_hold_command_invalid"),
+        (vec!["release", "--owner", OWNER, "--owner", OTHER], "backup_hold_command_invalid"),
+        (vec!["release", "--owner", OWNER, "--ttl", "60"], "backup_hold_command_invalid"),
         (vec!["release", "--force"], "backup_hold_command_invalid"),
+        (vec!["release", "--owner", "not-a-uuid"], "The owner field must be a valid UUID."),
+        (vec!["inspect", "--owner", OWNER], "backup_hold_command_invalid"),
+        (vec!["acquire", "--owner", OTHER], "backup_hold_action_invalid"),
+        (vec!["renew", "--owner", OWNER], "backup_hold_action_invalid"),
+        (vec!["status"], "backup_hold_action_invalid"),
+        (vec![], "backup_hold_action_invalid"),
     ] {
         let (ok, body, stderr) = console(&database, &args).await;
         assert!(!ok && body.is_null(), "{args:?} succeeded: {body}");
         assert_eq!(stderr, refusal, "{args:?}");
     }
-
-    // The released hold goes to the next backup, which renews and releases
-    // it; the database's clock decides every expiry.
-    let (ok, body, stderr) = console(&database, &["acquire", "--owner", OTHER, "--ttl", "60"]).await;
-    assert!(ok, "{stderr}");
-    assert_eq!([&body["active"], &body["owner"]], [&json!(true), &json!(OTHER)]);
-    assert_eq!(seconds(&body["acquired_at"], &body["expires_at"]), 60);
-    let (ok, body, stderr) = console(&database, &["renew", "--owner", OTHER, "--ttl=120"]).await;
-    assert!(ok, "{stderr}");
-    assert_eq!(seconds(&body["database_time"], &body["expires_at"]), 120);
-    assert!(console(&database, &["status", "--owner", OTHER]).await.0);
-    assert!(console(&database, &["release", "--owner", OTHER]).await.0);
-    let (ok, body, _) = console(&database, &["status"]).await;
-    assert!(ok);
-    assert_eq!([&body["active"], &body["owner"]], [&json!(false), &json!(OTHER)]);
 }
 
 #[tokio::test]
 async fn the_offline_command_never_initializes_a_database() {
     // A database with no native schema is refused, and left without one.
     let fresh = TestDatabase::new().await;
-    for args in [["status"].as_slice(), &["release", "--owner", OWNER], &["acquire", "--owner", OWNER]] {
+    for args in [["inspect"].as_slice(), &["release", "--owner", OWNER]] {
         let (ok, _, stderr) = console(&fresh, args).await;
         assert!(!ok);
         assert_eq!(stderr, "native_schema_not_initialized", "{args:?}");
@@ -315,7 +326,7 @@ async fn the_offline_command_never_initializes_a_database() {
     // Counterfactual: the server's own open initializes that same database,
     // and the command then serves it.
     fresh.open().await.unwrap().close().await;
-    let (ok, body, stderr) = console(&fresh, &["status"]).await;
+    let (ok, body, stderr) = console(&fresh, &["inspect"]).await;
     assert!(ok, "{stderr}");
     assert_eq!(body["owner"], Value::Null);
 
@@ -329,20 +340,22 @@ async fn the_offline_command_never_initializes_a_database() {
     let temp = tempfile::tempdir().unwrap();
     let empty = temp.path().join("empty.sqlite");
     std::fs::write(&empty, b"").unwrap();
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"));
-    command.env_clear().env("DW_RUST_EXPERIMENTAL", "1").env("DB_CONNECTION", "sqlite").env("DB_DATABASE", &empty)
-        .args(["backup-hold", "release", "--owner", OWNER]);
-    let output = tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
-    assert!(!output.status.success());
-    assert_eq!(first_line(&output.stderr), "native_schema_not_initialized");
-    assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0, "the command wrote to a non-native database");
+    for args in [["inspect"].as_slice(), &["release", "--owner", OWNER]] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_durable-workflow-server"));
+        command.env_clear().env("DW_RUST_EXPERIMENTAL", "1").env("DB_CONNECTION", "sqlite").env("DB_DATABASE", &empty)
+            .arg("backup-hold").args(args);
+        let output = tokio::task::spawn_blocking(move || command.output().unwrap()).await.unwrap();
+        assert!(!output.status.success());
+        assert_eq!(first_line(&output.stderr), "native_schema_not_initialized");
+        assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0, "the command wrote to a non-native database");
+    }
 }
 
 /// Change `database` with `sql`, then check the command refuses it and leaves
 /// `table` missing.
 async fn database_refuses_without_repair(database: &TestDatabase, sql: &'static str, table: &str) {
     database.execute(sql).await;
-    for args in [["status"].as_slice(), &["release", "--owner", OWNER]] {
+    for args in [["inspect"].as_slice(), &["release", "--owner", OWNER]] {
         let (ok, body, stderr) = console(database, args).await;
         assert!(!ok && body.is_null(), "{sql}: {args:?} succeeded: {body}");
         assert!(!stderr.is_empty(), "{sql}: no refusal reason");

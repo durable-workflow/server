@@ -29,8 +29,9 @@ pub(super) async fn open(database: &str) -> Result<SqlitePool> {
 /// Open an initialized native database for an offline console command
 /// (Server #973). There is no bootstrap path: the file is never created or
 /// switched to WAL, and the pool's own connection must find the native marker
-/// and the exact schema, or the database is refused as it is.
-pub(super) async fn open_existing(database: &str) -> Result<SqlitePool> {
+/// and the exact schema, or the database is refused as it is. A command that
+/// only reads opens the file read-only.
+pub(super) async fn open_existing(database: &str, writable: bool) -> Result<SqlitePool> {
     if database.is_empty() || database.contains('?') || database.contains(':') {
         return Err(refuse(
             StatusCode::BAD_REQUEST,
@@ -48,6 +49,7 @@ pub(super) async fn open_existing(database: &str) -> Result<SqlitePool> {
             SqliteConnectOptions::new()
                 .filename(path)
                 .create_if_missing(false)
+                .read_only(!writable)
                 .synchronous(SqliteSynchronous::Full)
                 .foreign_keys(true)
                 .busy_timeout(Duration::from_secs(5)),

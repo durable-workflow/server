@@ -6,7 +6,8 @@ The published Compose file runs the native server from 3.0.0.
 On native 3.x Server, take and release the backup hold through its admin
 endpoints instead of `php artisan external-payloads:backup-hold`. To release a
 restored hold before any Server process starts, run the image's offline
-`backup-hold release --owner=<uuid>` command against the restored database. The
+`backup-hold release --owner=<uuid>` command against the restored database
+(`backup-hold inspect` reads the hold without changing anything). The
 owner UUID, TTL limits and status checks are the same; see
 [coordinating online backups](contracts/external-payload-storage.md#coordinating-online-backups).
 

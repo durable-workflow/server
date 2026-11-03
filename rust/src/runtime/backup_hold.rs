@@ -187,64 +187,53 @@ fn sql_time(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-/// One offline `backup-hold` invocation, as PHP's
-/// `external-payloads:backup-hold {action} --owner= --ttl=900` takes it
-/// (Server #973): a restore releases the restored hold before any Server
-/// process starts.
+/// One offline `backup-hold` invocation (Server #973): only what a restore
+/// needs before any Server process starts. Live backups acquire, renew and
+/// check their hold through #953's endpoints.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Command {
-    /// `None` is `status`.
-    action: Option<Action>,
-    owner: Option<String>,
-    ttl: i64,
+pub enum Command {
+    /// `release --owner <uuid>`: #953's release, by the hold's recorded
+    /// owner, idempotent, a lapsed restored hold included.
+    Release { owner: String },
+    /// `inspect`: the hold as stored, read without a lock or a write.
+    Inspect,
 }
 
-/// Parse the arguments after `backup-hold`: an action (`acquire`, `renew`,
-/// `release` or `status`), then `--owner` and `--ttl`, each as `--name=value`
-/// or `--name value` and at most once. The TTL must be an integer whatever
-/// the action, as PHP's command checks it first.
+impl Command {
+    /// Whether the command writes; `inspect` opens the database read-only.
+    fn writes(&self) -> bool {
+        matches!(self, Self::Release { .. })
+    }
+}
+
+/// Parse the arguments after `backup-hold`: `release --owner <uuid>` (or
+/// `--owner=<uuid>`), or `inspect` alone.
 pub fn command(args: &[String]) -> Result<Command> {
     let invalid = || super::refuse(StatusCode::BAD_REQUEST, "backup_hold_command_invalid");
-    let mut args = args.iter();
-    let action = match args.next().map(String::as_str) {
-        Some("acquire") => Some(Action::Acquire),
-        Some("renew") => Some(Action::Renew),
-        Some("release") => Some(Action::Release),
-        Some("status") => None,
-        _ => return Err(super::refuse(StatusCode::BAD_REQUEST, "backup_hold_action_invalid")),
-    };
-    let (mut owner, mut ttl) = (None, None);
-    while let Some(arg) = args.next() {
-        let (name, value) = match arg.split_once('=') {
-            Some((name, value)) => (name, value.to_owned()),
-            None => (arg.as_str(), args.next().ok_or_else(invalid)?.clone()),
-        };
-        let slot = match name {
-            "--owner" => &mut owner,
-            "--ttl" => &mut ttl,
-            _ => return Err(invalid()),
-        };
-        if slot.replace(value).is_some() {
-            return Err(invalid());
+    match args {
+        [action, rest @ ..] if action == "release" => {
+            let owner = match rest {
+                [option] => option.strip_prefix("--owner=").map(str::to_owned),
+                [flag, value] if flag == "--owner" => Some(value.clone()),
+                _ => None,
+            };
+            owner.map(|owner| Command::Release { owner }).ok_or_else(invalid)
         }
+        [action] if action == "inspect" => Ok(Command::Inspect),
+        [action, ..] if action == "inspect" => Err(invalid()),
+        _ => Err(super::refuse(StatusCode::BAD_REQUEST, "backup_hold_action_invalid")),
     }
-    let ttl = match ttl {
-        None => DEFAULT_TTL_SECONDS,
-        Some(text) => super::laravel_validation::integer(&json!(text))
-            .ok_or_else(|| super::refuse(StatusCode::BAD_REQUEST, "backup_hold_ttl_invalid"))?,
-    };
-    Ok(Command { action, owner, ttl })
 }
 
 /// `backup-hold` against a native SQLite database that already exists.
 pub async fn console_sqlite(database: &str, command: &Command) -> Result<Value> {
-    let store = super::store::Store::new(super::sqlite::open_existing(database).await?);
+    let store = super::store::Store::new(super::sqlite::open_existing(database, command.writes()).await?);
     store.run_backup_hold_command(command).await
 }
 
 /// `backup-hold` against an initialized native PostgreSQL database.
 pub async fn console_postgres(options: sqlx::postgres::PgConnectOptions, command: &Command) -> Result<Value> {
-    let store = super::store::Store::new(super::postgres::PostgresStorage::open_existing(options).await?);
+    let store = super::store::Store::new(super::postgres::PostgresStorage::open_existing(options, command.writes()).await?);
     store.run_backup_hold_command(command).await
 }
 
@@ -326,21 +315,33 @@ store_methods! {
         Ok(next.report())
     }
 
-    /// The offline command's report, from the same methods #953's endpoints
-    /// call. The pool closes whatever the outcome.
+    /// The offline command's report. Release is #953's own method; the pool
+    /// closes whatever the outcome.
     async fn run_backup_hold_command(&self, command: &Command) -> Result<Value> {
-        let result = match command.action {
-            None => match status_owner(command.owner.as_deref()) {
-                Ok(owner) => self.backup_hold_status(owner.as_deref()).await,
-                Err(error) => Err(error),
-            },
-            Some(action) => match request(&json!({ "owner": command.owner, "ttl": command.ttl }), action) {
-                Ok(request) => self.change_backup_hold(action, &request).await,
+        let result = match command {
+            Command::Inspect => self.inspect_backup_hold().await,
+            Command::Release { owner } => match request(&json!({ "owner": owner }), Action::Release) {
+                Ok(request) => self.change_backup_hold(Action::Release, &request).await,
                 Err(error) => Err(error),
             },
         };
         self.close().await;
         result
+    }
+
+    /// The hold as stored, from plain reads in one read-only snapshot: no
+    /// lock, no row creation, no write. A missing row is no hold.
+    async fn inspect_backup_hold(&self) -> Result<Value> {
+        let mut tx = self.begin_read().await?;
+        let hold = match Self::read_backup_hold(&mut tx).await? {
+            Some(hold) => hold,
+            None => {
+                let now = Self::query(DB::BACKUP_HOLD_CLOCK).fetch_one(&mut *tx).await?;
+                Hold { owner: None, acquired_at: None, expires_at: None, now: DB::instant(&now, "database_time")? }
+            }
+        };
+        tx.rollback().await?;
+        Ok(hold.report())
     }
 
     /// `status`: the hold as it stands, refused when a scoped owner no longer

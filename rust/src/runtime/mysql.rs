@@ -814,7 +814,7 @@ impl MySqlStorage {
     /// Open an initialized native database for an offline console command
     /// (Server #973). There is no bootstrap path: the pool's own connection
     /// must find the native marker and the exact schema, or the database is
-    /// refused as it is.
+    /// refused as it is. The check only reads, in one read-only transaction.
     pub(super) async fn open_existing(connect_options: MySqlConnectOptions) -> Result<MySqlPool> {
         let pool = runtime_pool_options()
             .max_connections(1)
@@ -824,10 +824,12 @@ impl MySqlStorage {
             let mut connection = pool.acquire().await?;
             configure(&mut connection).await?;
             let flavor = Flavor::detect(&mut connection).await?;
-            if !scope(&mut connection).await?.iter().any(|table| table == "dw_server_schema") {
+            let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
+            if !scope(&mut tx).await?.iter().any(|table| table == "dw_server_schema") {
                 return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
             }
-            verify(&mut connection, flavor).await?;
+            verify(&mut tx, flavor).await?;
+            tx.rollback().await?;
             Ok::<_, super::RuntimeError>(())
         }
         .await;
