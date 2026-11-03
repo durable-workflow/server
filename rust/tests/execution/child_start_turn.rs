@@ -177,11 +177,6 @@ async fn an_unknown_await_is_refused_before_any_child_and_the_capability_is_adve
     database.remove().await;
 }
 
-async fn update_task_count(database: &TestDatabase, run: &Value) -> i64 {
-    let run = run.as_str().unwrap();
-    count(database, format!("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id='{run}' AND task_type='workflow' AND payload LIKE '%workflow_update_id%'")).await
-}
-
 // An update accepted while the parent's task is claimed gets its own task
 // at that task's completion. It does not replay the workflow, so it cannot
 // stand in for the start turn: the parent gets both.
@@ -205,7 +200,7 @@ async fn an_update_task_does_not_replace_the_start_turn() {
     assert_eq!(root.len(), 1, "one root start turn beside the update task: {turns:?}");
     assert_eq!(events(root[0], "ChildRunStarted").len(), 1, "{}", root[0]);
     assert!(turns.iter().any(|task| task["workflow_update_id"].is_string()), "the update task remains: {turns:?}");
-    assert!(update_task_count(&database, &started["run_id"]).await >= 1);
+    assert_eq!(parent_tasks(&database, &started["run_id"]).await, 3, "the claim, the update task and the turn");
     runtime.close().await;
     database.remove().await;
 }
