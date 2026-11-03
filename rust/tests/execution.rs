@@ -43,6 +43,8 @@ mod namespaces;
 
 #[path = "execution/late_workflow_claims.rs"]
 mod late_workflow_claims;
+#[path = "execution/not_recorded_receipts.rs"]
+mod not_recorded_receipts;
 #[path = "execution/search_attributes.rs"]
 mod search_attributes;
 #[path = "execution/search_attribute_upserts.rs"]

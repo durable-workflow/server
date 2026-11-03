@@ -41,7 +41,11 @@ function finishHttpLateWorkflowCompletion(Client $client, array $fixture, string
     $complete = [['type' => 'complete_workflow', 'result' => $client->payloadCodec()->envelope($fixture['input'])]];
     $late = static fn (array $task, array $commands): array => $receipt(static fn (): array => $client->completeWorkflowTask(
         $task['task_id'], $worker, $task['workflow_task_attempt'], $commands));
-    $state = ['applicable' => true, 'worker_id' => $worker, 'task_queue' => $queue, 'peer_workflow_id' => $peerId];
+    // Native adds the not-recorded receipt (server#994); published PHP omits
+    // `implementation` from cluster info. A failed read throws, so the
+    // recording never guesses which bodies to expect.
+    $state = ['applicable' => true, 'implementation' => $client->clusterInfo()->raw['implementation'] ?? null,
+        'worker_id' => $worker, 'task_queue' => $queue, 'peer_workflow_id' => $peerId];
     $register();
     $handle = $client->startWorkflow($definition['workflow_type'], $peerId, $queue, [$fixture['input']]);
     $state['peer_run_id'] = $handle->selectedRunId;

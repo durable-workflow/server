@@ -23,26 +23,50 @@ pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
         ) => Some("backend_unavailable"),
         RuntimeError::Database(sqlx::Error::Database(error)) => {
             if let Some(mysql) = error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>() {
-                return mysql_transient_reason(mysql.number());
+                // An unlisted number still falls back to its SQLSTATE class,
+                // so a connection-class refusal is never schedule-local.
+                return mysql_transient_reason(mysql.number())
+                    .or_else(|| mysql.code().and_then(sqlstate_transient_reason));
             }
             let code = error.code()?;
-            if matches!(code.as_ref(), "55P03" | "40P01" | "40001")
-                || (error
-                    .try_downcast_ref::<sqlx::sqlite::SqliteError>()
-                    .is_some()
-                    && code
-                        .parse::<u32>()
-                        .is_ok_and(|code| matches!(code & 0xff, 5 | 6)))
+            if error.try_downcast_ref::<sqlx::sqlite::SqliteError>().is_some()
+                && code
+                    .parse::<u32>()
+                    .is_ok_and(|code| matches!(code & 0xff, 5 | 6))
             {
                 Some("backend_lock_pressure")
-            } else if code.starts_with("08") || matches!(code.as_ref(), "57P01" | "57P02" | "57P03")
-            {
-                Some("backend_unavailable")
             } else {
-                None
+                sqlstate_transient_reason(code.as_ref())
             }
         }
         _ => None,
+    }
+}
+
+/// SQLSTATE values that describe a passing backend condition. Class 08 is a
+/// connection exception and class 53 is PostgreSQL's insufficient resources
+/// (disk full, out of memory, too many connections, configuration limit
+/// exceeded): both are backend-wide, never one schedule's fault (#955).
+pub(super) fn sqlstate_transient_reason(code: &str) -> Option<&'static str> {
+    if matches!(code, "55P03" | "40P01" | "40001") {
+        Some("backend_lock_pressure")
+    } else if code.starts_with("08") || code.starts_with("53") || matches!(code, "57P01" | "57P02" | "57P03") {
+        Some("backend_unavailable")
+    } else {
+        None
+    }
+}
+
+#[test]
+fn backend_resource_sqlstates_are_transient() {
+    for code in ["53000", "53100", "53200", "53300", "53400", "08004", "08006", "57P01"] {
+        assert_eq!(sqlstate_transient_reason(code), Some("backend_unavailable"), "{code}");
+    }
+    for code in ["55P03", "40P01", "40001"] {
+        assert_eq!(sqlstate_transient_reason(code), Some("backend_lock_pressure"), "{code}");
+    }
+    for code in ["23505", "22001", "42P01", "HY000", "42S02"] {
+        assert_eq!(sqlstate_transient_reason(code), None, "{code}");
     }
 }
 
@@ -53,18 +77,22 @@ pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
 /// that is (now) `super_read_only`, 1927 connection killed, 2055 connection
 /// lost, 3100 a Group Replication commit hook refusal while the member has no
 /// quorum, 4031 a server-side disconnect; and 3101 a transaction rolled back
-/// at commit by group certification, which a retry can pass.
+/// at commit by group certification, which a retry can pass. Server resource
+/// exhaustion is backend-wide too: 1021 disk full, 1037 out of memory, 1040
+/// too many connections, 1041 out of resources, 1135 cannot create a thread,
+/// 1203 the account's connection limit.
 pub(super) fn mysql_transient_reason(number: u16) -> Option<&'static str> {
     match number {
         1205 | 1213 | 3101 => Some("backend_lock_pressure"),
         1053 | 1290 | 1927 | 2002 | 2003 | 2006 | 2013 | 2055 | 3100 | 4031 => Some("backend_unavailable"),
+        1021 | 1037 | 1040 | 1041 | 1135 | 1203 => Some("backend_unavailable"),
         _ => None,
     }
 }
 
 #[test]
 fn mysql_cluster_failover_errors_are_transient() {
-    for number in [1053, 1290, 1927, 2002, 2003, 2006, 2013, 2055, 3100, 4031] {
+    for number in [1053, 1290, 1927, 2002, 2003, 2006, 2013, 2055, 3100, 4031, 1021, 1037, 1040, 1041, 1135, 1203] {
         assert_eq!(mysql_transient_reason(number), Some("backend_unavailable"), "{number}");
     }
     for number in [1205, 1213, 3101] {
