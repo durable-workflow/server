@@ -285,6 +285,21 @@ DW_SERVER_IMAGE=durableworkflow/server:<released-version> \
   --result-dir ./failover-result
 ```
 
+Native images also require Docker Buildx and a GitHub CLI that supports `gh attestation verify`
+and `--deny-self-hosted-runners`; `GH` can select its executable. The host
+inspector checks the exact OCI index, platform manifest and configuration digest, native entrypoint,
+source/release/build labels, and signed provenance for that exact image,
+repository, workflow, tag, source commit and build run. It records
+`artifacts.native_server_identity`. Its `release_version` comes from the
+verified release tag; serving-version and recovery observations remain part of
+the later runtime phases. It neither invokes PHP nor invents Composer package
+records for a native image.
+
+PHP images keep the existing `embedded_workflow_package` version/reference
+inspection. Passing either artifact inspector supplies only the provenance
+phase: every topology and recovery cell is still required before the complete
+rehearsal can pass. An inspector-only check does not qualify native failover.
+
 The runner connects to all three published endpoints through `127.0.0.1` by
 default. When the runner itself is in a container that controls a Docker daemon
 through a mounted socket, set `DW_FAILOVER_CONNECT_HOST` to the Docker host

@@ -971,21 +971,7 @@ def require_passing_result() -> None:
     require_recovery_bounds(BOUNDS)
 
 
-def provenance_phase() -> dict[str, Any]:
-    require(CONFIGURATION_ERROR is None, CONFIGURATION_ERROR or "invalid runner configuration")
-    raw = compose("config", "--format", "json").stdout
-    config = json.loads(raw)
-    services = config.get("services", {})
-    require(set(services) == {"bootstrap", "server-a", "server-b", "queue-worker", "scheduler", "load-balancer", "mysql", "redis"}, "unexpected Compose topology")
-    require(all("build" not in service for service in services.values()), "Compose build sections are forbidden")
-    for service_name, service in services.items():
-        image = str(service.get("image", ""))
-        require("@sha256:" in image, f"{service_name} is not repository-digest pinned: {image}")
-        for volume in service.get("volumes", []) or []:
-            volume_type = volume.get("type") if isinstance(volume, dict) else "volume"
-            require(volume_type != "bind", f"bind mount is forbidden for {service_name}: {volume}")
-    require(sum(1 for name in services if name == "scheduler") == 1, "exactly one scheduler service is required")
-    require(sum(1 for name in services if name == "queue-worker") == 1, "exactly one queue worker service is required")
+def inspect_php_workflow_package() -> dict[str, Any]:
     package_script = r'''
 $lock = json_decode(file_get_contents('/app/composer.lock'), true);
 $package = null;
@@ -1018,7 +1004,109 @@ echo json_encode($package, JSON_THROW_ON_ERROR);
         bool(workflow_package.get("source_reference") or workflow_package.get("dist_reference") or workflow_package.get("image_package_provenance")),
         "embedded workflow package has no exact source reference",
     )
-    RESULT["artifacts"]["embedded_workflow_package"] = workflow_package
+    return {"embedded_workflow_package": workflow_package}
+
+
+def inspect_native_server(image: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    config = metadata.get("Config") or {}
+    labels = config.get("Labels") or {}
+    require(config.get("Entrypoint") == ["/usr/local/bin/durable-workflow-server"], "native image entrypoint mismatch")
+    require(metadata.get("Os") == "linux" and metadata.get("Architecture") in {"amd64", "arm64"}, "unsupported native image platform")
+    require(re.fullmatch(r"(?:docker\.io/|index\.docker\.io/)?durableworkflow/server@sha256:[0-9a-f]{64}", image) is not None, "native image must be an exact public repository digest")
+    canonical = lambda value: re.sub(r"^(?:docker\.io/|index\.docker\.io/)", "", value)
+    require(canonical(image) in {canonical(value) for value in metadata.get("RepoDigests", [])}, "native image digest is not bound to inspected config")
+    require(labels.get("org.opencontainers.image.source") == "https://github.com/durable-workflow/server", "native image source repository mismatch")
+    require(labels.get("org.opencontainers.image.title") == "Durable Workflow Server (native)", "native image title mismatch")
+    revision = labels.get("org.opencontainers.image.revision", "")
+    tag = labels.get("dev.durable-workflow.release.tag", "")
+    run_id = labels.get("dev.durable-workflow.release.run-id", "")
+    require(re.fullmatch(r"[0-9a-f]{40}", revision) is not None and revision != "0" * 40, "native image source revision missing")
+    require(re.fullmatch(r"(?:native-)?(?:[3-9]|[1-9][0-9]+)\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?", tag) is not None, "native image release tag invalid")
+    require(re.fullmatch(r"[1-9][0-9]*", run_id) is not None, "native image release run missing")
+    version = tag.removeprefix("native-")
+
+    def manifest(reference: str) -> dict[str, Any]:
+        raw = command(["docker", "buildx", "imagetools", "inspect", "--raw", reference], timeout=60).stdout
+        require("sha256:" + hashlib.sha256(raw.encode()).hexdigest() == reference.split("@", 1)[1], "native OCI manifest digest mismatch")
+        return json.loads(raw)
+
+    index = manifest(image)
+    require(index.get("mediaType") == "application/vnd.oci.image.index.v1+json", "native image must resolve to an OCI index")
+    platforms = [entry for entry in index.get("manifests", [])
+                 if entry.get("platform", {}).get("os") == metadata["Os"]
+                 and entry.get("platform", {}).get("architecture") == metadata["Architecture"]]
+    require(len(platforms) == 1, "native OCI platform selection is ambiguous")
+    platform_digest = platforms[0].get("digest", "")
+    require(re.fullmatch(r"sha256:[0-9a-f]{64}", platform_digest) is not None, "native OCI platform digest missing")
+    platform = manifest(image.split("@", 1)[0] + "@" + platform_digest)
+    require(platform.get("mediaType") == "application/vnd.oci.image.manifest.v1+json", "native OCI platform manifest invalid")
+    config_digest = platform.get("config", {}).get("digest", "")
+    require(re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest) is not None, "native OCI config digest missing")
+    # Docker's classic and containerd stores expose different image IDs.
+    require(metadata.get("Id") in {image.split("@", 1)[1], platform_digest, config_digest}, "native local image ID is not bound to its OCI descriptors")
+    verified = command([
+        os.environ.get("GH", "gh"), "attestation", "verify", "oci://" + image,
+        "--repo", "durable-workflow/server",
+        "--signer-workflow", "github.com/durable-workflow/server/.github/workflows/native-release.yml",
+        "--source-ref", "refs/tags/" + tag, "--source-digest", revision,
+        "--deny-self-hosted-runners", "--format", "json",
+    ], timeout=60)
+    attestations = json.loads(verified.stdout)
+    require(isinstance(attestations, list) and bool(attestations), "native image has no verified attestation")
+    invocations = []
+    for attestation in attestations:
+        verification = attestation.get("verificationResult", {})
+        subjects = verification.get("statement", {}).get("subject", [])
+        require(any(subject.get("digest", {}).get("sha256") == image.split("@sha256:", 1)[1] for subject in subjects), "native attestation subject mismatch")
+        certificate = verification.get("signature", {}).get("certificate", {})
+        require(certificate.get("sourceRepositoryURI") == "https://github.com/durable-workflow/server", "native attestation repository mismatch")
+        require(certificate.get("sourceRepositoryDigest") == revision, "native attestation source mismatch")
+        require(certificate.get("sourceRepositoryRef") == "refs/tags/" + tag, "native attestation tag mismatch")
+        require(certificate.get("runnerEnvironment") == "github-hosted", "native attestation runner mismatch")
+        require(certificate.get("buildSignerURI") == "https://github.com/durable-workflow/server/.github/workflows/native-release.yml@refs/tags/" + tag, "native attestation signer mismatch")
+        invocation = certificate.get("runInvocationURI", "")
+        require(re.fullmatch(r"https://github\.com/durable-workflow/server/actions/runs/" + run_id + r"/attempts/[1-9][0-9]*", invocation) is not None, "native attestation release run mismatch")
+        invocations.append(invocation)
+    return {"native_server_identity": {
+        "runtime": "native", "image_repo_digest": image,
+        "image_manifest_digest": platform_digest, "image_config_digest": config_digest,
+        "local_image_id": metadata["Id"],
+        "platform": metadata["Os"] + "/" + metadata["Architecture"],
+        "source_repository": labels["org.opencontainers.image.source"], "source_revision": revision,
+        "release_tag": tag, "release_version": version, "release_run_id": run_id,
+        "attestation_invocations": sorted(set(invocations)),
+    }}
+
+
+def inspect_published_server() -> dict[str, Any]:
+    image = os.environ["DW_FAILOVER_SERVER_IMAGE"]
+    inspected = json.loads(command(["docker", "image", "inspect", image], timeout=30).stdout)
+    require(isinstance(inspected, list) and len(inspected) == 1, "server image inspection is ambiguous")
+    metadata = inspected[0]
+    config = metadata.get("Config") or {}
+    labels = config.get("Labels") or {}
+    if config.get("Entrypoint") == ["/usr/local/bin/durable-workflow-server"] or labels.get("org.opencontainers.image.title") == "Durable Workflow Server (native)":
+        return inspect_native_server(image, metadata)
+    return inspect_php_workflow_package()
+
+
+def provenance_phase() -> dict[str, Any]:
+    require(CONFIGURATION_ERROR is None, CONFIGURATION_ERROR or "invalid runner configuration")
+    raw = compose("config", "--format", "json").stdout
+    config = json.loads(raw)
+    services = config.get("services", {})
+    require(set(services) == {"bootstrap", "server-a", "server-b", "queue-worker", "scheduler", "load-balancer", "mysql", "redis"}, "unexpected Compose topology")
+    require(all("build" not in service for service in services.values()), "Compose build sections are forbidden")
+    for service_name, service in services.items():
+        image = str(service.get("image", ""))
+        require("@sha256:" in image, f"{service_name} is not repository-digest pinned: {image}")
+        for volume in service.get("volumes", []) or []:
+            volume_type = volume.get("type") if isinstance(volume, dict) else "volume"
+            require(volume_type != "bind", f"bind mount is forbidden for {service_name}: {volume}")
+    require(sum(1 for name in services if name == "scheduler") == 1, "exactly one scheduler service is required")
+    require(sum(1 for name in services if name == "queue-worker") == 1, "exactly one queue worker service is required")
+    identity = inspect_published_server()
+    RESULT["artifacts"].update(identity)
     digest = hashlib.sha256(raw.encode()).hexdigest()
     RESULT["artifacts"]["compose_config_sha256"] = digest
     return {
@@ -1027,7 +1115,7 @@ echo json_encode($package, JSON_THROW_ON_ERROR);
         "all_runtime_images_repo_digest_pinned": True,
         "compose_build_sections_present": False,
         "product_source_bind_mounts_present": False,
-        "embedded_workflow_package": workflow_package,
+        **identity,
     }
 
 
