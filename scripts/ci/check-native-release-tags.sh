@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Native release-candidate tags are their own Git tags, native-<version>
 # (Server #325). Check that:
-# - the PHP Release workflow's push-tag filter matches no native- tag, so a
-#   native tag starts no PHP release, and still matches plain versions;
+# - the retired PHP Release workflow (server#1002) has no push trigger, so
+#   no tag starts it, and its publish job never runs;
 # - the tag verifier accepts native- only when asked for it;
 # - the native publisher accepts only native- tags, and lets only a release
 #   candidate (-rc.N) skip Docker Hub.
@@ -10,35 +10,18 @@
 set -euo pipefail
 fail() { printf 'Native release tag check failed: %s\n' "$1" >&2; exit 1; }
 
-# The tag patterns under release.yml's push trigger.
-mapfile -t patterns < <(awk '
-  /^  push:/ { push = 1; next }
-  push && /^  [a-z_]+:/ { push = 0 }
-  push && /^    tags:/ { tags = 1; next }
-  tags && /^      - / { sub(/^      - /, ""); gsub(/\x27|"/, ""); print; next }
-  tags { tags = 0 }
+# The retired PHP Release workflow (server#1002): no push trigger at all, so
+# no tag of any kind starts it, and its publish job is `if: false`, so it never
+# loads the registry logins or contents: write.
+release_triggers=$(awk '
+  /^on:/ { on = 1; next }
+  on && /^[^ #]/ { on = 0 }
+  on && /^  [a-z_]+:/ { sub(/^  /, ""); sub(/:.*/, ""); print }
 ' .github/workflows/release.yml)
-test "${#patterns[@]}" -ge 1 || fail "release.yml has no push tag patterns."
-
-# A GitHub filter pattern as an anchored extended regular expression:
-# [..] and + keep their meaning, * matches anything but /, the rest is literal.
-matches() {
-  local pattern=$1 tag=$2 regex
-  regex=$(printf '%s' "$pattern" | sed -e 's/[.]/\\./g' -e 's#[*]#[^/]*#g')
-  [[ $tag =~ ^${regex}$ ]]
-}
-for pattern in "${patterns[@]}"; do
-  for tag in native-2.12.0-rc.1 native-2.11.4 native-3.0.0 3.0.2 3.1.0-rc.1 10.0.0; do
-    if matches "$pattern" "$tag"; then fail "release.yml tag pattern $pattern matches $tag."; fi
-  done
-done
-for tag in 2.11.4 2.12.0-rc.1; do
-  matched=0
-  for pattern in "${patterns[@]}"; do
-    if matches "$pattern" "$tag"; then matched=1; fi
-  done
-  test "$matched" = 1 || fail "no release.yml tag pattern matches the plain version $tag."
-done
+test "$release_triggers" = workflow_dispatch \
+  || fail "the retired release.yml must have only workflow_dispatch, not: $(echo $release_triggers)."
+grep -qx '    if: false' <(sed -n '/^  publish:$/,/^  [a-z-]*:$/p' .github/workflows/release.yml) \
+  || fail "the retired release.yml publish job must be if: false."
 
 expect() {
   local message=$1; shift
@@ -480,4 +463,4 @@ grep -q 'run: scripts/ci/verify-native-release-dispatch.sh' .github/workflows/na
 # the native Release job may write releases.
 grep -q 'name: Refuse a native release tag' .github/workflows/release.yml \
   || fail "release.yml must refuse a 3.x or native- tag."
-printf 'Native release tags: %d release.yml pattern(s) checked; verifier, publisher and rolling tags behave as intended.\n' "${#patterns[@]}"
+printf 'Native release tags: retired release.yml cannot start or publish; verifier, publisher and rolling tags behave as intended.\n'
