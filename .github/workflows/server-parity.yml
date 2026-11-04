@@ -2231,6 +2231,9 @@ jobs:
           # Composer runs confined in the pinned image, never in the published image under test.
           bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
             install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
+          # This shell-orchestration test needs the runner's jq, which the
+          # frozen PHP runtime image does not contain.
+          node --test tests/Unit/NativeImageCorpusTest.mjs
           docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -w /source \
             "$image" --test \
               tests/Unit/ServerParityRunnerTest.mjs \
@@ -2307,7 +2310,6 @@ jobs:
               tests/Unit/ServerParityWorkflowPollRequestContractTest.mjs \
               tests/Unit/ServerParityUpdateValidationContractTest.mjs \
               tests/Unit/ServerParityFixtureSelectionTest.mjs \
-              tests/Unit/NativeImageCorpusTest.mjs \
               tests/Unit/ServerParityUpdateValidationRetryTest.mjs \
               tests/Unit/ServerParityUpdateValidationTimingTest.mjs \
               tests/Unit/ServerParityUpdateValidationProcessTest.mjs \

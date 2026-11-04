@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -57,6 +57,7 @@ esac`,
       env: {...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH}`, MOCK_DIR: dir, FAILURE: failure,
         GITHUB_RUN_ID: '7', GITHUB_RUN_ATTEMPT: '2', GITHUB_JOB: 'corpus', RESOURCE_SCOPE: 'dw-parity-7-2-corpus'},
     });
+    assert.ok(existsSync(join(dir, 'parity-evidence/native-image-corpus.json')), result.stderr);
     return {...result,
       receipt: JSON.parse(readFileSync(join(dir, 'parity-evidence/native-image-corpus.json'), 'utf8')),
       calls: readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n').map(line => line.split(' ')),
