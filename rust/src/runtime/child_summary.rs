@@ -18,6 +18,7 @@ pub(super) struct ChildSummaryHistory {
 
 struct ExpectedChild {
     id: String,
+    parallel: Value,
     /// The first run, which the parent's wait keeps naming.
     run: String,
     instance: String,
@@ -58,7 +59,12 @@ impl ChildSummaryHistory {
         if !previous.same_call(payload) || previous.status != "waiting" {
             return false;
         }
-        let text = |key: &str| payload[key].as_str().filter(|v| !v.is_empty()).map(str::to_owned);
+        let text = |key: &str| {
+            payload[key]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
         match event {
             "ChildRunStarted" if !previous.started => {
                 if payload["child_run_number"] != 1
@@ -69,10 +75,15 @@ impl ChildSummaryHistory {
                 }
                 previous.started = true;
             }
-            "ChildRunStarted" if payload["retry_attempt"].is_i64() => {
-                let (Some(run), Some(link), Some(number)) =
-                    (text("child_workflow_run_id"), text("workflow_link_id"), payload["child_run_number"].as_i64())
-                else {
+            "ChildRunStarted"
+                if payload["retry_attempt"].is_i64()
+                    || previous.parallel.get("parallel_group_id").is_some() =>
+            {
+                let (Some(run), Some(link), Some(number)) = (
+                    text("child_workflow_run_id"),
+                    text("workflow_link_id"),
+                    payload["child_run_number"].as_i64(),
+                ) else {
                     return false;
                 };
                 if number <= previous.run_number || run == previous.latest_run || link == previous.latest_link {
@@ -116,11 +127,9 @@ impl ExpectedChild {
         };
         let id = text("child_call_id")?;
         let label = text("child_workflow_type")?;
-        if payload["workflow_link_id"] != id
-            || payload["child_workflow_class"] != label
-            || !payload["parallel_group_id"].is_null()
-            || !payload["parallel_group_path"].is_null()
-        {
+        let parallel = super::selections::metadata(payload, "child").ok()?;
+        super::selections::check_sequence(&parallel, payload["sequence"].as_i64()?).ok()?;
+        if payload["workflow_link_id"] != id || payload["child_workflow_class"] != label {
             return None;
         }
         Some(Self {
@@ -128,6 +137,7 @@ impl ExpectedChild {
             run: text("child_workflow_run_id")?,
             instance: text("child_workflow_instance_id")?,
             label,
+            parallel,
             started: false,
             status: "waiting",
             latest_run: text("child_workflow_run_id")?,
@@ -142,8 +152,7 @@ impl ExpectedChild {
             && payload["child_workflow_instance_id"] == self.instance.as_str()
             && payload["child_workflow_type"] == self.label.as_str()
             && payload["child_workflow_class"] == self.label.as_str()
-            && payload["parallel_group_id"].is_null()
-            && payload["parallel_group_path"].is_null()
+            && super::selections::metadata(payload, "child").ok().as_ref() == Some(&self.parallel)
     }
 
     fn wait_status(&self) -> &'static str {
@@ -173,7 +182,7 @@ where
         history: &ChildSummaryHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,c.status AS call_status,c.resolved_child_run_id,c.resolved_child_instance_id,c.child_workflow_type,c.metadata AS call_metadata,l.id AS link_id,l.child_workflow_run_id AS link_run,l.child_workflow_instance_id AS link_instance FROM workflow_run_waits w LEFT JOIN workflow_child_calls c ON c.parent_workflow_run_id=w.workflow_run_id AND c.sequence=w.sequence LEFT JOIN workflow_links l ON l.parent_workflow_run_id=w.workflow_run_id AND l.sequence=w.sequence AND l.link_type='child_workflow' AND l.child_workflow_run_id=c.resolved_child_run_id WHERE w.workflow_run_id=$1 AND w.kind='child' ORDER BY w.sequence")
+        let rows = Self::query("SELECT w.*,c.status AS call_status,c.resolved_child_run_id,c.resolved_child_instance_id,c.child_workflow_type,c.metadata AS call_metadata,l.id AS link_id,l.child_workflow_run_id AS link_run,l.child_workflow_instance_id AS link_instance,l.parallel_group_path AS link_group_path FROM workflow_run_waits w LEFT JOIN workflow_child_calls c ON c.parent_workflow_run_id=w.workflow_run_id AND c.sequence=w.sequence LEFT JOIN workflow_links l ON l.parent_workflow_run_id=w.workflow_run_id AND l.sequence=w.sequence AND l.link_type='child_workflow' AND l.child_workflow_run_id=c.resolved_child_run_id WHERE w.workflow_run_id=$1 AND w.kind='child' ORDER BY w.sequence")
             .bind(run_id).fetch_all(&mut **tx).await?;
         if rows.len() != history.calls.len() {
             return Ok(false);
@@ -307,6 +316,8 @@ where
                 .is_some_and(|v| v["child_call_id"] == child.id)
             && matches("link_id", &child.latest_link)?
             && matches("link_run", &child.latest_run)?
-            && matches("link_instance", &child.instance)?)
+            && matches("link_instance", &child.instance)?
+            && DB::optional_document_row(row, "link_group_path")?
+                == child.parallel.get("parallel_group_path").cloned())
     }
 }

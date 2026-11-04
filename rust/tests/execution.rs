@@ -287,6 +287,8 @@ mod timed_condition_waits;
 
 #[path = "execution/parallel_all.rs"]
 mod parallel_all;
+#[path = "execution/parallel_children.rs"]
+mod parallel_children;
 
 #[path = "execution/workflow_failures.rs"]
 mod workflow_failures;

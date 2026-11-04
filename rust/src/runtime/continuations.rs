@@ -91,10 +91,19 @@ where
 
     /// The memos `MemoUpsertService::inheritFromParent` copies from a run:
     /// each key and value, with its portable value when that is current.
-    pub(super) async fn inheritable_memos(tx: &mut Transaction<'_, DB>, from: &str) -> Result<Vec<InheritedMemo>> {
-        let rows = Self::query(DB::MEMO_READ).bind(from).fetch_all(&mut **tx).await?;
+    pub(super) async fn inheritable_memos(
+        tx: &mut Transaction<'_, DB>,
+        from: &str,
+    ) -> Result<Vec<InheritedMemo>> {
+        let rows = Self::query(DB::MEMO_READ)
+            .bind(from)
+            .fetch_all(&mut **tx)
+            .await?;
         if rows.len() > super::memos::MAX_ENTRIES {
-            return Err(refuse(StatusCode::CONFLICT, "workflow_memo_validation_failed"));
+            return Err(refuse(
+                StatusCode::CONFLICT,
+                "workflow_memo_validation_failed",
+            ));
         }
         let mut memos = Vec::with_capacity(rows.len());
         for memo in rows {
@@ -106,7 +115,11 @@ where
             } else {
                 None
             };
-            memos.push((DB::string(&memo, "key")?, DB::document_row(&memo, "value")?, portable));
+            memos.push((
+                DB::string(&memo, "key")?,
+                DB::document_row(&memo, "value")?,
+                portable,
+            ));
         }
         Ok(memos)
     }
@@ -259,14 +272,22 @@ where
             .map(|row| DB::document_row(&row, "payload"))
             .transpose()?
             .unwrap_or(Value::Null);
-        let call_id = original["child_call_id"].as_str().filter(|id| !id.is_empty()).map(str::to_owned);
-        let reference = match original["parent_workflow_run_id"].as_str().filter(|id| !id.is_empty()) {
-            None => json!({"child_call_id":call_id,"parent_workflow_instance_id":null,"parent_workflow_run_id":null,"parent_sequence":null}),
+        let call_id = original["child_call_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
+        let reference = match original["parent_workflow_run_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+        {
+            None => {
+                json!({"child_call_id":call_id,"parent_workflow_instance_id":null,"parent_workflow_run_id":null,"parent_sequence":null})
+            }
             Some(parent_run) => json!({"child_call_id":call_id,
                 "parent_workflow_instance_id":original["parent_workflow_instance_id"].as_str().unwrap_or(&original["workflow_instance_id"].as_str().unwrap_or_default()),
                 "parent_workflow_run_id":parent_run,"parent_sequence":original["parent_sequence"].as_i64()}),
         };
-        let links = Self::query("SELECT id,sequence,parent_workflow_run_id,child_workflow_instance_id,parent_close_policy FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type='child_workflow' ORDER BY id")
+        let links = Self::query("SELECT id,sequence,parent_workflow_run_id,child_workflow_instance_id,parent_close_policy,parallel_group_path FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type='child_workflow' ORDER BY id")
             .bind(old).fetch_all(&mut **tx).await?;
         for parent_link in links {
             let link = id();
@@ -335,6 +356,11 @@ where
             .map(|names| names.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
         let mut messages = Vec::new();
+            let parallel = super::selections::child_metadata(DB::optional_document_row(
+                &parent_link,
+                "parallel_group_path",
+            )?)?;
+            super::selections::merge(&mut payload, &parallel);
         for row in Self::query("SELECT * FROM workflow_signal_records WHERE workflow_run_id=$1 AND target_scope='instance' AND status='received' AND closed_at IS NULL")
             .bind(old).fetch_all(&mut **tx).await?
         {
@@ -421,8 +447,12 @@ where
             .bind(next).bind(next).bind(&update_id).execute(&mut **tx).await?;
         let command_id = DB::optional_string(update, "workflow_command_id")?;
         let command = match &command_id {
-            Some(command_id) => Self::query("SELECT command_type,status FROM workflow_commands WHERE id=$1")
-                .bind(command_id).fetch_optional(&mut **tx).await?,
+            Some(command_id) => {
+                Self::query("SELECT command_type,status FROM workflow_commands WHERE id=$1")
+                    .bind(command_id)
+                    .fetch_optional(&mut **tx)
+                    .await?
+            }
             None => None,
         };
         let command_id = match command {
@@ -442,6 +472,14 @@ where
             "workflow_instance_id":workflow,"workflow_run_id":next,
             "update_name":DB::string(update, "update_name")?,
             "arguments":DB::optional_string(update, "arguments")?.as_deref().map(wire)});
-        Self::append(tx, next, "UpdateAccepted", payload, None, command_id.as_deref()).await
+        Self::append(
+            tx,
+            next,
+            "UpdateAccepted",
+            payload,
+            None,
+            command_id.as_deref(),
+        )
+        .await
     }
 }
