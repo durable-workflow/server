@@ -129,7 +129,12 @@ async fn activity_result_read_preserves_encoded_values_and_closed_parent_history
     assert_eq!(info["structural_limits"]["pending_signal_count"], json!(5000), "{info}");
     assert_eq!(info["discovery"]["task_repair_path"], json!("/api/system/repair"), "{info}");
     assert!(info["native_unqualified"]["topology"].is_string(), "{info}");
-    assert!(info.get("supported_sdk_versions").is_none(), "{info}");
+    // Native's own qualified ranges, from the same source as
+    // client_compatibility (server#1005).
+    assert_eq!(info["supported_sdk_versions"]["rust"], json!(">=4.10.3,<5.0.0"), "{info}");
+    assert_eq!(info["client_compatibility"]["clients"]["sdk-rust"]["supported_versions"],
+        info["supported_sdk_versions"]["rust"], "{info}");
+    assert!(info["native_unqualified"].get("client_compatibility").is_none(), "{info}");
     reopened.close().await;
     database.remove().await;
 }

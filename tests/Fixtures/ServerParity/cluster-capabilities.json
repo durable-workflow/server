@@ -190,6 +190,24 @@
             "message": "Activity not found in this run."
           }
         }
+      },
+      "client_ranges": {
+        "php": {
+          "supported_sdk_versions": ">=2.0.0,<3.0.0",
+          "client_compatibility": ">=2.0.0,<3.0.0"
+        },
+        "python": {
+          "supported_sdk_versions": ">=2.0.0,<3.0.0",
+          "client_compatibility": ">=2.0.0,<3.0.0"
+        },
+        "rust": {
+          "supported_sdk_versions": ">=2.0.0,<4.0.0",
+          "client_compatibility": ">=2.0.0,<4.0.0"
+        },
+        "cli": {
+          "supported_sdk_versions": ">=2.0.0,<3.0.0",
+          "client_compatibility": ">=2.0.0,<3.0.0"
+        }
       }
     },
     "native_differences": {
@@ -293,14 +311,6 @@
         "value": "{absent}",
         "reason": "Native serves no include=diagnostics view."
       },
-      "present.supported_sdk_versions": {
-        "value": false,
-        "reason": "Native leaves this member out and names it in native_unqualified."
-      },
-      "present.client_compatibility": {
-        "value": false,
-        "reason": "Native leaves this member out and names it in native_unqualified."
-      },
       "present.topology": {
         "value": false,
         "reason": "Native leaves this member out and names it in native_unqualified."
@@ -327,21 +337,105 @@
       },
       "native_unqualified": {
         "value": [
-          "client_compatibility",
           "conformance_manifests",
           "discovery.diagnostics_path",
           "discovery.diagnostics_query",
           "structural_limits.external_payload_transaction_bytes",
-          "supported_sdk_versions",
           "topology"
         ],
         "reason": "Native names each member it leaves out."
+      },
+      "client_ranges": {
+        "value": {
+          "php": {
+            "supported_sdk_versions": ">=3.8.1,<4.0.0",
+            "client_compatibility": ">=3.8.1,<4.0.0"
+          },
+          "python": {
+            "supported_sdk_versions": ">=2.13.0,<3.0.0",
+            "client_compatibility": ">=2.13.0,<3.0.0"
+          },
+          "rust": {
+            "supported_sdk_versions": ">=4.10.3,<5.0.0",
+            "client_compatibility": ">=4.10.3,<5.0.0"
+          },
+          "cli": {
+            "supported_sdk_versions": ">=2.0.0,<3.0.0",
+            "client_compatibility": ">=2.0.0,<3.0.0"
+          }
+        },
+        "reason": "Native states the ranges its installed qualification supports, from one source for both members (server#1005). sdk-php >=3.8.1: 3.8.0 lost activity claims with heartbeat_timeout under lease maintenance (server#985), fixed in 3.8.1; 3.8.3 passed installed acceptance against native 3.0.4 (https://github.com/durable-workflow/sdk-php/pull/243#issuecomment-6612840439). sdk-python >=2.13.0: 2.13.0 passed installed acceptance against native 3.0.1 (https://github.com/durable-workflow/sdk-python/issues/228, sdk-python#168). sdk-rust >=4.10.3: 4.10.2 failed native describe parity (server#967, fixed by server#968 in 3.0.2); 4.10.3 declares and is qualified on native from 3.0.2 (https://github.com/durable-workflow/sdk-rust/pull/160, harness sdk-rust#155). cli >=2.0.0,<3.0.0: the Rust CLI ships as a 2.x minor (cli#72); its raw worker commands need native 3.1.0 (server#1001). Each upper bound is the next major."
       }
     },
     "native_additions": {
       "capabilities.child_workflow_start_turn": {
         "value": true,
         "reason": "Native serves start_child_workflow await: \"started\", a parent turn when the child start commits (Server #966); published PHP 2.x has no such mode."
+      },
+      "native_client_compatibility": {
+        "value": {
+          "schema": "durable-workflow.v2.client-compatibility",
+          "version": 2,
+          "authority": "protocol_manifests",
+          "top_level_version_role": "informational",
+          "fail_closed": true,
+          "required_protocols": {
+            "auth_composition": {
+              "schema": "durable-workflow.v2.auth-composition.contract",
+              "version": 1
+            },
+            "control_plane": {
+              "version": "2",
+              "header": "X-Durable-Workflow-Control-Plane-Version",
+              "request_contract": {
+                "schema": "durable-workflow.v2.control-plane-request.contract",
+                "version": 1
+              }
+            },
+            "worker_protocol": {
+              "version": "1.20",
+              "header": "X-Durable-Workflow-Protocol-Version"
+            }
+          },
+          "clients": {
+            "sdk-php": {
+              "supported_versions": ">=3.8.1,<4.0.0",
+              "requires": [
+                "auth_composition.version",
+                "control_plane.version",
+                "control_plane.request_contract",
+                "worker_protocol.version"
+              ]
+            },
+            "cli": {
+              "supported_versions": ">=2.0.0,<3.0.0",
+              "requires": [
+                "auth_composition.version",
+                "control_plane.version",
+                "control_plane.request_contract"
+              ]
+            },
+            "sdk-python": {
+              "supported_versions": ">=2.13.0,<3.0.0",
+              "requires": [
+                "auth_composition.version",
+                "control_plane.version",
+                "control_plane.request_contract",
+                "worker_protocol.version"
+              ]
+            },
+            "sdk-rust": {
+              "supported_versions": ">=4.10.3,<5.0.0",
+              "requires": [
+                "auth_composition.version",
+                "control_plane.version",
+                "control_plane.request_contract",
+                "worker_protocol.version"
+              ]
+            }
+          }
+        },
+        "reason": "Native's client_compatibility (server#1005) cites only protocols it serves beside the block: the auth composition contract, the control plane with its request contract, and worker protocol 1.20. Published PHP's block also cites the skew refusal matrix and five worker_protocol external execution contracts, which native does not publish; the CLI checks every protocol the block requires, so native must not cite them."
       }
     }
   }

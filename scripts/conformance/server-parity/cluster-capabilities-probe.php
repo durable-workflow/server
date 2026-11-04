@@ -53,6 +53,19 @@ function finishHttpClusterCapabilities(Client $admin, array $fixture, string $wo
             static fn (string $member): bool => array_key_exists($member, $info), $definition['php_only_members'])),
         'native_unqualified' => array_keys($info['native_unqualified'] ?? [])];
     sort($state['native_unqualified']);
+    // Each client's range as both members state it (server#1005): the two
+    // must agree. Native's full client_compatibility block is pinned too.
+    $compatibility = is_array($info['client_compatibility'] ?? null) ? $info['client_compatibility'] : [];
+    $state['client_ranges'] = [];
+    foreach (['php' => 'sdk-php', 'python' => 'sdk-python', 'rust' => 'sdk-rust', 'cli' => 'cli'] as $key => $client) {
+        $state['client_ranges'][$key] = [
+            'supported_sdk_versions' => $info['supported_sdk_versions'][$key] ?? null,
+            'client_compatibility' => $compatibility['clients'][$client]['supported_versions'] ?? null,
+        ];
+    }
+    if (($info['implementation'] ?? null) === 'rust') {
+        $state['native_client_compatibility'] = $info['client_compatibility'] ?? 'absent';
+    }
 
     $empty = ['codec' => 'avro', 'blob' => $definition['empty_blob']];
     $id = $workflowId.'-cc-run';
