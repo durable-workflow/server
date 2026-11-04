@@ -1,0 +1,150 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "concurrent waits λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "concurrent waits λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "id": "closed-wait-timeouts",
+  "contract": "Published PHP Server 2.11.8 history for a timed condition or signal wait followed by complete, fail, continue-as-new, cancel or terminate. Ordinary complete/fail/continue add no TimerCancelled or wait-resolution event; cancel/terminate cancel the wait timeout before their terminal event. Native additionally settles its physical pending timeout timer and ready/leased timer task on every close, without changing those histories. Raw worker HTTP uses a fresh namespace; embedded applications have no worker protocol. Physical cleanup is asserted separately by cross-backend native execution tests.",
+  "closed_wait_timeouts": {
+    "workflow_type": "parity.v1.close_wait",
+    "empty_blob": "wwHioz3/VYAiNwwA",
+    "timeout_seconds": 600,
+    "expected": {
+      "condition_complete": {
+        "status": "completed",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ConditionWaitOpened",
+          "TimerScheduled",
+          "WorkflowCompleted"
+        ]
+      },
+      "condition_fail": {
+        "status": "failed",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ConditionWaitOpened",
+          "TimerScheduled",
+          "WorkflowFailed"
+        ]
+      },
+      "condition_continue": {
+        "status": "completed",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ConditionWaitOpened",
+          "TimerScheduled",
+          "WorkflowContinuedAsNew"
+        ]
+      },
+      "condition_cancel": {
+        "status": "cancelled",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ConditionWaitOpened",
+          "TimerScheduled",
+          "CancelRequested",
+          "TimerCancelled",
+          "WorkflowCancelled"
+        ]
+      },
+      "condition_terminate": {
+        "status": "terminated",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ConditionWaitOpened",
+          "TimerScheduled",
+          "TerminateRequested",
+          "TimerCancelled",
+          "WorkflowTerminated"
+        ]
+      },
+      "signal_complete": {
+        "status": "completed",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "SignalWaitOpened",
+          "TimerScheduled",
+          "WorkflowCompleted"
+        ]
+      },
+      "signal_fail": {
+        "status": "failed",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "SignalWaitOpened",
+          "TimerScheduled",
+          "WorkflowFailed"
+        ]
+      },
+      "signal_continue": {
+        "status": "completed",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "SignalWaitOpened",
+          "TimerScheduled",
+          "WorkflowContinuedAsNew"
+        ]
+      },
+      "signal_cancel": {
+        "status": "cancelled",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "SignalWaitOpened",
+          "TimerScheduled",
+          "CancelRequested",
+          "TimerCancelled",
+          "WorkflowCancelled"
+        ]
+      },
+      "signal_terminate": {
+        "status": "terminated",
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "SignalWaitOpened",
+          "TimerScheduled",
+          "TerminateRequested",
+          "TimerCancelled",
+          "WorkflowTerminated"
+        ]
+      }
+    }
+  }
+}

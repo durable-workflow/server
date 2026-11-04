@@ -61,6 +61,7 @@ on:
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
       - tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs
       - tests/Unit/ServerParityConcurrentWaitsContractTest.mjs
+      - tests/Unit/ServerParityClosedWaitTimeoutsContractTest.mjs
       - tests/Unit/ServerParityHistoryExportWaitsContractTest.mjs
       - tests/Unit/ServerParityContinueTransfersContractTest.mjs
       - tests/Unit/ServerParityLargeCommandBatchesContractTest.mjs
@@ -2267,6 +2268,7 @@ jobs:
               tests/Unit/ServerParityOperatorMetricsContractTest.mjs \
               tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs \
               tests/Unit/ServerParityConcurrentWaitsContractTest.mjs \
+              tests/Unit/ServerParityClosedWaitTimeoutsContractTest.mjs \
               tests/Unit/ServerParityHistoryExportWaitsContractTest.mjs \
               tests/Unit/ServerParityContinueTransfersContractTest.mjs \
               tests/Unit/ServerParityChildDescriptionsContractTest.mjs \

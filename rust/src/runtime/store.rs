@@ -3243,8 +3243,10 @@ where
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
                     // Published PHP completes a run whatever is still open. Its
-                    // activities, timers and waits stay as they are, and its
-                    // open children follow their parent-close policies.
+                    // ordinary activities and timers stay as they are, and
+                    // open children follow their parent-close policies. The
+                    // terminal event settles physical wait timeout rows while
+                    // retaining PHP's history.
                     let output = match external.get(&index) {
                         Some(prepared) => prepared.stored(),
                         None => envelope(command, "result")?,
@@ -4508,6 +4510,7 @@ where
         Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         if let Some(reason) = closed_reason(event_type) {
+            Self::settle_closed_wait_timeouts(tx, run_id, recorded_at).await?;
             let task = payload.get("task").cloned();
             Box::pin(Self::reject_received_signals(tx, run_id, reason, task_id, task)).await?;
         }
