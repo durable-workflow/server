@@ -154,7 +154,7 @@ where
             "last_heartbeat_at":DB::optional_instant(&attempt,"last_heartbeat_at")?.or(DB::optional_instant(&activity,"last_heartbeat_at")?).map(super::cooperative::timestamp),
             "run_status":run_status,"run_closed_reason":DB::optional_string(&run,"closed_reason")?,"run_closed_at":DB::optional_instant(&run,"closed_at")?.map(super::cooperative::timestamp),
             "activity_status":activity_status,"attempt_status":attempt_status,"task_status":task_status,
-            "deadlines":super::activity_deadlines::deadlines_view::<DB>(&activity)?,"worker_session":worker_session,"protocol_version":protocol,"server_capabilities":super::store::capabilities()});
+            "deadlines":super::activity_deadlines::deadlines_view::<DB>(&activity)?,"worker_session":worker_session,"protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()});
         // A cooperative request that reached this attempt shows its receipt.
         if cancel_requested
             && let Some(receipt) = Self::activity_cancellation_receipt(tx, &run, &DB::string(&activity, "id")?, attempt_id).await?
@@ -233,7 +233,7 @@ where
                 "run_closed_reason":observed["run_closed_reason"],"run_closed_at":observed["run_closed_at"],
                 "heartbeat_recorded":false,"lease_expires_at":observed["lease_expires_at"],
                 "last_heartbeat_at":observed["last_heartbeat_at"],"worker_session":observed["worker_session"],
-                "protocol_version":protocol,"server_capabilities":super::store::capabilities()});
+                "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()});
             tx.commit().await?;
             return Ok(response);
         }
@@ -288,7 +288,7 @@ where
                             "run_closed_reason":observed["run_closed_reason"],"run_closed_at":observed["run_closed_at"],
                             "heartbeat_recorded":false,"lease_expires_at":observed["lease_expires_at"],
                             "last_heartbeat_at":observed["last_heartbeat_at"],"error":renewal["error"],"worker_session":snapshot,
-                            "worker_session_renewal":renewal,"protocol_version":protocol,"server_capabilities":super::store::capabilities()}) });
+                            "worker_session_renewal":renewal,"protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()}) });
                 }
             }
         }
@@ -353,7 +353,7 @@ where
             // PHP formats each time in UTC with microseconds, as status reads do.
             "heartbeat_recorded":true,"lease_expires_at":super::cooperative::timestamp(expires),
             "last_heartbeat_at":super::cooperative::timestamp(at),"worker_session":worker_session,
-            "protocol_version":protocol,"server_capabilities":super::store::capabilities()}),
+            "protocol_version":super::WORKER_PROTOCOL_VERSION,"server_capabilities":super::store::capabilities()}),
         )
     }
 }
