@@ -451,6 +451,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $parallelCancellation = isset($fixture['parallel_cancellation']) ? finishHttpParallelCancellation($client, $fixture, $workflowId, $url) : null;
     $activityResultRepeats = isset($fixture['activity_result_repeats']) ? finishHttpActivityResultRepeats($client, $fixture, $workflowId, $url) : null;
     $startSearchAttributes = isset($fixture['start_search_attributes']) ? finishHttpStartSearchAttributes($client, $fixture, $workflowId, $url) : null;
+    $jsonDoubles = isset($fixture['json_doubles']) ? finishHttpJsonDoubles($client, $fixture, $workflowId, $url) : null;
     $queryArgumentRouting = isset($fixture['query_argument_routing']) ? finishHttpQueryArgumentRouting($client, $fixture, $workflowId, $url) : null;
     $queryContractArguments = isset($fixture['query_contract_arguments']) ? finishHttpQueryContractArguments($client, $fixture, $workflowId, $url) : null;
     $parentCloseCancellation = isset($fixture['parent_close_cancellation']) ? finishHttpParentCloseCancellation($client, $fixture, $workflowId, $url) : null;
@@ -601,6 +602,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'parallel_cancellation' => $parallelCancellation,
         'activity_result_repeats' => $activityResultRepeats,
         'start_search_attributes' => $startSearchAttributes,
+        'json_doubles' => $jsonDoubles,
         'query_argument_routing' => $queryArgumentRouting,
         'query_contract_arguments' => $queryContractArguments,
         'parent_close_cancellation' => $parentCloseCancellation,
@@ -957,6 +959,7 @@ try {
     require __DIR__.'/parallel-cancellation-probe.php';
     require __DIR__.'/activity-result-repeats-probe.php';
     require __DIR__.'/start-search-attributes-probe.php';
+    require __DIR__.'/json-doubles-probe.php';
     require __DIR__.'/query-arguments-probe.php';
     require __DIR__.'/query-contract-arguments-probe.php';
     require __DIR__.'/parent-close-cancellation-probe.php';
@@ -1203,6 +1206,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['start_search_attributes'])) {
         $observation['start_search_attributes'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_search_attribute_registry'];
+    }
+    if ($mode === 'embedded' && isset($fixture['json_doubles'])) {
+        $observation['json_doubles'] = ['applicable' => false, 'reason' => 'embedded_has_no_http_json_bodies'];
     }
     if ($mode === 'embedded' && isset($fixture['query_argument_routing'])) {
         $observation['query_argument_routing'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
