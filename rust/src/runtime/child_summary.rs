@@ -158,7 +158,7 @@ impl ExpectedChild {
     fn wait_status(&self) -> &'static str {
         match self.status {
             "waiting" => "open",
-            "cancelled" => "cancelled",
+            "cancelled" | "terminated" => "cancelled",
             _ => "resolved",
         }
     }
@@ -241,7 +241,7 @@ where
         };
         let pending = rows.iter().find(|row| {
             DB::string(row, "source_status").is_ok_and(|status| {
-                matches!(status.as_str(), "cancelled" | "failed")
+                matches!(status.as_str(), "cancelled" | "terminated" | "failed")
                     || (status == "completed" && open.is_none())
             })
         });

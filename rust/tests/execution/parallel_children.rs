@@ -299,7 +299,12 @@ async fn failed_cancelled_and_terminated_members_wake_immediately_without_reopen
         assert!(poll(&app, "parent-worker", "workflow").await.is_null());
         let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
         check_paths(&history, &commands);
-        assert_eq!(observation(&app, &run).await["summary_state"], "observed");
+        let summary = observation(&app, &run).await;
+        assert_eq!(summary["summary_state"], "observed", "{close}: {summary}");
+        assert_eq!(
+            summary["liveness_state"], "repair_needed",
+            "{close}: {summary}"
+        );
         runtime.close().await;
         database.remove().await;
     }
@@ -521,7 +526,7 @@ async fn child_group_projection_failure_rolls_back_all_starts_and_original_lease
     database.execute("CREATE TRIGGER reject_second_child_wait BEFORE INSERT ON workflow_run_waits WHEN NEW.kind='child' AND NEW.sequence=2 BEGIN SELECT RAISE(ABORT,'child group fault'); END").await;
     assert_eq!(
         finish_task(&app, &initial, children(2)).await.0,
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
         run_history(&app, &run["workflow_id"], &run["run_id"]).await,
