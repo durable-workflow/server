@@ -660,7 +660,11 @@ contract fixture before its correction.
   as `…855` (5,852 of 20,000 random doubles changed). serde_json's
   `float_roundtrip` now parses exactly. The `json-doubles` fixture checks a
   memo, registered double search attributes and heartbeat details on both
-  implementations against the input digits.
+  implementations against the input digits. Two reviewed exceptions:
+  published PHP renders a typed double search attribute at PHP's 14-digit
+  `precision` in describe and the visibility list (native keeps every
+  digit), and MySQL's `json` column type parses doubles itself, so on MySQL
+  the history payloads hold MySQL's double for both implementations.
 - **Python worker shutdown after a late synchronous query handler (not yet
   diagnosed).** In the SQLite query-authority cohort on #515's run
   39431491496, the published Python SDK 2.5.15 client in `late-handler-sync`

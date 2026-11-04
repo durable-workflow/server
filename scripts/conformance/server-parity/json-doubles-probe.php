@@ -11,8 +11,9 @@ use GuzzleHttp\HandlerStack;
 // in a fresh namespace, one run starts with the fixture's doubles as a memo and
 // as registered double search attributes, then heartbeats its activity with
 // the same doubles as details. The probe records each value as it is read back
-// from the run description, the WorkflowStarted event and the run's activity
-// metadata. The contract compares them with the fixture's input digits.
+// from the run description, the visibility list, the WorkflowStarted event and
+// the run's activity metadata, plus the implementation and the storage. The
+// contract compares them with the fixture's input digits.
 function finishHttpJsonDoubles(Client $admin, array $fixture, string $workflowId, string $url): array
 {
     $definition = $fixture['json_doubles'];
@@ -84,15 +85,25 @@ function finishHttpJsonDoubles(Client $admin, array $fixture, string $workflowId
     $ok($raw('POST', '/api/worker/activity-tasks/'.$activity['task_id'].'/heartbeat', [
         'activity_attempt_id' => $activity['activity_attempt_id'], 'lease_owner' => $activity['lease_owner'],
         'details' => $doubles]), 200, 'heartbeat');
+    $listed = $ok($raw('GET', '/api/workflows?query='.rawurlencode('WorkflowId = "'.$id.'"')), 200, 'list')['workflows'] ?? [];
     $activities = $ok($raw('GET', $run.'/activities'), 200, 'activities')['activities'] ?? [];
     // End the run so nothing stays for later fixtures.
     $raw('POST', '/api/workflows/'.rawurlencode($id).'/terminate', ['reason' => 'json doubles recorded']);
     $pick = static fn (mixed $values): mixed => is_array($values)
         ? array_intersect_key($values, $attributes) : 'absent';
 
+    // MySQL's json column type parses doubles itself and can land one ULP
+    // off; MariaDB stores JSON as text, as SQLite and PostgreSQL keep it.
+    $mysql = (string) getenv('MYSQL_IMAGE');
+    $storage = $mysql !== '' && ! str_contains($mysql, 'mariadb') ? 'mysql_json' : 'exact';
+
     return ['applicable' => true,
+        // A failed cluster info read throws, so the implementation is never guessed.
+        'implementation' => $admin->clusterInfo()->raw['implementation'] ?? null,
+        'storage' => $storage,
         'described_memo' => $described['memo'][$definition['memo_name']] ?? 'absent',
         'described_search_attributes' => $pick($described['search_attributes'] ?? null),
+        'listed_search_attributes' => $pick($listed[0]['search_attributes'] ?? null),
         'started_memo' => $startedEvent['memo'][$definition['memo_name']] ?? 'absent',
         'started_search_attributes' => $pick($startedEvent['search_attributes'] ?? null),
         'heartbeat_details' => $activities[0]['last_heartbeat_progress']['details'] ?? 'absent'];

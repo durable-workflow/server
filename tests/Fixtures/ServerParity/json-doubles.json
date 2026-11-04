@@ -2,7 +2,7 @@
   "schema": "durable-workflow.server-parity-fixture/v1",
   "id": "json-doubles",
   "review_state": "reviewed",
-  "contract": "JSON doubles keep every digit (server#1010). Published Server 2.11.8 reads request bodies with json_decode and answers with json_encode, so a double comes back as the same double it was sent as. Over raw HTTP in a fresh namespace, one run starts with the fixture's doubles as a memo and as registered double search attributes, and its activity heartbeats with the same doubles as details. Each value read back from the run description (memo and search attributes), the WorkflowStarted event (memo and search attributes) and the run's activity metadata (last_heartbeat_progress.details) must be exactly the double its fixture text names: one ULP off is a failure. The expectations come from the input texts, not from a recording. Embedded applications have no HTTP request bodies, so the case is explicitly inapplicable there.",
+  "contract": "JSON doubles keep every digit (server#1010). Published Server 2.11.8 reads request bodies with json_decode and answers with json_encode, so a double comes back as the same double it was sent as. Over raw HTTP in a fresh namespace, one run starts with the fixture's doubles as a memo and as registered double search attributes, and its activity heartbeats with the same doubles as details. Each value read back from the run description (memo and search attributes), the visibility list (search attributes), the WorkflowStarted event (memo and search attributes) and the run's activity metadata (last_heartbeat_progress.details) must be exactly the double its fixture text names: one ULP off is a failure. Two reviewed exceptions apply. Published PHP renders a typed double search attribute through PHP's 14-digit precision in the run description and the visibility list (php_search_attribute_precision), so 1.4820142857142857 reads back as 1.4820142857143; native keeps every digit there. On MySQL, the json column type parses doubles itself, so the history payloads (WorkflowStarted and the heartbeat's details) hold MySQL's double for both implementations: mysql_json_doubles names the values MySQL 8.0's CAST(... AS JSON) stores, and every other double is unchanged. MariaDB stores JSON as text and, like SQLite and PostgreSQL, keeps every digit. The probe records the implementation from cluster info and the storage from the job's database image; any other implementation or storage is refused. The expectations come from the input texts and these two reviewed facts, never from a recording. Embedded applications have no HTTP request bodies, so the case is explicitly inapplicable there.",
   "workflow_type": "parity.v1.echo",
   "input": {
     "message": "json doubles λ",
@@ -44,6 +44,11 @@
       "d2": "33.333333333333336",
       "d3": "0.7071067811865476",
       "d4": "1.0000000000000002"
+    },
+    "php_search_attribute_precision": 14,
+    "mysql_json_doubles": {
+      "d0": "1.4820142857142855",
+      "d1": "124435.71428571428"
     }
   }
 }
