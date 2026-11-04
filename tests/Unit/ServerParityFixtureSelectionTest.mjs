@@ -57,17 +57,22 @@ function mainCorpusCommands(job) {
   return job.split(/(?=docker run )/).filter(command => /server-parity\.mjs (record|compare)/.test(command));
 }
 
-test('the SQLite job keeps update-validation in its main corpus and records service-calls separately', () => {
+test('the SQLite job keeps update-validation in its main corpus and isolates service-calls and schedule-catalog', () => {
   const sqlite = jobs()['execution-and-codec'];
   const commands = mainCorpusCommands(sqlite);
   assert.equal(commands.length, 4, 'php, embedded and rust records plus their comparison');
   for (const command of commands) {
-    assert.deepEqual(command.match(/--exclude-fixture \S+/g), ['--exclude-fixture tests/Fixtures/ServerParity/service-calls.json']);
+    assert.deepEqual(command.match(/--exclude-fixture \S+/g), [
+      '--exclude-fixture tests/Fixtures/ServerParity/service-calls.json',
+      '--exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json',
+    ]);
   }
   assert.ok(corpus.includes('update-validation.json'));
   assert.ok(corpus.includes('service-calls.json'));
   assert.match(sqlite, /service_calls_status=0\n\s+bash scripts\/conformance\/server-parity\/update-validation-sqlite\.sh http:\/\/parity-server:8080 http:\/\/parity-rust:8080 service-calls \|\| service_calls_status=\$\?/);
   assert.match(sqlite, /test "\$service_calls_status" -eq 0/);
+  assert.match(sqlite, /schedule_catalog_status=0\n\s+bash scripts\/conformance\/server-parity\/update-validation-sqlite\.sh http:\/\/parity-server:8080 http:\/\/parity-rust:8080 schedule-catalog \|\| schedule_catalog_status=\$\?/);
+  assert.match(sqlite, /test "\$schedule_catalog_status" -eq 0/);
   assert.doesNotMatch(sqlite, /update-validation-sqlite\.sh http:\/\/parity-server:8080 http:\/\/parity-rust:8080 \|\|/);
 });
 

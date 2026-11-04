@@ -4,8 +4,8 @@
 # Server #723. The SQLite job records the update-validation fixture apart from
 # its main corpus, for all three targets, and compares the three records. The
 # optional third argument names another fixture recorded the same way:
-# service-calls, whose published PHP record under SQLite writer contention has
-# refused the first call to a limited operation with 429 (Server #796).
+# service-calls (#796) or schedule-catalog, whose backfill can lose an
+# occurrence to PHP's concurrent SQLite maintenance writer (#1021).
 #
 # The published PHP record runs with PHP's maintenance loop stopped. On SQLite
 # the API server and that loop share one database file. Under the loop's writer
