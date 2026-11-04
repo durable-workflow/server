@@ -194,7 +194,7 @@ async fn termination_keeps_its_existing_timer_cancellation_history() {
     closed("terminate").await;
 }
 
-async fn later_completion(missing_retained_state: bool) {
+async fn later_completion(missing_projection: bool, missing_task: bool) {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -227,18 +227,21 @@ async fn later_completion(missing_retained_state: bool) {
     )
     .await;
     assert_eq!(done.0, StatusCode::OK, "{}", done.1);
-    if missing_retained_state {
+    if missing_projection {
         // Cleanup uses scheduling history even if a retained projection or
         // physical task is unavailable; it must not rebuild deleted rows.
         let id = run["run_id"].as_str().unwrap();
         database.execute(sqlx::AssertSqlSafe(format!("DELETE FROM workflow_run_waits WHERE workflow_run_id='{id}' AND kind IN ('condition','signal')"))).await;
+    }
+    if missing_task {
+        let id = run["run_id"].as_str().unwrap();
         database
             .execute(sqlx::AssertSqlSafe(format!(
                 "DELETE FROM workflow_tasks WHERE workflow_run_id='{id}' AND task_type='timer'"
             )))
             .await;
     }
-    if !missing_retained_state {
+    if !missing_task {
         let id = run["run_id"].as_str().unwrap();
         let lease_until = (chrono::Utc::now() + chrono::Duration::hours(1))
             .format("%Y-%m-%d %H:%M:%S%.6f")
@@ -252,6 +255,19 @@ async fn later_completion(missing_retained_state: bool) {
     let resumed = poll(&app, "later-worker", "workflow").await;
     assert_eq!(resumed["run_id"], run["run_id"]);
     let before = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    if missing_task && !missing_projection {
+        let id = run["run_id"].as_str().unwrap();
+        let surviving = format!(
+            "SELECT id,task_status FROM workflow_run_waits WHERE workflow_run_id='{id}' AND kind IN ('condition','signal') AND task_backed=TRUE AND task_status='ready'"
+        );
+        assert_eq!(
+            text_rows(&database, &surviving, &surviving, &surviving)
+                .await
+                .len(),
+            2,
+            "both task-backed projections survive without physical timer tasks before close"
+        );
+    }
     let complete = json!([{"type":"complete_workflow","result":envelope(Payload::Null)}]);
     let finished = finish_task(&app, &resumed, complete.clone()).await;
     assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
@@ -267,12 +283,29 @@ async fn later_completion(missing_retained_state: bool) {
     assert_eq!(timers.len(), 2);
     assert!(timers.iter().all(|(_, state)| state == "cancelled"));
     let tasks = database.timer_task_states(&run["run_id"]).await;
-    assert_eq!(tasks.len(), if missing_retained_state { 0 } else { 2 });
+    assert_eq!(tasks.len(), if missing_task { 0 } else { 2 });
     assert!(tasks.iter().all(|(_, state)| state == "cancelled"));
-    if missing_retained_state {
+    if missing_projection {
         let query = format!(
             "SELECT id,status FROM workflow_run_waits WHERE workflow_run_id='{}' AND kind IN ('condition','signal')",
             run["run_id"].as_str().unwrap()
+        );
+    } else {
+        let id = run["run_id"].as_str().unwrap();
+        let waits = format!(
+            "SELECT id,status FROM workflow_run_waits WHERE workflow_run_id='{id}' AND kind IN ('condition','signal')"
+        );
+        let states = text_rows(&database, &waits, &waits, &waits).await;
+        assert_eq!(states.len(), 2);
+        assert!(states.iter().all(|(_, status)| status == "cancelled"));
+        let backed = format!(
+            "SELECT id,task_status FROM workflow_run_waits WHERE workflow_run_id='{id}' AND kind IN ('condition','signal') AND (task_backed=TRUE OR task_status<>'cancelled' OR task_status IS NULL)"
+        );
+        assert!(
+            text_rows(&database, &backed, &backed, &backed)
+                .await
+                .is_empty(),
+            "terminal waits retain no ready/leased task association"
         );
         assert!(
             text_rows(&database, &query, &query, &query)
@@ -294,10 +327,15 @@ async fn later_completion(missing_retained_state: bool) {
 
 #[tokio::test]
 async fn later_task_closes_original_timeouts_after_database_reopen() {
-    later_completion(false).await;
+    later_completion(false, false).await;
 }
 
 #[tokio::test]
 async fn retained_projection_or_task_absence_does_not_hide_pending_timeout_rows() {
-    later_completion(true).await;
+    later_completion(true, true).await;
+}
+
+#[tokio::test]
+async fn absent_timer_tasks_still_clear_surviving_wait_projection_associations() {
+    later_completion(false, true).await;
 }
