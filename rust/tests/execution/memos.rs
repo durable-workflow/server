@@ -516,6 +516,61 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
     database.remove().await;
 }
 
+/// The raw text of an answer, before any JSON parsing could round it.
+async fn raw_text(app: &Router, method: &str, path: &str, body: &str) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("authorization", "Bearer test-token")
+        .header("content-type", "application/json")
+        .header("x-namespace", "default")
+        .header("x-durable-workflow-control-plane-version", "2")
+        .body(Body::from(body.to_owned()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+// PHP's json_decode and json_encode give a double back with the digits it
+// came in with. Without serde_json's float_roundtrip, parsing can land one
+// ULP off, so a memo's 1.4820142857142857 was answered as …855.
+#[tokio::test]
+async fn memo_doubles_keep_every_digit_through_storage() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let doubles = ["1.4820142857142857", "124435.71428571429", "33.333333333333336",
+        "0.7071067811865476", "1.0000000000000002", "2.2250738585072014e-308"];
+    let members: Vec<String> = doubles.iter().enumerate().map(|(index, text)| format!("\"d{index}\":{text}")).collect();
+    let start = format!(r#"{{"workflow_id":"memo-doubles","workflow_type":"echo","task_queue":"test","memo":{{"metadata":{{{}}}}}}}"#,
+        members.join(","));
+    let (status, started) = raw_text(&app, "POST", "/api/workflows", &start).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let run: Value = serde_json::from_str(&started).unwrap();
+    runtime.close().await;
+    drop(app);
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let path = format!("/api/workflows/memo-doubles/runs/{}", run["run_id"].as_str().unwrap());
+    let (status, described) = raw_text(&app, "GET", &path, "").await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    let (status, history) = raw_text(&app, "GET", &format!("{path}/history"), "").await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    for (index, text) in doubles.iter().enumerate() {
+        // serde_json writes the smallest exponent form; compare by value bits
+        // as well as by the digits PHP would print.
+        let expected: f64 = text.parse().unwrap();
+        let printed = serde_json::to_string(&expected).unwrap();
+        for (answer, name) in [(&described, "describe"), (&history, "history")] {
+            assert!(answer.contains(&format!("\"d{index}\":{printed}")), "{name} d{index} {text}: {answer}");
+        }
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
 #[tokio::test]
 async fn invalid_initial_memo_is_refused_before_any_original_is_admitted() {
     let database = TestDatabase::new().await;
