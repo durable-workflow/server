@@ -104,6 +104,7 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
             let kind = match command["type"].as_str() {
                 Some("schedule_activity") => "activity",
                 Some("start_timer") => "timer",
+                Some("start_child_workflow") => "child",
                 _ => return Err(unqualified()),
             };
             metadata(command, kind)?;
@@ -174,6 +175,14 @@ pub(super) fn merge(payload: &mut Value, metadata: &Value) {
 }
 
 pub(super) fn activity_metadata(path: Option<Value>) -> Result<Value> {
+    path_metadata(path, "activity")
+}
+
+pub(super) fn child_metadata(path: Option<Value>) -> Result<Value> {
+    path_metadata(path, "child")
+}
+
+fn path_metadata(path: Option<Value>, kind: &str) -> Result<Value> {
     let Some(path) = path else {
         return Ok(json!({}));
     };
@@ -184,7 +193,7 @@ pub(super) fn activity_metadata(path: Option<Value>) -> Result<Value> {
         .ok_or_else(unqualified)?;
     let mut value = leaf.clone();
     value["parallel_group_path"] = path.clone();
-    metadata(&value, "activity")
+    metadata(&value, kind)
 }
 
 impl<DB: Backend> Store<DB>
@@ -271,8 +280,13 @@ where
     }
 
     /// `groupCompletedSuccessfully` for each all-of group on a member's path:
-    /// every member sequence has a fired timer or a completed activity.
-    async fn all_groups_closed(tx: &mut Transaction<'_, DB>, run_id: &str, metadata: &Value) -> Result<bool> {
+    /// Every member sequence has a fired timer, completed activity or completed
+    /// child call. A retried/continued child is still one original call.
+    pub(super) async fn all_groups_closed(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        metadata: &Value,
+    ) -> Result<bool> {
         let Some(path) = metadata["parallel_group_path"].as_array() else {
             return Ok(true);
         };
@@ -286,8 +300,18 @@ where
             let last = base + size - 1;
             let mut closed = std::collections::BTreeSet::new();
             for (sql, done) in [
-                ("SELECT sequence,status FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3", "fired"),
-                ("SELECT sequence,status FROM activity_executions WHERE workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3", "completed"),
+                (
+                    "SELECT sequence,status FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3",
+                    "fired",
+                ),
+                (
+                    "SELECT sequence,status FROM activity_executions WHERE workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3",
+                    "completed",
+                ),
+                (
+                    "SELECT sequence,status FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3",
+                    "completed",
+                ),
             ] {
                 for row in Self::query(sql).bind(run_id).bind(base).bind(last).fetch_all(&mut **tx).await? {
                     if DB::string(&row, "status")? == done {
