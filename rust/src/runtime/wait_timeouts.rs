@@ -105,6 +105,7 @@ where
         let scheduled = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled'")
             .bind(run_id).fetch_all(&mut **tx).await?;
         let mut cancelled = BTreeSet::new();
+        let mut closed_waits = BTreeSet::new();
         for event in scheduled {
             let payload = DB::document_row(&event, "payload")?;
             if matches!(
@@ -115,6 +116,14 @@ where
                 .filter(|id| pending.contains(*id))
             {
                 cancelled.insert(timer_id.to_owned());
+                let (kind, field) = if payload["timer_kind"] == "condition_timeout" {
+                    ("condition", "condition_wait_id")
+                } else {
+                    ("signal", "signal_wait_id")
+                };
+                if let Some(wait_id) = payload[field].as_str().filter(|id| !id.is_empty()) {
+                    closed_waits.insert((kind, wait_id.to_owned(), timer_id.to_owned()));
+                }
             }
         }
         if cancelled.is_empty() {
@@ -123,6 +132,13 @@ where
         for timer_id in &cancelled {
             Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE workflow_run_id=$1 AND id=$2 AND status='pending'")
                 .bind(run_id).bind(timer_id).execute(&mut **tx).await?;
+        }
+        // A retained wait may outlive its physical timer task. Match the
+        // canonical wait and timer identities directly; do not recreate a
+        // missing projection or depend on a task inventory row to clear it.
+        for (kind, wait_id, timer_id) in closed_waits {
+            Self::query("UPDATE workflow_run_waits SET task_backed=FALSE,task_status='cancelled',updated_at=$1 WHERE workflow_run_id=$2 AND kind=$3 AND wait_id=$4 AND resume_source_kind='timer' AND resume_source_id=$5")
+                .bind(DB::bind_time(at)).bind(run_id).bind(kind).bind(wait_id).bind(timer_id).execute(&mut **tx).await?;
         }
         let tasks = Self::query("SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' AND status IN ('ready','leased')")
             .bind(run_id).fetch_all(&mut **tx).await?;
@@ -135,8 +151,6 @@ where
                 let task_id = DB::string(&task, "id")?;
                 Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL WHERE workflow_run_id=$1 AND id=$2")
                     .bind(run_id).bind(&task_id).execute(&mut **tx).await?;
-                Self::query("UPDATE workflow_run_waits SET task_backed=FALSE,task_status='cancelled',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3")
-                    .bind(DB::bind_time(at)).bind(run_id).bind(&task_id).execute(&mut **tx).await?;
             }
         }
         Ok(())
