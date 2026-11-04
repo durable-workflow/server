@@ -433,6 +433,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
     $activityLeaseRenewal = isset($fixture['activity_lease_renewal']) ? finishHttpActivityLeaseRenewal($client, $fixture, $workflowId, $url) : null;
     $concurrentWaits = isset($fixture['concurrent_waits']) ? finishHttpConcurrentWaits($client, $fixture, $workflowId, $url) : null;
     $parallelChildAll = isset($fixture['parallel_child_all']) ? finishHttpParallelChildAll($client, $fixture, $workflowId, $url) : null;
+    $closedWaitTimeouts = isset($fixture['closed_wait_timeouts']) ? finishHttpClosedWaitTimeouts($client, $fixture, $workflowId, $url) : null;
     $historyExportWaits = isset($fixture['history_export_waits']) ? finishHttpHistoryExportWaits($client, $fixture, $workflowId, $url) : null;
     $continueTransfers = isset($fixture['continue_transfers']) ? finishHttpContinueTransfers($client, $fixture, $workflowId, $url) : null;
     $largeCommandBatches = isset($fixture['large_command_batches']) ? finishHttpLargeCommandBatches($client, $fixture, $workflowId, $url) : null;
@@ -585,6 +586,7 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
         'activity_lease_renewal' => $activityLeaseRenewal,
         'concurrent_waits' => $concurrentWaits,
         'parallel_child_all' => $parallelChildAll,
+        'closed_wait_timeouts' => $closedWaitTimeouts,
         'history_export_waits' => $historyExportWaits,
         'continue_transfers' => $continueTransfers,
         'large_command_batches' => $largeCommandBatches,
@@ -943,6 +945,7 @@ try {
     require __DIR__.'/activity-lease-renewal-probe.php';
     require __DIR__.'/concurrent-waits-probe.php';
     require __DIR__.'/parallel-child-all-probe.php';
+    require __DIR__.'/closed-wait-timeouts-probe.php';
     require __DIR__.'/history-export-waits-probe.php';
     require __DIR__.'/continue-transfers-probe.php';
     require __DIR__.'/large-command-batches-probe.php';
@@ -1155,6 +1158,9 @@ try {
     }
     if ($mode === 'embedded' && isset($fixture['concurrent_waits'])) {
         $observation['concurrent_waits'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
+    }
+    if ($mode === 'embedded' && isset($fixture['closed_wait_timeouts'])) {
+        $observation['closed_wait_timeouts'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];
     }
     if ($mode === 'embedded' && isset($fixture['history_export_waits'])) {
         $observation['history_export_waits'] = ['applicable' => false, 'reason' => 'embedded_has_no_worker_protocol'];

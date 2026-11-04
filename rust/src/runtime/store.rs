@@ -3243,8 +3243,10 @@ where
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
                     // Published PHP completes a run whatever is still open. Its
-                    // activities, timers and waits stay as they are, and its
-                    // open children follow their parent-close policies.
+                    // ordinary activities and timers stay as they are, and
+                    // open children follow their parent-close policies. The
+                    // terminal event settles physical wait timeout rows while
+                    // retaining PHP's history.
                     let output = match external.get(&index) {
                         Some(prepared) => prepared.stored(),
                         None => envelope(command, "result")?,
@@ -3553,10 +3555,23 @@ where
         } else if command["type"] == "open_condition_wait"
             || command["type"] == "open_signal_wait"
         {
-            // A run may hold any number of open waits
-            // (`applyOpenSignalWait`, `applyOpenConditionWait`).
-            sequence += 1;
             let direct = command["type"] == "open_signal_wait";
+            // A queued task can replay an occurrence another task already
+            // opened. Keep that unresolved wait and its original deadline.
+            // Keys and fingerprints can name distinct concurrent waits.
+            if !direct
+                && let Some(occurrence) = command["condition_wait_occurrence_id"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                && Self::waits(tx, &run_id).await?.conditions.iter().any(|wait| {
+                    wait.advanceable() && wait.occurrence() == Some(occurrence)
+                })
+            {
+                return Ok(());
+            }
+            // Legacy opens and resolved occurrences keep PHP's per-open
+            // behavior, including several waits with the same key.
+            sequence += 1;
             let mut payload = command.clone();
             payload.as_object_mut().unwrap().remove("type");
             // Match PHP's optional occurrence payload: retain authored
@@ -4495,6 +4510,7 @@ where
         Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
         if let Some(reason) = closed_reason(event_type) {
+            Self::settle_closed_wait_timeouts(tx, run_id, recorded_at).await?;
             let task = payload.get("task").cloned();
             Box::pin(Self::reject_received_signals(tx, run_id, reason, task_id, task)).await?;
         }
@@ -5212,7 +5228,7 @@ pub(crate) fn capabilities() -> Value {
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
-        "child_workflow_start_turn": true});
+        "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true});
     value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
     value["supported_workflow_task_commands"]
         .as_array_mut()

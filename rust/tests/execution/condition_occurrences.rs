@@ -21,6 +21,173 @@ async fn register_signal_worker(app: &Router, worker: &str) {
     assert_eq!(response.0, StatusCode::CREATED, "{}", response.1);
 }
 
+fn occurrence_events(history: &Value, kind: &str) -> Vec<Value> {
+    history.as_array().unwrap().iter()
+        .filter(|event| event["event_type"] == kind)
+        .map(|event| event["payload"].clone()).collect()
+}
+
+async fn register_repeat_worker(app: &Router, worker: &str) {
+    let (status, body) = request(app, "POST", "/api/worker/register", json!({
+        "worker_id":worker,"task_queue":"test","runtime":"rust",
+        "supported_workflow_types":["echo"],"supported_activity_types":["activity-echo"],
+        "workflow_command_contracts":{"echo":{"signals":["payload"],
+            "signal_contracts":[{"name":"payload","parameters":[]}]}}
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["server_capabilities"]["condition_wait_idempotent_reopen"], true);
+}
+
+#[tokio::test]
+async fn another_task_reopening_an_unresolved_occurrence_keeps_its_wait_and_deadline() {
+    let database = TestDatabase::new().await;
+    let first = database.open().await.unwrap();
+    let app = router(first.clone());
+    register_repeat_worker(&app, "occurrence-opener").await;
+    let (status, info) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{info}");
+    assert_eq!(info["capabilities"]["condition_wait_idempotent_reopen"], true);
+    let run = start(&app, "duplicate-open-run").await;
+    let original = poll(&app, "occurrence-opener", "workflow").await;
+    let mut open = condition(json!("rust:condition-wait:0"));
+    open["timeout_seconds"] = json!(600);
+    let (status, body) = finish_task(&app, &original, json!([
+        open,
+        {"type":"schedule_activity","activity_type":"activity-echo",
+            "arguments":envelope(Payload::Array(vec![]))}
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let prefix = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let wait = occurrence_events(&prefix, "ConditionWaitOpened");
+    let timer = occurrence_events(&prefix, "TimerScheduled");
+    assert_eq!((wait.len(), timer.len()), (1, 1));
+
+    // Activity completion creates another workflow task without satisfying
+    // the condition. A fresh process must recognize its durable occurrence.
+    let activity = poll(&app, "occurrence-opener", "activity").await;
+    let (status, body) = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete",
+        activity["task_id"].as_str().unwrap()), json!({
+            "lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+            "result":envelope(Payload::Long(7))
+        })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    drop(app);
+    first.close().await;
+    let cold = database.open().await.unwrap();
+    let app = router(cold.clone());
+    register_repeat_worker(&app, "occurrence-replayer").await;
+    let next = poll(&app, "occurrence-replayer", "workflow").await;
+    assert_ne!(next["task_id"], original["task_id"]);
+    let before = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    assert!(occurrence_events(&before, "ConditionWaitSatisfied").is_empty());
+    let mut duplicate = condition(json!("rust:condition-wait:0"));
+    duplicate["timeout_seconds"] = json!(1);
+    duplicate["condition_key"] = json!("changed-key");
+    duplicate["condition_definition_fingerprint"] = json!("changed-fingerprint");
+    let (status, body) = finish_task(&app, &next, json!([
+        duplicate,
+        {"type":"record_version_marker","change_id":"after-repeat","version":1,
+            "min_supported":1,"max_supported":1}
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["created_task_ids"], json!([]));
+    let after = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    assert_eq!(occurrence_events(&after, "ConditionWaitOpened"), wait);
+    assert_eq!(occurrence_events(&after, "TimerScheduled"), timer);
+    assert_eq!(after.as_array().unwrap().len(), before.as_array().unwrap().len() + 1);
+    assert_eq!(occurrence_events(&after, "VersionMarkerRecorded")[0]["sequence"], 3);
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers WHERE status='pending'").await, 1);
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE task_type='timer' AND status='ready'").await, 1);
+
+    let (status, body) = request(&app, "POST", "/api/workflows/duplicate-open-run/signal/payload", json!([])).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let resumed = poll(&app, "occurrence-replayer", "workflow").await;
+    let (status, body) = finish_task(&app, &resumed, json!([
+        {"type":"complete_workflow","result":envelope(Payload::Long(7))}
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["run_status"], "completed");
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers WHERE status='pending'").await, 0);
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE task_type='timer' AND status='ready'").await, 0);
+    cold.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn an_occurrence_is_idempotent_within_one_batch_without_combining_other_occurrences() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "batch-occurrences", json!(["echo"]), json!([])).await;
+    let run = start(&app, "batch-occurrences").await;
+    let task = poll(&app, "batch-occurrences", "workflow").await;
+    let first = condition(json!("one"));
+    let (status, body) = finish_task(&app, &task, json!([
+        first.clone(), first, condition(json!("two"))
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let waits = occurrence_events(&history, "ConditionWaitOpened");
+    assert_eq!(waits.len(), 2);
+    assert_eq!((waits[0]["sequence"].clone(), waits[1]["sequence"].clone()), (json!(1), json!(2)));
+    assert_eq!((waits[0]["condition_wait_occurrence_id"].clone(), waits[1]["condition_wait_occurrence_id"].clone()),
+        (json!("one"), json!("two")));
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn repeated_legacy_opens_without_an_occurrence_keep_distinct_waits_and_timers() {
+    for occurrence in [None, Some(Value::Null), Some(json!(""))] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        register(&app, "legacy-opens", json!(["echo"]), json!([])).await;
+        let run = start(&app, "legacy-opens").await;
+        let task = poll(&app, "legacy-opens", "workflow").await;
+        let mut command = condition(occurrence.clone().unwrap_or(Value::Null));
+        if occurrence.is_none() {
+            command.as_object_mut().unwrap().remove("condition_wait_occurrence_id");
+        }
+        command["timeout_seconds"] = json!(600);
+        let (status, body) = finish_task(&app, &task, json!([command.clone(), command])).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+        assert_eq!(occurrence_events(&history, "ConditionWaitOpened").len(), 2);
+        assert_eq!(occurrence_events(&history, "TimerScheduled").len(), 2);
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers WHERE status='pending'").await, 2);
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+#[tokio::test]
+async fn an_occurrence_whose_timeout_fired_can_open_a_new_physical_wait() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "expired-occurrence", json!(["echo"]), json!([])).await;
+    let run = start(&app, "expired-occurrence").await;
+    let task = poll(&app, "expired-occurrence", "workflow").await;
+    let mut command = condition(json!("same"));
+    command["timeout_seconds"] = json!(0);
+    let (status, body) = finish_task(&app, &task, json!([command.clone()])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let next = poll(&app, "expired-occurrence", "workflow").await;
+    assert!(!next.is_null());
+    command["timeout_seconds"] = json!(600);
+    let (status, body) = finish_task(&app, &next, json!([command])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let waits = occurrence_events(&history, "ConditionWaitOpened");
+    assert_eq!(waits.len(), 2);
+    assert_ne!(waits[0]["condition_wait_id"], waits[1]["condition_wait_id"]);
+    assert_eq!(occurrence_events(&history, "TimerFired").len(), 1);
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_timers WHERE status='pending'").await, 1);
+    runtime.close().await;
+    database.remove().await;
+}
+
 #[tokio::test]
 async fn authored_occurrences_survive_restart_and_completion_fences() {
     let database = TestDatabase::new().await;

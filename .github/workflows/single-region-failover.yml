@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  attestations: read
 
 concurrency:
   group: single-region-failover-${{ github.event_name }}-${{ github.ref }}
@@ -37,6 +38,7 @@ jobs:
 
       - name: Run bounded published-artifact rehearsal
         env:
+          GH_TOKEN: ${{ github.token }}
           DW_FAILOVER_MODE: bounded
           DW_FAILOVER_PROJECT: single-region-failover-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           DW_FAILOVER_SERVER_A_PORT: "0"
