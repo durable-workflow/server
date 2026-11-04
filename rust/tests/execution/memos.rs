@@ -516,6 +516,74 @@ async fn initial_memo_survives_cold_open_and_uses_the_same_sequence_portable_val
     database.remove().await;
 }
 
+/// The raw text of an answer, before any JSON parsing could round it.
+async fn raw_text(app: &Router, method: &str, path: &str, body: &str) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("authorization", "Bearer test-token")
+        .header("content-type", "application/json")
+        .header("x-namespace", "default")
+        .header("x-durable-workflow-control-plane-version", "2")
+        .body(Body::from(body.to_owned()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+/// The double a backend's JSON column holds for `text`. MySQL's json type
+/// parses doubles itself and can land one ULP off, for PHP and native alike;
+/// MariaDB stores JSON as text, and SQLite and PostgreSQL keep the text.
+async fn json_column_double(database: &TestDatabase, text: &str) -> f64 {
+    if !matches!(database, TestDatabase::MySql { .. }) {
+        return text.parse().unwrap();
+    }
+    let query = format!(r#"SELECT 'value', CAST(JSON_EXTRACT('{{"x":{text}}}', '$.x') AS CHAR)"#);
+    let rows = text_rows(database, "", "", &query).await;
+    rows[0].1.parse().unwrap()
+}
+
+// PHP's json_decode and json_encode give a double back with the digits it
+// came in with. Without serde_json's float_roundtrip, parsing can land one
+// ULP off, so a memo's 1.4820142857142857 was answered as …855.
+#[tokio::test]
+async fn memo_doubles_keep_every_digit_through_storage() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let doubles = ["1.4820142857142857", "124435.71428571429", "33.333333333333336",
+        "0.7071067811865476", "1.0000000000000002", "2.2250738585072014e-308"];
+    let members: Vec<String> = doubles.iter().enumerate().map(|(index, text)| format!("\"d{index}\":{text}")).collect();
+    let start = format!(r#"{{"workflow_id":"memo-doubles","workflow_type":"echo","task_queue":"test","memo":{{"metadata":{{{}}}}}}}"#,
+        members.join(","));
+    let (status, started) = raw_text(&app, "POST", "/api/workflows", &start).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let run: Value = serde_json::from_str(&started).unwrap();
+    runtime.close().await;
+    drop(app);
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let path = format!("/api/workflows/memo-doubles/runs/{}", run["run_id"].as_str().unwrap());
+    let (status, described) = raw_text(&app, "GET", &path, "").await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    let (status, history) = raw_text(&app, "GET", &format!("{path}/history"), "").await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    for (index, text) in doubles.iter().enumerate() {
+        // The described memo keeps every digit on every backend.
+        let exact: f64 = text.parse().unwrap();
+        let printed = serde_json::to_string(&exact).unwrap();
+        assert!(described.contains(&format!("\"d{index}\":{printed}")), "describe d{index} {text}: {described}");
+        // History payloads live in a JSON column, so they hold the double
+        // that column stores, which the database itself names.
+        let stored = serde_json::to_string(&json_column_double(&database, text).await).unwrap();
+        assert!(history.contains(&format!("\"d{index}\":{stored}")), "history d{index} {text} as {stored}: {history}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
 #[tokio::test]
 async fn invalid_initial_memo_is_refused_before_any_original_is_admitted() {
     let database = TestDatabase::new().await;
