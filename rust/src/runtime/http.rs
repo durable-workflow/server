@@ -1079,13 +1079,17 @@ async fn cluster(
     let namespace = runtime.in_namespace(&discovery_namespace(&headers, &uri)).namespace_discovery().await?;
     let limits = super::payload_discovery::limits()?;
     let structural_limits = runtime.cluster_structural_limits(&metrics_config(&runtime)).await?;
+    let request_contract = super::visibility::request_contract();
+    let client_compatibility = super::cluster_info::client_compatibility(&auth_composition, &request_contract);
     Ok(Json(
         json!({"version": super::cluster_info::version(), "implementation": "rust", "development": super::cluster_info::build_identity().0,
         "capabilities": super::cluster_info::capabilities(), "structural_limits": structural_limits,
         "discovery": super::cluster_info::discovery(), "native_unqualified": super::cluster_info::unqualified(),
         "server_id": super::payload_discovery::server_id(), "default_namespace": "default",
         "namespace": namespace, "limits": limits,
-        "control_plane": {"version": "2", "request_contract": super::visibility::request_contract()}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},
+        "supported_sdk_versions": super::cluster_info::supported_sdk_versions(),
+        "client_compatibility": client_compatibility,
+        "control_plane": {"version": "2", "request_contract": request_contract}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},
         "auth_composition_contract": auth_composition,
         "principal_attribution_contract": principal_attribution,
         "service_catalog_read_contract": service_catalog,

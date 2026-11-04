@@ -127,12 +127,68 @@ pub(super) fn discovery() -> Value {
         "task_repair_path": "/api/system/repair"})
 }
 
+/// Native-qualified client ranges: the single source of both
+/// `supported_sdk_versions` and `client_compatibility.clients`, so the two can
+/// never disagree (server#1005). Each lower bound is the oldest release that
+/// passed installed acceptance against native; the cluster-capabilities
+/// fixture records the source of each. The upper bound is the next major.
+const CLIENT_RANGES: [(&str, &str, &str); 4] = [
+    ("php", "sdk-php", ">=3.8.1,<4.0.0"),
+    ("python", "sdk-python", ">=2.13.0,<3.0.0"),
+    ("rust", "sdk-rust", ">=4.10.3,<5.0.0"),
+    ("cli", "cli", ">=2.0.0,<3.0.0"),
+];
+
+/// `supported_sdk_versions`, keyed as published PHP keys it.
+pub(super) fn supported_sdk_versions() -> Value {
+    Value::Object(
+        CLIENT_RANGES
+            .iter()
+            .map(|(key, _, range)| ((*key).to_owned(), json!(range)))
+            .collect(),
+    )
+}
+
+/// `client_compatibility` (published PHP's `ClientCompatibility::info`, schema
+/// version 2), citing only protocols native serves: the auth composition
+/// contract, the control plane with its request contract, and the worker
+/// protocol. Their identities are read from the values cluster info serves, so
+/// the block cannot cite one native does not. PHP's skew refusal matrix and
+/// external execution contracts are not published by native, so they are not
+/// cited: the CLI checks every protocol the block requires.
+pub(super) fn client_compatibility(auth_composition: &Value, request_contract: &Value) -> Value {
+    let identity = |contract: &Value| json!({"schema": contract["schema"], "version": contract["version"]});
+    let served = ["auth_composition.version", "control_plane.version", "control_plane.request_contract"];
+    let mut clients = serde_json::Map::new();
+    // PHP's order: sdk-php, cli, sdk-python, sdk-rust.
+    for name in ["sdk-php", "cli", "sdk-python", "sdk-rust"] {
+        let (_, _, range) = CLIENT_RANGES.iter().find(|(_, client, _)| *client == name).expect("every client has a range");
+        let mut requires: Vec<&str> = served.to_vec();
+        if name != "cli" {
+            requires.push("worker_protocol.version");
+        }
+        clients.insert(name.to_owned(), json!({"supported_versions": range, "requires": requires}));
+    }
+    json!({
+        "schema": "durable-workflow.v2.client-compatibility",
+        "version": 2,
+        "authority": "protocol_manifests",
+        "top_level_version_role": "informational",
+        "fail_closed": true,
+        "required_protocols": {
+            "auth_composition": identity(auth_composition),
+            "control_plane": {"version": "2", "header": "X-Durable-Workflow-Control-Plane-Version",
+                "request_contract": identity(request_contract)},
+            "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "header": "X-Durable-Workflow-Protocol-Version"},
+        },
+        "clients": clients,
+    })
+}
+
 /// Members published PHP's cluster info carries that native leaves out, each
 /// with the reason.
 pub(super) fn unqualified() -> Value {
     json!({
-        "supported_sdk_versions": "Native has not qualified SDK version ranges of its own.",
-        "client_compatibility": "Native publishes no client compatibility matrix yet.",
         "topology": "Native runs as one process role and publishes no topology manifest.",
         "discovery.diagnostics_query": "Native serves no include=diagnostics view.",
         "discovery.diagnostics_path": "Native serves no include=diagnostics view.",
@@ -164,5 +220,51 @@ mod tests {
     #[test]
     fn the_version_is_never_empty() {
         assert!(!version().is_empty());
+    }
+
+    fn served_compatibility() -> Value {
+        let auth: Value = serde_json::from_str(include_str!("auth-composition.v1.json")).unwrap();
+        client_compatibility(&auth, &super::super::visibility::request_contract())
+    }
+
+    #[test]
+    fn supported_sdk_versions_and_client_compatibility_never_disagree() {
+        // server#1005: one source, so every client's range is the same in both.
+        let compatibility = served_compatibility();
+        let ranges = supported_sdk_versions();
+        for (key, client) in [("php", "sdk-php"), ("python", "sdk-python"), ("rust", "sdk-rust"), ("cli", "cli")] {
+            assert_eq!(compatibility["clients"][client]["supported_versions"], ranges[key], "{client}");
+        }
+        assert_eq!(ranges.as_object().unwrap().len(), 4);
+        assert_eq!(compatibility["clients"].as_object().unwrap().len(), 4);
+        assert_eq!(ranges, json!({"php": ">=3.8.1,<4.0.0", "python": ">=2.13.0,<3.0.0",
+            "rust": ">=4.10.3,<5.0.0", "cli": ">=2.0.0,<3.0.0"}));
+    }
+
+    #[test]
+    fn client_compatibility_cites_only_protocols_native_serves() {
+        let compatibility = served_compatibility();
+        assert_eq!(compatibility["authority"], "protocol_manifests");
+        assert_eq!(compatibility["fail_closed"], true);
+        let required = compatibility["required_protocols"].as_object().unwrap();
+        let mut keys: Vec<&str> = required.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, ["auth_composition", "control_plane", "worker_protocol"]);
+        // The identities are the ones cluster info serves beside the block.
+        assert_eq!(required["auth_composition"], json!({"schema": "durable-workflow.v2.auth-composition.contract", "version": 1}));
+        assert_eq!(required["control_plane"]["request_contract"],
+            json!({"schema": "durable-workflow.v2.control-plane-request.contract", "version": 1}));
+        assert_eq!(required["worker_protocol"], json!({"version": super::super::WORKER_PROTOCOL_VERSION,
+            "header": "X-Durable-Workflow-Protocol-Version"}));
+        // No external execution contract is cited anywhere: native publishes none.
+        assert!(!compatibility.to_string().contains("external_"), "{compatibility}");
+        // Every client requirement resolves to a cited protocol member.
+        for (client, entry) in compatibility["clients"].as_object().unwrap() {
+            for requirement in entry["requires"].as_array().unwrap() {
+                let (protocol, member) = requirement.as_str().unwrap().split_once('.').unwrap();
+                assert!(required.get(protocol).and_then(|value| value.get(member)).is_some(),
+                    "{client} requires {protocol}.{member}, which the block does not cite");
+            }
+        }
     }
 }
