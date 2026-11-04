@@ -40,6 +40,38 @@ export function checkClusterCapabilities(fixture, observation) {
   }
   const {implementation, ...rest} = state;
   assert.ok(implementation === null || implementation === 'rust', 'published PHP or native');
+  checkClientManifests(rest, implementation);
   assert.deepStrictEqual(rest, expectedFor(definition, implementation), `cluster capabilities (${implementation ?? 'php'})`);
   return projection;
+}
+
+// The protocols native serves beside its client_compatibility block, and so
+// the only ones the block may cite (server#1005). The CLI checks every
+// protocol the block requires.
+const NATIVE_SERVED_PROTOCOLS = ['auth_composition', 'control_plane', 'worker_protocol'];
+
+/// Independent of the reviewed values: each client's range is the same in
+/// supported_sdk_versions and client_compatibility, and native's block cites
+/// only protocols native serves, with every client requirement resolving.
+export function checkClientManifests(state, implementation) {
+  const ranges = state.client_ranges;
+  assert.ok(ranges && typeof ranges === 'object', 'client ranges recorded');
+  for (const [client, {supported_sdk_versions: sdk, client_compatibility: matrix}] of Object.entries(ranges)) {
+    assert.ok(typeof sdk === 'string' && sdk !== '', `${client}: supported_sdk_versions range`);
+    assert.equal(matrix, sdk, `${client}: client_compatibility and supported_sdk_versions agree`);
+  }
+  if (implementation !== 'rust') return;
+  const block = state.native_client_compatibility;
+  assert.ok(block && typeof block === 'object', 'native client_compatibility block');
+  assert.equal(block.authority, 'protocol_manifests', 'native compatibility authority');
+  const required = block.required_protocols;
+  assert.deepStrictEqual(Object.keys(required).sort(), NATIVE_SERVED_PROTOCOLS, 'native cites only protocols it serves');
+  assert.ok(!JSON.stringify(block).includes('external_'), 'native cites no external execution contract');
+  for (const [client, entry] of Object.entries(block.clients)) {
+    for (const requirement of entry.requires) {
+      const [protocol, member] = requirement.split('.');
+      assert.ok(required[protocol] && Object.hasOwn(required[protocol], member),
+        `${client} requires ${requirement}, which the block does not cite`);
+    }
+  }
 }

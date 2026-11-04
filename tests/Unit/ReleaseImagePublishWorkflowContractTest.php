@@ -53,13 +53,13 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $parsedWorkflow = Yaml::parse($workflow);
         $this->assertIsArray($parsedWorkflow);
-        $publishCondition = $parsedWorkflow['jobs']['publish']['if'] ?? null;
-        $this->assertIsString($publishCondition);
-        $this->assertSame(
-            "(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') "
-            ."|| (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))",
-            preg_replace('/\s+/', ' ', trim($publishCondition)),
-        );
+        // Retired (server#1002): PHP Server 2.11.8 is final. No tag starts the
+        // workflow, and its publish job never runs, so it never loads the
+        // registry logins or contents: write.
+        $this->assertSame(false, $parsedWorkflow['jobs']['publish']['if'] ?? null);
+        $triggers = $parsedWorkflow['on'] ?? $parsedWorkflow[true] ?? null;
+        $this->assertIsArray($triggers);
+        $this->assertSame(['workflow_dispatch'], array_keys($triggers));
 
         $guardOffset = strpos($workflow, 'Validate release publish context and credentials');
         $dockerHubLoginOffset = strpos($workflow, 'Log in to Docker Hub');

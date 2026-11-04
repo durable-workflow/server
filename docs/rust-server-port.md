@@ -337,9 +337,10 @@ contract fixture before its correction.
   `cluster-capabilities` fixture qualifies the activity result read against
   published 2.11.7. Native advertises no manifest it does not publish and no
   response compression. `native_unqualified` names each member it still
-  leaves out: `supported_sdk_versions`, `client_compatibility`, `topology`,
-  the diagnostics view, the external payload transaction limit and the
-  conformance manifests.
+  leaves out: `topology`, the diagnostics view, the external payload
+  transaction limit and the conformance manifests. Since server#1005 (3.1.0)
+  native serves `supported_sdk_versions` and `client_compatibility` from one
+  source with its own qualified ranges, citing only the protocols it serves.
 - **Fairness within a priority tier** (October 31, closed). Published PHP
   tries each batch of a poll's candidates (10 at the default
   `max_tasks_per_poll`) in `TaskFairnessScheduler` order: fairness classes
