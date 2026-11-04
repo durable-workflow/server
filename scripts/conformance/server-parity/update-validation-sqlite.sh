@@ -6,6 +6,8 @@
 # optional third argument names another fixture recorded the same way:
 # service-calls (#796) or schedule-catalog, whose backfill can lose an
 # occurrence to PHP's concurrent SQLite maintenance writer (#1021).
+# namespace-delete-payloads can leave a post-commit deletion pending (#1018).
+# These fixtures keep their exact assertions in the same PHP-only window.
 #
 # The published PHP record runs with PHP's maintenance loop stopped. On SQLite
 # the API server and that loop share one database file. Under the loop's writer
