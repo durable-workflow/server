@@ -290,6 +290,11 @@ async fn later_completion(missing_projection: bool, missing_task: bool) {
             "SELECT id,status FROM workflow_run_waits WHERE workflow_run_id='{}' AND kind IN ('condition','signal')",
             run["run_id"].as_str().unwrap()
         );
+        assert!(
+            text_rows(&database, &query, &query, &query)
+                .await
+                .is_empty()
+        );
     } else {
         let id = run["run_id"].as_str().unwrap();
         let waits = format!(
@@ -306,11 +311,6 @@ async fn later_completion(missing_projection: bool, missing_task: bool) {
                 .await
                 .is_empty(),
             "terminal waits retain no ready/leased task association"
-        );
-        assert!(
-            text_rows(&database, &query, &query, &query)
-                .await
-                .is_empty()
         );
     }
     assert_eq!(
