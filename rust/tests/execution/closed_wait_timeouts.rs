@@ -240,7 +240,10 @@ async fn later_completion(missing_retained_state: bool) {
     }
     if !missing_retained_state {
         let id = run["run_id"].as_str().unwrap();
-        database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_tasks SET status='leased',lease_expires_at='2099-01-01 00:00:00' WHERE workflow_run_id='{id}' AND task_type='timer'"))).await;
+        let lease_until = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S%.6f")
+            .to_string();
+        database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_tasks SET status='leased',lease_expires_at='{lease_until}' WHERE workflow_run_id='{id}' AND task_type='timer'"))).await;
     }
     drop(app);
     runtime.close().await;
