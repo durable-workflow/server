@@ -330,6 +330,11 @@ where
             if call_id.is_none() {
                 payload.as_object_mut().expect("an object").remove("child_call_id");
             }
+            let parallel = super::selections::child_metadata(DB::optional_document_row(
+                &parent_link,
+                "parallel_group_path",
+            )?)?;
+            super::selections::merge(&mut payload, &parallel);
             // PHP projects the parent again (`projectRun`).
             tx.summary_changed(&parent_run);
             Self::append(tx, &parent_run, "ChildRunStarted", payload, None, None).await?;
@@ -356,11 +361,6 @@ where
             .map(|names| names.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
         let mut messages = Vec::new();
-            let parallel = super::selections::child_metadata(DB::optional_document_row(
-                &parent_link,
-                "parallel_group_path",
-            )?)?;
-            super::selections::merge(&mut payload, &parallel);
         for row in Self::query("SELECT * FROM workflow_signal_records WHERE workflow_run_id=$1 AND target_scope='instance' AND status='received' AND closed_at IS NULL")
             .bind(old).fetch_all(&mut **tx).await?
         {

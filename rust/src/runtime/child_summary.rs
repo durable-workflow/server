@@ -134,10 +134,10 @@ impl ExpectedChild {
         }
         Some(Self {
             id,
+            parallel,
             run: text("child_workflow_run_id")?,
             instance: text("child_workflow_instance_id")?,
             label,
-            parallel,
             started: false,
             status: "waiting",
             latest_run: text("child_workflow_run_id")?,

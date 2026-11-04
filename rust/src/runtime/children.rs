@@ -351,6 +351,8 @@ where
     ) -> Result<StartedChild> {
         let parent_run = DB::string(parent, "id")?;
         let parent_instance = DB::string(parent, "workflow_instance_id")?;
+        let parallel = super::selections::metadata(command, "child")?;
+        super::selections::check_sequence(&parallel, sequence)?;
         // Published PHP starts a child whatever else the parent has open:
         // activities, timers, waits and other children. A replayed completion
         // is handled by the enclosing immutable task receipt.
@@ -361,8 +363,6 @@ where
                 text(command, "queue").map(str::to_owned)
             })?;
         let arguments = envelope(command, "arguments")?;
-        let parallel = super::selections::metadata(command, "child")?;
-        super::selections::check_sequence(&parallel, sequence)?;
         let policies = policies(command)?;
         let child_instance = id();
         let child_run = id();
@@ -522,6 +522,10 @@ where
             ));
         }
         let link = &links[0];
+        let parallel = super::selections::child_metadata(DB::optional_document_row(
+            link,
+            "parallel_group_path",
+        )?)?;
         let parent_run = DB::string(link, "parent_workflow_run_id")?;
         let sequence = DB::number(link, "sequence")?;
         let link_id = DB::string(link, "id")?;
@@ -538,10 +542,6 @@ where
         if !matches!(
             DB::string(&parent, "status")?.as_str(),
             "pending" | "running" | "waiting"
-        let parallel = super::selections::child_metadata(DB::optional_document_row(
-            link,
-            "parallel_group_path",
-        )?)?;
         ) || DB::string(&parent, "current_run_id")? != parent_run
         {
             return Ok(());
@@ -649,7 +649,17 @@ where
                 }
             }
         }
+        super::selections::merge(&mut payload, &parallel);
         Self::append(tx, &parent_run, event_type, payload, None, None).await?;
+        // Record the outcome even while the all barrier remains closed. The
+        // last successful member observes every committed call under the same
+        // parent transition lock; any failed member wakes the parent at once.
+        if matches!(resolution, ChildResolution::Completed(_))
+            && !Self::all_groups_closed(tx, &parent_run, &parallel).await?
+        {
+            return Ok(());
+        }
+        let parent_resume = Self::child_parent_resume(tx, &parent).await?;
         let (task_id, task_status) = match parent_resume {
             ChildParentResume::UpdateOnly => return Ok(()),
             ChildParentResume::Existing { id, status } => (id, status),
@@ -668,17 +678,7 @@ where
     /// the same call. Returns whether a retry started.
     async fn start_child_retry(
         tx: &mut Transaction<'_, DB>,
-        super::selections::merge(&mut payload, &parallel);
         parent: &DB::Row,
-        // Record the outcome even while the all barrier remains closed. The
-        // last successful member observes every committed call under the same
-        // parent transition lock; any failed member wakes the parent at once.
-        if matches!(resolution, ChildResolution::Completed(_))
-            && !Self::all_groups_closed(tx, &parent_run, &parallel).await?
-        {
-            return Ok(());
-        }
-        let parent_resume = Self::child_parent_resume(tx, &parent).await?;
         link: &DB::Row,
         call: &DB::Row,
         failed: &DB::Row,
@@ -687,6 +687,10 @@ where
     ) -> Result<bool> {
         let parent_run = DB::string(parent, "id")?;
         let failed_run = DB::string(failed, "id")?;
+        let parallel = super::selections::child_metadata(DB::optional_document_row(
+            link,
+            "parallel_group_path",
+        )?)?;
         // The policy the parent recorded when it scheduled the call, or the
         // call's own when that event is in an earlier run.
         let mut scheduled = Value::Null;
@@ -706,10 +710,6 @@ where
                 .filter(|policy| policy.is_object() || policy.is_array())
                 .unwrap_or(Value::Null)
         };
-        let parallel = super::selections::child_metadata(DB::optional_document_row(
-            link,
-            "parallel_group_path",
-        )?)?;
         if policy.is_null() {
             return Ok(false);
         }
@@ -794,6 +794,7 @@ where
         if let Some(fields) = started.as_object_mut() {
             fields.retain(|_, value| !value.is_null());
         }
+        super::selections::merge(&mut started, &parallel);
         Self::append(tx, &parent_run, "ChildRunStarted", started, None, None).await?;
         let mut child_started = json!({"workflow_class":workflow_class,"workflow_type":workflow_type,"workflow_instance_id":instance,
             "workflow_run_id":retry_run,"parent_workflow_instance_id":DB::string(parent, "workflow_instance_id")?,
@@ -820,7 +821,6 @@ where
         metadata["last_retry_backoff_seconds"] = json!(backoff);
         Self::query("UPDATE workflow_child_calls SET resolved_child_instance_id=$1,resolved_child_run_id=$2,status='started',started_at=$3,metadata=$4,updated_at=$5 WHERE id=$6")
             .bind(&instance).bind(&retry_run).bind(DB::bind_time(at)).bind(DB::document(&metadata)).bind(DB::bind_time(at))
-        super::selections::merge(&mut started, &parallel);
             .bind(DB::number(call, "id")?).execute(&mut **tx).await?;
         tx.summary_changed(&parent_run);
         Ok(true)
