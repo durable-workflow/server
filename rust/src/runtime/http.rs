@@ -652,7 +652,9 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         };
         let exists = match runtime.namespace_exists(&namespace).await {
             Ok(exists) => exists,
-            Err(error) => return error.into_response(),
+            // A storage failure here is still an answer on this plane: it gets
+            // the same envelope and version header as a handler's answer.
+            Err(error) => return finish_answer(error.into_response(), worker, header, version).await,
         };
         if !exists {
             let body = json!({"reason":"namespace_not_found", "namespace":namespace,
@@ -692,6 +694,12 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     if response.extensions().get::<super::external_transport::TypedRefusal>().is_some() && (worker || route.is_some()) {
         response = typed_refusal_envelope(response, route, worker).await;
     }
+    finish_answer(response, worker, header, version).await
+}
+
+/// Every answer on a plane carries its version header, and every worker
+/// answer its body envelope.
+async fn finish_answer(mut response: Response, worker: bool, header: &'static str, version: &'static str) -> Response {
     if worker {
         response = worker_protocol_envelope(response).await;
     }
@@ -706,11 +714,11 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
 const WORKER_ENVELOPE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// PHP's `WorkerProtocol::json`: every worker-plane JSON object answer
-/// carries `protocol_version` and `server_capabilities`, each added only when
-/// the handler left it out (`??=`), so a value already present is never
-/// changed (server#1001). The body's bytes are kept and the missing members
-/// are appended before its closing brace, as PHP appends them; numbers are
-/// never re-serialized.
+/// carries `protocol_version` and `server_capabilities`, each set only when
+/// the handler left it out or null (`??=`), so a non-null value is never
+/// changed (server#1001). A missing member is appended before the body's
+/// closing brace, as PHP appends it, and the other bytes are kept; numbers
+/// are never re-serialized.
 async fn worker_protocol_envelope(response: Response) -> Response {
     use axum::body::HttpBody as _;
     let json = response
@@ -736,29 +744,80 @@ async fn worker_protocol_envelope(response: Response) -> Response {
     }
 }
 
-/// The body with any missing envelope member appended, or `None` when it is
-/// not a JSON object or already has both members.
+/// The body with each missing or null envelope member set, or `None` when it
+/// is not a UTF-8 JSON object or already has both members.
 fn complete_worker_envelope(bytes: &[u8]) -> Option<Vec<u8>> {
-    // Only the member names are read; values are skipped unparsed.
-    let members: std::collections::HashMap<String, serde::de::IgnoredAny> = serde_json::from_slice(bytes).ok()?;
-    let mut missing = Vec::new();
-    if !members.contains_key("protocol_version") {
-        missing.push(format!("\"protocol_version\":{}", json!(super::WORKER_PROTOCOL_VERSION)));
-    }
-    if !members.contains_key("server_capabilities") {
-        missing.push(format!("\"server_capabilities\":{}", capabilities()));
-    }
-    if missing.is_empty() {
+    // A body that is not UTF-8 is not JSON; it passes through unchanged.
+    let text = std::str::from_utf8(bytes).ok()?;
+    // Values are kept as their raw text and never parsed into numbers.
+    let ObjectMembers(members) = serde_json::from_str(text).ok()?;
+    let envelope = [
+        ("protocol_version", json!(super::WORKER_PROTOCOL_VERSION)),
+        ("server_capabilities", capabilities()),
+    ];
+    // As in PHP's decoded array, the last of duplicate names is the value.
+    let value = |name: &str| {
+        members.iter().rev().find(|(key, _)| key == name).map(|(_, raw)| raw.get())
+    };
+    let unset: Vec<&(&str, Value)> = envelope
+        .iter()
+        .filter(|(name, _)| value(name).is_none_or(|raw| raw == "null"))
+        .collect();
+    if unset.is_empty() {
         return None;
     }
-    let end = bytes.iter().rposition(|byte| *byte == b'}')?;
-    let mut completed = bytes[..end].to_vec();
-    if !members.is_empty() {
-        completed.push(b',');
+    let member = |name: &str, value: &Value| format!("{}:{value}", json!(name));
+    if unset.iter().all(|(name, _)| value(name).is_none()) {
+        let end = text.rfind('}')?;
+        let mut completed = text[..end].to_owned();
+        if !members.is_empty() {
+            completed.push(',');
+        }
+        let appended: Vec<String> = unset.iter().map(|(name, value)| member(name, value)).collect();
+        completed.push_str(&appended.join(","));
+        completed.push_str(&text[end..]);
+        return Some(completed.into_bytes());
     }
-    completed.extend_from_slice(missing.join(",").as_bytes());
-    completed.extend_from_slice(&bytes[end..]);
-    Some(completed)
+    // An explicit null is replaced where it stands, as `??=` assigns to the
+    // existing key. The members are rewritten from their raw text, so only
+    // the whitespace between them changes.
+    let mut rendered: Vec<String> = members
+        .iter()
+        .map(|(key, raw)| match unset.iter().find(|(name, _)| name == key) {
+            Some((name, value)) => member(name, value),
+            None => format!("{}:{}", json!(key), raw.get()),
+        })
+        .collect();
+    rendered.extend(
+        unset
+            .iter()
+            .filter(|(name, _)| value(name).is_none())
+            .map(|(name, value)| member(name, value)),
+    );
+    Some(format!("{{{}}}", rendered.join(",")).into_bytes())
+}
+
+/// A JSON object's members in order, each value kept as its raw text.
+struct ObjectMembers<'a>(Vec<(String, &'a serde_json::value::RawValue)>);
+
+impl<'de: 'a, 'a> serde::Deserialize<'de> for ObjectMembers<'a> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct Members<'a>(std::marker::PhantomData<&'a ()>);
+        impl<'de: 'a, 'a> serde::de::Visitor<'de> for Members<'a> {
+            type Value = ObjectMembers<'a>;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> std::result::Result<Self::Value, M::Error> {
+                let mut members = Vec::new();
+                while let Some(member) = map.next_entry()? {
+                    members.push(member);
+                }
+                Ok(ObjectMembers(members))
+            }
+        }
+        deserializer.deserialize_map(Members(std::marker::PhantomData))
+    }
 }
 
 /// PHP renders a typed external payload error through `WorkerProtocol` or
@@ -2536,9 +2595,12 @@ async fn heartbeat_activity(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    // The worker-plane middleware already requires the header; keep the
+    // handler's own refusal so the error order is unchanged.
+    request_protocol(&headers)?;
     let attempt = body["activity_attempt_id"].clone();
     runtime
-        .heartbeat_activity(&task_id, body, request_protocol(&headers)?)
+        .heartbeat_activity(&task_id, body)
         .await
         .map_err(|error| activity_not_found(error, &task_id, attempt))
         .map(Json)
@@ -3006,5 +3068,36 @@ mod worker_envelope_tests {
         let completed = complete("{}").unwrap();
         assert!(completed.starts_with("{\"protocol_version\":"));
         serde_json::from_str::<Value>(&completed).unwrap();
+    }
+
+    #[test]
+    fn explicit_null_members_are_set_where_they_stand() {
+        // PHP's `??=` assigns to a null member and keeps its position.
+        let completed = complete(r#"{"a":1.10,"protocol_version":null,"b":"x"}"#).unwrap();
+        assert!(completed.starts_with(r#"{"a":1.10,"protocol_version":"1.20","b":"x","server_capabilities":{"#), "{completed}");
+        let body: Value = serde_json::from_str(&completed).unwrap();
+        assert_eq!(body["server_capabilities"], capabilities());
+        let completed = complete(r#"{"server_capabilities":null,"protocol_version":"1.7"}"#).unwrap();
+        let body: Value = serde_json::from_str(&completed).unwrap();
+        assert_eq!(body["server_capabilities"], capabilities());
+        assert_eq!(body["protocol_version"], "1.7");
+        // Raw values, including big numbers, keep their bytes on this path too.
+        let completed = complete(r#"{ "big" : 123456789012345678901234567890, "protocol_version" : null }"#).unwrap();
+        assert!(completed.starts_with(r#"{"big":123456789012345678901234567890,"protocol_version":"1.20","#), "{completed}");
+        // A non-null value, even a falsy one, is never replaced.
+        for value in [r#""""#, "false", "0", "{}", "[]"] {
+            let body = format!(r#"{{"protocol_version":{value},"server_capabilities":{value}}}"#);
+            assert_eq!(complete(&body), None, "{body}");
+        }
+        // The last of duplicate names decides, as in PHP's decoded array.
+        assert_eq!(complete(r#"{"protocol_version":null,"protocol_version":"1.7","server_capabilities":{}}"#), None);
+        let completed = complete(r#"{"protocol_version":"1.7","protocol_version":null,"server_capabilities":{}}"#).unwrap();
+        assert!(!completed.contains("1.7"), "{completed}");
+    }
+
+    #[test]
+    fn bodies_that_are_not_utf8_pass_through() {
+        assert_eq!(complete_worker_envelope(b"{\"a\":\"\xff\"}"), None);
+        assert_eq!(complete_worker_envelope(b"{\"\xc3\x28\":1}"), None);
     }
 }

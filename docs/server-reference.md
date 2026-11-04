@@ -908,13 +908,13 @@ can still ask for the expired diagnostic set with `status=stale`, and stale
 workers stop being considered for query-task dispatch and routing-gate
 admission.
 
-The current server advertises worker protocol `1.17` by default. Worker-plane
+The current server advertises worker protocol `1.20` by default. Worker-plane
 requests should send the highest `X-Durable-Workflow-Protocol-Version` their SDK
 implements, and worker-plane responses always echo the server's advertised
 version in the same header plus the `protocol_version` body field.
 Worker-protocol compatibility is same-major with a worker minor less than or
-equal to the server minor: a server advertising `1.17` accepts worker requests
-for `1.0` through `1.17`, including older `1.16` and `1.15` workers. Requests
+equal to the server minor: a server advertising `1.20` accepts worker requests
+for `1.0` through `1.20`, including older `1.19` and `1.17` workers. Requests
 with a missing, malformed, different-major, or higher-minor protocol version are
 rejected with `missing_protocol_version` or `unsupported_protocol_version` and a
 `supported_version` value that tells the worker what the server advertises.
