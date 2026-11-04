@@ -40,6 +40,14 @@ pub(super) async fn admission_http(
     let headers = response.headers().clone();
     let body = serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
         .unwrap();
+    // Admission answers on the worker plane are worker answers too
+    // (server#1001), so the suite's envelope sweep covers them.
+    if uri.starts_with("/api/worker/") {
+        let header = headers
+            .get("x-durable-workflow-protocol-version")
+            .and_then(|value| value.to_str().ok());
+        super::worker_envelope_sweep(method, uri, status, header, &body);
+    }
     (status, headers, body)
 }
 
