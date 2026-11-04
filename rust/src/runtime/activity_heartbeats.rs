@@ -35,15 +35,15 @@ where
                 response: json!({"reason":"activity_attempt_status_unavailable","minimum_protocol_version":"1.20"}),
             });
         }
-        self.observe_activity(task_id, body, protocol).await
+        self.observe_activity(task_id, body).await
     }
 
     // Heartbeat can report lost authority on legacy protocols without granting
     // the separately capability-gated non-renewing status endpoint.
-    async fn observe_activity(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
+    async fn observe_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         let mut tx = self.begin_read().await?;
         let (response, _) = self
-            .activity_observation(&mut tx, task_id, body, protocol, true)
+            .activity_observation(&mut tx, task_id, body, true)
             .await?;
         tx.commit().await?;
         Ok(response)
@@ -54,7 +54,6 @@ where
         tx: &mut Transaction<'_, DB>,
         task_id: &str,
         body: Value,
-        protocol: &str,
         check_session: bool,
     ) -> Result<(Value, bool)> {
         reject_fields(&body, &["activity_attempt_id", "lease_owner"])?;
@@ -164,12 +163,7 @@ where
         Ok((response, Self::cancellation_request(&run)?.is_none()))
     }
 
-    pub(crate) async fn heartbeat_activity(
-        &self,
-        task_id: &str,
-        body: Value,
-        protocol: &str,
-    ) -> Result<Value> {
+    pub(crate) async fn heartbeat_activity(&self, task_id: &str, body: Value) -> Result<Value> {
         reject_fields(
             &body,
             &[
@@ -209,7 +203,6 @@ where
                 &mut tx,
                 task_id,
                 json!({"activity_attempt_id":attempt_id,"lease_owner":text(&body,"lease_owner")?}),
-                protocol,
                 false,
             )
             .await

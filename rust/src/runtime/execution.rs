@@ -1786,7 +1786,7 @@ impl Runtime {
             Storage::MySql(store) => store.complete_activity(task_id, body, external).await,
         }
     }
-    delegate!(heartbeat_activity(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
+    delegate!(heartbeat_activity(task_id: &str, body: Value) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);
     delegate!(workflow_in_namespace(workflow_id: &str) -> Result<bool>);
