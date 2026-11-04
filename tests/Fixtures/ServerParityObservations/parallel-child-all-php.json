@@ -3,10 +3,13 @@
     "reference_image": "ghcr.io/durable-workflow/server@sha256:980fe0a052089ced34ec3fcd2be2ea4e77436861d8fb537fb6654cb652a53e07",
     "sdk_php": "3.9.1",
     "sdk_php_source": "e4d77aade4ddc02eb0ba40f827709b8b4817725e",
-    "wire_probe_sha256": "cc6acc99a1fe5a718f2f8658449561336e31738f5cc34c97422808e0f0c33131",
-    "type_annotation": "Offline decode of the retained canonical Avro frames with the identical installed SDK codec; no additional runtime I/O.",
+    "wire_probe_sha256": "5ed97b9b31ae0dd7aec0e1193e0d6b24bcd0ad463419f2e25ce58c0f19cf4bbc",
+    "type_annotation": "Canonical Avro type annotations captured with the installed SDK codec by the committed HTTP observer.",
     "redaction": "Canonical task snapshots omitted; nondeterministic IDs replaced consistently; only checked payload fields retained.",
-    "deduplication": "Unit baseline reconstructs duplicate prefix/at-parent-close arrays from the already checked immutable canonical events; runtime observations retain each independently."
+    "deduplication": "Unit baseline reconstructs duplicate prefix/at-parent-close arrays from the already checked immutable canonical events; runtime observations retain each independently.",
+    "observer_revision": "1c897420923be4caa1105f8d2b5f2ba97b1263b0",
+    "observed_started_at": "2026-11-04T12:00:49.434562+00:00",
+    "observed_finished_at": "2026-11-04T12:01:28.603546+00:00"
   },
   "parallel_child_all": {
     "applicable": true,
