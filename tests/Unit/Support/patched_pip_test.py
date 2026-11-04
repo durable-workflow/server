@@ -73,18 +73,10 @@ GUARDS = {
     # The bootstrap's own install of the hash-pinned wheel, in the same command.
     "pinned-wheel": sink_guards.GuardType(re.compile(r"#sha256=[0-9a-f]{64}"), 1),
 }
-CENTRAL_ACTIONS = {
-    "durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7",
-    "durable-workflow/.github/.github/actions/bootstrap-patched-pip@fea245682582d0620054e8547a5f3c968f9ef0f0",
-}
-LOCKED_POLICY_ACTION = "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@fea245682582d0620054e8547a5f3c968f9ef0f0  # clean-trust"
-LOCKED_POLICY_COMMAND = (
-    "python -I -m pip --isolated install --require-hashes --only-binary=:all:\n"
-    "          --no-deps -r .central-action-policy/qualification/requirements.lock"
-)
+CENTRAL_ACTION = "durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7"
 SELF_CHECKS = {
     # The Security-accepted central action is itself the bootstrap.
-    "accepted-action": lambda occurrence: any(occurrence.line == f"uses: {action}  # clean-trust" for action in CENTRAL_ACTIONS),
+    "accepted-action": lambda occurrence: occurrence.line == f"uses: {CENTRAL_ACTION}  # clean-trust",
     # "pip --version" makes no request.
     "version-query": lambda occurrence: re.search(r"-m pip --version\b", occurrence.line) is not None,
     "evidence-record": sink_guards.evidence_record(ROOT),
@@ -127,24 +119,6 @@ def unreviewed_sinks(root: Path, entries: list[dict[str, object]]) -> tuple[list
     found = pip_sinks(root)
     describe = lambda sinks: [f"{path}: {line} (x{count})" for (path, line), count in sorted(sinks.items())]
     return describe(found - reviewed), describe(reviewed - found)
-
-
-def locked_policy_trust(occurrence: sink_guards.Occurrence, source: str) -> bool:
-    """The Linux policy install uses the action's SSL_CERT_FILE/empty SSL_CERT_DIR.
-
-    Unlike pip's PIP_* variables, these OpenSSL settings survive --isolated.
-    Keep this alternative tied to the exact reviewed bootstrap and command.
-    """
-    if occurrence.path != ".github/workflows/phpunit-feature.yml":
-        return False
-    lines = source.split("\n")
-    if "\n".join(lines[occurrence.index:occurrence.index + 2]).strip() != LOCKED_POLICY_COMMAND:
-        return False
-    job = next((index for index in range(occurrence.index, -1, -1)
-                if sink_guards.WORKFLOW_JOB.match(lines[index])), None)
-    if job is None or lines[job] != "  action-policy:" or "    runs-on: ubuntu-latest" not in lines[job:occurrence.index]:
-        return False
-    return sink_guards.find_guard(lines, occurrence, GUARDS["bootstrap"]) == (LOCKED_POLICY_ACTION, 3)
 
 
 def make_root(directory: Path, common_name: str) -> str:
@@ -409,20 +383,6 @@ class RealPipTrustTest(unittest.TestCase):
             PIP_USE_DEPRECATED="legacy-certs",
         ))
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "the reviewed policy preflight runs on Linux")
-    def test_isolated_policy_install_keeps_the_bootstrap_openssl_roots(self) -> None:
-        config = self.venv / "pip.conf"
-        saved = config.read_bytes()
-        config.unlink()
-        try:
-            result, paths = self.fetch("--isolated")
-            self.assertEqual(["/simple/dw-trust-control/"], paths, result.stdout + result.stderr)
-            self.assertRefused(*self.fetch(
-                "--isolated", SSL_CERT_FILE=self.pip_bundle, SSL_CERT_DIR=str(self.empty_store_dir),
-            ))
-        finally:
-            config.write_bytes(saved)
-
     def test_patched_pip_wrapper_keeps_pip_status_and_removes_its_venv(self) -> None:
         temporary = self.work / "wrapper-tmp"
         for arguments, expected in ((["--version"], 0), (["install", "--no-index", "dw-trust-missing"], 1)):
@@ -592,9 +552,8 @@ class PatchedPipInventoryTest(unittest.TestCase):
                 self.assertTrue(any(item.startswith(f"{relative}: ") for item in unreviewed), unreviewed)
 
     def test_isolated_pip_commands_keep_legacy_certs(self) -> None:
-        # Isolated commands must keep pip off the operating system store, or
-        # use the reviewed Linux
-        # bootstrap's OpenSSL root configuration for the exact policy install.
+        # --isolated ignores the venv's pip.conf, so the command itself must
+        # keep pip off the operating system store.
         loose = []
         for directory in SCANNED:
             for path in sorted((ROOT / directory).rglob("*")):
@@ -606,27 +565,10 @@ class PatchedPipInventoryTest(unittest.TestCase):
                     continue
                 for command in re.finditer(rf"\bpip{SEPARATOR}--isolated\b", text):
                     following = text[command.start():command.start() + 400]
-                    index = text.count("\n", 0, command.start())
-                    line = text.split("\n")[index]
-                    occurrence = sink_guards.Occurrence(path.relative_to(ROOT).as_posix(), line.strip(), index,
-                                                       command.start() - (text.rfind("\n", 0, command.start()) + 1), command.group(0))
-                    if "legacy-certs" not in following and not locked_policy_trust(occurrence, text):
+                    if "legacy-certs" not in following:
                         loose.append(f"{path.relative_to(ROOT).as_posix()}:{text.count(chr(10), 0, command.start()) + 1}")
 
         self.assertEqual([], loose)
-
-    def test_locked_policy_trust_requires_exact_bootstrap_command_and_linux_job(self) -> None:
-        path = ".github/workflows/phpunit-feature.yml"
-        source = (ROOT / path).read_text()
-        occurrence = next(item for item in sink_guards.occurrences(ROOT, [ROOT / path], PIP_SINK)
-                          if item.line.startswith("python -I -m pip --isolated"))
-        self.assertTrue(locked_policy_trust(occurrence, source))
-        for before, after in [("fea245682582d0620054e8547a5f3c968f9ef0f0", "0" * 40),
-                              ("--require-hashes", "--no-cache-dir"),
-                              ("qualification/requirements.lock", "qualification/other.lock"),
-                              ("runs-on: ubuntu-latest", "runs-on: windows-latest")]:
-            with self.subTest(mutation=before):
-                self.assertFalse(locked_policy_trust(occurrence, source.replace(before, after)))
 
 
 if __name__ == "__main__":

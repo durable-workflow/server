@@ -49,22 +49,22 @@
     },
     {
       "path": ".github/workflows/phpunit-feature.yml",
-      "line": "python -I -m pip --isolated install --require-hashes --only-binary=:all:",
+      "line": "run: python -m pip install PyYAML==6.0.2",
       "count": 1,
-      "confinement": "The reviewed Linux clean-trust bootstrap exports checked SSL_CERT_FILE and an empty SSL_CERT_DIR before the isolated, hash-locked, wheel-only policy install. These OpenSSL settings survive pip --isolated. Python -I prevents checked-out modules from replacing pip; the protected central requirements lock supplies dependency hashes.",
+      "confinement": "The clean-trust action at the preflight's reviewed step exports the checked bundle as PIP_CERT and SSL_CERT_FILE with an empty SSL_CERT_DIR, so pip and its truststore see only that bundle.",
       "guards": [
         {
           "type": "bootstrap",
-          "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@fea245682582d0620054e8547a5f3c968f9ef0f0  # clean-trust",
-          "distance": 3
+          "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+          "distance": 2
         }
       ]
     },
     {
       "path": ".github/workflows/phpunit-feature.yml",
-      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@fea245682582d0620054e8547a5f3c968f9ef0f0  # clean-trust",
+      "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
       "count": 1,
-      "confinement": "The currently required central clean-trust bootstrap installs hash-pinned pip 26.2.2, checks and exports its CA bundle with an empty SSL_CERT_DIR. Its exact immutable revision is also enforced by central qualification policy.",
+      "confinement": "The central clean-trust action (Security-accepted .github #239): installs the hash-pinned pip 26.2.2, checks its bundle and exports it, with an empty SSL_CERT_DIR, as PIP_CERT and SSL_CERT_FILE to later steps. At the policy's reviewed preflight step.",
       "guards": [
         {
           "type": "accepted-action",
@@ -518,5 +518,12 @@
       ]
     }
   ],
-  "isolation_exceptions": []
+  "isolation_exceptions": [
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "run: python -m pip install PyYAML==6.0.2",
+      "owner": "durable-workflow/.github central qualification policy",
+      "reason": "The central policy admits only this exact action-policy preflight install. General is asked (cloud#438 19131108) to admit python -I -m pip; adopt it here when it does."
+    }
+  ]
 }
