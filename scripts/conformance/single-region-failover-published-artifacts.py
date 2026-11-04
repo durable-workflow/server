@@ -1100,6 +1100,8 @@ def inspect_published_server() -> dict[str, Any]:
     metadata = inspected[0]
     config = metadata.get("Config") or {}
     labels = config.get("Labels") or {}
+    requested = re.sub(r"^(?:docker\.io/|index\.docker\.io/)", "", os.environ["DW_FAILOVER_SERVER_IMAGE_REQUESTED"])
+    resolved = re.sub(r"^(?:docker\.io/|index\.docker\.io/)", "", image)
     native = (
         config.get("Entrypoint") == ["/usr/local/bin/durable-workflow-server"]
         and labels.get("org.opencontainers.image.title") == "Durable Workflow Server (native)"
@@ -1118,6 +1120,7 @@ def inspect_published_server() -> dict[str, Any]:
         and bool(labels.get("dev.durable-workflow.workflow.version"))
         and re.fullmatch(r"2\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?", str(labels.get("dev.durable-workflow.release.tag", ""))) is not None
         and labels.get("org.opencontainers.image.version") == labels.get("dev.durable-workflow.release.tag")
+        and requested == (resolved if "@" in requested else "durableworkflow/server:" + str(labels.get("dev.durable-workflow.release.tag")))
     )
     require(native != php, "unknown or contradictory server implementation identity")
     if native:

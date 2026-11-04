@@ -139,6 +139,7 @@ class PublishedIdentityTest(unittest.TestCase):
         self.assertFalse(any(args[:2] == ["docker", "run"] for args, _ in self.commands))
 
     def legacy_php(self):
+        os.environ["DW_FAILOVER_SERVER_IMAGE_REQUESTED"] = IMAGE
         self.metadata["Config"] = {"Entrypoint": ["server-entrypoint"], "Labels": {
             "org.opencontainers.image.title": "server", "org.opencontainers.image.source": REPOSITORY,
             "org.opencontainers.image.version": "2.11.8", "dev.durable-workflow.release.tag": "2.11.8",
@@ -158,6 +159,35 @@ class PublishedIdentityTest(unittest.TestCase):
     def test_php_discriminators_with_native_release_labels_are_refused_before_execution(self):
         self.legacy_php()
         self.metadata["Config"]["Labels"].update({"dev.durable-workflow.release.tag": "3.1.0", "org.opencontainers.image.version": "3.1.0"})
+        with self.assertRaisesRegex(AssertionError, "implementation identity"):
+            self.inspect()
+        self.assertEqual(1, len(self.commands))
+
+    def test_native_tag_request_cannot_select_an_otherwise_recognized_php_image(self):
+        self.legacy_php()
+        os.environ["DW_FAILOVER_SERVER_IMAGE_REQUESTED"] = "durableworkflow/server:3.1.0"
+        with self.assertRaisesRegex(AssertionError, "implementation identity"):
+            self.inspect()
+        self.assertEqual(1, len(self.commands))
+
+    def test_php_requested_tag_and_digest_accept_public_repository_aliases(self):
+        for prefix in ("", "docker.io/", "index.docker.io/"):
+            for reference in ("durableworkflow/server:2.11.8", IMAGE):
+                with self.subTest(prefix=prefix, reference=reference):
+                    self.legacy_php()
+                    os.environ["DW_FAILOVER_SERVER_IMAGE_REQUESTED"] = prefix + reference
+                    self.assertEqual({"embedded_workflow_package": self.php_package}, self.inspect())
+
+    def test_php_wrong_requested_tag_is_refused_before_execution(self):
+        self.legacy_php()
+        os.environ["DW_FAILOVER_SERVER_IMAGE_REQUESTED"] = "durableworkflow/server:2.11.7"
+        with self.assertRaisesRegex(AssertionError, "implementation identity"):
+            self.inspect()
+        self.assertEqual(1, len(self.commands))
+
+    def test_php_wrong_requested_digest_is_refused_before_execution(self):
+        self.legacy_php()
+        os.environ["DW_FAILOVER_SERVER_IMAGE_REQUESTED"] = "docker.io/durableworkflow/server@sha256:" + "e" * 64
         with self.assertRaisesRegex(AssertionError, "implementation identity"):
             self.inspect()
         self.assertEqual(1, len(self.commands))
