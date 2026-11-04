@@ -158,13 +158,14 @@ test('a native or embedded failure is never retried, even after a PHP retry', ()
   }
 });
 
-test('a named fixture records and retries under its own evidence names', () => {
-  const result = run('php1=fail-locked', 'service-calls');
+for (const fixture of ['service-calls', 'schedule-catalog']) test(`${fixture} records and retries under its own evidence names`, () => {
+  const result = run('php1=fail-locked', fixture);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.records, ['php parity-v1', 'php parity-v1-retry', 'embedded parity-v1-retry', 'rust parity-v1-retry']);
-  assert.match(result.stdout, /^::warning title=Published PHP service-calls record retried::/m);
-  for (const name of ['service-calls-php.json', 'service-calls-embedded.json', 'service-calls-rust.json', 'service-calls-comparison.json',
-    'service-calls-php.attempt-1.json', 'service-calls-php.attempt-1.locked.txt', 'service-calls-maintenance-schedule-retry.txt']) {
+  assert.ok(result.stdout.includes(`::warning title=Published PHP ${fixture} record retried::`));
+  for (const suffix of ['php.json', 'embedded.json', 'rust.json', 'comparison.json',
+    'php.attempt-1.json', 'php.attempt-1.locked.txt', 'maintenance-schedule-retry.txt']) {
+    const name = `${fixture}-${suffix}`;
     assert.equal(result.evidence(name), true, name);
   }
   assert.equal(result.evidence('update-validation-php.json'), false);
