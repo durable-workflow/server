@@ -937,6 +937,9 @@ Memo upserts and explicit typed search-attribute updates additionally require
 the matching registered worker capability. Durable condition-wait occurrence
 identity requires protocol `1.17`; older workers remain eligible for workflows
 whose replay history does not contain that identity.
+Native additionally advertises `condition_wait_idempotent_reopen` when opening
+an already-unresolved occurrence preserves its existing wait and deadline.
+See [idempotent condition-wait opens](contracts/condition-wait-occurrences.md).
 
 Long-poll wake-ups use short-lived cache-backed signal keys plus periodic
 reprobes. Multi-node deployments therefore need a shared cache backend for

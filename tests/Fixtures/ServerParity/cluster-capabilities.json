@@ -368,6 +368,10 @@
       }
     },
     "native_additions": {
+      "capabilities.condition_wait_idempotent_reopen": {
+        "value": true,
+        "reason": "Native preserves an unresolved condition wait when a later open repeats its nonempty condition_wait_occurrence_id, keeping the original sequence and deadline (Server #1015). Published PHP retains per-open behavior."
+      },
       "capabilities.child_workflow_start_turn": {
         "value": true,
         "reason": "Native serves start_child_workflow await: \"started\", a parent turn when the child start commits (Server #966); published PHP 2.x has no such mode."
