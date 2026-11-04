@@ -1025,9 +1025,9 @@ def inspect_native_server(image: str, metadata: dict[str, Any]) -> dict[str, Any
     require(re.fullmatch(r"[1-9][0-9]*", run_id) is not None, "native image release run missing")
     version = tag.removeprefix("native-")
 
-    def manifest(reference: str) -> dict[str, Any]:
+    def manifest(reference: str, expected_digest: str | None = None) -> dict[str, Any]:
         raw = command(["docker", "buildx", "imagetools", "inspect", "--raw", reference], timeout=60).stdout
-        require("sha256:" + hashlib.sha256(raw.encode()).hexdigest() == reference.split("@", 1)[1], "native OCI manifest digest mismatch")
+        require("sha256:" + hashlib.sha256(raw.encode()).hexdigest() == (expected_digest or reference.split("@", 1)[1]), "native OCI manifest digest mismatch")
         return json.loads(raw)
 
     index = manifest(image)
@@ -1044,6 +1044,20 @@ def inspect_native_server(image: str, metadata: dict[str, Any]) -> dict[str, Any
     require(re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest) is not None, "native OCI config digest missing")
     # Docker's classic and containerd stores expose different image IDs.
     require(metadata.get("Id") in {image.split("@", 1)[1], platform_digest, config_digest}, "native local image ID is not bound to its OCI descriptors")
+    requested = canonical(os.environ["DW_FAILOVER_SERVER_IMAGE_REQUESTED"])
+    if "@" in requested:
+        require(requested == canonical(image), "requested native image digest mismatch")
+    else:
+        require(requested == "durableworkflow/server:" + version, "requested native registry tag mismatch")
+    manifest("durableworkflow/server:" + version, image.split("@", 1)[1])
+    tag_ref = "refs/tags/" + tag
+    tag_commit = command(["git", "rev-parse", "--verify", tag_ref + "^{commit}"], timeout=30).stdout.strip()
+    require(tag_commit == revision, "checked-out native Git tag commit mismatch")
+    remote = command(["git", "ls-remote", "--exit-code", "https://github.com/durable-workflow/server.git", tag_ref, tag_ref + "^{}"], timeout=60).stdout.splitlines()
+    refs = {reference: commit for commit, reference in (line.split() for line in remote)}
+    require(len(refs) == len(remote) and tag_ref in refs and set(refs) <= {tag_ref, tag_ref + "^{}"}, "current native Git tag missing or ambiguous")
+    require(all(re.fullmatch(r"[0-9a-f]{40}", commit) is not None for commit in refs.values()), "current native Git tag object invalid")
+    require(refs.get(tag_ref + "^{}", refs[tag_ref]) == revision, "current native Git tag commit mismatch")
     verified = command([
         os.environ.get("GH", "gh"), "attestation", "verify", "oci://" + image,
         "--repo", "durable-workflow/server",
@@ -1073,7 +1087,8 @@ def inspect_native_server(image: str, metadata: dict[str, Any]) -> dict[str, Any
         "local_image_id": metadata["Id"],
         "platform": metadata["Os"] + "/" + metadata["Architecture"],
         "source_repository": labels["org.opencontainers.image.source"], "source_revision": revision,
-        "release_tag": tag, "release_version": version, "release_run_id": run_id,
+        "release_tag": tag, "registry_tag": version, "release_version": version,
+        "git_tag_commit": tag_commit, "git_tag_object": refs[tag_ref], "release_run_id": run_id,
         "attestation_invocations": sorted(set(invocations)),
     }}
 
@@ -1085,7 +1100,27 @@ def inspect_published_server() -> dict[str, Any]:
     metadata = inspected[0]
     config = metadata.get("Config") or {}
     labels = config.get("Labels") or {}
-    if config.get("Entrypoint") == ["/usr/local/bin/durable-workflow-server"] or labels.get("org.opencontainers.image.title") == "Durable Workflow Server (native)":
+    native = (
+        config.get("Entrypoint") == ["/usr/local/bin/durable-workflow-server"]
+        and labels.get("org.opencontainers.image.title") == "Durable Workflow Server (native)"
+        and "dev.durable-workflow.package.authority" not in labels
+        and not any(key.startswith("dev.durable-workflow.workflow.") for key in labels)
+    )
+    php = (
+        config.get("Entrypoint") == ["server-entrypoint"]
+        and labels.get("org.opencontainers.image.title") in {"server", "Durable Workflow Server"}
+        and labels.get("org.opencontainers.image.source") == "https://github.com/durable-workflow/server"
+        and labels.get("dev.durable-workflow.package.authority") == "composer.lock"
+        and labels.get("dev.durable-workflow.workflow.package") == "durable-workflow/workflow"
+        and labels.get("dev.durable-workflow.workflow.source") == "https://github.com/durable-workflow/workflow.git"
+        and re.fullmatch(r"[0-9a-f]{40}", str(labels.get("dev.durable-workflow.workflow.commit", ""))) is not None
+        and labels.get("dev.durable-workflow.workflow.commit") != "0" * 40
+        and bool(labels.get("dev.durable-workflow.workflow.version"))
+        and re.fullmatch(r"2\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?", str(labels.get("dev.durable-workflow.release.tag", ""))) is not None
+        and labels.get("org.opencontainers.image.version") == labels.get("dev.durable-workflow.release.tag")
+    )
+    require(native != php, "unknown or contradictory server implementation identity")
+    if native:
         return inspect_native_server(image, metadata)
     return inspect_php_workflow_package()
 

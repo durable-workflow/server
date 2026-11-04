@@ -27,6 +27,7 @@ class PublishedIdentityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.environment = mock.patch.dict(os.environ, {
             "DW_FAILOVER_SERVER_IMAGE": IMAGE,
+            "DW_FAILOVER_SERVER_IMAGE_REQUESTED": "durableworkflow/server:3.1.0",
             "GH": "gh",
         })
         self.environment.start()
@@ -34,6 +35,9 @@ class PublishedIdentityTest(unittest.TestCase):
         self.commands = []
         self.index_raw = INDEX_RAW
         self.manifest_raw = MANIFEST_RAW
+        self.live_raw = INDEX_RAW
+        self.local_peel = SOURCE
+        self.remote_refs = "d" * 40 + "\trefs/tags/3.1.0\n" + SOURCE + "\trefs/tags/3.1.0^{}\n"
         self.metadata = {
             "Id": CONFIG_DIGEST, "RepoDigests": [IMAGE],
             "Os": "linux", "Architecture": "amd64",
@@ -65,8 +69,12 @@ class PublishedIdentityTest(unittest.TestCase):
         if args[:3] == ["docker", "image", "inspect"]:
             value = [self.metadata]
         elif args[:4] == ["docker", "buildx", "imagetools", "inspect"]:
-            value = self.index_raw if args[-1] == IMAGE else self.manifest_raw
+            value = self.live_raw if ":3.1.0" in args[-1] else self.index_raw if args[-1] == IMAGE else self.manifest_raw
             return subprocess.CompletedProcess(args, 0, value, "")
+        elif args[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(args, 0, self.local_peel + "\n", "")
+        elif args[:2] == ["git", "ls-remote"]:
+            return subprocess.CompletedProcess(args, 0, self.remote_refs, "")
         elif args[:3] == ["gh", "attestation", "verify"]:
             if self.verifier_error:
                 raise self.verifier_error
@@ -91,6 +99,8 @@ class PublishedIdentityTest(unittest.TestCase):
         self.assertEqual(SOURCE, identity["source_revision"])
         self.assertEqual("3.1.0", identity["release_version"])
         self.assertEqual("12345", identity["release_run_id"])
+        self.assertEqual("3.1.0", identity["registry_tag"])
+        self.assertEqual(SOURCE, identity["git_tag_commit"])
         self.assertEqual([self.certificate["runInvocationURI"]], identity["attestation_invocations"])
         self.assertFalse(any(args[:2] == ["docker", "run"] for args, _ in self.commands))
         verifier, options = next((args, options) for args, options in self.commands if args[0] == "gh")
@@ -109,14 +119,14 @@ class PublishedIdentityTest(unittest.TestCase):
         self.assertNotEqual(identity["local_image_id"], identity["image_config_digest"])
 
     def test_php_inspection_preserves_the_original_package_record(self):
-        self.metadata["Config"] = {"Entrypoint": ["docker-php-entrypoint"], "Labels": {}}
+        self.legacy_php()
         self.assertEqual({"embedded_workflow_package": self.php_package}, self.inspect())
         self.assertEqual(2, len(self.commands))
         self.assertIn("/app/composer.lock", self.commands[1][0][-1])
         self.assertFalse(any(args[0] == "gh" for args, _ in self.commands))
 
     def test_php_inspection_still_rejects_missing_package_provenance(self):
-        self.metadata["Config"] = {"Entrypoint": ["docker-php-entrypoint"], "Labels": {}}
+        self.legacy_php()
         self.php_package["source_reference"] = None
         self.php_package["dist_reference"] = None
         with self.assertRaisesRegex(AssertionError, "no exact source reference"):
@@ -126,7 +136,70 @@ class PublishedIdentityTest(unittest.TestCase):
         self.verifier_error = subprocess.CalledProcessError(1, ["gh", "attestation", "verify"])
         with self.assertRaises(subprocess.CalledProcessError):
             self.inspect()
-        self.assertEqual(4, len(self.commands))
+        self.assertFalse(any(args[:2] == ["docker", "run"] for args, _ in self.commands))
+
+    def legacy_php(self):
+        self.metadata["Config"] = {"Entrypoint": ["server-entrypoint"], "Labels": {
+            "org.opencontainers.image.title": "server", "org.opencontainers.image.source": REPOSITORY,
+            "org.opencontainers.image.version": "2.11.8", "dev.durable-workflow.release.tag": "2.11.8",
+            "dev.durable-workflow.package.authority": "composer.lock",
+            "dev.durable-workflow.workflow.package": "durable-workflow/workflow",
+            "dev.durable-workflow.workflow.source": "https://github.com/durable-workflow/workflow.git",
+            "dev.durable-workflow.workflow.version": "2.15.12", "dev.durable-workflow.workflow.commit": "d" * 40,
+        }}
+
+    def test_unknown_identity_cannot_fall_back_to_valid_looking_php_package(self):
+        self.metadata["Config"]["Entrypoint"] = ["php"]
+        self.metadata["Config"]["Labels"].pop("org.opencontainers.image.title")
+        with self.assertRaisesRegex(AssertionError, "implementation identity"):
+            self.inspect()
+        self.assertEqual(1, len(self.commands))
+
+    def test_php_discriminators_with_native_release_labels_are_refused_before_execution(self):
+        self.legacy_php()
+        self.metadata["Config"]["Labels"].update({"dev.durable-workflow.release.tag": "3.1.0", "org.opencontainers.image.version": "3.1.0"})
+        with self.assertRaisesRegex(AssertionError, "implementation identity"):
+            self.inspect()
+        self.assertEqual(1, len(self.commands))
+
+    def test_incomplete_or_mixed_php_identity_never_launches_package_inspector(self):
+        fields = ["org.opencontainers.image.title", "org.opencontainers.image.source",
+                  "org.opencontainers.image.version", "dev.durable-workflow.release.tag",
+                  "dev.durable-workflow.package.authority", "dev.durable-workflow.workflow.package",
+                  "dev.durable-workflow.workflow.source", "dev.durable-workflow.workflow.commit",
+                  "dev.durable-workflow.workflow.version"]
+        for field in fields:
+            with self.subTest(missing=field):
+                self.legacy_php()
+                self.commands.clear()
+                self.metadata["Config"]["Labels"].pop(field)
+                with self.assertRaisesRegex(AssertionError, "implementation identity"):
+                    self.inspect()
+                self.assertEqual(1, len(self.commands))
+        for entrypoint, title in [(["/usr/local/bin/durable-workflow-server"], "server"),
+                                  (["server-entrypoint"], "Durable Workflow Server (native)")]:
+            with self.subTest(entrypoint=entrypoint, title=title):
+                self.legacy_php()
+                self.commands.clear()
+                self.metadata["Config"]["Entrypoint"] = entrypoint
+                self.metadata["Config"]["Labels"]["org.opencontainers.image.title"] = title
+                with self.assertRaisesRegex(AssertionError, "implementation identity"):
+                    self.inspect()
+                self.assertEqual(1, len(self.commands))
+
+    def test_historical_native_git_tag_normalizes_to_registry_version(self):
+        self.metadata["Config"]["Labels"]["dev.durable-workflow.release.tag"] = "native-3.1.0"
+        self.certificate["sourceRepositoryRef"] = "refs/tags/native-3.1.0"
+        self.certificate["buildSignerURI"] = WORKFLOW + "@refs/tags/native-3.1.0"
+        self.remote_refs = self.remote_refs.replace("refs/tags/3.1.0", "refs/tags/native-3.1.0")
+        identity = self.inspect()["native_server_identity"]
+        self.assertEqual("native-3.1.0", identity["release_tag"])
+        self.assertEqual("3.1.0", identity["registry_tag"])
+
+    def test_exact_digest_request_still_requires_the_live_version_tag(self):
+        os.environ["DW_FAILOVER_SERVER_IMAGE_REQUESTED"] = IMAGE
+        self.assertEqual("3.1.0", self.inspect()["native_server_identity"]["registry_tag"])
+        self.assertTrue(any(args[-1] == "durableworkflow/server:3.1.0" for args, _ in self.commands))
 
     def test_native_identity_phase_does_not_pass_recovery_cells(self):
         services = {name: {"image": IMAGE} for name in ["bootstrap", "server-a", "server-b",
@@ -169,6 +242,16 @@ for name, mutate in [
     ("rolling_release_tag", lambda t: t.metadata["Config"]["Labels"].update({"dev.durable-workflow.release.tag": "latest"})),
     ("php_version_as_native", lambda t: t.metadata["Config"]["Labels"].update({"dev.durable-workflow.release.tag": "2.11.8"})),
     ("missing_build_run", lambda t: t.metadata["Config"]["Labels"].pop("dev.durable-workflow.release.run-id")),
+    ("native_with_php_authority", lambda t: t.metadata["Config"]["Labels"].update({"dev.durable-workflow.package.authority": "composer.lock"})),
+    ("native_with_php_package", lambda t: t.metadata["Config"]["Labels"].update({"dev.durable-workflow.workflow.package": "durable-workflow/workflow"})),
+    ("wrong_requested_tag", lambda t: os.environ.update(DW_FAILOVER_SERVER_IMAGE_REQUESTED="durableworkflow/server:3.2.0")),
+    ("wrong_requested_digest", lambda t: os.environ.update(DW_FAILOVER_SERVER_IMAGE_REQUESTED="durableworkflow/server@sha256:" + "e" * 64)),
+    ("moved_registry_tag", lambda t: setattr(t, "live_raw", t.live_raw + " ")),
+    ("missing_local_git_tag", lambda t: setattr(t, "local_peel", "")),
+    ("moved_local_git_tag", lambda t: setattr(t, "local_peel", "e" * 40)),
+    ("missing_remote_git_tag", lambda t: setattr(t, "remote_refs", "")),
+    ("moved_remote_git_tag", lambda t: setattr(t, "remote_refs", "e" * 40 + "\trefs/tags/3.1.0\n")),
+    ("duplicate_remote_git_tag", lambda t: setattr(t, "remote_refs", t.remote_refs + t.remote_refs)),
     ("empty_attestations", lambda t: t.attestations.clear()),
     ("different_signed_subject", lambda t: t.attestations[0]["verificationResult"]["statement"]["subject"][0]["digest"].update(sha256="e" * 64)),
     ("different_signed_repository", lambda t: t.certificate.update(sourceRepositoryURI="https://example.invalid")),

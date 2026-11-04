@@ -295,6 +295,12 @@ verified release tag; serving-version and recovery observations remain part of
 the later runtime phases. It neither invokes PHP nor invents Composer package
 records for a native image.
 
+The requested registry tag must match the verified release version (`native-`
+is removed from historical Git tag names). The current registry tag must still
+resolve to the inspected index. The checked-out and current remote Git tag must
+both peel to the recorded source commit. Unknown or mixed implementation
+identities are refused before any in-image inspection.
+
 PHP images keep the existing `embedded_workflow_package` version/reference
 inspection. Passing either artifact inspector supplies only the provenance
 phase: every topology and recovery cell is still required before the complete
