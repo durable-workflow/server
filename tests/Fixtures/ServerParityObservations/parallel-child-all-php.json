@@ -1,0 +1,3162 @@
+{
+  "evidence": {
+    "reference_image": "ghcr.io/durable-workflow/server@sha256:980fe0a052089ced34ec3fcd2be2ea4e77436861d8fb537fb6654cb652a53e07",
+    "sdk_php": "3.9.1",
+    "sdk_php_source": "e4d77aade4ddc02eb0ba40f827709b8b4817725e",
+    "wire_probe_sha256": "cc6acc99a1fe5a718f2f8658449561336e31738f5cc34c97422808e0f0c33131",
+    "type_annotation": "Offline decode of the retained canonical Avro frames with the identical installed SDK codec; no additional runtime I/O.",
+    "redaction": "Canonical task snapshots omitted; nondeterministic IDs replaced consistently; only checked payload fields retained.",
+    "deduplication": "Unit baseline reconstructs duplicate prefix/at-parent-close arrays from the already checked immutable canonical events; runtime observations retain each independently."
+  },
+  "parallel_child_all": {
+    "applicable": true,
+    "cases": {
+      "single": {
+        "size": 1,
+        "workflow_id": "{parent:single}",
+        "run_id": "{parent-run:single}",
+        "initial_recorded": true,
+        "duplicate_start_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "task_not_leased",
+          "message": null
+        },
+        "initial_no_parent_task": true,
+        "initial_commands": [
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:single}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:1",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 1,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:1",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 1,
+                "parallel_group_index": 0
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "children": [
+          {
+            "workflow_id": "{child:single:0}",
+            "run_id": "{child-run:single:0}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:single:0}",
+                  "workflow_run_id": "{child-run:single:0}",
+                  "parent_workflow_instance_id": "{parent:single}",
+                  "parent_workflow_run_id": "{parent-run:single}",
+                  "parent_sequence": 1,
+                  "workflow_link_id": "{call:single:0}",
+                  "child_call_id": "{call:single:0}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "WorkflowCompleted",
+                "payload": {},
+                "typed_decoded": {
+                  "output": {
+                    "type": "map",
+                    "value": {
+                      "echo": {
+                        "type": "map",
+                        "value": {
+                          "index": {
+                            "type": "int64",
+                            "value": "0"
+                          },
+                          "value": {
+                            "type": "map",
+                            "value": {
+                              "message": {
+                                "type": "string",
+                                "value": "concurrent waits λ"
+                              },
+                              "count": {
+                                "type": "int64",
+                                "value": "9007199254740993"
+                              },
+                              "optional": {
+                                "type": "null",
+                                "value": null
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "empty_before_last": [],
+        "completion_order": [
+          0
+        ],
+        "duplicate_child_outcomes": [
+          {
+            "status": 409,
+            "recorded": null,
+            "reason": "run_closed",
+            "message": null
+          }
+        ],
+        "typed_result": {
+          "type": "map",
+          "value": {
+            "results": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "echo": {
+                      "type": "map",
+                      "value": {
+                        "index": {
+                          "type": "int64",
+                          "value": "0"
+                        },
+                        "value": {
+                          "type": "map",
+                          "value": {
+                            "message": {
+                              "type": "string",
+                              "value": "concurrent waits λ"
+                            },
+                            "count": {
+                              "type": "int64",
+                              "value": "9007199254740993"
+                            },
+                            "optional": {
+                              "type": "null",
+                              "value": null
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "duplicate_finish_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "run_closed",
+          "message": null
+        },
+        "events": [
+          {
+            "sequence": 1,
+            "event_type": "StartAccepted",
+            "payload": {
+              "workflow_instance_id": "{parent:single}",
+              "workflow_run_id": "{parent-run:single}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 2,
+            "event_type": "WorkflowStarted",
+            "payload": {
+              "workflow_instance_id": "{parent:single}",
+              "workflow_run_id": "{parent-run:single}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 3,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:single:0}",
+              "child_call_id": "{call:single:0}",
+              "child_workflow_instance_id": "{child:single:0}",
+              "child_workflow_run_id": "{child-run:single:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:1",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 1,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:1",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 1,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 4,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:single:0}",
+              "child_call_id": "{call:single:0}",
+              "child_workflow_instance_id": "{child:single:0}",
+              "child_workflow_run_id": "{child-run:single:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:1",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 1,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:1",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 1,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 5,
+            "event_type": "ChildRunCompleted",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:single:0}",
+              "child_call_id": "{call:single:0}",
+              "child_workflow_instance_id": "{child:single:0}",
+              "child_workflow_run_id": "{child-run:single:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "child_status": "completed",
+              "parallel_group_id": "parallel-children:1:1",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 1,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:1",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 1,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "echo": {
+                    "type": "map",
+                    "value": {
+                      "index": {
+                        "type": "int64",
+                        "value": "0"
+                      },
+                      "value": {
+                        "type": "map",
+                        "value": {
+                          "message": {
+                            "type": "string",
+                            "value": "concurrent waits λ"
+                          },
+                          "count": {
+                            "type": "int64",
+                            "value": "9007199254740993"
+                          },
+                          "optional": {
+                            "type": "null",
+                            "value": null
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "result": {
+                "type": "map",
+                "value": {
+                  "echo": {
+                    "type": "map",
+                    "value": {
+                      "index": {
+                        "type": "int64",
+                        "value": "0"
+                      },
+                      "value": {
+                        "type": "map",
+                        "value": {
+                          "message": {
+                            "type": "string",
+                            "value": "concurrent waits λ"
+                          },
+                          "count": {
+                            "type": "int64",
+                            "value": "9007199254740993"
+                          },
+                          "optional": {
+                            "type": "null",
+                            "value": null
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 6,
+            "event_type": "WorkflowCompleted",
+            "payload": {},
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "results": {
+                    "type": "list",
+                    "value": [
+                      {
+                        "type": "map",
+                        "value": {
+                          "echo": {
+                            "type": "map",
+                            "value": {
+                              "index": {
+                                "type": "int64",
+                                "value": "0"
+                              },
+                              "value": {
+                                "type": "map",
+                                "value": {
+                                  "message": {
+                                    "type": "string",
+                                    "value": "concurrent waits λ"
+                                  },
+                                  "count": {
+                                    "type": "int64",
+                                    "value": "9007199254740993"
+                                  },
+                                  "optional": {
+                                    "type": "null",
+                                    "value": null
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "no_extra_parent_task": true
+      },
+      "out_of_order": {
+        "size": 3,
+        "workflow_id": "{parent:out_of_order}",
+        "run_id": "{parent-run:out_of_order}",
+        "initial_recorded": true,
+        "duplicate_start_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "task_not_leased",
+          "message": null
+        },
+        "initial_no_parent_task": true,
+        "initial_commands": [
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:out_of_order}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:3",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 3,
+                "parallel_group_index": 0
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:out_of_order}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:3",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 3,
+                "parallel_group_index": 1
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "1"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:out_of_order}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 2,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:3",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 3,
+                "parallel_group_index": 2
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "2"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "children": [
+          {
+            "workflow_id": "{child:out_of_order:0}",
+            "run_id": "{child-run:out_of_order:0}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:out_of_order:0}",
+                  "workflow_run_id": "{child-run:out_of_order:0}",
+                  "parent_workflow_instance_id": "{parent:out_of_order}",
+                  "parent_workflow_run_id": "{parent-run:out_of_order}",
+                  "parent_sequence": 1,
+                  "workflow_link_id": "{call:out_of_order:0}",
+                  "child_call_id": "{call:out_of_order:0}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "WorkflowCompleted",
+                "payload": {},
+                "typed_decoded": {
+                  "output": {
+                    "type": "map",
+                    "value": {
+                      "echo": {
+                        "type": "map",
+                        "value": {
+                          "index": {
+                            "type": "int64",
+                            "value": "0"
+                          },
+                          "value": {
+                            "type": "map",
+                            "value": {
+                              "message": {
+                                "type": "string",
+                                "value": "concurrent waits λ"
+                              },
+                              "count": {
+                                "type": "int64",
+                                "value": "9007199254740993"
+                              },
+                              "optional": {
+                                "type": "null",
+                                "value": null
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "workflow_id": "{child:out_of_order:1}",
+            "run_id": "{child-run:out_of_order:1}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "1"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:out_of_order:1}",
+                  "workflow_run_id": "{child-run:out_of_order:1}",
+                  "parent_workflow_instance_id": "{parent:out_of_order}",
+                  "parent_workflow_run_id": "{parent-run:out_of_order}",
+                  "parent_sequence": 2,
+                  "workflow_link_id": "{call:out_of_order:1}",
+                  "child_call_id": "{call:out_of_order:1}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "WorkflowCompleted",
+                "payload": {},
+                "typed_decoded": {
+                  "output": {
+                    "type": "map",
+                    "value": {
+                      "echo": {
+                        "type": "map",
+                        "value": {
+                          "index": {
+                            "type": "int64",
+                            "value": "1"
+                          },
+                          "value": {
+                            "type": "map",
+                            "value": {
+                              "message": {
+                                "type": "string",
+                                "value": "concurrent waits λ"
+                              },
+                              "count": {
+                                "type": "int64",
+                                "value": "9007199254740993"
+                              },
+                              "optional": {
+                                "type": "null",
+                                "value": null
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "workflow_id": "{child:out_of_order:2}",
+            "run_id": "{child-run:out_of_order:2}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "2"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:out_of_order:2}",
+                  "workflow_run_id": "{child-run:out_of_order:2}",
+                  "parent_workflow_instance_id": "{parent:out_of_order}",
+                  "parent_workflow_run_id": "{parent-run:out_of_order}",
+                  "parent_sequence": 3,
+                  "workflow_link_id": "{call:out_of_order:2}",
+                  "child_call_id": "{call:out_of_order:2}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "WorkflowCompleted",
+                "payload": {},
+                "typed_decoded": {
+                  "output": {
+                    "type": "map",
+                    "value": {
+                      "echo": {
+                        "type": "map",
+                        "value": {
+                          "index": {
+                            "type": "int64",
+                            "value": "2"
+                          },
+                          "value": {
+                            "type": "map",
+                            "value": {
+                              "message": {
+                                "type": "string",
+                                "value": "concurrent waits λ"
+                              },
+                              "count": {
+                                "type": "int64",
+                                "value": "9007199254740993"
+                              },
+                              "optional": {
+                                "type": "null",
+                                "value": null
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "empty_before_last": [
+          true,
+          true
+        ],
+        "completion_order": [
+          2,
+          0,
+          1
+        ],
+        "duplicate_child_outcomes": [
+          {
+            "status": 409,
+            "recorded": null,
+            "reason": "run_closed",
+            "message": null
+          },
+          {
+            "status": 409,
+            "recorded": null,
+            "reason": "run_closed",
+            "message": null
+          },
+          {
+            "status": 409,
+            "recorded": null,
+            "reason": "run_closed",
+            "message": null
+          }
+        ],
+        "typed_result": {
+          "type": "map",
+          "value": {
+            "results": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "echo": {
+                      "type": "map",
+                      "value": {
+                        "index": {
+                          "type": "int64",
+                          "value": "0"
+                        },
+                        "value": {
+                          "type": "map",
+                          "value": {
+                            "message": {
+                              "type": "string",
+                              "value": "concurrent waits λ"
+                            },
+                            "count": {
+                              "type": "int64",
+                              "value": "9007199254740993"
+                            },
+                            "optional": {
+                              "type": "null",
+                              "value": null
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "map",
+                  "value": {
+                    "echo": {
+                      "type": "map",
+                      "value": {
+                        "index": {
+                          "type": "int64",
+                          "value": "1"
+                        },
+                        "value": {
+                          "type": "map",
+                          "value": {
+                            "message": {
+                              "type": "string",
+                              "value": "concurrent waits λ"
+                            },
+                            "count": {
+                              "type": "int64",
+                              "value": "9007199254740993"
+                            },
+                            "optional": {
+                              "type": "null",
+                              "value": null
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "map",
+                  "value": {
+                    "echo": {
+                      "type": "map",
+                      "value": {
+                        "index": {
+                          "type": "int64",
+                          "value": "2"
+                        },
+                        "value": {
+                          "type": "map",
+                          "value": {
+                            "message": {
+                              "type": "string",
+                              "value": "concurrent waits λ"
+                            },
+                            "count": {
+                              "type": "int64",
+                              "value": "9007199254740993"
+                            },
+                            "optional": {
+                              "type": "null",
+                              "value": null
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "duplicate_finish_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "run_closed",
+          "message": null
+        },
+        "events": [
+          {
+            "sequence": 1,
+            "event_type": "StartAccepted",
+            "payload": {
+              "workflow_instance_id": "{parent:out_of_order}",
+              "workflow_run_id": "{parent-run:out_of_order}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 2,
+            "event_type": "WorkflowStarted",
+            "payload": {
+              "workflow_instance_id": "{parent:out_of_order}",
+              "workflow_run_id": "{parent-run:out_of_order}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 3,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:out_of_order:0}",
+              "child_call_id": "{call:out_of_order:0}",
+              "child_workflow_instance_id": "{child:out_of_order:0}",
+              "child_workflow_run_id": "{child-run:out_of_order:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 4,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:out_of_order:0}",
+              "child_call_id": "{call:out_of_order:0}",
+              "child_workflow_instance_id": "{child:out_of_order:0}",
+              "child_workflow_run_id": "{child-run:out_of_order:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 5,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:out_of_order:1}",
+              "child_call_id": "{call:out_of_order:1}",
+              "child_workflow_instance_id": "{child:out_of_order:1}",
+              "child_workflow_run_id": "{child-run:out_of_order:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 6,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:out_of_order:1}",
+              "child_call_id": "{call:out_of_order:1}",
+              "child_workflow_instance_id": "{child:out_of_order:1}",
+              "child_workflow_run_id": "{child-run:out_of_order:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 7,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 3,
+              "workflow_link_id": "{call:out_of_order:2}",
+              "child_call_id": "{call:out_of_order:2}",
+              "child_workflow_instance_id": "{child:out_of_order:2}",
+              "child_workflow_run_id": "{child-run:out_of_order:2}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 2,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 2
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 8,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 3,
+              "workflow_link_id": "{call:out_of_order:2}",
+              "child_call_id": "{call:out_of_order:2}",
+              "child_workflow_instance_id": "{child:out_of_order:2}",
+              "child_workflow_run_id": "{child-run:out_of_order:2}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 2,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 2
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 9,
+            "event_type": "ChildRunCompleted",
+            "payload": {
+              "sequence": 3,
+              "workflow_link_id": "{call:out_of_order:2}",
+              "child_call_id": "{call:out_of_order:2}",
+              "child_workflow_instance_id": "{child:out_of_order:2}",
+              "child_workflow_run_id": "{child-run:out_of_order:2}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "child_status": "completed",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 2,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 2
+                }
+              ]
+            },
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "echo": {
+                    "type": "map",
+                    "value": {
+                      "index": {
+                        "type": "int64",
+                        "value": "2"
+                      },
+                      "value": {
+                        "type": "map",
+                        "value": {
+                          "message": {
+                            "type": "string",
+                            "value": "concurrent waits λ"
+                          },
+                          "count": {
+                            "type": "int64",
+                            "value": "9007199254740993"
+                          },
+                          "optional": {
+                            "type": "null",
+                            "value": null
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "result": {
+                "type": "map",
+                "value": {
+                  "echo": {
+                    "type": "map",
+                    "value": {
+                      "index": {
+                        "type": "int64",
+                        "value": "2"
+                      },
+                      "value": {
+                        "type": "map",
+                        "value": {
+                          "message": {
+                            "type": "string",
+                            "value": "concurrent waits λ"
+                          },
+                          "count": {
+                            "type": "int64",
+                            "value": "9007199254740993"
+                          },
+                          "optional": {
+                            "type": "null",
+                            "value": null
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 10,
+            "event_type": "ChildRunCompleted",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:out_of_order:0}",
+              "child_call_id": "{call:out_of_order:0}",
+              "child_workflow_instance_id": "{child:out_of_order:0}",
+              "child_workflow_run_id": "{child-run:out_of_order:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "child_status": "completed",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "echo": {
+                    "type": "map",
+                    "value": {
+                      "index": {
+                        "type": "int64",
+                        "value": "0"
+                      },
+                      "value": {
+                        "type": "map",
+                        "value": {
+                          "message": {
+                            "type": "string",
+                            "value": "concurrent waits λ"
+                          },
+                          "count": {
+                            "type": "int64",
+                            "value": "9007199254740993"
+                          },
+                          "optional": {
+                            "type": "null",
+                            "value": null
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "result": {
+                "type": "map",
+                "value": {
+                  "echo": {
+                    "type": "map",
+                    "value": {
+                      "index": {
+                        "type": "int64",
+                        "value": "0"
+                      },
+                      "value": {
+                        "type": "map",
+                        "value": {
+                          "message": {
+                            "type": "string",
+                            "value": "concurrent waits λ"
+                          },
+                          "count": {
+                            "type": "int64",
+                            "value": "9007199254740993"
+                          },
+                          "optional": {
+                            "type": "null",
+                            "value": null
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 11,
+            "event_type": "ChildRunCompleted",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:out_of_order:1}",
+              "child_call_id": "{call:out_of_order:1}",
+              "child_workflow_instance_id": "{child:out_of_order:1}",
+              "child_workflow_run_id": "{child-run:out_of_order:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "child_status": "completed",
+              "parallel_group_id": "parallel-children:1:3",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 3,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:3",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 3,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "echo": {
+                    "type": "map",
+                    "value": {
+                      "index": {
+                        "type": "int64",
+                        "value": "1"
+                      },
+                      "value": {
+                        "type": "map",
+                        "value": {
+                          "message": {
+                            "type": "string",
+                            "value": "concurrent waits λ"
+                          },
+                          "count": {
+                            "type": "int64",
+                            "value": "9007199254740993"
+                          },
+                          "optional": {
+                            "type": "null",
+                            "value": null
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "result": {
+                "type": "map",
+                "value": {
+                  "echo": {
+                    "type": "map",
+                    "value": {
+                      "index": {
+                        "type": "int64",
+                        "value": "1"
+                      },
+                      "value": {
+                        "type": "map",
+                        "value": {
+                          "message": {
+                            "type": "string",
+                            "value": "concurrent waits λ"
+                          },
+                          "count": {
+                            "type": "int64",
+                            "value": "9007199254740993"
+                          },
+                          "optional": {
+                            "type": "null",
+                            "value": null
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "sequence": 12,
+            "event_type": "WorkflowCompleted",
+            "payload": {},
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "results": {
+                    "type": "list",
+                    "value": [
+                      {
+                        "type": "map",
+                        "value": {
+                          "echo": {
+                            "type": "map",
+                            "value": {
+                              "index": {
+                                "type": "int64",
+                                "value": "0"
+                              },
+                              "value": {
+                                "type": "map",
+                                "value": {
+                                  "message": {
+                                    "type": "string",
+                                    "value": "concurrent waits λ"
+                                  },
+                                  "count": {
+                                    "type": "int64",
+                                    "value": "9007199254740993"
+                                  },
+                                  "optional": {
+                                    "type": "null",
+                                    "value": null
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "map",
+                        "value": {
+                          "echo": {
+                            "type": "map",
+                            "value": {
+                              "index": {
+                                "type": "int64",
+                                "value": "1"
+                              },
+                              "value": {
+                                "type": "map",
+                                "value": {
+                                  "message": {
+                                    "type": "string",
+                                    "value": "concurrent waits λ"
+                                  },
+                                  "count": {
+                                    "type": "int64",
+                                    "value": "9007199254740993"
+                                  },
+                                  "optional": {
+                                    "type": "null",
+                                    "value": null
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "map",
+                        "value": {
+                          "echo": {
+                            "type": "map",
+                            "value": {
+                              "index": {
+                                "type": "int64",
+                                "value": "2"
+                              },
+                              "value": {
+                                "type": "map",
+                                "value": {
+                                  "message": {
+                                    "type": "string",
+                                    "value": "concurrent waits λ"
+                                  },
+                                  "count": {
+                                    "type": "int64",
+                                    "value": "9007199254740993"
+                                  },
+                                  "optional": {
+                                    "type": "null",
+                                    "value": null
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "no_extra_parent_task": true
+      },
+      "failed": {
+        "size": 2,
+        "workflow_id": "{parent:failed}",
+        "run_id": "{parent-run:failed}",
+        "initial_recorded": true,
+        "duplicate_start_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "task_not_leased",
+          "message": null
+        },
+        "initial_no_parent_task": true,
+        "initial_commands": [
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:failed}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:2",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:2",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:failed}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:2",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:2",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "1"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "children": [
+          {
+            "workflow_id": "{child:failed:0}",
+            "run_id": "{child-run:failed:0}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:failed:0}",
+                  "workflow_run_id": "{child-run:failed:0}",
+                  "parent_workflow_instance_id": "{parent:failed}",
+                  "parent_workflow_run_id": "{parent-run:failed}",
+                  "parent_sequence": 1,
+                  "workflow_link_id": "{call:failed:0}",
+                  "child_call_id": "{call:failed:0}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "WorkflowFailed",
+                "payload": {
+                  "failure_id": "{failure:failed}"
+                },
+                "typed_decoded": []
+              }
+            ]
+          },
+          {
+            "workflow_id": "{child:failed:1}",
+            "run_id": "{child-run:failed:1}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "1"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:failed:1}",
+                  "workflow_run_id": "{child-run:failed:1}",
+                  "parent_workflow_instance_id": "{parent:failed}",
+                  "parent_workflow_run_id": "{parent-run:failed}",
+                  "parent_sequence": 2,
+                  "workflow_link_id": "{call:failed:1}",
+                  "child_call_id": "{call:failed:1}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "WorkflowCompleted",
+                "payload": {},
+                "typed_decoded": {
+                  "output": {
+                    "type": "map",
+                    "value": {
+                      "echo": {
+                        "type": "map",
+                        "value": {
+                          "index": {
+                            "type": "int64",
+                            "value": "1"
+                          },
+                          "value": {
+                            "type": "map",
+                            "value": {
+                              "message": {
+                                "type": "string",
+                                "value": "concurrent waits λ"
+                              },
+                              "count": {
+                                "type": "int64",
+                                "value": "9007199254740993"
+                              },
+                              "optional": {
+                                "type": "null",
+                                "value": null
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "empty_before_last": [],
+        "completion_order": [
+          0,
+          1
+        ],
+        "typed_result": {
+          "type": "map",
+          "value": {
+            "failure_class": {
+              "type": "string",
+              "value": "DurableWorkflow\\Exception\\ChildWorkflowFailed"
+            },
+            "failure_type": {
+              "type": "string",
+              "value": "ChildRunFailed"
+            },
+            "workflow_type": {
+              "type": "string",
+              "value": "parity.v1.child_all_child"
+            },
+            "message": {
+              "type": "string",
+              "value": "child barrier failure λ"
+            }
+          }
+        },
+        "duplicate_finish_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "run_closed",
+          "message": null
+        },
+        "duplicate_child_outcomes": [
+          {
+            "status": 409,
+            "recorded": null,
+            "reason": "run_closed",
+            "message": null
+          }
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "event_type": "StartAccepted",
+            "payload": {
+              "workflow_instance_id": "{parent:failed}",
+              "workflow_run_id": "{parent-run:failed}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 2,
+            "event_type": "WorkflowStarted",
+            "payload": {
+              "workflow_instance_id": "{parent:failed}",
+              "workflow_run_id": "{parent-run:failed}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 3,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:failed:0}",
+              "child_call_id": "{call:failed:0}",
+              "child_workflow_instance_id": "{child:failed:0}",
+              "child_workflow_run_id": "{child-run:failed:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 4,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:failed:0}",
+              "child_call_id": "{call:failed:0}",
+              "child_workflow_instance_id": "{child:failed:0}",
+              "child_workflow_run_id": "{child-run:failed:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 5,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:failed:1}",
+              "child_call_id": "{call:failed:1}",
+              "child_workflow_instance_id": "{child:failed:1}",
+              "child_workflow_run_id": "{child-run:failed:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 6,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:failed:1}",
+              "child_call_id": "{call:failed:1}",
+              "child_workflow_instance_id": "{child:failed:1}",
+              "child_workflow_run_id": "{child-run:failed:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 7,
+            "event_type": "ChildRunFailed",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:failed:0}",
+              "child_call_id": "{call:failed:0}",
+              "child_workflow_instance_id": "{child:failed:0}",
+              "child_workflow_run_id": "{child-run:failed:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "child_status": "failed",
+              "failure_id": "{failure:failed}",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 8,
+            "event_type": "WorkflowCompleted",
+            "payload": {},
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "failure_class": {
+                    "type": "string",
+                    "value": "DurableWorkflow\\Exception\\ChildWorkflowFailed"
+                  },
+                  "failure_type": {
+                    "type": "string",
+                    "value": "ChildRunFailed"
+                  },
+                  "workflow_type": {
+                    "type": "string",
+                    "value": "parity.v1.child_all_child"
+                  },
+                  "message": {
+                    "type": "string",
+                    "value": "child barrier failure λ"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "no_extra_parent_task": true
+      },
+      "cancelled": {
+        "size": 2,
+        "workflow_id": "{parent:cancelled}",
+        "run_id": "{parent-run:cancelled}",
+        "initial_recorded": true,
+        "duplicate_start_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "task_not_leased",
+          "message": null
+        },
+        "initial_no_parent_task": true,
+        "initial_commands": [
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:cancelled}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:2",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:2",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:cancelled}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:2",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:2",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "1"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "children": [
+          {
+            "workflow_id": "{child:cancelled:0}",
+            "run_id": "{child-run:cancelled:0}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:cancelled:0}",
+                  "workflow_run_id": "{child-run:cancelled:0}",
+                  "parent_workflow_instance_id": "{parent:cancelled}",
+                  "parent_workflow_run_id": "{parent-run:cancelled}",
+                  "parent_sequence": 1,
+                  "workflow_link_id": "{call:cancelled:0}",
+                  "child_call_id": "{call:cancelled:0}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "CancelRequested",
+                "payload": {
+                  "workflow_instance_id": "{child:cancelled:0}",
+                  "workflow_run_id": "{child-run:cancelled:0}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 3,
+                "event_type": "WorkflowCancelled",
+                "payload": {
+                  "workflow_instance_id": "{child:cancelled:0}",
+                  "workflow_run_id": "{child-run:cancelled:0}",
+                  "failure_id": "{failure:cancelled}"
+                },
+                "typed_decoded": []
+              }
+            ]
+          },
+          {
+            "workflow_id": "{child:cancelled:1}",
+            "run_id": "{child-run:cancelled:1}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "1"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:cancelled:1}",
+                  "workflow_run_id": "{child-run:cancelled:1}",
+                  "parent_workflow_instance_id": "{parent:cancelled}",
+                  "parent_workflow_run_id": "{parent-run:cancelled}",
+                  "parent_sequence": 2,
+                  "workflow_link_id": "{call:cancelled:1}",
+                  "child_call_id": "{call:cancelled:1}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "WorkflowCompleted",
+                "payload": {},
+                "typed_decoded": {
+                  "output": {
+                    "type": "map",
+                    "value": {
+                      "echo": {
+                        "type": "map",
+                        "value": {
+                          "index": {
+                            "type": "int64",
+                            "value": "1"
+                          },
+                          "value": {
+                            "type": "map",
+                            "value": {
+                              "message": {
+                                "type": "string",
+                                "value": "concurrent waits λ"
+                              },
+                              "count": {
+                                "type": "int64",
+                                "value": "9007199254740993"
+                              },
+                              "optional": {
+                                "type": "null",
+                                "value": null
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "empty_before_last": [],
+        "completion_order": [
+          0,
+          1
+        ],
+        "typed_result": {
+          "type": "map",
+          "value": {
+            "failure_class": {
+              "type": "string",
+              "value": "DurableWorkflow\\Exception\\ChildWorkflowFailed"
+            },
+            "failure_type": {
+              "type": "string",
+              "value": "ChildRunCancelled"
+            },
+            "workflow_type": {
+              "type": "string",
+              "value": "parity.v1.child_all_child"
+            },
+            "message": {
+              "type": "string",
+              "value": "Workflow cancelled: child barrier closed λ"
+            }
+          }
+        },
+        "duplicate_finish_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "run_closed",
+          "message": null
+        },
+        "duplicate_child_outcomes": [
+          {
+            "status": 409,
+            "recorded": null,
+            "reason": "run_closed",
+            "message": null
+          }
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "event_type": "StartAccepted",
+            "payload": {
+              "workflow_instance_id": "{parent:cancelled}",
+              "workflow_run_id": "{parent-run:cancelled}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 2,
+            "event_type": "WorkflowStarted",
+            "payload": {
+              "workflow_instance_id": "{parent:cancelled}",
+              "workflow_run_id": "{parent-run:cancelled}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 3,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:cancelled:0}",
+              "child_call_id": "{call:cancelled:0}",
+              "child_workflow_instance_id": "{child:cancelled:0}",
+              "child_workflow_run_id": "{child-run:cancelled:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 4,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:cancelled:0}",
+              "child_call_id": "{call:cancelled:0}",
+              "child_workflow_instance_id": "{child:cancelled:0}",
+              "child_workflow_run_id": "{child-run:cancelled:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 5,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:cancelled:1}",
+              "child_call_id": "{call:cancelled:1}",
+              "child_workflow_instance_id": "{child:cancelled:1}",
+              "child_workflow_run_id": "{child-run:cancelled:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 6,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:cancelled:1}",
+              "child_call_id": "{call:cancelled:1}",
+              "child_workflow_instance_id": "{child:cancelled:1}",
+              "child_workflow_run_id": "{child-run:cancelled:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 7,
+            "event_type": "ChildRunCancelled",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:cancelled:0}",
+              "child_call_id": "{call:cancelled:0}",
+              "child_workflow_instance_id": "{child:cancelled:0}",
+              "child_workflow_run_id": "{child-run:cancelled:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "child_status": "cancelled",
+              "failure_id": "{failure:cancelled}",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 8,
+            "event_type": "WorkflowCompleted",
+            "payload": {},
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "failure_class": {
+                    "type": "string",
+                    "value": "DurableWorkflow\\Exception\\ChildWorkflowFailed"
+                  },
+                  "failure_type": {
+                    "type": "string",
+                    "value": "ChildRunCancelled"
+                  },
+                  "workflow_type": {
+                    "type": "string",
+                    "value": "parity.v1.child_all_child"
+                  },
+                  "message": {
+                    "type": "string",
+                    "value": "Workflow cancelled: child barrier closed λ"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "no_extra_parent_task": true
+      },
+      "terminated": {
+        "size": 2,
+        "workflow_id": "{parent:terminated}",
+        "run_id": "{parent-run:terminated}",
+        "initial_recorded": true,
+        "duplicate_start_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "task_not_leased",
+          "message": null
+        },
+        "initial_no_parent_task": true,
+        "initial_commands": [
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:terminated}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:2",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:2",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 0
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "type": "start_child_workflow",
+            "queue": "{parent:terminated}-children",
+            "workflow_type": "parity.v1.child_all_child",
+            "parallel_group_id": "parallel-children:1:2",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "parallel_group_path": [
+              {
+                "parallel_group_id": "parallel-children:1:2",
+                "parallel_group_kind": "child",
+                "parallel_group_base_sequence": 1,
+                "parallel_group_size": 2,
+                "parallel_group_index": 1
+              }
+            ],
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "1"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "children": [
+          {
+            "workflow_id": "{child:terminated:0}",
+            "run_id": "{child-run:terminated:0}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "0"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:terminated:0}",
+                  "workflow_run_id": "{child-run:terminated:0}",
+                  "parent_workflow_instance_id": "{parent:terminated}",
+                  "parent_workflow_run_id": "{parent-run:terminated}",
+                  "parent_sequence": 1,
+                  "workflow_link_id": "{call:terminated:0}",
+                  "child_call_id": "{call:terminated:0}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "TerminateRequested",
+                "payload": {
+                  "workflow_instance_id": "{child:terminated:0}",
+                  "workflow_run_id": "{child-run:terminated:0}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 3,
+                "event_type": "WorkflowTerminated",
+                "payload": {
+                  "workflow_instance_id": "{child:terminated:0}",
+                  "workflow_run_id": "{child-run:terminated:0}",
+                  "failure_id": "{failure:terminated}"
+                },
+                "typed_decoded": []
+              }
+            ]
+          },
+          {
+            "workflow_id": "{child:terminated:1}",
+            "run_id": "{child-run:terminated:1}",
+            "typed_arguments": {
+              "type": "list",
+              "value": [
+                {
+                  "type": "map",
+                  "value": {
+                    "index": {
+                      "type": "int64",
+                      "value": "1"
+                    },
+                    "value": {
+                      "type": "map",
+                      "value": {
+                        "message": {
+                          "type": "string",
+                          "value": "concurrent waits λ"
+                        },
+                        "count": {
+                          "type": "int64",
+                          "value": "9007199254740993"
+                        },
+                        "optional": {
+                          "type": "null",
+                          "value": null
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "events": [
+              {
+                "sequence": 1,
+                "event_type": "WorkflowStarted",
+                "payload": {
+                  "workflow_instance_id": "{child:terminated:1}",
+                  "workflow_run_id": "{child-run:terminated:1}",
+                  "parent_workflow_instance_id": "{parent:terminated}",
+                  "parent_workflow_run_id": "{parent-run:terminated}",
+                  "parent_sequence": 2,
+                  "workflow_link_id": "{call:terminated:1}",
+                  "child_call_id": "{call:terminated:1}"
+                },
+                "typed_decoded": []
+              },
+              {
+                "sequence": 2,
+                "event_type": "WorkflowCompleted",
+                "payload": {},
+                "typed_decoded": {
+                  "output": {
+                    "type": "map",
+                    "value": {
+                      "echo": {
+                        "type": "map",
+                        "value": {
+                          "index": {
+                            "type": "int64",
+                            "value": "1"
+                          },
+                          "value": {
+                            "type": "map",
+                            "value": {
+                              "message": {
+                                "type": "string",
+                                "value": "concurrent waits λ"
+                              },
+                              "count": {
+                                "type": "int64",
+                                "value": "9007199254740993"
+                              },
+                              "optional": {
+                                "type": "null",
+                                "value": null
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "empty_before_last": [],
+        "completion_order": [
+          0,
+          1
+        ],
+        "typed_result": {
+          "type": "map",
+          "value": {
+            "failure_class": {
+              "type": "string",
+              "value": "DurableWorkflow\\Exception\\ChildWorkflowFailed"
+            },
+            "failure_type": {
+              "type": "string",
+              "value": "ChildRunTerminated"
+            },
+            "workflow_type": {
+              "type": "string",
+              "value": "parity.v1.child_all_child"
+            },
+            "message": {
+              "type": "string",
+              "value": "Workflow terminated: child barrier closed λ"
+            }
+          }
+        },
+        "duplicate_finish_outcome": {
+          "status": 409,
+          "recorded": null,
+          "reason": "run_closed",
+          "message": null
+        },
+        "duplicate_child_outcomes": [
+          {
+            "status": 409,
+            "recorded": null,
+            "reason": "run_closed",
+            "message": null
+          }
+        ],
+        "events": [
+          {
+            "sequence": 1,
+            "event_type": "StartAccepted",
+            "payload": {
+              "workflow_instance_id": "{parent:terminated}",
+              "workflow_run_id": "{parent-run:terminated}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 2,
+            "event_type": "WorkflowStarted",
+            "payload": {
+              "workflow_instance_id": "{parent:terminated}",
+              "workflow_run_id": "{parent-run:terminated}"
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 3,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:terminated:0}",
+              "child_call_id": "{call:terminated:0}",
+              "child_workflow_instance_id": "{child:terminated:0}",
+              "child_workflow_run_id": "{child-run:terminated:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 4,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:terminated:0}",
+              "child_call_id": "{call:terminated:0}",
+              "child_workflow_instance_id": "{child:terminated:0}",
+              "child_workflow_run_id": "{child-run:terminated:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 5,
+            "event_type": "ChildWorkflowScheduled",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:terminated:1}",
+              "child_call_id": "{call:terminated:1}",
+              "child_workflow_instance_id": "{child:terminated:1}",
+              "child_workflow_run_id": "{child-run:terminated:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 6,
+            "event_type": "ChildRunStarted",
+            "payload": {
+              "sequence": 2,
+              "workflow_link_id": "{call:terminated:1}",
+              "child_call_id": "{call:terminated:1}",
+              "child_workflow_instance_id": "{child:terminated:1}",
+              "child_workflow_run_id": "{child-run:terminated:1}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "parent_close_policy": "abandon",
+              "cancellation_policy": "abandon",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 1,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 1
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 7,
+            "event_type": "ChildRunTerminated",
+            "payload": {
+              "sequence": 1,
+              "workflow_link_id": "{call:terminated:0}",
+              "child_call_id": "{call:terminated:0}",
+              "child_workflow_instance_id": "{child:terminated:0}",
+              "child_workflow_run_id": "{child-run:terminated:0}",
+              "child_workflow_class": "parity.v1.child_all_child",
+              "child_workflow_type": "parity.v1.child_all_child",
+              "child_run_number": 1,
+              "child_status": "terminated",
+              "failure_id": "{failure:terminated}",
+              "parallel_group_id": "parallel-children:1:2",
+              "parallel_group_kind": "child",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 2,
+              "parallel_group_index": 0,
+              "parallel_group_path": [
+                {
+                  "parallel_group_id": "parallel-children:1:2",
+                  "parallel_group_kind": "child",
+                  "parallel_group_base_sequence": 1,
+                  "parallel_group_size": 2,
+                  "parallel_group_index": 0
+                }
+              ]
+            },
+            "typed_decoded": []
+          },
+          {
+            "sequence": 8,
+            "event_type": "WorkflowCompleted",
+            "payload": {},
+            "typed_decoded": {
+              "output": {
+                "type": "map",
+                "value": {
+                  "failure_class": {
+                    "type": "string",
+                    "value": "DurableWorkflow\\Exception\\ChildWorkflowFailed"
+                  },
+                  "failure_type": {
+                    "type": "string",
+                    "value": "ChildRunTerminated"
+                  },
+                  "workflow_type": {
+                    "type": "string",
+                    "value": "parity.v1.child_all_child"
+                  },
+                  "message": {
+                    "type": "string",
+                    "value": "Workflow terminated: child barrier closed λ"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "no_extra_parent_task": true
+      }
+    }
+  }
+}
