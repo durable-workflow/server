@@ -61,7 +61,15 @@ cat > "$scratch/docker" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CALL_LOG"
 ref=${!#}
+if [[ -n "${PUBLISH_LOOKUP_FAILURE:-}" && "$*" == *"imagetools inspect"* ]]; then
+  printf '%s\n' "$PUBLISH_LOOKUP_FAILURE" >&2; exit 73
+fi
 if [[ "$*" == *"imagetools inspect --format {{json .Image}}"* ]]; then
+  if [[ -n "${CURRENT_READ_FAILURE:-}" ]]; then
+    if [[ "$CURRENT_READ_FAILURE" == mixed-subject ]]; then printf 'ERROR: %s: not found\nerror getting credentials: helper not found\n' "$ref" >&2
+    else printf '%s\n' "$CURRENT_READ_FAILURE" >&2; fi
+    exit 73
+  fi
   if [[ "${RACE_REF:-}" == "$ref" ]]; then
     count=$(( $(cat "$RACE_COUNTER" 2>/dev/null || echo 0) + 1 )); echo "$count" > "$RACE_COUNTER"
     if ((count > 1)); then echo '{"config":{"Labels":{"dev.durable-workflow.release.tag":"3.9.0"}}}'; exit 0; fi
@@ -153,6 +161,37 @@ live_state=$'ghcr.io/example/native:3.0 3.0.0\nexample/native:3.0 3.0.0\nghcr.io
 rolling_control VERIFY_ONLY=true ALIAS_STATE="$live_state" || fail "qualified same-index live state must pass."
 grep -q 'imagetools create' "$scratch/calls" && fail "same-index live-state verification wrote."
 
+# Credential/transport/auth/rate failures are never evidence of alias or
+# version-tag absence, even when their text contains the words "not found".
+read_failures=(
+  'error getting credentials: credential helper not found'
+  'error getting credentials: executable file not found in $PATH'
+  'HTTP 401 Unauthorized: authentication required'
+  'insufficient_scope: authorization failed'
+  'dial tcp: registry host not found'
+  'TLS CA file not found'
+  'HTTP 429 Too Many Requests'
+  'manifest unknown'
+  'ERROR: unrelated.invalid/server:latest: not found'
+  mixed-subject
+)
+for failure in "${read_failures[@]}"; do
+  if rolling_control CURRENT_READ_FAILURE="$failure"; then fail "failed alias lookup was accepted as absent."; fi
+  grep -q 'imagetools create' "$scratch/calls" && fail "failed alias lookup reached registry writes."
+  : > "$scratch/calls"
+  if env -i PATH="$scratch:$PATH" CALL_LOG="$scratch/calls" PUBLISH_LOOKUP_FAILURE="$failure" \
+    "${images[@]}" RELEASE_TAG=3.0.0 PUBLISH_DOCKERHUB=true DIGEST_AMD64="$index" DIGEST_ARM64="$index" \
+    bash "$publish" >/dev/null 2>&1; then fail "failed exact-tag lookup was accepted as absent."; fi
+  grep -q 'imagetools create' "$scratch/calls" && fail "failed exact-tag lookup reached publication writes."
+done
+source scripts/ci/native-registry-absence.sh
+native_registry_subject_missing ghcr.io/example/native:latest 'ERROR: ghcr.io/example/native:latest: not found' \
+  || fail "the exact subject-bound not-found format must be recognized."
+for output in 'not found' 'ERROR: example/native:latest: not found' 'ERROR: ghcr.io/example/native:latest: manifest unknown' \
+  $'ERROR: ghcr.io/example/native:latest: not found\ncredential helper not found'; do
+  if native_registry_subject_missing ghcr.io/example/native:latest "$output"; then fail "unbound/mixed absence diagnostic accepted."; fi
+done
+
 # The GitHub Release, from protected main (native-github-release.yml): it
 # verifies the tag, the run, both exact tags and the provenance, then marks
 # a final Latest only when the live latest alias names its index in both
@@ -186,6 +225,11 @@ cat > "$scratch/release-docker" <<'FAKE'
 #!/usr/bin/env bash
 ref=${!#}
 if [[ "$ref" == *:latest ]]; then
+  if [[ -n "${LATEST_READ_FAILURE:-}" ]]; then
+    if [[ "$LATEST_READ_FAILURE" == mixed-subject ]]; then printf 'ERROR: %s: not found\ncredential helper not found\n' "$ref" >&2
+    else printf '%s\n' "$LATEST_READ_FAILURE" >&2; fi
+    exit 73
+  fi
   digest=$(awk -v r="${ref%:latest}" '$1 == r { print $2 }' <<<"${LATEST_STATE:-}")
   [[ -z "$digest" ]] && { echo "ERROR: $ref: not found" >&2; exit 1; }
   [[ "$digest" == unreadable ]] && { echo "ERROR: unauthorized" >&2; exit 1; }
@@ -287,6 +331,13 @@ want_release "qualification refusal" "$(gh_release 3.0.2 "$ours" QUALIFICATION_S
 test ! -s "$scratch/gh_calls" || fail "Release was created despite qualification refusal."
 want_release "final missing qualification" "$(gh_release 3.0.2 "$ours" PROMOTION_EVIDENCE=)" "FAILED"
 want_release "candidate needs no alias qualification" "$(gh_release 3.1.0-rc.1 "$ours" PROMOTION_EVIDENCE= QUALIFICATION_STATUS=1)" "--prerelease --latest=false"
+
+for failure in "${read_failures[@]}"; do
+  want_release "failed latest read remains unknown" "$(gh_release 3.0.2 "$ours" LATEST_READ_FAILURE="$failure")" "FAILED"
+  test ! -s "$scratch/gh_calls" || fail "failed latest lookup reached Release creation."
+done
+want_release "malformed successful latest digest" "$(gh_release 3.0.2 'ghcr.io/example/native not-a-digest')" "FAILED"
+test ! -s "$scratch/gh_calls" || fail "malformed latest digest reached Release creation."
 
 # Release identity: only a strict native- label admits a release image, and
 # only when its server reports exactly that version.

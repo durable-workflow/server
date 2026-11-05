@@ -23,6 +23,7 @@
 # Env: RELEASE_TAG, RELEASE_RUN_ID, GITHUB_REPOSITORY, GHCR_IMAGE,
 # DOCKERHUB_IMAGE. GH and DOCKER override the gh and docker commands.
 set -euo pipefail
+source scripts/ci/native-registry-absence.sh
 fail() { printf 'GitHub Release failed: %s\n' "$1" >&2; exit 1; }
 # Reuse the same read-only authority checks as protected alias promotion.
 source "$(dirname "${BASH_SOURCE[0]}")/native-release-verify-publication.sh"
@@ -39,9 +40,10 @@ fi
 latest_digest() {
   local output
   if ! output=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1:latest" 2>&1); then
-    grep -qiE 'not found|manifest unknown|name unknown' <<<"$output" && return 0
-    fail "cannot read the current $1:latest: $(head -c 300 <<<"$output")"
+    native_registry_subject_missing "$1:latest" "$output" && return 0
+    fail "cannot establish the current latest alias."
   fi
+  [[ "$output" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "latest alias returned no valid digest."
   printf '%s\n' "$output"
 }
 

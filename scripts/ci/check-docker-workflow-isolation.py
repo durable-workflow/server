@@ -4,12 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import shlex
 import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+
+# Closed cleanup model, not a path exemption: every module used by the owner
+# checks/CLI transport is bound to reviewed bytes. A source change requires an
+# explicit model update and countercontrol review before gaining coverage.
+QUALIFICATION_CLEANUP_SOURCES = {
+    "scripts/ci/native_qualification.py": "bea634249dfd4bdf9f869f02ecc800a0294e6b4422ed576fc9d9176a8b7b0865",
+    "scripts/ci/native_alias_evidence.py": "52a565f81adb977e597ddaaa26cc1a9478be86d87b052b2ed53107eb88e18897",
+    "scripts/ci/native_alias_transport.py": "c1b210c785eff1e82e3e154c2f9c44a4d9214491525c3f681343cee44849ee85",
+}
 
 
 WORKFLOW_SCOPE_PARTS = (
@@ -897,9 +907,47 @@ def resource_aliases(
     return aliases
 
 
+def qualification_cleanup_resources(
+    command: str, resolution_source: str, root: Path | None,
+) -> tuple[set[OwnedResource], list[str]]:
+    """Recognize one exact, idempotent, owner-gated helper invocation."""
+    try:
+        tokens = shlex.split(re.sub(r"^run:\s*", "", command))
+    except ValueError:
+        return set(), []
+    if tokens[:3] != ["python3", "scripts/ci/native_qualification.py", "cleanup"]:
+        return set(), []
+    reason = "strict qualification cleanup requires reviewed bytes, closed argv and job-scoped scope"
+    if (root is None or len(tokens) != 9 or tokens[3] != "--kind"
+            or tokens[4] not in {"corpus", "compose"} or tokens[5] != "--scope"
+            or tokens[7:] != ["--output", "qualification-state/cleanup.json"]
+            or re.fullmatch(r"\$(?:[A-Z][A-Z0-9_]*|\{[A-Z][A-Z0-9_]*\})", tokens[6]) is None
+            or not value_is_job_scoped(resolution_source, tokens[6])):
+        return set(), [reason]
+    try:
+        for relative, expected in QUALIFICATION_CLEANUP_SOURCES.items():
+            path = root / relative
+            # Symlinked code could import a different adjacent module closure.
+            if path.resolve() != root.resolve() / relative:
+                return set(), [reason]
+            with path.open("rb") as stream:
+                data = stream.read(131073)
+            if len(data) > 131072 or hashlib.sha256(data).hexdigest() != expected:
+                return set(), [reason]
+    except OSError:
+        return set(), [reason]
+    scope = tokens[6]
+    if tokens[4] == "compose":
+        return {OwnedResource("compose", scope)}, []
+    return {OwnedResource("network", scope), *(
+        OwnedResource("container", scope + "-" + suffix)
+        for suffix in ("rust", "server", "php-maintenance"))}, []
+
+
 def cleanup_resources(
     job_source: str,
     resolution_source: str,
+    root: Path | None = None,
 ) -> tuple[set[OwnedResource], list[str]]:
     """Return resources removed by tolerant always-steps and cleanup violations."""
 
@@ -936,6 +984,9 @@ def cleanup_resources(
         ]
 
         for _, command in commands:
+            modeled, errors = qualification_cleanup_resources(command, resolution_source, root)
+            resources.update(modeled)
+            violations.extend(errors)
             for match in COMPOSE_COMMAND.finditer(command):
                 arguments = command[match.end() :]
                 if not COMPOSE_DOWN_OPERATION.search(arguments):
@@ -2427,6 +2478,7 @@ def validate(root: Path) -> list[str]:
             cleaned, cleanup_violations = cleanup_resources(
                 job_source,
                 resource_source,
+                root,
             )
             violations.extend(
                 f"{workflow} job {job_name}: {violation}"

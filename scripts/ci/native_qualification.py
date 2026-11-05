@@ -119,10 +119,10 @@ def owned_inventory(commands: Commands, role: str, scope: str) -> tuple[set[str]
             require(type(labels) is dict and labels.get("com.docker.compose.project") == scope,
                     "cleanup_container_owner")
         else:
-            attached = data.get("NetworkSettings", {}).get("Networks", {})
-            labels = data["Config"].get("Labels") or {}
-            require(data.get("Name", "").startswith("/" + scope + "-") or scope in attached
-                    or (type(labels) is dict and labels.get(OWNER) == scope),
+            # Prefixes and network membership discover candidates, never grant
+            # removal authority. Validate every candidate before the first rm.
+            labels = data["Config"].get("Labels")
+            require(type(labels) is dict and labels.get(OWNER) == scope,
                     "cleanup_container_owner")
         for mount in data["Mounts"]:
             if type(mount) is dict and mount.get("Type") == "volume":

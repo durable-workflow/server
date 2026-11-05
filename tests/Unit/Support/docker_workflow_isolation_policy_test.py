@@ -12,6 +12,68 @@ POLICY = ROOT / "scripts" / "ci" / "check-docker-workflow-isolation.py"
 
 
 class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
+    def qualification_cleanup_sources(self) -> dict[str, str]:
+        return {relative: (ROOT / relative).read_text() for relative in (
+            "scripts/ci/native_qualification.py", "scripts/ci/native_alias_evidence.py",
+            "scripts/ci/native_alias_transport.py")}
+
+    def qualification_workflow(self, invocation: str, always: bool = True) -> str:
+        condition = "if: always()" if always else "if: success()"
+        return """
+            jobs:
+              corpus:
+                env:
+                  RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+                steps:
+                  - run: docker network create "$RESOURCE_SCOPE"
+                  - run: docker run -d --name "$RESOURCE_SCOPE-rust" image
+                  - CONDITION
+                    run: INVOCATION
+        """.replace("CONDITION", condition).replace("INVOCATION", invocation)
+
+    def test_accepts_exact_reviewed_strict_qualification_cleanup(self) -> None:
+        invocation = ('python3 scripts/ci/native_qualification.py cleanup --kind corpus '
+                      '--scope "$RESOURCE_SCOPE" --output qualification-state/cleanup.json')
+        result = self.run_policy(self.qualification_workflow(invocation), self.qualification_cleanup_sources())
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_strict_qualification_cleanup_refuses_helper_and_import_byte_changes(self) -> None:
+        invocation = ('python3 scripts/ci/native_qualification.py cleanup --kind corpus '
+                      '--scope "$RESOURCE_SCOPE" --output qualification-state/cleanup.json')
+        for changed in self.qualification_cleanup_sources():
+            sources = self.qualification_cleanup_sources()
+            sources[changed] += "\n# changed source is not the reviewed closure\n"
+            result = self.run_policy(self.qualification_workflow(invocation), sources)
+            self.assertNotEqual(0, result.returncode, changed)
+            self.assertIn("strict qualification cleanup requires reviewed bytes", result.stderr)
+
+    def test_strict_qualification_cleanup_refuses_open_argv_scope_or_non_always(self) -> None:
+        invocation = ('python3 scripts/ci/native_qualification.py cleanup --kind corpus '
+                      '--scope "$RESOURCE_SCOPE" --output qualification-state/cleanup.json')
+        for invalid in (invocation + " --extra value", invocation.replace("corpus", "unknown"),
+                        invocation.replace('"$RESOURCE_SCOPE"', "shared-name"),
+                        invocation.replace("qualification-state/cleanup.json", "another.json"),
+                        invocation.replace("cleanup --kind", "observe-image --kind")):
+            result = self.run_policy(self.qualification_workflow(invalid), self.qualification_cleanup_sources())
+            self.assertNotEqual(0, result.returncode, invalid)
+        result = self.run_policy(self.qualification_workflow(invocation, always=False), self.qualification_cleanup_sources())
+        self.assertNotEqual(0, result.returncode)
+
+    def test_accepts_closed_strict_compose_cleanup_with_job_scoped_project(self) -> None:
+        workflow = """
+            jobs:
+              smoke:
+                env:
+                  PROJECT: compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+                  SERVER_PORT: "0"
+                steps:
+                  - run: docker compose -p "$PROJECT" up -d
+                  - if: always()
+                    run: python3 scripts/ci/native_qualification.py cleanup --kind compose --scope "$PROJECT" --output qualification-state/cleanup.json
+        """
+        result = self.run_policy(workflow, self.qualification_cleanup_sources())
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def run_policy(
         self, workflow: str, scripts: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:

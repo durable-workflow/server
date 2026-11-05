@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,8 @@ class ResourceCommands:
         self.containers, self.networks, self.volumes = {CID}, {NID}, {VOLUME}
         self.removed, self.reads = [], []
         self.owner = SCOPE
+        self.corpus_owner = SCOPE
+        self.container_name = "/" + SCOPE + "-server"
         self.volume_owner = None
         self.fail_list = self.leak = False
 
@@ -51,13 +54,17 @@ class ResourceCommands:
                     ("\n" if getattr(self, resource + "s") else "")).encode()
         if operation == "inspect":
             if resource == "container":
-                value = {"Id": CID, "Name": "/" + SCOPE + "-server", "Image": CONFIG,
-                         "Config": {"Labels": {"com.docker.compose.project": self.owner}},
+                labels = {"com.docker.compose.project": self.owner}
+                if self.corpus_owner is not None:
+                    labels[Q.OWNER] = self.corpus_owner
+                value = {"Id": CID, "Name": self.container_name, "Image": CONFIG,
+                         "Config": {"Labels": labels},
+                         "NetworkSettings": {"Networks": {SCOPE: {}}},
                          "Mounts": [{"Type": "volume", "Name": VOLUME}]}
             elif resource == "volume":
                 value = {"Name": VOLUME, "Labels": self.volume_owner}
             elif resource == "network":
-                value = {"Id": NID, "Name": SCOPE, "Containers": {CID: {}}}
+                value = {"Id": NID, "Name": SCOPE, "Containers": {CID: {}}, "Labels": {Q.OWNER: SCOPE}}
             else:
                 value = {"Id": CONFIG, "Architecture": "amd64", "Os": "linux",
                          "Config": {"Labels": {"org.opencontainers.image.revision": SOURCE,
@@ -116,10 +123,37 @@ class ProducerTests(unittest.TestCase):
             self.assertEqual(commands.removed, [])
 
     def test_cleanup_remaining_resource_is_failure(self):
+        for role in ("corpus", "compose"):
+            commands = ResourceCommands()
+            commands.leak = True
+            with self.subTest(role=role), self.assertRaisesRegex(E.Refusal, "cleanup_not_absent"):
+                Q.cleanup(commands, role, SCOPE)
+
+    def test_corpus_unavailable_inventory_is_unknown_with_zero_removals(self):
         commands = ResourceCommands()
-        commands.leak = True
-        with self.assertRaisesRegex(E.Refusal, "cleanup_not_absent"):
-            Q.cleanup(commands, "compose", SCOPE)
+        commands.fail_list = True
+        with self.assertRaisesRegex(E.Refusal, "fake_api_unavailable"):
+            Q.cleanup(commands, "corpus", SCOPE)
+        self.assertEqual(commands.removed, [])
+
+    def test_corpus_prefix_attachment_and_missing_label_never_authorize_removal(self):
+        for name, owner in (("/foreign-owner", "foreign"), ("/" + SCOPE + "-rust", "foreign"),
+                             ("/" + SCOPE + "-rust", None)):
+            commands = ResourceCommands()
+            commands.container_name, commands.corpus_owner = name, owner
+            with self.subTest(name=name, owner=owner), self.assertRaisesRegex(E.Refusal, "cleanup_container_owner"):
+                Q.cleanup(commands, "corpus", SCOPE)
+            self.assertEqual(commands.removed, [])
+
+    def test_corpus_labelled_attached_or_standalone_helpers_are_owned(self):
+        for attached in (True, False):
+            commands = ResourceCommands()
+            commands.container_name = "/anonymous-helper"
+            if not attached:
+                commands.networks.clear()
+            result = Q.cleanup(commands, "corpus", SCOPE)
+            self.assertIs(result["verified_absent"], True)
+            self.assertIn(("container", {CID}), commands.removed)
 
     def test_diagnostic_context_does_not_query_provider_or_docker(self):
         provider = ProducerProvider()
@@ -297,26 +331,58 @@ class WorkflowContracts(unittest.TestCase):
             self.assertIn("promotion-receipt/receipt.json", source)
             self.assertIn("if-no-files-found: error", source)
 
-    def test_partial_setup_fallback_cannot_turn_strict_cleanup_failure_into_success(self):
-        # Execute the actual workflow run block with inert CLI fakes, rather than
-        # accepting a source string that merely says cleanup was successful.
+    def test_workflow_strict_cleanup_failure_has_no_fallback_removal(self):
+        # Execute the actual workflow block AND helper against an inert Docker
+        # provider that presents a foreign exact-name/attached collision. Both
+        # helper broadening and a raw workflow fallback would produce removals.
         with tempfile.TemporaryDirectory() as directory:
             scratch = Path(directory)
-            for name, status in (("python3", 71), ("docker", 0), ("xargs", 0)):
-                target = scratch / name
-                target.write_text("#!/bin/sh\nexit " + str(status) + "\n")
-                target.chmod(0o755)
+            scripts = scratch / "scripts/ci"
+            scripts.mkdir(parents=True)
+            for name in ("native_qualification.py", "native_alias_evidence.py", "native_alias_transport.py"):
+                shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
+            docker = scratch / "docker"
+            docker.write_text("#!" + sys.executable + "\n" + textwrap.dedent('''
+                import json, os, sys
+                from pathlib import Path
+                args = sys.argv[1:]
+                with Path(os.environ["FAKE_LEDGER"]).open("a") as log:
+                    log.write(json.dumps(args) + "\\n")
+                cid, nid, scope = "d" * 64, "e" * 64, os.environ["RESOURCE_SCOPE"]
+                resource, operation = args[:2]
+                if operation == "ls":
+                    print(cid if resource == "container" else nid if resource == "network" else "")
+                elif operation == "inspect":
+                    value = ({"Id": nid, "Name": scope, "Labels": {"dev.durable-workflow.qualification.scope": scope},
+                              "Containers": {cid: {}}} if resource == "network" else
+                             {"Id": cid, "Name": "/" + scope + "-rust", "Mounts": [],
+                              "Config": {"Labels": {"owner": "foreign", "com.docker.compose.project": "foreign"}},
+                              "NetworkSettings": {"Networks": {scope: {}}}})
+                    print(json.dumps([value]))
+                elif operation == "rm" or resource == "rm":
+                    pass
+                else:
+                    raise SystemExit(71)
+            '''))
+            docker.chmod(0o755)
             for role in ("corpus", "compose"):
                 source = (ROOT / E.WORKFLOWS[role]).read_text()
                 block = source.split("      - name: Verify owned qualification cleanup\n", 1)[1]
                 block = block.split("      - name:", 1)[0]
                 body = textwrap.dedent(block.split("        run: |\n", 1)[1])
+                ledger = scratch / (role + "-ledger")
                 result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", body],
                                         env={"PATH": directory + ":" + os.environ["PATH"],
-                                             "RESOURCE_SCOPE": "dw-parity-301-1-corpus",
-                                             "DW_PUBLISHED_COMPOSE_PROJECT": SCOPE},
+                                             "RESOURCE_SCOPE": SCOPE, "DW_PUBLISHED_COMPOSE_PROJECT": SCOPE,
+                                             "FAKE_LEDGER": str(ledger)}, cwd=scratch,
                                         capture_output=True, timeout=5, check=False)
-                self.assertEqual(result.returncode, 1, role)
+                self.assertNotEqual(result.returncode, 0, role)
+                calls = [json.loads(line) for line in ledger.read_text().splitlines()]
+                self.assertTrue(calls)
+                self.assertFalse(any("rm" in call for call in calls), calls)
+                self.assertFalse((scratch / "qualification-state/cleanup.json").exists())
+                self.assertNotIn("docker ", body)
+                self.assertNotIn("||", body)
 
 
 if __name__ == "__main__":

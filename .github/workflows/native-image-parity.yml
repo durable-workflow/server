@@ -82,14 +82,8 @@ jobs:
         id: cleanup
         if: always()
         run: |
-          # Strict ownership/readback is the receipt authority. Preserve its
-          # failure even if the harmless partial-setup fallback can remove more.
-          cleanup_status=0
           python3 scripts/ci/native_qualification.py cleanup --kind corpus \
-            --scope "$RESOURCE_SCOPE" --output qualification-state/cleanup.json || cleanup_status=$?
-          docker rm -fv "$RESOURCE_SCOPE-rust" "$RESOURCE_SCOPE-server" "$RESOURCE_SCOPE-php-maintenance" >/dev/null 2>&1 || true
-          docker network rm "$RESOURCE_SCOPE" >/dev/null 2>&1 || true
-          test "$cleanup_status" = 0
+            --scope "$RESOURCE_SCOPE" --output qualification-state/cleanup.json
 
       - name: Finalize promotion receipt
         if: always()

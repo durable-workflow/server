@@ -4,6 +4,7 @@ on:
     paths:
       - scripts/ci/native_alias_*.py
       - scripts/ci/native_qualification.py
+      - scripts/ci/native-registry-absence.sh
       - scripts/ci/native-release-*.sh
       - scripts/ci/check-native-release-tags.sh
       - scripts/ci/select-published-compose-image.sh

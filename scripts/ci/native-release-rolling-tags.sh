@@ -23,6 +23,7 @@
 # (one per line) or RELEASE_IMAGE_TAG_SOURCE_URL (git ls-remote). DOCKER
 # overrides the docker command.
 set -eEuo pipefail
+source scripts/ci/native-registry-absence.sh
 fail() { printf 'Native rolling tags failed: %s\n' "$1" >&2; exit 1; }
 docker_bin=${DOCKER:-docker}
 
@@ -84,7 +85,7 @@ fi
 current_release() {
   local ref=$1 output label
   if ! output=$("$docker_bin" buildx imagetools inspect --format '{{json .Image}}' "$ref" 2>&1); then
-    grep -qiE 'not found|manifest unknown|name unknown' <<<"$output" && return 0
+    native_registry_subject_missing "$ref" "$output" && return 0
     fail "cannot read a current alias."
   fi
   label=$(jq -r 'if has("linux/amd64") then .["linux/amd64"] else . end

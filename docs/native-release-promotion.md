@@ -103,12 +103,16 @@ responses use private temporary files and bounded requests; failures print a
 static reason rather than authorization arguments or server logs.
 
 Cleanup retains the original body result. It removes only exact owned Compose
-project resources or the corpus scope's labelled/named/attached containers,
+project resources or containers carrying the exact corpus scope OWNER label,
 owned network and observed owned volumes, including labelled standalone helper
-containers. Successful independent Docker inventory reads must then show zero
+containers. Names and network attachment discover candidates but never authorize
+removal. Every discovered corpus container must have the exact OWNER label
+before any removal; a foreign collision stops with zero removals. Successful independent Docker inventory reads must then show zero
 owned containers, networks and volumes. API failure is unknown, never absence.
-A harmless partial-setup fallback runs after the strict check while preserving
-its exit status; fallback removal cannot repair a failed cleanup proof.
+There is no raw by-name fallback. The isolation checker recognizes only this
+closed always-run kind/scope invocation bound to job identity and reviewed
+helper/transport/predicate source bytes. Unknown ownership/API state retains
+any remaining resource for escalation and never broadens deletion.
 Only after successful body and cleanup steps does the existing job finalize its
 receipt, repeating provider job and immutable workflow ownership. An `always()`
 upload, failed/cancelled job or diagnostic receipt cannot satisfy promotion.
@@ -119,7 +123,11 @@ Arm64 Compose retains its existing QEMU scope, without a native-hardware claim.
 The alias helper preserves Git-version selection and native/PHP latest
 arbitration. It reads current release labels and digests, then immediately before
 each registry write re-reads both exact tags and every selected alias. A changed
-or unreadable state stops. Previously confirmed writes must still name the
+or unreadable state stops. Absence is recognized only for the exact single-line
+Buildx diagnostic `ERROR: <requested-ref>: not found` for that requested tag.
+Credential-helper, auth, transport, rate-limit, mixed/extra or unknown diagnostic
+formats refuse. This is an explicit fail-closed client-format contract, not an
+HTTP-status parser; a future client format requires separate source review. Previously confirmed writes must still name the
 qualified index. Each write is verified before proceeding to the other registry.
 Superseded aliases remain in place; a same-index recovery is idempotent.
 
@@ -128,5 +136,7 @@ an external actor can race after the last read. A write failure, timeout or
 post-write mismatch stops with an explicit attempted/confirmed partial state;
 there is no automatic rollback. General owns any concrete retry decision with
 unchanged qualified evidence, including uncertain cross-registry outcomes.
+Cloud retains its separate immutable-artifact/profile/installed-closure and
+deployment gates; alias qualification does not grant deployment admission.
 No production execution, release dispatch or registry mutation is admitted by
 source tests or by merging these workflows.

@@ -81,15 +81,8 @@ jobs:
         id: cleanup
         if: always()
         run: |
-          # Only strict owned cleanup/readback can qualify the receipt. The
-          # partial-setup fallback never changes its saved failure into success.
-          cleanup_status=0
           python3 scripts/ci/native_qualification.py cleanup --kind compose \
-            --scope "$DW_PUBLISHED_COMPOSE_PROJECT" --output qualification-state/cleanup.json || cleanup_status=$?
-          docker ps -aq --filter "label=com.docker.compose.project=$DW_PUBLISHED_COMPOSE_PROJECT" | xargs -r docker rm -f >/dev/null 2>&1 || true
-          docker network ls -q --filter "label=com.docker.compose.project=$DW_PUBLISHED_COMPOSE_PROJECT" | xargs -r docker network rm >/dev/null 2>&1 || true
-          docker volume ls -q --filter "label=com.docker.compose.project=$DW_PUBLISHED_COMPOSE_PROJECT" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
-          test "$cleanup_status" = 0
+            --scope "$DW_PUBLISHED_COMPOSE_PROJECT" --output qualification-state/cleanup.json
 
       - name: Finalize promotion receipt
         if: always()
