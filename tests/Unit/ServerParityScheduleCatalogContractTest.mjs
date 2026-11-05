@@ -32,6 +32,63 @@ function model() {
 }
 const projection = {scope: 'schedule_catalog'};
 
+function nativeModel() {
+  const observation = model();
+  const steps = observation.schedule_catalog.steps;
+  let sequence = 1;
+  for (const step of steps) {
+    for (const result of step.response.results ?? []) {
+      if (result.outcome === 'started') result.workflow_id = String(sequence++).padStart(26, '0');
+    }
+    for (const item of step.response.schedules ?? []) Object.assign(item, {
+      failures_count: 0, skipped_trigger_count: 0, latest_workflow_instance_id: null, current_run: null,
+    });
+  }
+  const latest = {'bf': steps[58].response.results.at(-1).workflow_id,
+    'bf-skip': steps[62].response.results.at(-1).workflow_id,
+    'bf-buffer': steps[64].response.results.at(-1).workflow_id};
+  for (const item of steps[71].response.schedules) {
+    if (item.schedule_id === 'beta') item.skipped_trigger_count = 2;
+    if (!Object.hasOwn(latest, item.schedule_id)) continue;
+    item.latest_workflow_instance_id = latest[item.schedule_id];
+    item.skipped_trigger_count = {'bf': 7, 'bf-skip': 2, 'bf-buffer': 0}[item.schedule_id];
+    item.current_run = {run_id: String(sequence++).padStart(26, '0'), status: 'pending', status_bucket: 'running', is_terminal: false};
+  }
+  const skipped = steps[71].response.schedules.find(item => item.schedule_id === 'bf-skip');
+  const audit = steps[70].response.events.filter(event => event.event_type === 'ScheduleTriggered').at(-1);
+  audit.workflow_instance_id = skipped.latest_workflow_instance_id;
+  audit.workflow_run_id = skipped.current_run.run_id;
+  return observation;
+}
+
+test('native summaries are checked before the unchanged published PHP comparison', () => {
+  const observation = nativeModel();
+  const before = structuredClone(observation);
+  assert.deepStrictEqual(checkScheduleCatalog(fixture, observation, workflowId, 'rust'), projection);
+  assert.deepStrictEqual(observation, before, 'raw summary evidence is retained unchanged');
+});
+test('native target cannot omit all new summary fields', () => {
+  assert.throws(() => checkScheduleCatalog(fixture, model(), workflowId, 'rust'), /complete schedule list summary/);
+});
+for (const [label, mutate] of [
+  ['partial summary', o => { delete o.schedule_catalog.steps[4].response.schedules[0].failures_count; }],
+  ['wrong failure count', o => { o.schedule_catalog.steps[4].response.schedules[0].failures_count = 1; }],
+  ['wrong skip count', o => { o.schedule_catalog.steps[71].response.schedules[1].skipped_trigger_count = 0; }],
+  ['wrong latest workflow', o => { o.schedule_catalog.steps[71].response.schedules[0].latest_workflow_instance_id = '9'.repeat(26); }],
+  ['missing current run', o => { o.schedule_catalog.steps[71].response.schedules[0].current_run = null; }],
+  ['shortened run identity', o => { o.schedule_catalog.steps[71].response.schedules[0].current_run.run_id = 'short'; }],
+  ['invented terminal state', o => { o.schedule_catalog.steps[71].response.schedules[0].current_run.is_terminal = true; }],
+  ['wrong audit run', o => { o.schedule_catalog.steps[70].response.events.filter(e => e.event_type === 'ScheduleTriggered').at(-1).workflow_run_id = '9'.repeat(26); }],
+  ['unreviewed extra field', o => { o.schedule_catalog.steps[4].response.schedules[0].other_summary = 1; }],
+  ['changed existing field', o => { o.schedule_catalog.steps[4].response.schedules[0].note = 'changed'; }],
+]) {
+  test(`rejects native ${label}`, () => {
+    const observation = nativeModel();
+    mutate(observation);
+    assert.throws(() => checkScheduleCatalog(fixture, observation, workflowId, 'rust'));
+  });
+}
+
 test('published PHP responses pass', () => assert.deepStrictEqual(checkScheduleCatalog(fixture, model(), workflowId), projection));
 test('a sequence replayed in a new namespace passes', () => {
   const observation = model();
