@@ -24,6 +24,13 @@ A unique escaped key follows ordinary JSON semantics and is compared by its
 decoded name. If the raw response or equivalent duplicate-detecting decode
 proof is unavailable, retain uncertainty.
 
+Consume the complete original body as exactly one JSON value. Only JSON
+whitespace may follow it. A valid refusal prefix followed by nonwhitespace,
+another object or another scalar remains uncertain. Invalid UTF-8 also
+refuses before classification. Do not drop invalid bytes, replace them or
+classify a successfully decoded prefix. Raw-byte vectors use bounded hex
+where a UTF-8 string cannot represent the invalid input.
+
 | poll_status | reason | Client action |
 | --- | --- | --- |
 | `task_offer_expired` | `task_offer_expired` | Resolve this selected logical packet. Preserve the registration and unrelated pending packets. A new logical poll is permitted. |

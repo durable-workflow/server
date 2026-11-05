@@ -51,6 +51,9 @@
     "available_exception_fields_must_match_response": true,
     "raw_response_before_ordinary_decode": {
       "strict_utf8_json_required": true,
+      "exactly_one_complete_json_value_required": true,
+      "only_json_whitespace_may_follow_value": true,
+      "partial_prefix_parsing_or_trailing_payload_allowed": false,
       "duplicate_decoded_member_names_forbidden": true,
       "duplicate_identical_values_also_forbidden": true,
       "last_member_wins_or_first_member_wins_not_sufficient": true,
@@ -70,6 +73,7 @@
     "per_response_scope": "expiry resolves only selected packet; proved authority loss ends only the original registration, never a replacement incarnation"
   },
   "source_executor_requirements": {
+    "raw_case_encoding": "each raw case has exactly one raw_body_utf8 or lowercase raw_body_hex input; hex cases bind raw_body_bytes; each decoded raw vector is at most 512 bytes",
     "kinds": [
       "workflow",
       "activity",
@@ -1695,6 +1699,156 @@
       },
       "expected_action": "retain_selected_packet",
       "required_predecode_refusal": "invalid_json"
+    },
+    {
+      "id": "raw-refusal-expiry-trailing-json-whitespace",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"} \r\n\t"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "raw-refusal-expiry-trailing-text",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"} trailing"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "trailing_nonwhitespace"
+    },
+    {
+      "id": "raw-refusal-expiry-trailing-second-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"} {}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "trailing_nonwhitespace"
+    },
+    {
+      "id": "raw-refusal-expiry-trailing-second-scalar",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"} null"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "trailing_nonwhitespace"
+    },
+    {
+      "id": "raw-refusal-expiry-utf8-invalid-leading",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f65787069726564222c22726561736f6e223a227461736b5f6f666665725f65787069726564ff227d",
+        "raw_body_bytes": 79
+      },
+      "required_predecode_refusal": "invalid_utf8",
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "raw-refusal-expiry-utf8-lone-continuation",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f65787069726564222c22726561736f6e223a227461736b5f6f666665725f6578706972656480227d",
+        "raw_body_bytes": 79
+      },
+      "required_predecode_refusal": "invalid_utf8",
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "raw-refusal-expiry-utf8-surrogate",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f65787069726564222c22726561736f6e223a227461736b5f6f666665725f65787069726564eda080227d",
+        "raw_body_bytes": 81
+      },
+      "required_predecode_refusal": "invalid_utf8",
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "raw-refusal-expiry-utf8-truncated-multibyte",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227461736b5f6f666665725f65787069726564222c22726561736f6e223a227461736b5f6f666665725f65787069726564e2227d",
+        "raw_body_bytes": 79
+      },
+      "required_predecode_refusal": "invalid_utf8",
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "raw-refusal-authority-trailing-json-whitespace",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"} \r\n\t"
+      },
+      "expected_action": "end_original_registration"
+    },
+    {
+      "id": "raw-refusal-authority-trailing-text",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"} trailing"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "trailing_nonwhitespace"
+    },
+    {
+      "id": "raw-refusal-authority-trailing-second-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"} {}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "trailing_nonwhitespace"
+    },
+    {
+      "id": "raw-refusal-authority-trailing-second-scalar",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"} null"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "trailing_nonwhitespace"
+    },
+    {
+      "id": "raw-refusal-authority-utf8-invalid-leading",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227374616c655f776f726b65725f726567697374726174696f6e222c22726561736f6e223a22776f726b65725f726567697374726174696f6e5f6c6f73745f617574686f72697479ff227d",
+        "raw_body_bytes": 102
+      },
+      "required_predecode_refusal": "invalid_utf8",
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "raw-refusal-authority-utf8-lone-continuation",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227374616c655f776f726b65725f726567697374726174696f6e222c22726561736f6e223a22776f726b65725f726567697374726174696f6e5f6c6f73745f617574686f7269747980227d",
+        "raw_body_bytes": 102
+      },
+      "required_predecode_refusal": "invalid_utf8",
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "raw-refusal-authority-utf8-surrogate",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227374616c655f776f726b65725f726567697374726174696f6e222c22726561736f6e223a22776f726b65725f726567697374726174696f6e5f6c6f73745f617574686f72697479eda080227d",
+        "raw_body_bytes": 104
+      },
+      "required_predecode_refusal": "invalid_utf8",
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "raw-refusal-authority-utf8-truncated-multibyte",
+      "input": {
+        "http_status": 409,
+        "raw_body_hex": "7b227461736b223a6e756c6c2c22706f6c6c5f737461747573223a227374616c655f776f726b65725f726567697374726174696f6e222c22726561736f6e223a22776f726b65725f726567697374726174696f6e5f6c6f73745f617574686f72697479e2227d",
+        "raw_body_bytes": 102
+      },
+      "required_predecode_refusal": "invalid_utf8",
+      "expected_action": "retain_selected_packet"
     }
   ],
   "authority_cases": [
