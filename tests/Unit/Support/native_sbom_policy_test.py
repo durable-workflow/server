@@ -35,6 +35,74 @@ def encoded(value):
 
 
 class SbomPolicyTests(unittest.TestCase):
+    def child_fixture(self, architecture="amd64", media_index=0):
+        source, tag = "c" * 40, "3.2.0-rc.1"
+        config = {"os": "linux", "architecture": architecture, "config": {"Labels": {
+            "org.opencontainers.image.revision": source, "dev.durable-workflow.release.tag": tag}}}
+        raw = encoded(config)
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        manifest = {"schemaVersion": 2, "mediaType": P.MANIFEST_MEDIA_TYPES[media_index],
+                    "config": {"mediaType": P.CONFIG_MEDIA_TYPES[media_index], "digest": digest, "size": len(raw)},
+                    "layers": []}
+        return manifest, config, source, tag
+
+    def bind_child(self, manifest, config, platform, source, tag):
+        config_raw = encoded(config)
+        config_digest = "sha256:" + hashlib.sha256(config_raw).hexdigest()
+        manifest = copy.deepcopy(manifest)
+        manifest["config"].update(digest=config_digest, size=len(config_raw))
+        manifest_raw = encoded(manifest)
+        child_digest = "sha256:" + hashlib.sha256(manifest_raw).hexdigest()
+        return P.child_identity(manifest_raw, child_digest, config_raw, config_digest, platform, source, tag)
+
+    def test_child_bytes_bind_actual_config_platform_and_release_labels(self):
+        for architecture in ("amd64", "arm64"):
+            for media_index in (0, 1):
+                manifest, config, source, tag = self.child_fixture(architecture, media_index)
+                if architecture == "arm64":
+                    config["variant"] = "v8"
+                result = self.bind_child(manifest, config, "linux/" + architecture, source, tag)
+                self.assertEqual(result["platform"], "linux/" + architecture)
+                self.assertEqual(result["source_commit"], source)
+                self.assertEqual(result["tag"], tag)
+                self.assertNotEqual(result["child_manifest_digest"], result["image_config_digest"])
+
+    def test_hash_valid_foreign_platform_source_and_tag_configs_refuse(self):
+        changes = [lambda v: v.update(os="windows"), lambda v: v.update(architecture="arm64"),
+                   lambda v: v.update(variant="v3"),
+                   lambda v: v["config"]["Labels"].update({"org.opencontainers.image.revision": "d" * 40}),
+                   lambda v: v["config"]["Labels"].update({"dev.durable-workflow.release.tag": "3.2.1"}),
+                   lambda v: v["config"].update(Labels={})]
+        for change in changes:
+            manifest, config, source, tag = self.child_fixture()
+            change(config)
+            # Recompute both content addresses: wrong identities must refuse
+            # even when the registry bytes are correctly named by their hashes.
+            with self.subTest(change=change), self.assertRaises(P.Refusal):
+                self.bind_child(manifest, config, "linux/amd64", source, tag)
+
+    def test_child_bytes_and_config_descriptor_cannot_be_substituted(self):
+        manifest, config, source, tag = self.child_fixture()
+        config_raw = encoded(config)
+        config_digest = "sha256:" + hashlib.sha256(config_raw).hexdigest()
+        manifest_raw = encoded(manifest)
+        digest = "sha256:" + hashlib.sha256(manifest_raw).hexdigest()
+        for child_raw, image_raw in ((manifest_raw + b"\n", config_raw), (manifest_raw, config_raw + b"\n")):
+            with self.assertRaisesRegex(P.Refusal, "content_bytes"):
+                P.child_identity(child_raw, digest, image_raw, config_digest, "linux/amd64", source, tag)
+        for change in (lambda v: v.update(mediaType=P.INDEX_MEDIA_TYPES[0]),
+                       lambda v: v.update(schemaVersion=True),
+                       lambda v: v["config"].update(mediaType=P.CONFIG_MEDIA_TYPES[1]),
+                       lambda v: v["config"].update(size=True),
+                       lambda v: v["config"].update(size=len(config_raw) + 1),
+                       lambda v: v["config"].update(digest="sha256:" + "e" * 64)):
+            changed = copy.deepcopy(manifest)
+            change(changed)
+            raw = encoded(changed)
+            child = "sha256:" + hashlib.sha256(raw).hexdigest()
+            with self.subTest(change=change), self.assertRaises(P.Refusal):
+                P.child_identity(raw, child, config_raw, config_digest, "linux/amd64", source, tag)
+
     def index_fixture(self):
         expected = {"linux/amd64": "sha256:" + "a" * 64, "linux/arm64": "sha256:" + "b" * 64}
         members = [{"mediaType": P.MANIFEST_MEDIA_TYPES[0], "digest": digest, "size": 123,

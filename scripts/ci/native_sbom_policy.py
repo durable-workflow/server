@@ -31,6 +31,8 @@ INDEX_MEDIA_TYPES = ("application/vnd.oci.image.index.v1+json",
                      "application/vnd.docker.distribution.manifest.list.v2+json")
 MANIFEST_MEDIA_TYPES = ("application/vnd.oci.image.manifest.v1+json",
                         "application/vnd.docker.distribution.manifest.v2+json")
+CONFIG_MEDIA_TYPES = ("application/vnd.oci.image.config.v1+json",
+                      "application/vnd.docker.container.image.v1+json")
 
 
 class Refusal(ValueError):
@@ -223,6 +225,47 @@ def index_children(raw: bytes, index_digest: str, expected: dict[str, str]) -> d
         found[platform] = member["digest"]
     require(set(found) == set(PLATFORMS), "sbom_index_platform_set")
     return found
+
+
+def child_identity(manifest_raw: bytes, child_digest: str, config_raw: bytes,
+                   config_digest: str, platform: str, source: str, tag: str) -> dict[str, str]:
+    """Bind content-addressed child/config bytes to the expected release tuple.
+
+    Expected digests must come from independently verified publication/index
+    and smoke evidence. This checks bytes/identity only, not their provider,
+    signatures, smoke success, layers, archive contents or scanner execution.
+    """
+    require(is_digest(child_digest) and is_digest(config_digest) and child_digest != config_digest
+            and platform in PLATFORMS, "sbom_child_expected_tuple")
+    require(type(source) is str and re.fullmatch(r"[0-9a-f]{40}", source) is not None
+            and type(tag) is str and re.fullmatch(
+                r"(?:native-)?(?:[3-9]|[1-9]\d+)\.\d+\.\d+(?:-rc\.\d+)?", tag, re.ASCII) is not None,
+            "sbom_child_release_identity")
+    for raw, digest in ((manifest_raw, child_digest), (config_raw, config_digest)):
+        require(type(raw) is bytes and 0 < len(raw) <= 1048576
+                and "sha256:" + hashlib.sha256(raw).hexdigest() == digest, "sbom_child_content_bytes")
+    manifest = parse(manifest_raw, 1048576)
+    require(type(manifest) is dict and type(manifest.get("schemaVersion")) is int
+            and manifest["schemaVersion"] == 2 and manifest.get("mediaType") in MANIFEST_MEDIA_TYPES
+            and type(manifest.get("config")) is dict and type(manifest.get("layers")) is list,
+            "sbom_child_manifest_shape")
+    descriptor = manifest["config"]
+    media_index = MANIFEST_MEDIA_TYPES.index(manifest["mediaType"])
+    require(descriptor.get("mediaType") == CONFIG_MEDIA_TYPES[media_index]
+            and descriptor.get("digest") == config_digest
+            and type(descriptor.get("size")) is int and descriptor["size"] == len(config_raw),
+            "sbom_child_config_descriptor")
+    config = parse(config_raw, 1048576)
+    architecture = platform.split("/")[1]
+    require(type(config) is dict and config.get("os") == "linux"
+            and config.get("architecture") == architecture
+            and ("variant" not in config or (architecture == "arm64" and config["variant"] == "v8"))
+            and type(config.get("config")) is dict, "sbom_child_config_platform")
+    labels = config["config"].get("Labels")
+    require(type(labels) is dict and labels.get("org.opencontainers.image.revision") == source
+            and labels.get("dev.durable-workflow.release.tag") == tag, "sbom_child_config_source")
+    return {"child_manifest_digest": child_digest, "image_config_digest": config_digest,
+            "platform": platform, "source_commit": source, "tag": tag}
 
 
 def exact_release_asset_bytes(expected: dict[str, bytes], observed: dict[str, bytes]) -> dict[str, Any]:

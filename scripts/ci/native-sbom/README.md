@@ -81,3 +81,17 @@ index-as-child and nested-index descriptors refuse. This does not authenticate
 the expected publication tuple or a child's fetched config/source; those remain
 future transport checks. Seventeen synthetic source test families cover the
 library, which remains unwired and refuses direct execution.
+
+`child_identity` now separately checks content-addressed manifest and config
+bytes (each at most 1 MiB), the manifest's exact config digest/size, actual
+Linux architecture/variant and the expected source/release labels. It accepts
+the image/config pairs defined by the
+[OCI image manifest specification](https://github.com/opencontainers/image-spec/blob/v1.1.1/manifest.md)
+and [Docker schema 2 specification](https://distribution.github.io/distribution/spec/manifest-v2-2/).
+An index, changed raw bytes, mismatched config descriptor or correctly hashed
+config for another platform/source/tag refuses. Twenty synthetic source test
+families pass. The expected tuple must already come from independently verified
+publication/index and smoke evidence. This guard does not authenticate those
+inputs, fetch an object, validate layer/archive contents, run smoke or scan,
+or authorize an execution. Generation mode remains null and direct execution
+still refuses.
