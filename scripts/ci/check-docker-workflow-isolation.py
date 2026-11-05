@@ -18,7 +18,7 @@ from pathlib import Path
 QUALIFICATION_CLEANUP_SOURCES = {
     "scripts/ci/native_qualification.py": "ea74b534004c04209843a0ca28bb5a338cd2f2bec56fde1e511da9ffc20a911e",
     "scripts/ci/native_alias_evidence.py": "647d184c7a5e456410933a7188debc3fe23360d002ef6458ced742bb85f32c37",
-    "scripts/ci/native_alias_transport.py": "e9ab362d47046438fa8bddfd0c3ef25e8f08f68f6855a65f8a4d2a338c072b68",
+    "scripts/ci/native_alias_transport.py": "053af14689c7c69d6620860390801fc900a331126f32a4f68fac6eb0e6593fef",
 }
 
 

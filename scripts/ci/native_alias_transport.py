@@ -42,7 +42,7 @@ class Commands:
             state = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
         except OSError:
             raise Refusal("provider_child_authority_unknown") from None
-        if state is None or state.si_pid == 0:
+        if state is None:
             return None
         require(state.si_pid == pid and state.si_code in (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED),
                 "provider_child_authority_unknown")

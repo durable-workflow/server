@@ -84,14 +84,18 @@ def fake_command_lifecycle(module, exit_code=0, authority_error=False, cleanup_e
             return [(value, 1) for value in list(self.keys.values())]
 
     def observe(kind, pid, flags):
-        assert kind == os.P_PID and pid == process.pid and flags & os.WNOWAIT and flags & os.WNOHANG
+        assert kind == os.P_PID
+        assert pid == process.pid
+        assert flags & os.WNOWAIT
+        assert flags & os.WNOHANG
         events.append("observe")
         if authority_error or process.reaped:
             raise ChildProcessError("synthetic unowned child")
         return None if exit_code is None else SimpleNamespace(si_pid=pid, si_code=os.CLD_EXITED, si_status=exit_code)
 
     def signal_group(pid, sig):
-        assert pid == process.pid and sig == module.signal.SIGKILL
+        assert pid == process.pid
+        assert sig == module.signal.SIGKILL
         events.append("foreign-signal" if process.reaped else "owned-signal")
         if cleanup_error == "signal":
             raise PermissionError("synthetic-private-marker")
