@@ -2071,7 +2071,8 @@
         "http_status": 400,
         "response_family": "native_malformed_json",
         "typed_override_verdict": false,
-        "durable_mutation_count": 0
+        "durable_mutation_count": 0,
+        "json_error": "Syntax error"
       }
     },
     {
@@ -2084,7 +2085,8 @@
         "http_status": 400,
         "response_family": "native_malformed_json",
         "typed_override_verdict": false,
-        "durable_mutation_count": 0
+        "durable_mutation_count": 0,
+        "json_error": "Syntax error"
       }
     },
     {
@@ -2097,7 +2099,8 @@
         "http_status": 400,
         "response_family": "native_malformed_json",
         "typed_override_verdict": false,
-        "durable_mutation_count": 0
+        "durable_mutation_count": 0,
+        "json_error": "Syntax error"
       }
     },
     {
@@ -2109,7 +2112,8 @@
         "http_status": 400,
         "response_family": "native_malformed_json",
         "typed_override_verdict": false,
-        "durable_mutation_count": 0
+        "durable_mutation_count": 0,
+        "json_error": "Malformed UTF-8 characters, possibly incorrectly encoded"
       }
     },
     {
@@ -2391,6 +2395,10 @@
       "native_json": {
         "path": "rust/src/runtime/json_body.rs",
         "blob": "50664ec66ce1cee1c8ecaf1d5a2d52a2f21a772c"
+      },
+      "native_payload_limits": {
+        "path": "rust/src/runtime/payload_limits.rs",
+        "blob": "d0bfeef89cd9a280c9e478ee62125fbaa01ef78d"
       }
     },
     "baseline": "valid independent auth/namespace/protocol and original prepared graph; all unrelated gates must be live before an isolated semantic control can qualify",
@@ -2467,7 +2475,8 @@
       "$required_capability": "prepared_local_activities for existing role/original-prepared-claim refusal; activity_retry_delay_override_v1 only for proposed fresh v2 mode-gate refusal",
       "$unavailable": "the exact ordered array explicitly chosen by the case; no wildcard members",
       "$duplicate_boolean": "actual Boolean required by the case, false for first commit and true for identical retained reply",
-      "$case_claim_released_boolean": "actual Boolean, true only for ActivityRetryScheduled, false for terminal/completed"
+      "$case_claim_released_boolean": "actual Boolean, true only for ActivityRetryScheduled, false for terminal/completed",
+      "$case_json_error": "only the fixed case.expected.json_error literal, independently derived from pinned payload_limits::json_error; never copied from a response or generalized to another malformed input"
     },
     "matching": "resolve declared bindings only; compare full exact JSON keys/types/values and the protocol response header; response decoding must consume strict UTF-8 original bytes fully and refuse duplicate member names before schema matching",
     "envelope": {
@@ -2614,11 +2623,15 @@
         "body": {
           "message": "Request bodies must contain valid JSON.",
           "reason": "malformed_json",
-          "json_error": "Syntax error",
+          "json_error": "$case_json_error",
           "protocol_version": "$protocol_version",
           "server_capabilities": "$server_capabilities"
         },
-        "typed_override_verdict": false
+        "typed_override_verdict": false,
+        "closed_case_json_error_values": [
+          "Syntax error",
+          "Malformed UTF-8 characters, possibly incorrectly encoded"
+        ]
       }
     },
     "mode_gate_unavailable_proposal": {
