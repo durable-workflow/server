@@ -158,7 +158,7 @@ test('a native or embedded failure is never retried, even after a PHP retry', ()
   }
 });
 
-for (const fixture of ['service-calls', 'schedule-catalog']) test(`${fixture} records and retries under its own evidence names`, () => {
+for (const fixture of ['service-calls', 'schedule-catalog', 'namespace-delete-payloads']) test(`${fixture} records and retries under its own evidence names`, () => {
   const result = run('php1=fail-locked', fixture);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(result.records, ['php parity-v1', 'php parity-v1-retry', 'embedded parity-v1-retry', 'rust parity-v1-retry']);
