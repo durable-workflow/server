@@ -26,6 +26,7 @@ on:
       - tests/Fixtures/ActivityMetadataProjection/**
       - tests/Fixtures/CodecRegression/**
       - tests/Fixtures/HistoryBudget/**
+      - tests/Fixtures/ScheduleVisibilityQuery/system-fields.json
       - tests/Fixtures/ServerUpgrade/**
       - tests/Fixtures/ServerParity/**
       - tests/Fixtures/ServerParityObservations/**
