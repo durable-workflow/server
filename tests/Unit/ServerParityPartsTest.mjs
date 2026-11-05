@@ -5,8 +5,10 @@
 // belongs to the five non-native-test parts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 
 const workflow = readFileSync('.github/workflows/server-parity.yml', 'utf8');
 const PARTS = ['native-tests', 'corpus', 'restarts', 'cohorts', 'sdk-directions', 'corrected-markers'];
@@ -135,8 +137,8 @@ for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['post
 
 test('the database bootstraps run the native suites only in the native-tests parts', () => {
   const postgres = steps(job('postgres-storage')).find(step => step.name.startsWith('Bootstrap published '));
-  assert.match(postgres.text, /-e DW_PARITY_PART \\\n/);
-  assert.match(postgres.text, /'if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']* --test execution [^']*; fi && if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo build --locked --offline; else test -x \/target\/debug\/durable-workflow-server; fi'/);
+  assert.match(postgres.text, /-e DW_PARITY_PART -e DW_EXECUTION_SHARDS \\\n/);
+  assert.match(postgres.text, /'case "\$DW_PARITY_PART" in native-tests\) shard=1 suffix= ;; native-tests-b\) shard=2 suffix=-b ;; \*\) shard= ;; esac; set -o pipefail; if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']*runtime::postgres::tests::qualification_[^']* > \/evidence\/postgres-tests\.txt \|\| exit 1; fi; if \[ -n "\$shard" \]; then [^']*cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 \$\(cat \/evidence\/execution-shard\$suffix\.txt\) > \/evidence\/postgres-execution-tests\$suffix\.txt \|\| exit 1; fi; case "\$DW_PARITY_PART" in native-tests\|native-tests-b\) cargo build --locked --offline ;; \*\) test -x \/target\/debug\/durable-workflow-server ;; esac'/);
   const mysql = steps(job('mysql-execution')).find(step => step.name.startsWith('Bootstrap published '));
   assert.match(mysql.text, /-e DW_PARITY_PART -e DW_EXECUTION_SHARDS \\\n/);
   // native-tests runs the database suite and the first half of the execution
@@ -144,40 +146,102 @@ test('the database bootstraps run the native suites only in the native-tests par
   assert.match(mysql.text, /'case "\$DW_PARITY_PART" in native-tests\) shard=1 suffix= ;; native-tests-b\) shard=2 suffix=-b ;; \*\) shard= ;; esac; set -o pipefail; if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']*runtime::mysql::[^']* > \/evidence\/mysql-tests\.txt \|\| exit 1; fi; if \[ -n "\$shard" \]; then [^']*cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 \$\(cat \/evidence\/execution-shard\$suffix\.txt\) > \/evidence\/mysql-execution-tests\$suffix\.txt \|\| exit 1; fi; case "\$DW_PARITY_PART" in native-tests\|native-tests-b\) cargo build --locked --offline ;; \*\) test -x \/target\/debug\/durable-workflow-server ;; esac'/);
 });
 
-test('all MySQL and MariaDB labels split execution tests into two parts, every test in exactly one', () => {
-  const block = job('mysql-execution');
-  assert.match(block, /^ {6}DW_EXECUTION_SHARDS: \$\{\{ matrix\.execution_shards \|\| 1 \}\}$/m);
-  // Matrix values come from the label's include entry; the added
-  // native-tests-b combination names its own, the same ones.
-  const include = block.slice(block.indexOf('\n        include:\n'), block.indexOf('\n    env:\n'));
-  const entries = include.split(/\n {10}- /).slice(1).map(text => Object.fromEntries(
-    [...('label: ' + text.replace(/^label: /, '')).matchAll(/^\s*([a-z_]+): (\S+)$/gm)].map(match => match.slice(1))));
-  const sharded = ['mysql-8.0', 'existing-php-mysql-matrix', 'mariadb-10.11'];
-  for (const name of sharded) {
-    const pair = entries.filter(entry => entry.label === name);
-    assert.equal(pair.length, 2, JSON.stringify(entries));
-    const [label, half] = pair;
-    assert.equal(label.part, undefined);
-    assert.equal(label.execution_shards, '2');
-    assert.deepEqual(half, {...label, part: 'native-tests-b'});
-  }
-  assert.ok(entries.filter(entry => !sharded.includes(entry.label)).every(entry => !entry.execution_shards && !entry.part));
-  // The selection the bootstrap runs: list, sort bytewise, deal round-robin.
-  const bootstrap = steps(block).find(step => step.name.startsWith('Bootstrap published ')).text;
-  const selection = /cargo test --locked --offline --test execution -- --list --format terse \| sed -n "s\/: test\\\$\/\/p" \| LC_ALL=C sort \| tee \/evidence\/execution-listed-tests\.txt \| awk -v count="\$DW_EXECUTION_SHARDS" -v shard="\$shard" "([^"]+)" > \/evidence\/execution-shard\$suffix\.txt && test -s \/evidence\/execution-shard\$suffix\.txt && /.exec(bootstrap);
-  assert.ok(selection, 'the execution tests are selected by the listed round-robin');
-  const names = Array.from({length: 489}, (_, index) => `suite::test_${String(index).padStart(3, '0')}`);
-  const deal = (shard, count) => {
-    const run = spawnSync('awk', ['-v', `count=${count}`, '-v', `shard=${shard}`, selection[1]], {input: names.join('\n') + '\n', encoding: 'utf8'});
-    assert.equal(run.status, 0, run.stderr);
-    return run.stdout.trim().split('\n');
+for (const [family, sharded] of [
+  ['mysql-execution', ['mysql-8.0', 'existing-php-mysql-matrix', 'mariadb-10.11']],
+  ['postgres-storage', ['existing-php-matrix', 'postgres-17']],
+]) {
+  test(`${family} splits execution tests into two exhaustive disjoint parts`, () => {
+    const block = job(family);
+    assert.match(block, /^ {6}DW_EXECUTION_SHARDS: \$\{\{ matrix\.execution_shards \|\| 1 \}\}$/m);
+    // Matrix values come from the label's include entry; the added
+    // native-tests-b combination names its own, the same ones.
+    const include = block.slice(block.indexOf('\n        include:\n'), block.indexOf('\n    env:\n'));
+    const entries = include.split(/\n {10}- /).slice(1).map(text => Object.fromEntries(
+      [...('label: ' + text.replace(/^label: /, '')).matchAll(/^\s*([a-z_]+): (\S+)$/gm)].map(match => match.slice(1))));
+    for (const name of sharded) {
+      const pair = entries.filter(entry => entry.label === name);
+      assert.equal(pair.length, 2, JSON.stringify(entries));
+      const [label, half] = pair;
+      assert.equal(label.part, undefined);
+      assert.equal(label.execution_shards, '2');
+      assert.deepEqual(half, {...label, part: 'native-tests-b'});
+    }
+    assert.ok(entries.filter(entry => !sharded.includes(entry.label)).every(entry => !entry.execution_shards && !entry.part));
+    // The selection the bootstrap runs: list, sort bytewise, deal round-robin.
+    const bootstrap = steps(block).find(step => step.name.startsWith('Bootstrap published ')).text;
+    const selection = /cargo test --locked --offline --test execution -- --list --format terse \| sed -n "s\/: test\\\$\/\/p" \| LC_ALL=C sort \| tee \/evidence\/execution-listed-tests\.txt \| awk -v count="\$DW_EXECUTION_SHARDS" -v shard="\$shard" "([^"]+)" > \/evidence\/execution-shard\$suffix\.txt && test -s \/evidence\/execution-shard\$suffix\.txt && /.exec(bootstrap);
+    assert.ok(selection, 'the execution tests are selected by the listed round-robin');
+    const names = Array.from({length: 489}, (_, index) => `suite::test_${String(index).padStart(3, '0')}`);
+    const deal = (shard, count) => {
+      const run = spawnSync('awk', ['-v', `count=${count}`, '-v', `shard=${shard}`, selection[1]], {input: names.join('\n') + '\n', encoding: 'utf8'});
+      assert.equal(run.status, 0, run.stderr);
+      return run.stdout.trim().split('\n');
+    };
+    const halves = [deal(1, 2), deal(2, 2)];
+    assert.deepEqual([...halves[0], ...halves[1]].sort(), names);
+    assert.equal(new Set([...halves[0], ...halves[1]]).size, names.length);
+    assert.ok(Math.abs(halves[0].length - halves[1].length) <= 1);
+    // A label with one shard runs the whole suite in native-tests.
+    assert.deepEqual(deal(1, 1), names);
+  });
+}
+
+test('PostgreSQL native selection runs each half once and stops on discovery or suite failure', t => {
+  const root = mkdtempSync(join(tmpdir(), 'postgres-selection-'));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'cargo'), `#!/usr/bin/env node
+const {appendFileSync} = require('node:fs');
+const args = process.argv.slice(2);
+appendFileSync(process.env.DW_SELECTION_CALLS, JSON.stringify(args) + '\\n');
+const kind = args[0] === 'build' ? 'build' : args.includes('--list') ? 'list'
+  : args.includes('--lib') ? 'database' : 'execution';
+if (process.env.DW_SELECTION_FAIL === kind) process.exit(7);
+if (kind === 'list') process.stdout.write(process.env.DW_SELECTION_LIST);
+`, {mode: 0o755});
+  const bootstrap = steps(job('postgres-storage')).find(step => step.name.startsWith('Bootstrap published '));
+  const literal = /^\s+'(case .*; esac)'$/m.exec(bootstrap.text)?.[1];
+  assert.ok(literal);
+  const script = literal.replaceAll('/evidence', '"$DW_SELECTION_EVIDENCE"')
+    .replaceAll('/target/debug/durable-workflow-server', '"$DW_SELECTION_BINARY"');
+  const names = ['suite::z', 'suite::b', 'suite::a', 'suite::x', 'suite::c'];
+  const run = (part, {fail = '', empty = false} = {}) => {
+    const evidence = mkdtempSync(join(root, 'case-'));
+    const calls = join(evidence, 'calls.jsonl');
+    const result = spawnSync('bash', ['-c', script], {encoding: 'utf8', timeout: 10000,
+      env: {...process.env, PATH: `${bin}:${process.env.PATH}`, DW_PARITY_PART: part,
+        DW_EXECUTION_SHARDS: '2', DW_SELECTION_EVIDENCE: evidence, DW_SELECTION_CALLS: calls,
+        DW_SELECTION_BINARY: process.execPath, DW_SELECTION_FAIL: fail,
+        DW_SELECTION_LIST: empty ? '' : names.map(name => `${name}: test\n`).join('')}});
+    return {...result, evidence, calls: existsSync(calls)
+      ? readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : []};
   };
-  const halves = [deal(1, 2), deal(2, 2)];
-  assert.deepEqual([...halves[0], ...halves[1]].sort(), names);
-  assert.equal(new Set([...halves[0], ...halves[1]]).size, names.length);
-  assert.ok(Math.abs(halves[0].length - halves[1].length) <= 1);
-  // A label with one shard runs the whole suite in native-tests.
-  assert.deepEqual(deal(1, 1), names);
+  const halves = ['native-tests', 'native-tests-b'].map(part => run(part));
+  const selected = halves.map((half, index) => {
+    assert.equal(half.status, 0, half.stderr);
+    assert.equal(half.calls.filter(args => args.includes('--lib')).length, index === 0 ? 1 : 0);
+    assert.equal(half.calls.filter(args => args[0] === 'build').length, 1);
+    const executions = half.calls.filter(args => args.includes('--exact'));
+    assert.equal(executions.length, 1);
+    const selectedNames = readFileSync(join(half.evidence, `execution-shard${index === 0 ? '' : '-b'}.txt`), 'utf8')
+      .trim().split('\n');
+    assert.deepEqual(executions[0].slice(executions[0].indexOf('--test-threads=2') + 1), selectedNames);
+    return selectedNames;
+  });
+  assert.deepEqual(selected, [['suite::a', 'suite::c', 'suite::z'], ['suite::b', 'suite::x']]);
+  assert.deepEqual([...selected[0], ...selected[1]].sort(), [...names].sort());
+  for (const options of [{empty: true}, {fail: 'list'}, {fail: 'execution'}, {fail: 'database'}]) {
+    const refused = run('native-tests', options);
+    assert.notEqual(refused.status, 0);
+    assert.equal(refused.calls.some(args => args[0] === 'build'), false);
+    if (options.empty || options.fail === 'list' || options.fail === 'database') {
+      assert.equal(refused.calls.some(args => args.includes('--exact')), false);
+    }
+  }
+  const corpus = run('corpus');
+  assert.equal(corpus.status, 0, corpus.stderr);
+  assert.deepEqual(corpus.calls, []);
 });
 
 test('every readiness probe bounds each request, so one silent connection cannot stall a part', () => {
