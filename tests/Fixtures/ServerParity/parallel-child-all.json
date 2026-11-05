@@ -1,0 +1,51 @@
+{
+  "schema": "durable-workflow.server-parity-fixture/v1",
+  "review_state": "reviewed",
+  "workflow_type": "parity.v1.echo",
+  "input": {
+    "message": "concurrent waits λ",
+    "count": 9007199254740993,
+    "optional": null
+  },
+  "typed_value": {
+    "type": "map",
+    "value": {
+      "message": {
+        "type": "string",
+        "value": "concurrent waits λ"
+      },
+      "count": {
+        "type": "int64",
+        "value": "9007199254740993"
+      },
+      "optional": {
+        "type": "null",
+        "value": null
+      }
+    }
+  },
+  "activity": false,
+  "expected_events": [
+    "StartAccepted",
+    "WorkflowStarted",
+    "WorkflowCompleted"
+  ],
+  "id": "parallel-child-all",
+  "contract": "Worker-protocol flat child-only all barriers authored and cold-replayed by the real published PHP SDK: every child starts atomically, carries the original call/link/instance/run and path, and returns exact ordered typed results despite out-of-order completion. Success waits for every member; failure/cancel/terminate wakes the parent immediately as ChildWorkflowFailed. Duplicate parent/child completions add no starts or history. After a failed parent catches its outcome and closes under default abandon, later successful siblings add no parent resolution or wakeup. This worker-HTTP side contract is explicitly inapplicable to embedded execution. Native cold database replacement, retries/continuation, malformed and unqualified shape refusals, bounded inventory and rollback are covered separately by cross-backend native tests. Child select/nested/mixed/scoped/started-in-all remain refused.",
+  "parallel_child_all": {
+    "parent_type": "parity.v1.child_all_parent",
+    "child_type": "parity.v1.child_all_child",
+    "cases": {
+      "single": 1,
+      "out_of_order": 3,
+      "failed": 2,
+      "cancelled": 2,
+      "terminated": 2
+    },
+    "failure_messages": {
+      "failed": "child barrier failure λ",
+      "cancelled": "Workflow cancelled: child barrier closed λ",
+      "terminated": "Workflow terminated: child barrier closed λ"
+    }
+  }
+}

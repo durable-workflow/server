@@ -1,4 +1,4 @@
-//! Published activity/timer all barriers retain every authored ancestor.
+//! Published all barriers retain every qualified authored ancestor.
 use super::{Result, refuse};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -38,6 +38,7 @@ fn entry(value: &Value, leaf: &str) -> Result<Value> {
     let prefix = match kind {
         "activity" => "parallel-activities",
         "timer" => "parallel-timers",
+        "child" => "parallel-children",
         _ => "parallel-calls",
     };
     if value["parallel_group_id"] != format!("{prefix}:{base}:{size}") {
@@ -50,7 +51,7 @@ fn entry(value: &Value, leaf: &str) -> Result<Value> {
 }
 
 pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
-    if !matches!(kind, "activity" | "timer") {
+    if !matches!(kind, "activity" | "timer" | "child") {
         return Err(invalid());
     }
     let top = entry(value, kind)?;
@@ -58,6 +59,11 @@ pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
         .as_array()
         .filter(|path| !path.is_empty())
         .ok_or_else(invalid)?;
+    // Child selections, nested barriers and mixed child groups have not been
+    // qualified. Keep their refusal independent of activity/timer paths.
+    if kind == "child" && (path.len() != 1 || top["parallel_group_kind"] != "child") {
+        return Err(invalid());
+    }
     let path = path
         .iter()
         .map(|value| entry(value, kind))
@@ -95,6 +101,7 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
         let kind = match command["type"].as_str() {
             Some("schedule_activity") => "activity",
             Some("start_timer") => "timer",
+            Some("start_child_workflow") => "child",
             _ => return Err(invalid()),
         };
         let metadata = metadata(command, kind)?;
@@ -156,6 +163,8 @@ impl AllHistory {
             ("activity", "activity_execution_id")
         } else if event.starts_with("Timer") {
             ("timer", "timer_id")
+        } else if event.starts_with("Child") {
+            ("child", "child_call_id")
         } else {
             return true;
         };
@@ -196,7 +205,10 @@ impl AllHistory {
         {
             return false;
         }
-        if matches!(event, "ActivityScheduled" | "TimerScheduled") {
+        if matches!(
+            event,
+            "ActivityScheduled" | "TimerScheduled" | "ChildWorkflowScheduled"
+        ) {
             let group = self.groups.entry(group_id).or_insert_with(|| Group {
                 size,
                 members: BTreeMap::new(),
@@ -243,6 +255,10 @@ impl AllHistory {
                 | "ActivityCancelled"
                 | "TimerFired"
                 | "TimerCancelled"
+                | "ChildRunCompleted"
+                | "ChildRunFailed"
+                | "ChildRunCancelled"
+                | "ChildRunTerminated"
         ) {
             member.terminal = true;
             if group.members.len() == size && group.members.values().all(|member| member.terminal) {

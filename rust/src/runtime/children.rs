@@ -1,14 +1,13 @@
 //! Sequential child outcomes and abandoned-parent cleanup retain the original call.
 //! A retried child keeps the call under a new link (`child_retries`).
-//! Parallel child groups remain unqualified and are refused at admission
-//! rather than silently discarded.
+//! Flat child-only all groups keep their path on every physical child link.
 use super::schedule_storage::iso8601;
 use super::transaction::Transaction;
 use super::{
     Result,
     backend::Backend,
     envelope, refuse,
-    store::{Store, id, now, reject_fields},
+    store::{Store, id, now},
     text, wire,
 };
 use axum::http::StatusCode;
@@ -44,7 +43,7 @@ enum ChildParentResume {
 }
 
 pub(super) fn validate_child(command: &Value) -> Result<()> {
-    reject_fields(
+    super::selections::fields(
         command,
         &[
             "type",
@@ -59,6 +58,15 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
             "await",
         ],
     )?;
+    let parallel = super::selections::metadata(command, "child")?;
+    // This slice qualifies result barriers. A committed-start handle inside
+    // a barrier has a different wakeup contract and stays separately refused.
+    if parallel.get("parallel_group_id").is_some() && command["await"] == AWAIT_STARTED {
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "development_parallel_group_unqualified",
+        ));
+    }
     if text(command, "workflow_type")?.len() > 191
         || command.get("queue").is_some_and(|queue| {
             queue
@@ -80,19 +88,35 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
         if let Some(seconds) = super::child_retries::timeout(command, field)
             && super::child_retries::after(now, seconds).is_none()
         {
-            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_timeout"));
+            return Err(refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_child_timeout",
+            ));
         }
     }
     // PHP reads a backoff object's values as a list (`array_values`).
-    if let Some(mut backoff) = super::child_retries::list(&command["retry_policy"]["backoff_seconds"])
-        && backoff.any(|entry| entry.as_i64().is_some_and(|seconds| super::child_retries::after(now, seconds).is_none()))
+    if let Some(mut backoff) =
+        super::child_retries::list(&command["retry_policy"]["backoff_seconds"])
+        && backoff.any(|entry| {
+            entry
+                .as_i64()
+                .is_some_and(|seconds| super::child_retries::after(now, seconds).is_none())
+        })
     {
-        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_retry_policy"));
+        return Err(refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_child_retry_policy",
+        ));
     }
     Ok(())
 }
 
-const PARENT_CLOSE_POLICIES: [&str; 4] = ["abandon", "request_cancel", "request_cancellation", "terminate"];
+const PARENT_CLOSE_POLICIES: [&str; 4] = [
+    "abandon",
+    "request_cancel",
+    "request_cancellation",
+    "terminate",
+];
 const CANCELLATION_POLICIES: [&str; 3] = ["try_cancel", "wait_cancellation_completed", "abandon"];
 
 /// A child's parent-close and cancellation policies.
@@ -120,21 +144,34 @@ pub(super) fn policies(command: &Value) -> Result<ChildPolicies> {
         None | Some(Value::Null) => None,
         Some(Value::String(text)) => Some(text.trim().to_owned()).filter(|text| !text.is_empty()),
         Some(_) => {
-            errors.push((format!("commands.0.{field}"), vec![format!("The commands.0.{field} field must be a string.")]));
+            errors.push((
+                format!("commands.0.{field}"),
+                vec![format!("The commands.0.{field} field must be a string.")],
+            ));
             None
         }
     };
     let parent_close = read("parent_close_policy");
     let cancellation = read("cancellation_policy");
-    if cancellation.as_deref().is_some_and(|value| !CANCELLATION_POLICIES.contains(&value)) {
-        errors.push(("commands.0.cancellation_policy".into(), vec!["The selected commands.0.cancellation_policy is invalid.".into()]));
+    if cancellation
+        .as_deref()
+        .is_some_and(|value| !CANCELLATION_POLICIES.contains(&value))
+    {
+        errors.push((
+            "commands.0.cancellation_policy".into(),
+            vec!["The selected commands.0.cancellation_policy is invalid.".into()],
+        ));
     }
     if let Some(error) = super::laravel_validation::failure_messages(errors) {
         return Err(error);
     }
     if parent_close.as_deref().is_some_and(|value| !PARENT_CLOSE_POLICIES.contains(&value)) {
         let message = "The parent_close_policy must be one of: abandon, request_cancel, request_cancellation, terminate.";
-        return Err(super::laravel_validation::failure(vec![("commands.0.parent_close_policy", vec![message])]).expect("one message"));
+        return Err(super::laravel_validation::failure(vec![(
+            "commands.0.parent_close_policy",
+            vec![message],
+        )])
+        .expect("one message"));
     }
     Ok(ChildPolicies {
         parent_close: parent_close.unwrap_or_else(|| "abandon".into()),
@@ -314,6 +351,8 @@ where
     ) -> Result<StartedChild> {
         let parent_run = DB::string(parent, "id")?;
         let parent_instance = DB::string(parent, "workflow_instance_id")?;
+        let parallel = super::selections::metadata(command, "child")?;
+        super::selections::check_sequence(&parallel, sequence)?;
         // Published PHP starts a child whatever else the parent has open:
         // activities, timers, waits and other children. A replayed completion
         // is handled by the enclosing immutable task receipt.
@@ -352,14 +391,24 @@ where
         // `inheritTypedVisibilityMetadata`: the child takes its parent's memos
         // and search attributes.
         let memos = Self::inheritable_memos(tx, &parent_run).await?;
-        Self::inherit_visibility(tx, memos, &parent_run, &child_run, &child_instance, started_at).await?;
+        Self::inherit_visibility(
+            tx,
+            memos,
+            &parent_run,
+            &child_run,
+            &child_instance,
+            started_at,
+        )
+        .await?;
         Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at,retry_policy,timeout_policy) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16,$17,$18)")
             .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(&policies.cancellation).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
             .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":policies.cancellation}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
             .bind(retry_policy.as_ref().map(DB::document)).bind(timeout_policy.as_ref().map(DB::document)).execute(&mut **tx).await?;
-        Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9)")
-            .bind(&call).bind(sequence).bind(&parent_instance).bind(&parent_run).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
-        let scheduled = json!({"sequence":sequence,"workflow_link_id":call,"child_call_id":call,"child_workflow_instance_id":child_instance,"child_workflow_run_id":child_run,"child_workflow_class":workflow_type,"child_workflow_type":workflow_type,"parent_close_policy":policies.parent_close,"cancellation_policy":policies.cancellation,"retry_policy":retry_policy,"timeout_policy":timeout_policy});
+        Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at,parallel_group_path) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9,$10)")
+            .bind(&call).bind(sequence).bind(&parent_instance).bind(&parent_run).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
+            .bind(parallel.get("parallel_group_path").map(DB::document)).execute(&mut **tx).await?;
+        let mut scheduled = json!({"sequence":sequence,"workflow_link_id":call,"child_call_id":call,"child_workflow_instance_id":child_instance,"child_workflow_run_id":child_run,"child_workflow_class":workflow_type,"child_workflow_type":workflow_type,"parent_close_policy":policies.parent_close,"cancellation_policy":policies.cancellation,"retry_policy":retry_policy,"timeout_policy":timeout_policy});
+        super::selections::merge(&mut scheduled, &parallel);
         Self::append(
             tx,
             &parent_run,
@@ -400,7 +449,10 @@ where
         let turn = json!({"workflow_wait_kind":"child_started","child_call_id":call,"child_workflow_run_id":child_run,
             "resume_source_kind":"child_workflow_run","resume_source_id":child_run,"workflow_sequence":sequence,
             "workflow_event_type":"ChildRunStarted"});
-        Ok(StartedChild { task: child_task, turn })
+        Ok(StartedChild {
+            task: child_task,
+            turn,
+        })
     }
 
     /// The parent's start turn (Server #966): one fresh workflow task, created
@@ -470,6 +522,10 @@ where
             ));
         }
         let link = &links[0];
+        let parallel = super::selections::child_metadata(DB::optional_document_row(
+            link,
+            "parallel_group_path",
+        )?)?;
         let parent_run = DB::string(link, "parent_workflow_run_id")?;
         let sequence = DB::number(link, "sequence")?;
         let link_id = DB::string(link, "id")?;
@@ -560,7 +616,6 @@ where
                 .execute(&mut **tx)
                 .await?;
         }
-        let parent_resume = Self::child_parent_resume(tx, &parent).await?;
         // The event names the child run's closed reason: a run that timed
         // out failed with `timed_out`. The call keeps its status.
         let closed_reason = match resolution {
@@ -594,7 +649,17 @@ where
                 }
             }
         }
+        super::selections::merge(&mut payload, &parallel);
         Self::append(tx, &parent_run, event_type, payload, None, None).await?;
+        // Record the outcome even while the all barrier remains closed. The
+        // last successful member observes every committed call under the same
+        // parent transition lock; any failed member wakes the parent at once.
+        if matches!(resolution, ChildResolution::Completed(_))
+            && !Self::all_groups_closed(tx, &parent_run, &parallel).await?
+        {
+            return Ok(());
+        }
+        let parent_resume = Self::child_parent_resume(tx, &parent).await?;
         let (task_id, task_status) = match parent_resume {
             ChildParentResume::UpdateOnly => return Ok(()),
             ChildParentResume::Existing { id, status } => (id, status),
@@ -622,6 +687,10 @@ where
     ) -> Result<bool> {
         let parent_run = DB::string(parent, "id")?;
         let failed_run = DB::string(failed, "id")?;
+        let parallel = super::selections::child_metadata(DB::optional_document_row(
+            link,
+            "parallel_group_path",
+        )?)?;
         // The policy the parent recorded when it scheduled the call, or the
         // call's own when that event is in an earlier run.
         let mut scheduled = Value::Null;
@@ -652,7 +721,10 @@ where
         let failure = Self::query("SELECT CASE WHEN non_retryable THEN 1 ELSE 0 END AS non_retryable_flag,exception_class FROM workflow_failures WHERE workflow_run_id=$1 ORDER BY created_at,id LIMIT 1")
             .bind(&failed_run).fetch_optional(&mut **tx).await?;
         let failure = match failure {
-            Some(row) => Some((DB::number(&row, "non_retryable_flag")? != 0, DB::optional_string(&row, "exception_class")?)),
+            Some(row) => Some((
+                DB::number(&row, "non_retryable_flag")? != 0,
+                DB::optional_string(&row, "exception_class")?,
+            )),
             None => None,
         };
         let failed_event = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowFailed' ORDER BY sequence DESC LIMIT 1")
@@ -669,8 +741,12 @@ where
         let run_timeout = timeout_policy["run_timeout_seconds"].as_i64();
         let at = now();
         let backoff = super::child_retries::backoff_seconds(&policy, attempts);
-        let available_at = super::child_retries::after(at, backoff)
-            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_retry_policy"))?;
+        let available_at = super::child_retries::after(at, backoff).ok_or_else(|| {
+            refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_child_retry_policy",
+            )
+        })?;
         let instance = DB::string(failed, "workflow_instance_id")?;
         // The latest run as a row: an aggregate of MySQL's unsigned column
         // does not decode as a signed integer.
@@ -696,9 +772,10 @@ where
             .bind(&retry_run).bind(run_number).bind(run_number).bind(DB::bind_time(at)).bind(&instance).execute(&mut **tx).await?;
         let parent_close = DB::optional_string(link, "parent_close_policy")?.unwrap_or_else(|| "abandon".into());
         let retry_link = id();
-        Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9)")
+        Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at,parallel_group_path) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9,$10)")
             .bind(&retry_link).bind(sequence).bind(DB::string(parent, "workflow_instance_id")?).bind(&parent_run).bind(&instance).bind(&retry_run)
-            .bind(&parent_close).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
+            .bind(&parent_close).bind(DB::bind_time(at)).bind(DB::bind_time(at))
+            .bind(parallel.get("parallel_group_path").map(DB::document)).execute(&mut **tx).await?;
         let workflow_type = DB::string(failed, "workflow_type")?;
         let workflow_class = DB::string(failed, "workflow_class")?;
         let deadlines = json!({"execution_timeout_seconds":execution_timeout,"run_timeout_seconds":run_timeout,
@@ -717,6 +794,7 @@ where
         if let Some(fields) = started.as_object_mut() {
             fields.retain(|_, value| !value.is_null());
         }
+        super::selections::merge(&mut started, &parallel);
         Self::append(tx, &parent_run, "ChildRunStarted", started, None, None).await?;
         let mut child_started = json!({"workflow_class":workflow_class,"workflow_type":workflow_type,"workflow_instance_id":instance,
             "workflow_run_id":retry_run,"parent_workflow_instance_id":DB::string(parent, "workflow_instance_id")?,

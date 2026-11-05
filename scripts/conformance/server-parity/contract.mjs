@@ -14,6 +14,7 @@ import {checkSearchAttributes} from './search-attribute-contract.mjs';
 import {checkStorageTest} from './storage-test-contract.mjs';
 import {checkActivityLeaseRenewal} from './activity-lease-renewal-contract.mjs';
 import {checkConcurrentWaits} from './concurrent-waits-contract.mjs';
+import {checkParallelChildAll} from './parallel-child-all-contract.mjs';
 import {checkClosedWaitTimeouts} from './closed-wait-timeouts-contract.mjs';
 import {checkHistoryExportWaits} from './history-export-waits-contract.mjs';
 import {checkContinueTransfers} from './continue-transfers-contract.mjs';
@@ -195,6 +196,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
   const concurrentWaits = fixture.concurrent_waits ? checkConcurrentWaits(fixture, observation) : null;
+  const parallelChildAll = fixture.parallel_child_all ? checkParallelChildAll(fixture, observation) : null;
   const closedWaitTimeouts = fixture.closed_wait_timeouts ? checkClosedWaitTimeouts(fixture, observation) : null;
   const historyExportWaits = fixture.history_export_waits ? checkHistoryExportWaits(fixture, observation) : null;
   const continueTransfers = fixture.continue_transfers ? checkContinueTransfers(fixture, observation) : null;
@@ -794,6 +796,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
     ...(storageTest ? {storage_test: storageTest} : {}),
     ...(activityLeaseRenewal ? {activity_lease_renewal: activityLeaseRenewal} : {}),
     ...(concurrentWaits ? {concurrent_waits: concurrentWaits} : {}),
+    ...(parallelChildAll ? {parallel_child_all: parallelChildAll} : {}),
     ...(closedWaitTimeouts ? {closed_wait_timeouts: closedWaitTimeouts} : {}),
     ...(historyExportWaits ? {history_export_waits: historyExportWaits} : {}),
     ...(continueTransfers ? {continue_transfers: continueTransfers} : {}),
