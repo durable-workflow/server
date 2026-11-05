@@ -29,6 +29,42 @@
       "rpds-py>=0.7.0"
     ]
   ],
+  "bundled_installer": {
+    "execution_qualified": false,
+    "future_boundary": "Bind the exact immutable Python config and effective isolated Python/pip versions before the offline hash-closed install; no ambient site/config or network fallback. Runtime and byte closure remain unqualified.",
+    "image_build_source": {
+      "configure_option": "--with-ensurepip",
+      "git_blob": "731ba320c351ff9980eef4a61cff5d8c3a2e5a80",
+      "path": "3.13/slim-bookworm/Dockerfile",
+      "python_source_archive_sha256": "abb0102e6d4ae027509bcb82327d9dd85515b44a3ba8ad538cfc5e9847029f68",
+      "repository": "docker-library/python",
+      "source_commit": "152874b138f0b1c4699fbdcb52b174608cfbfff5"
+    },
+    "image_runtime_version_observed": false,
+    "name": "pip",
+    "python_source": {
+      "declared_constant": "_PIP_VERSION = \"26.2.2\"",
+      "git_blob": "6e01881fefeaf51261c7f67d23ad7112c246d446",
+      "path": "Lib/ensurepip/__init__.py",
+      "repository": "python/cpython",
+      "source_commit": "0d4bd512fc429e3d4eacdd113c975e161f21644d",
+      "tag": "v3.13.18",
+      "tag_object": "c4aea32388690378deb747cd4afe01e3253f0696"
+    },
+    "reference_pypi_metadata": {
+      "requires_dist": null,
+      "requires_python": ">=3.10",
+      "scope": "metadata only; not proof of bundled-wheel or installed bytes",
+      "version": "26.2.2",
+      "wheel": {
+        "filename": "pip-26.2.2-py3-none-any.whl",
+        "sha256": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
+        "size": 1819850,
+        "url": "https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl"
+      }
+    },
+    "source_expected_version": "26.2.2"
+  },
   "confinement_source_complete": false,
   "extras": [],
   "observation_scope": "public manifests/configs/PyPI metadata only; no layer/wheel acquisition or execution",

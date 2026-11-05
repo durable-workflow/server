@@ -54,6 +54,16 @@ filesystem, bounded scratch/output/resources, no capabilities, no-new-privileges
 no network, daemon socket or host credential mounts. That execution source is
 still incomplete. Neither image layers nor wheels were acquired or executed.
 
+The candidate also records its installer's source identity. The exact official
+Python build enables `ensurepip`; the signed CPython 3.13.18 tag's immutable
+source declares bundled pip 26.2.2. Its source/blob and public PyPI wheel metadata
+are retained separately. This is an expected version, not an observed runtime,
+bundled-wheel hash proof or qualified installed pip. The future confined
+executable must bind the actual pinned image/config and isolated Python/pip
+readbacks before its offline, hash-closed dependency install. Ambient site or
+configuration and network fallback cannot supply that prerequisite. The five
+validator dependencies and both derived requirements files are unchanged.
+
 The proposed deterministic raw assets are `server-linux-amd64.spdx.json`,
 `server-linux-arm64.spdx.json` and `server-sbom-manifest.json`.
 `exact_release_asset_bytes` rejects absent, extra, renamed, empty, oversized or

@@ -6,7 +6,7 @@
     "scan_or_publication_admitted": false,
     "schema_validator_dependency_closure": {
       "path": "scripts/ci/native-sbom/validator-pins.v1.json",
-      "sha256": "9b140b139b299d22bd92420a4ae2ff570eeb19c7977f485557b6119c407ad314",
+      "sha256": "b6374004e922d0f4789e22ad214639c9562f6815fdf67e13528f86885fca3e4c",
       "status": "candidate_metadata_not_executed"
     }
   },
