@@ -103,6 +103,51 @@ class SbomPolicyTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(P.Refusal):
                 P.verified_statement_matches(encoded(fixture()), changed, certificate, registry, child, index, source, tag, 123, 2)
 
+    def release_manifest_fixture(self):
+        release = {"tag": "3.2.0-rc.1", "source_commit": "c" * 40, "index_digest": "sha256:" + "d" * 64,
+                   "run_id": 123, "run_attempt": 2}
+        subjects = {platform: {"child_manifest_digest": "sha256:" + child * 64,
+                              "image_config_digest": "sha256:" + config * 64}
+                    for platform, child, config in (("linux/amd64", "a", "1"), ("linux/arm64", "b", "2"))}
+        arm = fixture()
+        arm["documentNamespace"] += "-arm64"
+        return release, subjects, {"linux/amd64": encoded(fixture()), "linux/arm64": encoded(arm)}
+
+    def test_checksum_map_binds_release_platform_subjects_and_raw_asset_bytes(self):
+        release, subjects, documents = self.release_manifest_fixture()
+        raw = P.release_asset_manifest(release, subjects, documents)
+        value = json.loads(raw)
+        self.assertEqual(value["release"], release)
+        self.assertEqual(value["registries"], list(P.REGISTRIES))
+        self.assertEqual([v["platform"] for v in value["documents"]], list(P.PLATFORMS))
+        for item, name in zip(value["documents"], P.SPDX_ASSETS):
+            platform = item["platform"]
+            self.assertEqual(item["asset"], name)
+            self.assertEqual(item["bytes"], len(documents[platform]))
+            self.assertEqual(item["sha256"], hashlib.sha256(documents[platform]).hexdigest())
+            self.assertEqual(item["child_manifest_digest"], subjects[platform]["child_manifest_digest"])
+            self.assertEqual(item["image_config_digest"], subjects[platform]["image_config_digest"])
+        changed = {**documents, "linux/amd64": json.dumps(fixture(), separators=(",", ":")).encode()}
+        self.assertNotEqual(raw, P.release_asset_manifest(release, subjects, changed))
+        self.assertEqual(raw, P.release_asset_manifest(dict(reversed(list(release.items()))),
+            dict(reversed(list(subjects.items()))), dict(reversed(list(documents.items())))))
+
+    def test_checksum_map_refuses_incomplete_ambiguous_and_wrong_release_tuples(self):
+        release, subjects, documents = self.release_manifest_fixture()
+        mutations = [lambda r, s, d: r.update(run_id=True), lambda r, s, d: r.update(run_attempt=0),
+                     lambda r, s, d: r.update(extra="unreviewed"),
+                     lambda r, s, d: s.pop("linux/arm64"), lambda r, s, d: d.pop("linux/arm64"),
+                     lambda r, s, d: s.__setitem__("linux/arm64", copy.deepcopy(s["linux/amd64"])),
+                     lambda r, s, d: s["linux/amd64"].update(child_manifest_digest=r["index_digest"]),
+                     lambda r, s, d: s["linux/amd64"].update(image_config_digest="wrong-config"),
+                     lambda r, s, d: s["linux/amd64"].update(image_config_digest=s["linux/arm64"]["child_manifest_digest"]),
+                     lambda r, s, d: d.__setitem__("linux/arm64", d["linux/amd64"])]
+        for mutate in mutations:
+            args = copy.deepcopy((release, subjects, documents))
+            mutate(*args)
+            with self.subTest(mutate=mutate), self.assertRaises(P.Refusal):
+                P.release_asset_manifest(*args)
+
     def child_fixture(self, architecture="amd64", media_index=0):
         source, tag = "c" * 40, "3.2.0-rc.1"
         config = {"os": "linux", "architecture": architecture, "config": {"Labels": {

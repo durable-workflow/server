@@ -389,5 +389,49 @@ def verified_statement_matches(raw_document: bytes, statement: dict[str, Any],
     return predicate_matches(raw_document, canonical(statement["predicate"]))
 
 
+def release_asset_manifest(release: dict[str, Any], subjects: dict[str, dict[str, str]],
+                           raw_documents: dict[str, bytes]) -> bytes:
+    """Compile raw-asset identities from independently verified inputs.
+
+    This unsigned checksum map is not qualification/signature authority. Its
+    caller must first authenticate publication, both registry subject tuples,
+    generation custody and signed predicates. Existing Release bytes must
+    still pass exact_release_asset_bytes rather than being reconstructed.
+    """
+    require(type(release) is dict and set(release) == {
+        "tag", "source_commit", "index_digest", "run_id", "run_attempt"}, "sbom_manifest_release")
+    require(type(release["run_id"]) is int and 0 < release["run_id"] <= 9007199254740991
+            and type(release["run_attempt"]) is int and 0 < release["run_attempt"] <= 9007199254740991,
+            "sbom_manifest_release_run")
+    require_release_invocation(
+        f"https://github.com/{REPOSITORY}/actions/runs/{release['run_id']}/attempts/{release['run_attempt']}",
+        release["run_id"], release["run_attempt"])
+    require(type(subjects) is dict and set(subjects) == set(PLATFORMS)
+            and type(raw_documents) is dict and set(raw_documents) == set(PLATFORMS), "sbom_manifest_platform_set")
+    children, configs = set(), set()
+    for platform in PLATFORMS:
+        subject = subjects[platform]
+        require(type(subject) is dict and set(subject) == {"child_manifest_digest", "image_config_digest"}
+                and all(is_digest(value) for value in subject.values()), "sbom_manifest_subject")
+        child, config = subject["child_manifest_digest"], subject["image_config_digest"]
+        require(child != config and config != release["index_digest"], "sbom_manifest_config")
+        sbom_verification_command(REGISTRIES[0], child, release["index_digest"], release["tag"], release["source_commit"])
+        children.add(child)
+        configs.add(config)
+    require(len(children) == len(configs) == 2 and children.isdisjoint(configs), "sbom_manifest_distinct_subjects")
+    documents = distinct_platform_documents(*(raw_documents[platform] for platform in PLATFORMS))
+    members = []
+    for platform, asset, observation in zip(PLATFORMS, SPDX_ASSETS, documents):
+        members.append({"platform": platform, **subjects[platform], "asset": asset,
+                        "bytes": observation["raw_bytes"], "sha256": observation["raw_sha256"],
+                        "canonical_predicate_sha256": observation["canonical_sha256"],
+                        "document_namespace": observation["namespace"]})
+    result = canonical({"schema": "durable-workflow.native-sbom-manifest.v1",
+        "repository": {"name": REPOSITORY, "id": int(REPOSITORY_ID), "owner_id": int(OWNER_ID)},
+        "release": release, "registries": list(REGISTRIES), "documents": members}) + b"\n"
+    require(len(result) <= ASSET_LIMITS[MANIFEST_ASSET], "sbom_manifest_size")
+    return result
+
+
 if __name__ == "__main__":
     raise SystemExit("native_sbom_policy is a source library; executable/dependency closure is not wired")

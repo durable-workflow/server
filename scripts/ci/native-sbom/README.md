@@ -131,3 +131,15 @@ The future transport still must authenticate and select the actual bounded
 current-run pair, bind publication/index/config and generator custody, reject
 ambiguous current predicates, and verify both registry origins. A caller-supplied
 dictionary or a passing synthetic control supplies none of those authorities.
+
+`release_asset_manifest` compiles the proposed unsigned checksum-map bytes from
+independently verified release, two-platform child/config tuples and the two
+retained raw documents. It binds the fixed repository/registries, tag/source,
+index/run/attempt, platform-specific asset names, raw SHA-256/size, canonical
+predicate hashes and distinct namespaces. Missing/ambiguous platforms and
+interchanged child/config identities refuse. Input map order does not alter the
+output; reformatting raw SPDX does. Twenty-six synthetic families cover the
+source library. This map is not a signature or qualification receipt, and the
+future caller must establish generation and signed-subject custody first.
+Existing Release assets must retain their original bytes, not be reconstructed
+through this compiler.
