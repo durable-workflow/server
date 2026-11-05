@@ -165,3 +165,20 @@ subjects refuse the whole result. Twenty-nine synthetic source families pass.
 The future transport must still execute/authenticate those fixed requests and
 bind their actual registry origins. Synthetic dictionaries exercise these
 requirements without supplying cryptographic or publication evidence.
+
+The separate source component `native_sbom_archive.py` implements a narrower
+initial input guard: one uncompressed canonical OCI archive, with all blob
+hashes/sizes and exactly one config/layer graph matching the independently
+smoked config and its ordered diff IDs. It reads under byte/member/deadline
+bounds without host extraction or extension processing. Duplicate/traversal/link/
+sparse/extension entries, changed or reordered layers, extra graphs/members,
+wrong descriptors, malformed JSON, truncation and changed reread metadata refuse.
+It returns an archive-specific manifest identity, never a registry subject.
+
+This guard is not yet a selected generator input. Docker-save hybrid exports,
+compressed layers and other unqualified formats deliberately refuse; a reviewed
+producer/adapter and actual format qualification are still required before
+adoption. The future caller must own/seal the original regular file, bind its
+config to actual smoke/provider authority and retain/recheck byte identity
+through the confined scan. Generation mode stays null and direct component
+execution refuses. Synthetic tar fixtures are not image exports or scan proof.
