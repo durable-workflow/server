@@ -31,10 +31,12 @@ image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "
 
 # The frozen PHP reference loses SQLite writes under maintenance contention.
 # service-calls (#796), schedule-catalog (#1021) and namespace-delete-payloads
-# (#1018) record separately with PHP's loop stopped; native maintenance remains enabled.
+# (#1018), plus post-prune payload cleanup, record separately with PHP's loop
+# stopped; native maintenance remains enabled.
 selection=(--exclude-fixture tests/Fixtures/ServerParity/service-calls.json
   --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json
-  --exclude-fixture tests/Fixtures/ServerParity/namespace-delete-payloads.json)
+  --exclude-fixture tests/Fixtures/ServerParity/namespace-delete-payloads.json
+  --exclude-fixture tests/Fixtures/ServerParity/retention-external-payloads.json)
 for pending in patch-insertion-activity-pending patch-insertion-activity-completed patch-created-activity-pending \
   patch-created-activity-completed workflow-waiting-history-type workflow-waiting-history-message workflow-task-transient-retry; do
   selection+=(--include-fixture "tests/Fixtures/ServerParityPending/$pending.json")
@@ -127,15 +129,20 @@ namespace_delete_payloads_status=0
 bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 namespace-delete-payloads \
   || namespace_delete_payloads_status=$?
 
+retention_payloads_status=0
+bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 retention-external-payloads \
+  || retention_payloads_status=$?
+
 native_id=$(docker image inspect --format '{{.Id}}' "$native")
 jq -n --arg native "$native" --arg id "$native_id" --arg php "$image" --arg revision "$DW_PARITY_RUNNER_REVISION" \
   --argjson reference "$status" --argjson nativeStatus "$native_status" --argjson compare "$compare_status" \
   --argjson serviceCalls "$service_calls_status" \
   --argjson scheduleCatalog "$schedule_catalog_status" \
   --argjson namespaceDeletePayloads "$namespace_delete_payloads_status" \
+  --argjson retentionPayloads "$retention_payloads_status" \
   '{schema:"durable-workflow.native-image-corpus.v1", native_image:$native, native_image_id:$id, php_reference:$php,
     runner_revision:$revision, backend:"sqlite",
-    status:{reference_records:$reference, native_record:$nativeStatus, compare:$compare, service_calls:$serviceCalls, schedule_catalog:$scheduleCatalog, namespace_delete_payloads:$namespaceDeletePayloads}}' \
+    status:{reference_records:$reference, native_record:$nativeStatus, compare:$compare, service_calls:$serviceCalls, schedule_catalog:$scheduleCatalog, namespace_delete_payloads:$namespaceDeletePayloads, retention_payloads:$retentionPayloads}}' \
   > parity-evidence/native-image-corpus.json
 cat parity-evidence/native-image-corpus.json
 test "$status" -eq 0
@@ -144,3 +151,4 @@ test "$compare_status" -eq 0
 test "$service_calls_status" -eq 0
 test "$schedule_catalog_status" -eq 0
 test "$namespace_delete_payloads_status" -eq 0
+test "$retention_payloads_status" -eq 0

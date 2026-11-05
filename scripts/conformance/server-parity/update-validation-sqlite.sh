@@ -7,6 +7,7 @@
 # service-calls (#796) or schedule-catalog, whose backfill can lose an
 # occurrence to PHP's concurrent SQLite maintenance writer (#1021).
 # namespace-delete-payloads can leave a post-commit deletion pending (#1018).
+# retention-external-payloads has the same contention after a prune commits.
 # These fixtures keep their exact assertions in the same PHP-only window.
 #
 # The published PHP record runs with PHP's maintenance loop stopped. On SQLite
