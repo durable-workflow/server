@@ -4,12 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import shlex
 import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+
+# Closed cleanup model, not a path exemption: every module used by the owner
+# checks/CLI transport is bound to reviewed bytes. A source change requires an
+# explicit model update and countercontrol review before gaining coverage.
+QUALIFICATION_CLEANUP_SOURCES = {
+    "scripts/ci/native_qualification.py": "ea74b534004c04209843a0ca28bb5a338cd2f2bec56fde1e511da9ffc20a911e",
+    "scripts/ci/native_alias_evidence.py": "647d184c7a5e456410933a7188debc3fe23360d002ef6458ced742bb85f32c37",
+    "scripts/ci/native_alias_transport.py": "053af14689c7c69d6620860390801fc900a331126f32a4f68fac6eb0e6593fef",
+}
 
 
 WORKFLOW_SCOPE_PARTS = (
@@ -897,9 +907,47 @@ def resource_aliases(
     return aliases
 
 
+def qualification_cleanup_resources(
+    command: str, resolution_source: str, root: Path | None,
+) -> tuple[set[OwnedResource], list[str]]:
+    """Recognize one exact, idempotent, owner-gated helper invocation."""
+    try:
+        tokens = shlex.split(re.sub(r"^run:\s*", "", command))
+    except ValueError:
+        return set(), []
+    if tokens[:3] != ["python3", "scripts/ci/native_qualification.py", "cleanup"]:
+        return set(), []
+    reason = "strict qualification cleanup requires reviewed bytes, closed argv and job-scoped scope"
+    if (root is None or len(tokens) != 9 or tokens[3] != "--kind"
+            or tokens[4] not in {"corpus", "compose"} or tokens[5] != "--scope"
+            or tokens[7:] != ["--output", "qualification-state/cleanup.json"]
+            or re.fullmatch(r"\$(?:[A-Z][A-Z0-9_]*|\{[A-Z][A-Z0-9_]*\})", tokens[6]) is None
+            or not value_is_job_scoped(resolution_source, tokens[6])):
+        return set(), [reason]
+    try:
+        for relative, expected in QUALIFICATION_CLEANUP_SOURCES.items():
+            path = root / relative
+            # Symlinked code could import a different adjacent module closure.
+            if path.resolve() != root.resolve() / relative:
+                return set(), [reason]
+            with path.open("rb") as stream:
+                data = stream.read(131073)
+            if len(data) > 131072 or hashlib.sha256(data).hexdigest() != expected:
+                return set(), [reason]
+    except OSError:
+        return set(), [reason]
+    scope = tokens[6]
+    if tokens[4] == "compose":
+        return {OwnedResource("compose", scope)}, []
+    return {OwnedResource("network", scope), *(
+        OwnedResource("container", scope + "-" + suffix)
+        for suffix in ("rust", "server", "php-maintenance"))}, []
+
+
 def cleanup_resources(
     job_source: str,
     resolution_source: str,
+    root: Path | None = None,
 ) -> tuple[set[OwnedResource], list[str]]:
     """Return resources removed by tolerant always-steps and cleanup violations."""
 
@@ -934,8 +982,17 @@ def cleanup_resources(
             for line_number, command in commands
             for scan_command in resource_command_variants(command)
         ]
+        unconditional_always = any(re.fullmatch(
+            r"\s+(?:-\s+)?if:\s*(?:always\(\)|\$\{\{\s*always\(\)\s*\}\})\s*", line)
+            for line in step.splitlines())
 
         for _, command in commands:
+            modeled, errors = qualification_cleanup_resources(command, resolution_source, root)
+            if modeled and not unconditional_always:
+                modeled = set()
+                errors.append("strict qualification cleanup requires an unconditional always() step")
+            resources.update(modeled)
+            violations.extend(errors)
             for match in COMPOSE_COMMAND.finditer(command):
                 arguments = command[match.end() :]
                 if not COMPOSE_DOWN_OPERATION.search(arguments):
@@ -1215,6 +1272,42 @@ def literal_repository_script(root: Path, value: str) -> str:
 
 def spans_overlap(first: tuple[int, int], second: tuple[int, int]) -> bool:
     return first[0] < second[1] and second[0] < first[1]
+
+
+def isolated_source_check(
+    root: Path,
+    program: str,
+    arguments: str,
+) -> tuple[str, bool, tuple[int, int]] | None:
+    """Model only closed isolated Python execution and shell diagnostics.
+
+    An executed Python helper remains a transitive inspection target. Shell
+    syntax/lint operands are data only for these exact argument positions;
+    accepting one occurrence must not exempt another invocation of the file.
+    """
+
+    if program != "/usr/bin/env":
+        return None
+    match = re.fullmatch(
+        r"\s+-i PATH=/usr/bin:/bin LC_ALL=C "
+        r"(?P<tool>/usr/bin/python3 -I -S -B|/bin/sh -n|/usr/bin/shellcheck) "
+        r"(?P<path>(?:[\w.-]+/)*[\w.-]+\.(?:py|sh))\s*",
+        arguments,
+    )
+    if match is None:
+        return None
+    path = match.group("path")
+    target = root / path
+    if (
+        any(part in {".", ".."} for part in path.split("/"))
+        or not target.is_file()
+        or not target.resolve().is_relative_to(root.resolve())
+    ):
+        return None
+    executes = match.group("tool").startswith("/usr/bin/python3 ")
+    if target.suffix != (".py" if executes else ".sh"):
+        return None
+    return path, executes, match.span("path")
 
 
 def workflow_run_blocks(job_source: str) -> list[str]:
@@ -2051,6 +2144,8 @@ def unclassified_dynamic_invocations(
                 raw_arguments = invocation.group("arguments")
                 if is_assignment_word(raw_program):
                     continue
+                if isolated_source_check(root, raw_program, raw_arguments) is not None:
+                    continue
 
                 program, tokens, command_string = unwrap_command_launcher(
                     raw_program.strip("\"'"),
@@ -2146,6 +2241,20 @@ def workflow_script_references(
     references: set[str] = set()
     allowed_script_spans: list[tuple[int, int]] = []
     violations = unclassified_dynamic_invocations(root, job_source)
+
+    for invocation in WORKFLOW_COMMAND_INVOCATION.finditer(invocation_source):
+        if starts_inside_shell_quote(invocation_source, invocation.start()):
+            continue
+        check = isolated_source_check(
+            root, invocation.group("program"), invocation.group("arguments")
+        )
+        if check is None:
+            continue
+        path, executes, span = check
+        if executes:
+            references.add(path)
+        offset = invocation.start("arguments")
+        allowed_script_spans.append((offset + span[0], offset + span[1]))
 
     for reference in WORKFLOW_SCRIPT_REFERENCE.finditer(invocation_source):
         if (
@@ -2427,6 +2536,7 @@ def validate(root: Path) -> list[str]:
             cleaned, cleanup_violations = cleanup_resources(
                 job_source,
                 resource_source,
+                root,
             )
             violations.extend(
                 f"{workflow} job {job_name}: {violation}"

@@ -178,6 +178,11 @@ jobs:
       - name: Prove the image installs and checks the fixed Brotli decoder
         run: python3 -m unittest tests/Unit/Support/brotli_trust_test.py
 
+      - name: Prove the PHP image refuses an affected APT client before download
+        run: |
+          python3 -m unittest tests/Unit/Support/php_apt_test.py
+          python3 scripts/ci/verify-php-apt-source.py
+
       - name: Check published failover image identity and recovery result gates
         run: python3 -m unittest discover -s tests/Unit/Support -p 'single_region_failover*test.py'
 

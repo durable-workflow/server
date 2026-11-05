@@ -10,6 +10,7 @@
 # DIGEST_ARM64 from the build jobs, which push by digest and fail unless that
 # exact digest passed its smoke test. Writes digest= to $GITHUB_OUTPUT.
 set -euo pipefail
+source scripts/ci/native-registry-absence.sh
 fail() { printf 'Native release publication failed: %s\n' "$1" >&2; exit 1; }
 # A plain tag is native only from major 3, above every PHP release; native-
 # names the tags published before plain ones.
@@ -41,8 +42,8 @@ for image in "${registries[@]}"; do
   if lookup=$(docker buildx imagetools inspect "$image:$image_tag" 2>&1); then
     fail "$image:$image_tag already exists."
   fi
-  grep -qiE 'not found|manifest unknown|name unknown' <<<"$lookup" \
-    || fail "could not confirm that $image:$image_tag is absent: $(head -c 300 <<<"$lookup")"
+  native_registry_subject_missing "$image:$image_tag" "$lookup" \
+    || fail "could not establish exact version-tag absence."
 done
 
 for image in "${registries[@]}"; do
