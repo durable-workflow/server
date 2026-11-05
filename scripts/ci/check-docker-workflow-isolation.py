@@ -982,9 +982,15 @@ def cleanup_resources(
             for line_number, command in commands
             for scan_command in resource_command_variants(command)
         ]
+        unconditional_always = any(re.fullmatch(
+            r"\s+(?:-\s+)?if:\s*(?:always\(\)|\$\{\{\s*always\(\)\s*\}\})\s*", line)
+            for line in step.splitlines())
 
         for _, command in commands:
             modeled, errors = qualification_cleanup_resources(command, resolution_source, root)
+            if modeled and not unconditional_always:
+                modeled = set()
+                errors.append("strict qualification cleanup requires an unconditional always() step")
             resources.update(modeled)
             violations.extend(errors)
             for match in COMPOSE_COMMAND.finditer(command):

@@ -58,6 +58,10 @@ class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
             self.assertNotEqual(0, result.returncode, invalid)
         result = self.run_policy(self.qualification_workflow(invocation, always=False), self.qualification_cleanup_sources())
         self.assertNotEqual(0, result.returncode)
+        conditional = self.qualification_workflow(invocation).replace("if: always()", "if: always() && false")
+        result = self.run_policy(conditional, self.qualification_cleanup_sources())
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unconditional always()", result.stderr)
 
     def test_accepts_closed_strict_compose_cleanup_with_job_scoped_project(self) -> None:
         workflow = """
