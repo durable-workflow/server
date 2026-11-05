@@ -34,6 +34,46 @@ def encoded(value):
 
 
 class SbomPolicyTests(unittest.TestCase):
+    def test_build_provenance_cannot_substitute_for_an_spdx_predicate(self):
+        provenance = encoded({"buildDefinition": {"buildType": "synthetic-provenance"}, "runDetails": {}})
+        raw = encoded(fixture())
+        with self.assertRaisesRegex(P.Refusal, "spdx_schema_shape"):
+            P.predicate_matches(raw, provenance)
+
+    def test_verification_request_uses_spdx_child_and_fixed_release_identity(self):
+        child, index, source = "sha256:" + "a" * 64, "sha256:" + "b" * 64, "c" * 40
+        for registry in P.REGISTRIES:
+            command = P.sbom_verification_command(registry, child, index, "3.2.0-rc.1", source)
+            self.assertEqual(command[:4], ["gh", "attestation", "verify", "oci://" + registry + "@" + child])
+            self.assertEqual(command[4:], ["--repo", P.REPOSITORY, "--signer-workflow",
+                "github.com/durable-workflow/server/.github/workflows/native-release.yml",
+                "--source-ref", "refs/tags/3.2.0-rc.1", "--source-digest", source,
+                "--predicate-type", "https://spdx.dev/Document/v2.3", "--deny-self-hosted-runners", "--format", "json"])
+            self.assertNotIn(index, command)
+
+    def test_verification_request_refuses_redirects_indexes_and_cli_injection(self):
+        original = [P.REGISTRIES[0], "sha256:" + "a" * 64, "sha256:" + "b" * 64, "3.2.0", "c" * 40]
+        for position, replacement in ((0, "foreign.invalid/server"), (0, "--repo=foreign"),
+                                      (1, original[2]), (1, "--format=env"), (2, "not-a-digest"),
+                                      (3, "refs/heads/main"), (3, "3.2.0\n--repo=foreign"),
+                                      (3, "3.2.\u0661"),
+                                      (4, "c" * 39), (4, "--source-digest=foreign")):
+            args = list(original)
+            args[position] = replacement
+            with self.subTest(position=position, replacement=replacement), self.assertRaises(P.Refusal):
+                P.sbom_verification_command(*args)
+
+    def test_verified_invocation_requires_exact_repo_run_and_attempt_without_prefixes(self):
+        uri = "https://github.com/durable-workflow/server/actions/runs/123/attempts/2"
+        P.require_release_invocation(uri, 123, 2)
+        for changed in (uri.replace("123", "1234"), uri.replace("attempts/2", "attempts/3"),
+                        uri.replace("durable-workflow/server", "foreign/server"), uri + "/", uri + "?suffix=1"):
+            with self.subTest(changed=changed), self.assertRaisesRegex(P.Refusal, "invocation"):
+                P.require_release_invocation(changed, 123, 2)
+        for run, attempt in ((True, 2), (123, False), (0, 2), (123, 0), (2 ** 53, 2)):
+            with self.subTest(run=run, attempt=attempt), self.assertRaisesRegex(P.Refusal, "release_run"):
+                P.require_release_invocation(uri, run, attempt)
+
     def test_existing_release_requires_all_three_exact_raw_assets(self):
         arm = fixture()
         arm["documentNamespace"] += "-arm64"

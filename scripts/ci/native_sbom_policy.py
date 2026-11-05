@@ -23,6 +23,9 @@ COLLECTION_LIMIT = 100000
 SPDX_ASSETS = ("server-linux-amd64.spdx.json", "server-linux-arm64.spdx.json")
 MANIFEST_ASSET = "server-sbom-manifest.json"
 ASSET_LIMITS = {**dict.fromkeys(SPDX_ASSETS, RAW_LIMIT), MANIFEST_ASSET: 65536}
+REGISTRIES = ("ghcr.io/durable-workflow/server", "durableworkflow/server")
+REPOSITORY = "durable-workflow/server"
+PREDICATE_TYPE = "https://spdx.dev/Document/v2.3"
 
 
 class Refusal(ValueError):
@@ -191,6 +194,42 @@ def exact_release_asset_bytes(expected: dict[str, bytes], observed: dict[str, by
         require(original == retained, "sbom_release_asset_bytes_changed")
         result[name] = {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()}
     return result
+
+
+def sbom_verification_command(registry: str, child: str, index: str, tag: str, source: str) -> list[str]:
+    """Construct, never execute, the fixed signature-verification request.
+
+    A future caller must independently prove index membership/platform and the
+    expected release tuple first. Successful command construction is not a
+    verified signature or proof that the digest is a platform child.
+    """
+    if registry not in REGISTRIES:
+        raise Refusal("sbom_registry")
+    for digest in (child, index):
+        if type(digest) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+            raise Refusal("sbom_subject_digest")
+    require(child != index, "sbom_index_is_not_child")
+    if type(tag) is not str or re.fullmatch(r"(?:native-)?(?:[3-9]|[1-9]\d+)\.\d+\.\d+(?:-rc\.\d+)?", tag, re.ASCII) is None:
+        raise Refusal("sbom_release_tag")
+    if type(source) is not str or re.fullmatch(r"[0-9a-f]{40}", source) is None:
+        raise Refusal("sbom_source_commit")
+    return ["gh", "attestation", "verify", "oci://" + registry + "@" + child,
+            "--repo", REPOSITORY, "--signer-workflow", "github.com/" + REPOSITORY + "/.github/workflows/native-release.yml",
+            "--source-ref", "refs/tags/" + tag, "--source-digest", source,
+            "--predicate-type", PREDICATE_TYPE, "--deny-self-hosted-runners", "--format", "json"]
+
+
+def require_release_invocation(uri: str, run_id: int, attempt: int) -> None:
+    """Bind a certificate's verified invocation URI to one exact run attempt.
+
+    The caller must extract this field from authenticated verifier output;
+    arbitrary strings passed here do not become authenticated observations.
+    """
+    require(type(run_id) is int and 0 < run_id <= 9007199254740991
+            and type(attempt) is int and 0 < attempt <= 9007199254740991,
+            "sbom_release_run")
+    expected = f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}"
+    require(type(uri) is str and uri == expected, "sbom_release_invocation")
 
 
 if __name__ == "__main__":

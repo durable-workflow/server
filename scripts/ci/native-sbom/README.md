@@ -63,3 +63,13 @@ bytes; it does not authenticate a checksum map, signature, provider asset or
 image tuple. The future caller must verify those independently and bound each
 download before calling it. Ten synthetic test families now cover the source
 library. No transport, replacement or publication is implemented by this helper.
+
+The source library also constructs the fixed `gh attestation verify` request:
+one selected child under each fixed registry name, exact release signer workflow,
+tag ref and source commit, the SPDX 2.3 predicate type and self-hosted refusal.
+The index cannot be substituted for the requested child. A separate comparison
+requires the authenticated certificate invocation to match the exact release
+run and attempt, with no prefix or suffix acceptance. Fourteen source test
+families pass. These functions neither run `gh` nor authenticate caller-supplied
+tuples/strings; future index membership, provider/signature verification and
+bounded transport remain required before using their results.
