@@ -7,6 +7,7 @@ expected smoked config. Docker's hybrid export is deliberately unsupported.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 import re
 import tarfile
 import time
@@ -107,19 +108,34 @@ def json_member(reader: ArchiveReader, table: dict[str, dict], name: str, limit:
     return parse(raw, limit)
 
 
-def descriptor(value, media_type: str, table: dict[str, dict], platform: str | None = None) -> str:
-    require(type(value) is dict and set(value) <= {"mediaType", "digest", "size", "platform"}
+def descriptor(value, media_type: str, table: dict[str, dict], platform: str | None = None,
+               exporter_root: bool = False) -> str:
+    allowed = {"mediaType", "digest", "size", "platform"}
+    if exporter_root:
+        allowed.add("annotations")
+    require(type(value) is dict and set(value) <= allowed
             and value.get("mediaType") == media_type and is_digest(value.get("digest"))
             and type(value.get("size")) is int and 0 < value["size"] <= ARCHIVE_LIMIT,
             "sbom_archive_descriptor")
-    if platform is not None:
+    if "annotations" in value:
+        annotations = value["annotations"]
+        require(type(annotations) is dict and set(annotations) == {"org.opencontainers.image.created"},
+                "sbom_archive_export_annotation")
+        created = annotations["org.opencontainers.image.created"]
+        require(type(created) is str and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", created)
+                is not None, "sbom_archive_export_annotation")
+        try:
+            datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            raise Refusal("sbom_archive_export_annotation") from None
+    if platform is not None and (not exporter_root or "platform" in value):
         selected = value.get("platform")
         require(type(selected) is dict and set(selected) <= {"os", "architecture", "variant"}
                 and selected.get("os") == "linux" and selected.get("architecture") == platform.split("/")[1]
                 and ("variant" not in selected or
                      (platform == "linux/arm64" and selected["variant"] == "v8")),
                 "sbom_archive_descriptor_platform")
-    else:
+    elif platform is None:
         require("platform" not in value, "sbom_archive_descriptor_platform")
     name = "blobs/sha256/" + value["digest"][7:]
     require(name in table and table[name]["size"] == value["size"], "sbom_archive_descriptor_size")
@@ -146,7 +162,10 @@ def oci_archive_identity(stream: BinaryIO, expected_config: str, platform: str,
             and type(index["schemaVersion"]) is int and index["schemaVersion"] == 2
             and index["mediaType"] == "application/vnd.oci.image.index.v1+json"
             and type(index["manifests"]) is list and len(index["manifests"]) == 1, "sbom_archive_index")
-    manifest_name = descriptor(index["manifests"][0], MANIFEST_TYPE, table, platform)
+    # BuildKit's OCI exporter adds only a presentation creation annotation and
+    # can omit this optional platform field. The exact config below remains the
+    # platform authority; neither annotation nor omission substitutes for it.
+    manifest_name = descriptor(index["manifests"][0], MANIFEST_TYPE, table, platform, exporter_root=True)
     manifest = json_member(reader, table, manifest_name)
     require(type(manifest) is dict and set(manifest) == {"schemaVersion", "mediaType", "config", "layers"}
             and type(manifest["schemaVersion"]) is int and manifest["schemaVersion"] == 2

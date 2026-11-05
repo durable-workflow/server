@@ -7,22 +7,40 @@ closure are reviewed. Frozen 3.1 artifacts keep their recorded SBOM-free status.
 
 ## Subject and export authority
 
-Each native architecture job must first retain its actual successful smoke
+Each native architecture job must retain its actual successful smoke
 observation, immutable local config ID, source commit, release, platform and
-provider run/attempt/job. Export only that config ID, with an explicit platform;
-never resolve a mutable name at export time. The independently verified
+provider run/attempt/job. The preferred source candidate emits an additional
+OCI archive from the same single-platform build result. It may be produced
+before smoke, but cannot supply SBOM authority until its complete config/layer
+graph matches the actual successfully smoked config. Never rebuild or resolve
+a mutable name to obtain a supposedly equivalent input. The independently verified
 published index/child/config tuple remains the attestation authority. An archive
 hash or an exporter-generated manifest is not a replacement registry subject.
 
-The proposed offline input is one uncompressed Docker-save archive. Docker's
-[save interface](https://docs.docker.com/reference/cli/docker/image/save/)
-can otherwise include multiple platforms and references. The actual selected
-CLI/daemon/image-store implementation and its source/format must be pinned
-before supporting its output. An illustrative
-[Moby v28.5.2 exporter](https://github.com/moby/moby/blob/v28.5.2/image/tarexport/save.go)
-writes both Docker and OCI metadata, references config bytes by their hash, and
-orders archive layers from the image config's diff IDs. This source example is
-not a selection or observation of a running daemon.
+The proposed offline input is one unnamed OCI-layout tar with uncompressed
+layers. [Multiple exporters](https://docs.docker.com/build/exporters/)
+allow a second output without a second build. The candidate OCI parameters are
+`type=oci,dest=native-sbom/input.oci.tar,compression=uncompressed,force-compression=true,oci-mediatypes=true`.
+Force compression is explicit so cached compressed layers cannot silently
+enter this input profile. The native Release's existing named registry output
+would remain separate; the PR image's daemon output would carry its existing
+owned smoke name. Do not use global tags to name the additional archive:
+[Buildx 0.38.1](https://github.com/docker/buildx/blob/v0.38.1/build/opt.go)
+copies those names to every image exporter.
+
+Read-only historical provider log `42056550973` / job `127346371667` records
+Buildx 0.38.1, BuildKit 0.34.2 and Engine 29.4.2. This is existing-tool evidence,
+not a new exporter invocation or future runtime qualification. The exact
+[BuildKit OCI exporter](https://github.com/moby/buildkit/blob/v0.34.2/exporter/oci/export.go)
+selects containerd's skip-Docker-manifest option and adds a UTC creation
+annotation; a single manifest descriptor may omit its platform. Those known
+presentation fields cannot replace config/platform authority. Unknown names,
+annotations or additional graphs still refuse. Actual exporter identity and
+produced format must be independently qualified before adoption.
+
+Docker-save hybrid input remains unsupported. Its possible additional image
+references/metadata require a different reviewed adapter; it is not a fallback
+when the proposed OCI export or guard fails.
 
 The archive guard must stream under a fixed total-byte/member/deadline bound,
 without extracting to the host. It must reject duplicate names, traversal,
@@ -46,7 +64,7 @@ duplicate/path/link/truncation countercontrols are required before adoption.
 
 The proposed scanner input is exclusively the held archive. The pinned
 [Syft 1.55.0 source](https://github.com/anchore/syft/blob/f15c3343e29dfb20cf6d82c820e7090b49808c96/cmd/syft/internal/commands/scan.go)
-supports explicit `--from docker-archive`; omitting the source selection can
+supports explicit `--from oci-archive`; omitting the source selection can
 fall back to a daemon or registry. The future fixed invocation must select the
 archive source, exact platform, SPDX JSON and intended filesystem scope
 explicitly, with automatic update/config discovery disabled by reviewed inputs.

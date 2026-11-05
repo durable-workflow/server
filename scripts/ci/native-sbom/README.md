@@ -182,3 +182,11 @@ adoption. The future caller must own/seal the original regular file, bind its
 config to actual smoke/provider authority and retain/recheck byte identity
 through the confined scan. Generation mode stays null and direct component
 execution refuses. Synthetic tar fixtures are not image exports or scan proof.
+
+The source-derived BuildKit profile additionally accepts only its known UTC
+creation annotation on the root descriptor and an omitted optional root
+platform, while still requiring the exact config's real platform. The annotation
+supplies no source, registry, smoke or timestamp authority. Unknown annotations,
+image-name/ref hints, malformed dates and explicit wrong platforms refuse.
+This supports the proposed unnamed OCI side output from the same build without
+relaxing blob/graph/layer integrity or claiming actual producer qualification.

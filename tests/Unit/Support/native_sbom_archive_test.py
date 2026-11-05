@@ -63,6 +63,32 @@ def archive(files, extras=()):
 
 
 class SbomArchiveTest(unittest.TestCase):
+    def test_buildkit_root_creation_metadata_does_not_replace_config_authority(self):
+        def buildkit_root(index):
+            item = index["manifests"][0]
+            del item["platform"]
+            item["annotations"] = {"org.opencontainers.image.created": "2026-11-05T00:00:00Z"}
+
+        for platform in ("linux/amd64", "linux/arm64"):
+            files, config = fixture(platform, mutate_index=buildkit_root)
+            raw = archive(files)
+            with self.subTest(platform=platform):
+                self.assertEqual(A.oci_archive_identity(io.BytesIO(raw), config, platform)["platform"], platform)
+                foreign = "linux/arm64" if platform == "linux/amd64" else "linux/amd64"
+                with self.assertRaisesRegex(A.Refusal, "config_platform"):
+                    A.oci_archive_identity(io.BytesIO(raw), config, foreign)
+
+    def test_export_annotations_refuse_unknown_names_types_and_invalid_calendar(self):
+        bad = [{"org.opencontainers.image.ref.name": "mutable:latest"},
+               {"org.opencontainers.image.created": None},
+               {"org.opencontainers.image.created": "2026-02-30T00:00:00Z"},
+               {"org.opencontainers.image.created": "2026-11-05T00:00:00Zsuffix"},
+               {"org.opencontainers.image.created": "2026-11-05T00:00:00Z", "foreign": "value"}]
+        for annotations in bad:
+            files, config = fixture(mutate_index=lambda index: index["manifests"][0].update(annotations=annotations))
+            with self.subTest(annotations=annotations), self.assertRaisesRegex(A.Refusal, "export_annotation"):
+                A.oci_archive_identity(io.BytesIO(archive(files)), config, "linux/amd64")
+
     def test_both_platforms_bind_complete_config_and_ordered_layers(self):
         for platform in ("linux/amd64", "linux/arm64"):
             files, config = fixture(platform)
