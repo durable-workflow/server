@@ -24,7 +24,7 @@ function priority(path, failed) {
   return null;
 }
 
-const TEST_SUMMARY = /^(rust|mysql|postgres|comparator|codec-load|artifact-summary)(-execution)?-tests\.txt$/;
+const TEST_SUMMARY = /^(rust|mysql|postgres|comparator|codec-load|artifact-summary)(-execution)?-tests(-b)?\.txt$/;
 
 // A node:test (TAP) report's failing tests: each `not ok` line with its
 // indented YAML diagnostic block, ending at the block's `...` line. A large
