@@ -63,9 +63,14 @@
     {
       "path": ".github/workflows/phpunit-feature.yml",
       "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
-      "count": 1,
-      "confinement": "The central clean-trust action (Security-accepted .github #239): installs the hash-pinned pip 26.2.2, checks its bundle and exports it, with an empty SSL_CERT_DIR, as PIP_CERT and SSL_CERT_FILE to later steps. At the policy's reviewed preflight step.",
+      "count": 2,
+      "confinement": "The accepted central clean-trust action installs hash-pinned pip 26.2.2 and exports its checked bundle with an empty SSL_CERT_DIR as PIP_CERT and SSL_CERT_FILE. Both the policy preflight and bounded SBOM source-test job use this exact action.",
       "guards": [
+        {
+          "type": "accepted-action",
+          "line": null,
+          "distance": null
+        },
         {
           "type": "accepted-action",
           "line": null,
@@ -514,6 +519,19 @@
           "type": "bootstrap",
           "line": "&& sh /sdk/ci/bootstrap-patched-pip.sh /sdk/venv/bin/python \\",
           "distance": 1
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/phpunit-feature.yml",
+      "line": "python -I -m pip install --no-deps --require-hashes --only-binary=:all:",
+      "count": 1,
+      "confinement": "The earlier central clean-trust action exports the checked CA pair. Isolated pip installs only five exact wheel URLs with required hashes and no dependency solve for synthetic source tests; this is not the confined generator validator or an execution receipt.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust",
+          "distance": 3
         }
       ]
     }

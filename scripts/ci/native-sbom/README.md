@@ -166,6 +166,15 @@ The future transport must still execute/authenticate those fixed requests and
 bind their actual registry origins. Synthetic dictionaries exercise these
 requirements without supplying cryptographic or publication evidence.
 
+Ordinary source CI runs these synthetic policy and archive tests in a bounded
+source-test job after the existing central-action preflight and patched-pip
+bootstrap. Its
+Linux/amd64 CPython 3.13 test dependencies are the five hash-closed wheel URLs
+in `source-test.requirements.txt`, derived from the validator metadata and
+checked against it. This is development test tooling, separate from the future
+confined image/offline validator execution. It supplies no generator, archive,
+scan, installed dependency or publication qualification.
+
 The separate source component `native_sbom_archive.py` implements a narrower
 initial input guard: one uncompressed canonical OCI archive, with all blob
 hashes/sizes and exactly one config/layer graph matching the independently

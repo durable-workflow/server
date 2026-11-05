@@ -35,6 +35,22 @@ def encoded(value):
 
 
 class SbomPolicyTests(unittest.TestCase):
+    def test_ci_source_tooling_matches_the_hash_closed_dependency_inventory(self):
+        pins = ROOT / "scripts/ci/native-sbom"
+        metadata_raw = (pins / "validator-pins.v1.json").read_bytes()
+        tools = json.loads((pins / "tool-pins.v1.json").read_bytes())
+        self.assertEqual(hashlib.sha256(metadata_raw).hexdigest(),
+                         tools["admission"]["schema_validator_dependency_closure"]["sha256"])
+        packages = json.loads(metadata_raw)["packages"]
+        requirements = (pins / "source-test.requirements.txt").read_text().splitlines()
+        entries = [line for line in requirements if line and not line.startswith("#")]
+        expected = []
+        for _, package in sorted(packages.items()):
+            wheel = package["wheels"].get("any") or package["wheels"]["linux/amd64"]
+            expected.append(wheel["url"] + " --hash=sha256:" + wheel["sha256"])
+        self.assertEqual(len(entries), 5)
+        self.assertEqual(entries, expected)
+
     def certificate_fixture(self):
         source, tag = "c" * 40, "3.2.0-rc.1"
         return {"issuer": "https://token.actions.githubusercontent.com",
