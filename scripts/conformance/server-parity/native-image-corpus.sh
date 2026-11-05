@@ -31,10 +31,12 @@ image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "
 
 # The frozen PHP reference loses SQLite writes under maintenance contention.
 # service-calls (#796), schedule-catalog (#1021) and namespace-delete-payloads
-# (#1018) record separately with PHP's loop stopped; native maintenance remains enabled.
+# (#1018), plus post-prune payload cleanup, record separately with PHP's loop
+# stopped; native maintenance remains enabled.
 selection=(--exclude-fixture tests/Fixtures/ServerParity/service-calls.json
   --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json
-  --exclude-fixture tests/Fixtures/ServerParity/namespace-delete-payloads.json)
+  --exclude-fixture tests/Fixtures/ServerParity/namespace-delete-payloads.json
+  --exclude-fixture tests/Fixtures/ServerParity/retention-external-payloads.json)
 for pending in patch-insertion-activity-pending patch-insertion-activity-completed patch-created-activity-pending \
   patch-created-activity-completed workflow-waiting-history-type workflow-waiting-history-message workflow-task-transient-retry; do
   selection+=(--include-fixture "tests/Fixtures/ServerParityPending/$pending.json")
@@ -44,33 +46,36 @@ mkdir -p parity-state parity-evidence
 chmod 0777 parity-state parity-evidence
 touch parity-state/php.sqlite parity-state/embedded.sqlite
 chmod 0666 parity-state/*.sqlite
-bash scripts/ci/run-composer.sh --rm -v "$PWD:/source" -w /source -- \
+bash scripts/ci/run-composer.sh --rm --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" -v "$PWD:/source" -w /source -- \
   install --working-dir=scripts/conformance/server-parity --no-interaction --no-progress
-docker network create "$RESOURCE_SCOPE" >/dev/null
+docker network create --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" "$RESOURCE_SCOPE" >/dev/null
 
 # The native image under test, as an operator runs it. The shared state
 # directory is also its /state, where fixtures put their external payload
 # storage roots (file:///state/...), as on every corpus server.
-docker run -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
+docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" -d --name "$RESOURCE_SCOPE-rust" --network "$RESOURCE_SCOPE" --network-alias=parity-rust \
   --cpus=1 --memory=256m --memory-swap=256m -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \
   -e DB_DATABASE=/app/database/rust.sqlite -v "$PWD/parity-state:/app/database" -v "$PWD/parity-state:/state" \
   "$native" >/dev/null
+mkdir -p qualification-state
+python3 scripts/ci/native_qualification.py observe-image --kind corpus --image "$native" \
+  --container "$RESOURCE_SCOPE-rust" --platform linux/amd64 --output qualification-state/image.json
 
 # Published PHP and embedded PHP, as the corpus part runs them.
 for target in php embedded; do
-  docker run --rm --user=1000:1000 --entrypoint php \
+  docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" --rm --user=1000:1000 --entrypoint php \
     -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE="/state/$target.sqlite" \
     -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
     "$image" artisan server:bootstrap --force >> parity-evidence/bootstrap.txt
 done
-docker run -d --name "$RESOURCE_SCOPE-server" --network "$RESOURCE_SCOPE" --network-alias=parity-server \
+docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" -d --name "$RESOURCE_SCOPE-server" --network "$RESOURCE_SCOPE" --network-alias=parity-server \
   --user=1000:1000 --cpus=1 --memory=512m --memory-swap=512m \
   -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -e DB_SQLITE_BUSY_TIMEOUT=30000 \
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token "$image" >/dev/null
 for target in server rust; do
   ready=0
   for _ in $(seq 1 30); do
-    if docker run --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
+    if docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" --rm --user=1000:1000 --entrypoint curl --network "$RESOURCE_SCOPE" "$image" \
       -fsS --connect-timeout 2 --max-time 5 "http://parity-$target:8080/api/ready" > "parity-evidence/$target-readiness.json"; then
       ready=1
       break
@@ -79,7 +84,7 @@ for target in server rust; do
   done
   test "$ready" = 1
 done
-docker run -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
+docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" -d --name "$RESOURCE_SCOPE-php-maintenance" --network "$RESOURCE_SCOPE" \
   --user=1000:1000 --cpus=0.25 --memory=256m --memory-swap=256m --entrypoint sh \
   -v "$PWD/parity-state:/state" -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/php.sqlite -e DB_SQLITE_BUSY_TIMEOUT=30000 \
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
@@ -95,11 +100,11 @@ http_flags=(--network "$RESOURCE_SCOPE" -v "$PWD:/source:ro" -v "$PWD/parity-evi
   -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR)
 record_http() {
   local target=$1 url=$2
-  docker run --rm --user=1000:1000 --entrypoint node "${http_flags[@]}" "$image" scripts/conformance/server-parity.mjs record \
+  docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" --rm --user=1000:1000 --entrypoint node "${http_flags[@]}" "$image" scripts/conformance/server-parity.mjs record \
     --mode http --url "$url" --target "$target" --output "/evidence/$target.json" "${selection[@]}"
 }
 record_embedded() {
-  docker run --rm --user=1000:1000 --entrypoint node \
+  docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" --rm --user=1000:1000 --entrypoint node \
     -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
     -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
     -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
@@ -111,7 +116,7 @@ record_embedded || status=$?
 native_status=0
 record_http rust http://parity-rust:8080 || native_status=$?
 compare_status=0
-docker run --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
+docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" --rm --user=1000:1000 --entrypoint node -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
   scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json "${selection[@]}" \
   > parity-evidence/comparison.json || compare_status=$?
 service_calls_status=0
@@ -124,15 +129,20 @@ namespace_delete_payloads_status=0
 bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 namespace-delete-payloads \
   || namespace_delete_payloads_status=$?
 
+retention_payloads_status=0
+bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 retention-external-payloads \
+  || retention_payloads_status=$?
+
 native_id=$(docker image inspect --format '{{.Id}}' "$native")
 jq -n --arg native "$native" --arg id "$native_id" --arg php "$image" --arg revision "$DW_PARITY_RUNNER_REVISION" \
   --argjson reference "$status" --argjson nativeStatus "$native_status" --argjson compare "$compare_status" \
   --argjson serviceCalls "$service_calls_status" \
   --argjson scheduleCatalog "$schedule_catalog_status" \
   --argjson namespaceDeletePayloads "$namespace_delete_payloads_status" \
+  --argjson retentionPayloads "$retention_payloads_status" \
   '{schema:"durable-workflow.native-image-corpus.v1", native_image:$native, native_image_id:$id, php_reference:$php,
     runner_revision:$revision, backend:"sqlite",
-    status:{reference_records:$reference, native_record:$nativeStatus, compare:$compare, service_calls:$serviceCalls, schedule_catalog:$scheduleCatalog, namespace_delete_payloads:$namespaceDeletePayloads}}' \
+    status:{reference_records:$reference, native_record:$nativeStatus, compare:$compare, service_calls:$serviceCalls, schedule_catalog:$scheduleCatalog, namespace_delete_payloads:$namespaceDeletePayloads, retention_payloads:$retentionPayloads}}' \
   > parity-evidence/native-image-corpus.json
 cat parity-evidence/native-image-corpus.json
 test "$status" -eq 0
@@ -141,3 +151,4 @@ test "$compare_status" -eq 0
 test "$service_calls_status" -eq 0
 test "$schedule_catalog_status" -eq 0
 test "$namespace_delete_payloads_status" -eq 0
+test "$retention_payloads_status" -eq 0

@@ -150,7 +150,9 @@ docker compose up -d --wait
 
 Repository checks and focused test commands are documented in
 [CONTRIBUTING.md](CONTRIBUTING.md). Bugs and feature requests belong in
-[GitHub Issues](https://github.com/durable-workflow/server/issues).
+[GitHub Issues](https://github.com/durable-workflow/server/issues). The
+[native publication and alias-promotion runbook](docs/native-release-promotion.md)
+describes the separate qualification and protected release phases.
 
 ## License
 

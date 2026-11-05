@@ -12,6 +12,7 @@ on:
       - Dockerfile.native
       - Dockerfile.native.dockerignore
       - scripts/ci/native-image-smoke.sh
+      - scripts/ci/native-registry-absence.sh
       - scripts/ci/native-release-publish.sh
       - scripts/ci/native-release-rolling-tags.sh
       - scripts/ci/native-release-identity.sh
