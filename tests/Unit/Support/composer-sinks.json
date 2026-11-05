@@ -194,7 +194,7 @@
         {
           "type": "server-verify",
           "line": "RUN server-verify-trust final \\",
-          "distance": 77
+          "distance": 78
         }
       ]
     },

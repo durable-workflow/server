@@ -152,6 +152,11 @@ jobs:
       - name: Prove the image installs and checks the fixed Brotli decoder
         run: python3 -m unittest tests/Unit/Support/brotli_trust_test.py
 
+      - name: Prove the PHP image refuses an affected APT client before download
+        run: |
+          python3 -m unittest tests/Unit/Support/php_apt_test.py
+          python3 scripts/ci/verify-php-apt-source.py
+
       - name: Check published failover image identity and recovery result gates
         run: python3 -m unittest discover -s tests/Unit/Support -p 'single_region_failover*test.py'
 
@@ -175,10 +180,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Cache public mirrored build inputs under their canonical image names
+      # The mirror misses this index's amd64 attestation companion (90503a91).
+      # Retain that exact official index and runtime; use the canonical registry.
+      - name: Cache the canonical public PHP build input
         run: |
-          docker pull mirror.gcr.io/library/php:8.3-apache
-          docker tag mirror.gcr.io/library/php:8.3-apache php:8.3-apache
+          bash scripts/ci/pull-images.sh php@sha256:3614314e50a9b17a0c317dfd100c6346d8881d6565e713556b7a4e8eb3ec4505
+          docker tag php@sha256:3614314e50a9b17a0c317dfd100c6346d8881d6565e713556b7a4e8eb3ec4505 php:8.3-apache
 
       - name: Key the source-free PHP tool images
         id: php_tools_key

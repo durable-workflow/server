@@ -1217,6 +1217,42 @@ def spans_overlap(first: tuple[int, int], second: tuple[int, int]) -> bool:
     return first[0] < second[1] and second[0] < first[1]
 
 
+def isolated_source_check(
+    root: Path,
+    program: str,
+    arguments: str,
+) -> tuple[str, bool, tuple[int, int]] | None:
+    """Model only closed isolated Python execution and shell diagnostics.
+
+    An executed Python helper remains a transitive inspection target. Shell
+    syntax/lint operands are data only for these exact argument positions;
+    accepting one occurrence must not exempt another invocation of the file.
+    """
+
+    if program != "/usr/bin/env":
+        return None
+    match = re.fullmatch(
+        r"\s+-i PATH=/usr/bin:/bin LC_ALL=C "
+        r"(?P<tool>/usr/bin/python3 -I -S -B|/bin/sh -n|/usr/bin/shellcheck) "
+        r"(?P<path>(?:[\w.-]+/)*[\w.-]+\.(?:py|sh))\s*",
+        arguments,
+    )
+    if match is None:
+        return None
+    path = match.group("path")
+    target = root / path
+    if (
+        any(part in {".", ".."} for part in path.split("/"))
+        or not target.is_file()
+        or not target.resolve().is_relative_to(root.resolve())
+    ):
+        return None
+    executes = match.group("tool").startswith("/usr/bin/python3 ")
+    if target.suffix != (".py" if executes else ".sh"):
+        return None
+    return path, executes, match.span("path")
+
+
 def workflow_run_blocks(job_source: str) -> list[str]:
     """Return only shell source from run steps in one workflow job."""
 
@@ -2051,6 +2087,8 @@ def unclassified_dynamic_invocations(
                 raw_arguments = invocation.group("arguments")
                 if is_assignment_word(raw_program):
                     continue
+                if isolated_source_check(root, raw_program, raw_arguments) is not None:
+                    continue
 
                 program, tokens, command_string = unwrap_command_launcher(
                     raw_program.strip("\"'"),
@@ -2146,6 +2184,20 @@ def workflow_script_references(
     references: set[str] = set()
     allowed_script_spans: list[tuple[int, int]] = []
     violations = unclassified_dynamic_invocations(root, job_source)
+
+    for invocation in WORKFLOW_COMMAND_INVOCATION.finditer(invocation_source):
+        if starts_inside_shell_quote(invocation_source, invocation.start()):
+            continue
+        check = isolated_source_check(
+            root, invocation.group("program"), invocation.group("arguments")
+        )
+        if check is None:
+            continue
+        path, executes, span = check
+        if executes:
+            references.add(path)
+        offset = invocation.start("arguments")
+        allowed_script_spans.append((offset + span[0], offset + span[1]))
 
     for reference in WORKFLOW_SCRIPT_REFERENCE.finditer(invocation_source):
         if (
