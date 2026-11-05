@@ -25,6 +25,8 @@ MANIFEST_ASSET = "server-sbom-manifest.json"
 ASSET_LIMITS = {**dict.fromkeys(SPDX_ASSETS, RAW_LIMIT), MANIFEST_ASSET: 65536}
 REGISTRIES = ("ghcr.io/durable-workflow/server", "durableworkflow/server")
 REPOSITORY = "durable-workflow/server"
+REPOSITORY_ID = "1208272134"
+OWNER_ID = "100327932"
 PREDICATE_TYPE = "https://spdx.dev/Document/v2.3"
 PLATFORMS = ("linux/amd64", "linux/arm64")
 INDEX_MEDIA_TYPES = ("application/vnd.oci.image.index.v1+json",
@@ -326,6 +328,39 @@ def require_release_invocation(uri: str, run_id: int, attempt: int) -> None:
             "sbom_release_run")
     expected = f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}"
     require(type(uri) is str and uri == expected, "sbom_release_invocation")
+
+
+def require_certificate_identity(certificate: dict[str, Any], source: str, tag: str,
+                                 run_id: int, attempt: int) -> None:
+    """Check claims extracted from successful cryptographic verifier output.
+
+    Arbitrary dictionaries are not certificates or authenticated evidence.
+    Current repository/provider identity and the verified statement/predicate
+    must also be bound separately by the future executable.
+    """
+    require(type(certificate) is dict and type(source) is str
+            and re.fullmatch(r"[0-9a-f]{40}", source) is not None
+            and type(tag) is str and re.fullmatch(
+                r"(?:native-)?(?:[3-9]|[1-9]\d+)\.\d+\.\d+(?:-rc\.\d+)?", tag, re.ASCII) is not None,
+            "sbom_certificate_inputs")
+    repository_uri = "https://github.com/" + REPOSITORY
+    workflow_uri = repository_uri + "/.github/workflows/native-release.yml@refs/tags/" + tag
+    expected = {
+        "issuer": "https://token.actions.githubusercontent.com",
+        "sourceRepositoryURI": repository_uri,
+        "sourceRepositoryIdentifier": REPOSITORY_ID,
+        "sourceRepositoryOwnerURI": "https://github.com/durable-workflow",
+        "sourceRepositoryOwnerIdentifier": OWNER_ID,
+        "sourceRepositoryDigest": source,
+        "sourceRepositoryRef": "refs/tags/" + tag,
+        "buildSignerURI": workflow_uri,
+        "buildSignerDigest": source,
+        "runnerEnvironment": "github-hosted",
+        "buildTrigger": "workflow_dispatch",
+    }
+    require(all(type(certificate.get(key)) is str and certificate[key] == value
+                for key, value in expected.items()), "sbom_certificate_identity")
+    require_release_invocation(certificate.get("runInvocationURI"), run_id, attempt)
 
 
 if __name__ == "__main__":

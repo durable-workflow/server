@@ -105,3 +105,17 @@ The future executable must additionally bind the fixed repository ID/current
 publication identity and authenticated exact release invocation, rather than
 infer current repository ownership from recorded names alone. This source
 correction runs no verifier and does not complete those transport gates.
+
+`require_certificate_identity` checks claims already extracted from successful
+cryptographic verifier output. It requires the fixed repository/owner numeric
+IDs as strings, exact GitHub issuer and repository URIs, source/tag,
+native-release signer URI/digest, hosted runner, dispatch event and exact
+run/attempt URI. The field names follow the
+[sigstore-go 1.3.0 certificate extensions](https://github.com/sigstore/sigstore-go/blob/v1.3.0/pkg/fulcio/certificate/extensions.go)
+used by [GitHub CLI 2.103.3](https://github.com/cli/cli/blob/v2.103.3/go.mod).
+Read-only repository metadata independently matches the fixed IDs. Twenty-two
+synthetic source families pass, including same-name/different-ID and every
+missing/wrong-type/changed claim. Passing a dictionary does not authenticate it.
+The future executable still must verify the actual CLI/tool closure, current
+provider identity, selected statement/subject/predicate, and both registry
+origins. No attestation or signature was fetched or verified by these tests.

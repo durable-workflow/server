@@ -35,6 +35,41 @@ def encoded(value):
 
 
 class SbomPolicyTests(unittest.TestCase):
+    def certificate_fixture(self):
+        source, tag = "c" * 40, "3.2.0-rc.1"
+        return {"issuer": "https://token.actions.githubusercontent.com",
+            "sourceRepositoryURI": "https://github.com/durable-workflow/server",
+            "sourceRepositoryIdentifier": "1208272134",
+            "sourceRepositoryOwnerURI": "https://github.com/durable-workflow",
+            "sourceRepositoryOwnerIdentifier": "100327932",
+            "sourceRepositoryDigest": source, "sourceRepositoryRef": "refs/tags/" + tag,
+            "buildSignerURI": "https://github.com/durable-workflow/server/.github/workflows/native-release.yml@refs/tags/" + tag,
+            "buildSignerDigest": source, "runnerEnvironment": "github-hosted", "buildTrigger": "workflow_dispatch",
+            "runInvocationURI": "https://github.com/durable-workflow/server/actions/runs/123/attempts/2"}, source, tag
+
+    def test_authenticated_certificate_claims_bind_immutable_ids_and_exact_release(self):
+        certificate, source, tag = self.certificate_fixture()
+        P.require_certificate_identity(certificate, source, tag, 123, 2)
+        for key in certificate:
+            for value in (None, True, 123, certificate[key] + "/foreign"):
+                changed = {**certificate, key: value}
+                with self.subTest(key=key, value=value), self.assertRaises(P.Refusal):
+                    P.require_certificate_identity(changed, source, tag, 123, 2)
+            missing = {k: v for k, v in certificate.items() if k != key}
+            with self.subTest(missing=key), self.assertRaises(P.Refusal):
+                P.require_certificate_identity(missing, source, tag, 123, 2)
+
+    def test_certificate_repo_names_do_not_substitute_for_ids_or_attempt(self):
+        certificate, source, tag = self.certificate_fixture()
+        for changed in ({**certificate, "sourceRepositoryIdentifier": "1208272135"},
+                        {**certificate, "sourceRepositoryOwnerIdentifier": "100327933"},
+                        {**certificate, "sourceRepositoryDigest": "d" * 40},
+                        {**certificate, "runnerEnvironment": "self-hosted"}):
+            with self.assertRaisesRegex(P.Refusal, "certificate_identity"):
+                P.require_certificate_identity(changed, source, tag, 123, 2)
+        with self.assertRaisesRegex(P.Refusal, "release_invocation"):
+            P.require_certificate_identity(certificate, source, tag, 123, 3)
+
     def child_fixture(self, architecture="amd64", media_index=0):
         source, tag = "c" * 40, "3.2.0-rc.1"
         config = {"os": "linux", "architecture": architecture, "config": {"Labels": {
