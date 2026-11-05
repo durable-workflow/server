@@ -70,6 +70,39 @@ class SbomPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(P.Refusal, "release_invocation"):
             P.require_certificate_identity(certificate, source, tag, 123, 3)
 
+    def statement_fixture(self, registry):
+        child, index = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+        certificate, source, tag = self.certificate_fixture()
+        statement = {"_type": "https://in-toto.io/Statement/v1", "predicateType": P.PREDICATE_TYPE,
+            "subject": [{"name": registry, "digest": {"sha256": "a" * 64}}], "predicate": fixture()}
+        return statement, certificate, child, index, source, tag
+
+    def test_verified_statement_binds_child_registry_and_retained_predicate(self):
+        for registry in P.REGISTRIES:
+            statement, certificate, child, index, source, tag = self.statement_fixture(registry)
+            raw = encoded(fixture())
+            observed = P.verified_statement_matches(raw, statement, certificate, registry, child, index, source, tag, 123, 2)
+            self.assertEqual(observed["raw_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(observed["raw_bytes"], len(raw))
+
+    def test_provenance_indexes_foreign_subjects_and_changed_signed_predicates_refuse(self):
+        registry = P.REGISTRIES[0]
+        statement, certificate, child, index, source, tag = self.statement_fixture(registry)
+        changes = [lambda v: v.update(_type="https://in-toto.io/Statement/v0.1"),
+                   lambda v: v.update(predicateType="https://slsa.dev/provenance/v1"),
+                   lambda v: v.update(subject=[]),
+                   lambda v: v["subject"].append(copy.deepcopy(v["subject"][0])),
+                   lambda v: v["subject"][0].update(name=P.REGISTRIES[1]),
+                   lambda v: v["subject"][0].update(digest={"sha256": index.removeprefix("sha256:")}),
+                   lambda v: v["subject"][0].update(digest={"sha256": "a" * 64, "sha512": "c" * 128}),
+                   lambda v: v["predicate"].update(documentNamespace="https://example.invalid/foreign"),
+                   lambda v: v["predicate"].update(name="different-image")]
+        for change in changes:
+            changed = copy.deepcopy(statement)
+            change(changed)
+            with self.subTest(change=change), self.assertRaises(P.Refusal):
+                P.verified_statement_matches(encoded(fixture()), changed, certificate, registry, child, index, source, tag, 123, 2)
+
     def child_fixture(self, architecture="amd64", media_index=0):
         source, tag = "c" * 40, "3.2.0-rc.1"
         config = {"os": "linux", "architecture": architecture, "config": {"Labels": {

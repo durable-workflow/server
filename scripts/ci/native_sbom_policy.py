@@ -363,5 +363,31 @@ def require_certificate_identity(certificate: dict[str, Any], source: str, tag: 
     require_release_invocation(certificate.get("runInvocationURI"), run_id, attempt)
 
 
+def verified_statement_matches(raw_document: bytes, statement: dict[str, Any],
+                               certificate: dict[str, Any], registry: str, child: str,
+                               index: str, source: str, tag: str, run_id: int,
+                               attempt: int) -> dict[str, Any]:
+    """Compare one already-authenticated statement with the retained raw SPDX.
+
+    Only the future cryptographic-verifier transport may supply authenticated
+    statement/certificate pairs. This function does not verify a signature,
+    authenticate arbitrary dictionaries, select among bundles or fetch data.
+    """
+    # Reuse the closed subject/release request validation without executing it.
+    sbom_verification_command(registry, child, index, tag, source)
+    require_certificate_identity(certificate, source, tag, run_id, attempt)
+    require(type(statement) is dict and statement.get("_type") == "https://in-toto.io/Statement/v1"
+            and statement.get("predicateType") == PREDICATE_TYPE
+            and type(statement.get("subject")) is list and len(statement["subject"]) == 1,
+            "sbom_verified_statement_shape")
+    subject = statement["subject"][0]
+    require(type(subject) is dict and set(subject) == {"name", "digest"}
+            and subject["name"] == registry and type(subject["digest"]) is dict
+            and subject["digest"] == {"sha256": child.removeprefix("sha256:")},
+            "sbom_verified_statement_subject")
+    require(type(statement.get("predicate")) is dict, "sbom_verified_predicate_shape")
+    return predicate_matches(raw_document, canonical(statement["predicate"]))
+
+
 if __name__ == "__main__":
     raise SystemExit("native_sbom_policy is a source library; executable/dependency closure is not wired")

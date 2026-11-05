@@ -119,3 +119,15 @@ missing/wrong-type/changed claim. Passing a dictionary does not authenticate it.
 The future executable still must verify the actual CLI/tool closure, current
 provider identity, selected statement/subject/predicate, and both registry
 origins. No attestation or signature was fetched or verified by these tests.
+
+`verified_statement_matches` composes these checks for one already-authenticated
+certificate/statement pair. The statement must be in-toto v1 with the exact
+SPDX predicate type and exactly one fixed-registry subject whose SHA-256 is the
+selected Server child. Its predicate must match the retained, independently
+validated SPDX document canonically; raw asset identity remains separate.
+Twenty-four synthetic source families now cover this composition, including
+index/provenance/foreign-registry substitutions and altered signed predicates.
+The future transport still must authenticate and select the actual bounded
+current-run pair, bind publication/index/config and generator custody, reject
+ambiguous current predicates, and verify both registry origins. A caller-supplied
+dictionary or a passing synthetic control supplies none of those authorities.
