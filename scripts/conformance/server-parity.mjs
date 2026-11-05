@@ -138,7 +138,7 @@ try {
           checkSdkTimerAuthorPackages(fixture, item.observation, record.artifacts);
           checkSdkSignalDirectionPackages(fixture, item.observation, record.artifacts);
           item.outcome = 'product-fail';
-          item.projection = checkObservation(fixture, item.observation, workflowId, record.artifacts);
+          item.projection = checkObservation(fixture, item.observation, workflowId, record.artifacts, record.target);
           item.outcome = 'pass';
         } catch (error) {
           item.error = error.message;

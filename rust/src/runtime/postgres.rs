@@ -535,6 +535,16 @@ mod tests {
     /// probe ran inside it, native's read snapshot `BEGIN` then failed with
     /// 25001, and every later statement on that connection with 25P02.
     #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_schedule_list_complete_summary_and_join_plans() {
+        let db=Database::new().await;
+        let store=super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_schedule_list_summary().await;
+        store.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
     #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
     async fn qualification_a_begin_cancelled_in_flight_leaves_no_transaction_behind() {
         let db = Database::new().await;
