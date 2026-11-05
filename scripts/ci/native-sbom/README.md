@@ -73,3 +73,11 @@ run and attempt, with no prefix or suffix acceptance. Fourteen source test
 families pass. These functions neither run `gh` nor authenticate caller-supplied
 tuples/strings; future index membership, provider/signature verification and
 bounded transport remain required before using their results.
+
+The exact-index byte guard verifies the expected raw digest and binds exactly
+one Linux child for each selected architecture, independently of array order.
+Missing/extra/duplicate/unknown platforms, changed bytes, wrong children,
+index-as-child and nested-index descriptors refuse. This does not authenticate
+the expected publication tuple or a child's fetched config/source; those remain
+future transport checks. Seventeen synthetic source test families cover the
+library, which remains unwired and refuses direct execution.

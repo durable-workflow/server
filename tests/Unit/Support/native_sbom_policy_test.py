@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic SPDX shape/predicate controls, without a scan or provider call."""
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -34,6 +35,55 @@ def encoded(value):
 
 
 class SbomPolicyTests(unittest.TestCase):
+    def index_fixture(self):
+        expected = {"linux/amd64": "sha256:" + "a" * 64, "linux/arm64": "sha256:" + "b" * 64}
+        members = [{"mediaType": P.MANIFEST_MEDIA_TYPES[0], "digest": digest, "size": 123,
+                    "platform": {"os": "linux", "architecture": platform.split("/")[1]}}
+                   for platform, digest in expected.items()]
+        return {"schemaVersion": 2, "mediaType": P.INDEX_MEDIA_TYPES[0], "manifests": members}, expected
+
+    def test_index_children_match_exact_platforms_independently_of_order(self):
+        value, expected = self.index_fixture()
+        value["manifests"][1]["platform"]["variant"] = "v8"
+        for media in P.INDEX_MEDIA_TYPES:
+            value["mediaType"] = media
+            value["manifests"].reverse()
+            raw = encoded(value)
+            digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+            self.assertEqual(P.index_children(raw, digest, expected), expected)
+            altered = raw + b"\n"
+            with self.assertRaisesRegex(P.Refusal, "index_bytes"):
+                P.index_children(altered, digest, expected)
+
+    def test_index_refuses_extra_missing_duplicate_unknown_and_nested_members(self):
+        changes = [lambda v: v["manifests"].pop(),
+                   lambda v: v["manifests"].append(copy.deepcopy(v["manifests"][0])),
+                   lambda v: v["manifests"].__setitem__(1, copy.deepcopy(v["manifests"][0])),
+                   lambda v: v["manifests"][0]["platform"].update(os="unknown", architecture="unknown"),
+                   lambda v: v["manifests"][0]["platform"].update(variant="v3"),
+                   lambda v: v["manifests"][0].update(digest="sha256:" + "c" * 64),
+                   lambda v: v["manifests"][0].update(mediaType=P.INDEX_MEDIA_TYPES[0]),
+                   lambda v: v["manifests"][0].update(size=True),
+                   lambda v: v.update(schemaVersion=True)]
+        for change in changes:
+            value, expected = self.index_fixture()
+            change(value)
+            raw = encoded(value)
+            digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+            with self.subTest(change=change), self.assertRaises(P.Refusal):
+                P.index_children(raw, digest, expected)
+
+    def test_index_refuses_an_incomplete_or_self_referential_expected_tuple(self):
+        value, original = self.index_fixture()
+        raw = encoded(value)
+        digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        for expected in ({}, {"linux/amd64": original["linux/amd64"]},
+                         {**original, "linux/unknown": "sha256:" + "c" * 64},
+                         {**original, "linux/amd64": digest},
+                         {**original, "linux/amd64": original["linux/arm64"]}):
+            with self.subTest(expected=expected), self.assertRaisesRegex(P.Refusal, "expected_children"):
+                P.index_children(raw, digest, expected)
+
     def test_build_provenance_cannot_substitute_for_an_spdx_predicate(self):
         provenance = encoded({"buildDefinition": {"buildType": "synthetic-provenance"}, "runDetails": {}})
         raw = encoded(fixture())

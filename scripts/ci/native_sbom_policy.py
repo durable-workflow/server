@@ -26,6 +26,11 @@ ASSET_LIMITS = {**dict.fromkeys(SPDX_ASSETS, RAW_LIMIT), MANIFEST_ASSET: 65536}
 REGISTRIES = ("ghcr.io/durable-workflow/server", "durableworkflow/server")
 REPOSITORY = "durable-workflow/server"
 PREDICATE_TYPE = "https://spdx.dev/Document/v2.3"
+PLATFORMS = ("linux/amd64", "linux/arm64")
+INDEX_MEDIA_TYPES = ("application/vnd.oci.image.index.v1+json",
+                     "application/vnd.docker.distribution.manifest.list.v2+json")
+MANIFEST_MEDIA_TYPES = ("application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json")
 
 
 class Refusal(ValueError):
@@ -171,6 +176,53 @@ def distinct_platform_documents(amd64: bytes, arm64: bytes) -> tuple[dict[str, A
     pair = document(amd64), document(arm64)
     require(pair[0]["namespace"] != pair[1]["namespace"], "spdx_namespace_reused")
     return pair
+
+
+def is_digest(value: Any) -> bool:
+    return type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def descriptor_platform(member: Any) -> str:
+    require(type(member) is dict
+            and set(member) <= {"mediaType", "digest", "size", "platform", "annotations"}
+            and member.get("mediaType") in MANIFEST_MEDIA_TYPES and is_digest(member.get("digest"))
+            and type(member.get("size")) is int and 0 < member["size"] <= 1048576,
+            "sbom_child_descriptor")
+    platform = member.get("platform")
+    require(type(platform) is dict and set(platform) <= {"os", "architecture", "variant"}
+            and platform.get("os") == "linux" and platform.get("architecture") in ("amd64", "arm64"),
+            "sbom_child_platform")
+    require("variant" not in platform
+            or (platform["architecture"] == "arm64" and platform["variant"] == "v8"),
+            "sbom_child_variant")
+    return "linux/" + platform["architecture"]
+
+
+def index_children(raw: bytes, index_digest: str, expected: dict[str, str]) -> dict[str, str]:
+    """Bind one content-addressed index to the independently expected children.
+
+    This checks bytes and descriptors, not publication/signature authority or
+    the fetched children's actual config/platform/source. The caller must
+    independently obtain the expected release tuple and verify those next.
+    """
+    require(is_digest(index_digest) and type(expected) is dict and set(expected) == set(PLATFORMS)
+            and all(is_digest(value) and value != index_digest for value in expected.values())
+            and len(set(expected.values())) == 2, "sbom_expected_children")
+    require(type(raw) is bytes and 0 < len(raw) <= 1048576
+            and "sha256:" + hashlib.sha256(raw).hexdigest() == index_digest, "sbom_index_bytes")
+    value = parse(raw, 1048576)
+    require(type(value) is dict and set(value) <= {"schemaVersion", "mediaType", "manifests", "annotations"}
+            and type(value.get("schemaVersion")) is int and value["schemaVersion"] == 2
+            and value.get("mediaType") in INDEX_MEDIA_TYPES
+            and type(value.get("manifests")) is list and len(value["manifests"]) == 2,
+            "sbom_index_shape")
+    found = {}
+    for member in value["manifests"]:
+        platform = descriptor_platform(member)
+        require(platform not in found and member["digest"] == expected[platform], "sbom_index_child_binding")
+        found[platform] = member["digest"]
+    require(set(found) == set(PLATFORMS), "sbom_index_platform_set")
+    return found
 
 
 def exact_release_asset_bytes(expected: dict[str, bytes], observed: dict[str, bytes]) -> dict[str, Any]:
