@@ -177,12 +177,16 @@ for image in "${images[@]}"; do
   args=()
   for alias in "${aliases[@]}"; do args+=(--tag "$image:$alias"); done
   attempted=$image
+  printf 'Native alias write attempted: %s at %s.\n' "$image" "$INDEX_DIGEST"
+  printf -- '- alias write attempted: `%s` at `%s`\n' "$image" "$INDEX_DIGEST" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   "$docker_bin" buildx imagetools create "${args[@]}" "$image@$INDEX_DIGEST"
   for alias in "${aliases[@]}"; do
     digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$alias")
     [[ "$digest" == "$INDEX_DIGEST" ]] || { partial; fail "post-write alias mismatch."; }
   done
   confirmed+=("$image")
+  printf 'Native alias write confirmed: %s at %s.\n' "$image" "$INDEX_DIGEST"
+  printf -- '- alias write confirmed: `%s` at `%s`\n' "$image" "$INDEX_DIGEST" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 done
 
 # Each moved alias names exactly the attested index.
