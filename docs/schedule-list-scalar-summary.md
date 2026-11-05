@@ -15,8 +15,9 @@ Each list item adds:
 | `current_run` | Nullable `{run_id,status,status_bucket,is_terminal}` from that instance's current run | Missing/pruned/wrong-namespace/wrong-instance target is null, meaning unknown |
 
 The instance and run joins require exact identities and exact schedule namespace
-on both sides. MySQL/MariaDB use binary comparisons to avoid case/accent/trailing-
-space collation matches. A current run ID and the instance's complete current-run
+on both sides. MySQL/MariaDB retain a candidate equality usable by each existing index, then
+apply an exact binary residual to avoid case/accent/trailing-space collation
+matches. The page namespace predicate uses the same candidate/residual pattern. A current run ID and the instance's complete current-run
 pointer have at most 26 Unicode scalars / 104 UTF-8 bytes. Status is a complete
 value at most 32 UTF-8 bytes and must be one of the existing statuses:
 `pending`, `running`, `waiting` map to running/nonterminal; `completed` maps to
@@ -28,7 +29,9 @@ outcome. Missing current-run information does not imply completion or no action.
 For newly projected scalars, SQL transfers the **whole** value only within its
 byte bound and returns an independent invalid flag otherwise. Rust checks the
 complete decoded scalar count and enum before returning a response. No prefix
-can become a plausible identity or status. NUL and astral scalars remain exact.
+can become a plausible identity or status. NUL and astral scalars remain exact in SQLite/MySQL. PostgreSQL text cannot
+store NUL, which is an unsupported storage-domain cell, not a decoder pass.
+Invalid UTF-8 setup limitations remain distinct from SQLite decoder refusal.
 Malformed/oversized scalar metadata refuses the page with the existing typed
 HTTP 503 `storage_unavailable` envelope; values are not included in diagnostics.
 Backend decode failures retain the existing storage-unavailable response.
@@ -38,7 +41,7 @@ Backend decode failures retain the existing storage-unavailable response.
 | Byte size including NUL | `length(CAST(column AS BLOB))` | `OCTET_LENGTH(column)` | `OCTET_LENGTH(column)` |
 | Scalar projection | `CASE WHEN bytes<=bound THEN column ELSE NULL END` | Same | Same |
 | Invalid flag | Non-null and empty or over-bound, separately from SQL null | Same | Same |
-| Namespace / join identity | Exact text comparison | Exact text comparison | `BINARY left=BINARY right` |
+| Namespace / join identity | Exact text comparison | Exact text comparison | Candidate `left=right` plus `BINARY left=BINARY right` |
 
 The page selects explicit existing list columns and bounded scalar expressions.
 It excludes `recent_actions`, `buffered_actions`, `last_skip_reason` and
@@ -60,7 +63,13 @@ behavior, outside this slice.
 Source vectors cover a 50-row page and its continuation with/without a system
 query (1/2/2/3 calls), malformed excluded arrays, independent counters, missing
 and wrong-namespace links, all seven statuses, pruned targets, exact NUL/astral
-identities and empty/scalar-count/byte-count failures. Normal source checks and
-Server review must qualify the exact SQL/decoder on each backend before this
+identities and empty/scalar-count/byte-count failures. The existing MySQL/MariaDB and PostgreSQL disposable source suites invoke the
+same complete decoder/join controls, including maximum legal unsigned counters
+and exact HTTP 503/no-value responses on MySQL/MariaDB. The shared unsigned
+decoder remains unchanged with its original 409 behavior. MySQL/MariaDB EXPLAIN
+controls retain actual primary-key/access-type output for each referenced join
+after seeding 256 unrelated instances/runs. Those controls require successful
+normal backend qualification; source authorship alone is not plan evidence.
+Normal source checks and Server review must qualify the exact SQL/decoder on each backend before this
 can be called contract-compliant. No new runtime/image/qualification dispatch,
 schema/UDF, persisted summary, release or frozen-artifact admission follows.

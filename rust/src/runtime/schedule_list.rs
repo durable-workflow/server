@@ -561,7 +561,7 @@ fn byte_length(backend: &str, column: &str) -> String {
 
 fn exact_identity(backend: &str, left: &str, right: &str) -> String {
     if backend == "MySQL" {
-        format!("BINARY {left}=BINARY {right}")
+        format!("({left}={right} AND BINARY {left}=BINARY {right})")
     } else {
         format!("{left}={right}")
     }
@@ -670,11 +670,7 @@ where
         let mysql = DB::NAME == "MySQL";
         let mut binds = Vec::new();
         let mut sql = list_selection(DB::NAME, only.is_some());
-        sql.push_str(if mysql {
-            " WHERE BINARY s.namespace=BINARY "
-        } else {
-            " WHERE s.namespace="
-        });
+        sql.push_str(" WHERE s.namespace=");
         let mut placeholder = |sql: &mut String, bind: Bind| {
             binds.push(bind);
             if mysql {
@@ -684,6 +680,10 @@ where
             }
         };
         placeholder(&mut sql, Bind::Text(self.namespace.to_string()));
+        if mysql {
+            sql.push_str(" AND BINARY s.namespace=BINARY ");
+            placeholder(&mut sql, Bind::Text(self.namespace.to_string()));
+        }
         sql.push_str(" AND s.status!='deleted'");
         let mut equal = |sql: &mut String, column: Column, value: String| {
             sql.push_str(" AND ");
@@ -754,8 +754,8 @@ where
             }
             _ => return Err(invalid_summary()),
         };
-        let failures = DB::number(row, "failures_count")?;
-        let skipped = DB::number(row, "skipped_trigger_count")?;
+        let failures = DB::number(row, "failures_count").map_err(|_| invalid_summary())?;
+        let skipped = DB::number(row, "skipped_trigger_count").map_err(|_| invalid_summary())?;
         if failures < 0 || skipped < 0 {
             return Err(invalid_summary());
         }
@@ -763,6 +763,110 @@ where
             json!({"failures_count":failures,"skipped_trigger_count":skipped,
             "latest_workflow_instance_id":latest,"current_run":current}),
         )
+    }
+
+    /// Shared source controls called by each existing disposable backend suite.
+    #[cfg(test)]
+    pub(super) async fn qualify_schedule_list_summary(&self) {
+        use axum::response::IntoResponse;
+        async fn refused(error: RuntimeError) {
+            let response = error.into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),
+                json!({"reason":"storage_unavailable","message":"storage_unavailable"}));
+        }
+        Self::query("INSERT INTO workflow_schedules(id,schedule_id,namespace,action,spec,recent_actions,buffered_actions,failures_count,skipped_trigger_count,latest_workflow_instance_id) VALUES ('summary','summary',$1,$2,$3,$4,$5,2,3,'instance')")
+            .bind(self.namespace.as_ref()).bind(DB::document(&json!({"workflow_type":"echo","task_queue":"test"})))
+            .bind(DB::document(&json!({}))).bind(DB::document(&json!({"malformed":"deferred"})))
+            .bind(DB::document(&json!({"malformed":"deferred"}))).execute(&self.pool).await.unwrap();
+        let rows=self.select_schedules(&Selection {status:None,workflow_type:None,predicates:vec![]},None,None,50).await.unwrap();
+        use sqlx::{Row,Column};
+        assert!(rows[0].columns().iter().all(|column| !["recent_actions","buffered_actions"].contains(&column.name())));
+        let page = self.list_schedules(None,"fixture-secret").await.unwrap();
+        assert_eq!(page["schedules"][0]["failures_count"],2);
+        assert_eq!(page["schedules"][0]["skipped_trigger_count"],3);
+        assert!(page["schedules"][0]["current_run"].is_null());
+        Self::query("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace,current_run_id) VALUES ('instance','Echo','echo',$1,'run')")
+            .bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        Self::query("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace) VALUES ('other','Echo','echo',$1)")
+            .bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ('run','instance',1,'Echo','echo',$1,'running')")
+            .bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        for (status,bucket,terminal) in [("pending","running",false),("running","running",false),("waiting","running",false),
+            ("completed","completed",true),("failed","failed",true),("cancelled","failed",true),("terminated","failed",true)] {
+            Self::query("UPDATE workflow_runs SET status=$1 WHERE id='run'").bind(status).execute(&self.pool).await.unwrap();
+            assert_eq!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"],
+                json!({"run_id":"run","status":status,"status_bucket":bucket,"is_terminal":terminal}));
+        }
+        for invalid in ["Instance","instance ","absent"] {
+            Self::query("UPDATE workflow_schedules SET latest_workflow_instance_id=$1").bind(invalid).execute(&self.pool).await.unwrap();
+            assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        }
+        Self::query("UPDATE workflow_schedules SET latest_workflow_instance_id='instance'").execute(&self.pool).await.unwrap();
+        for namespace in ["Default","default ","other"] {
+            Self::query("UPDATE workflow_instances SET namespace=$1 WHERE id='instance'").bind(namespace).execute(&self.pool).await.unwrap();
+            assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        }
+        Self::query("UPDATE workflow_instances SET namespace=$1 WHERE id='instance'").bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        Self::query("UPDATE workflow_runs SET namespace='other' WHERE id='run'").execute(&self.pool).await.unwrap();
+        assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        Self::query("UPDATE workflow_runs SET namespace=$1,workflow_instance_id='other' WHERE id='run'").bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        Self::query("UPDATE workflow_runs SET workflow_instance_id='instance' WHERE id='run'").execute(&self.pool).await.unwrap();
+        for bad in ["unknown-storage-status".to_owned(),"x".repeat(33),String::new()] {
+            Self::query("UPDATE workflow_runs SET status=$1 WHERE id='run'").bind(bad).execute(&self.pool).await.unwrap();
+            refused(self.list_schedules(None,"fixture-secret").await.unwrap_err()).await;
+        }
+        Self::query("UPDATE workflow_runs SET status='running' WHERE id='run'").execute(&self.pool).await.unwrap();
+        for bad in ["", "missing"] {
+            Self::query("UPDATE workflow_instances SET current_run_id=$1 WHERE id='instance'").bind(bad).execute(&self.pool).await.unwrap();
+            if bad.is_empty() {refused(self.list_schedules(None,"fixture-secret").await.unwrap_err()).await;}
+            else {assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());}
+        }
+        Self::query("UPDATE workflow_instances SET current_run_id='run' WHERE id='instance'").execute(&self.pool).await.unwrap();
+        // Complete values that fit every catalog. NUL has no PostgreSQL text cell.
+        let mut identities=vec!["🙂".repeat(191),"x".repeat(191)];
+        if DB::NAME!="PostgreSQL" {identities.push("ab\0cd🙂".into());}
+        for exact in identities {
+            Self::query("UPDATE workflow_schedules SET latest_workflow_instance_id=$1").bind(exact.as_str()).execute(&self.pool).await.unwrap();
+            assert_eq!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["latest_workflow_instance_id"],exact);
+        }
+        println!("schedule summary {}: NUL {}",DB::NAME,if DB::NAME=="PostgreSQL" {"storage-domain unsupported; no decoder pass"} else {"complete scalar decoded"});
+        Self::query("UPDATE workflow_schedules SET latest_workflow_instance_id='instance'").execute(&self.pool).await.unwrap();
+        let mut run_ids=vec!["🙂".repeat(26),"x".repeat(26)];
+        if DB::NAME!="PostgreSQL" {run_ids.push("ab\0cd🙂".into());}
+        for exact in run_ids {
+            Self::query("UPDATE workflow_runs SET id=$1 WHERE workflow_instance_id='instance'").bind(exact.as_str()).execute(&self.pool).await.unwrap();
+            Self::query("UPDATE workflow_instances SET current_run_id=$1 WHERE id='instance'").bind(exact.as_str()).execute(&self.pool).await.unwrap();
+            assert_eq!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"]["run_id"],exact);
+        }
+        Self::query("UPDATE workflow_runs SET id='run' WHERE workflow_instance_id='instance'").execute(&self.pool).await.unwrap();
+        Self::query("UPDATE workflow_instances SET current_run_id='run' WHERE id='instance'").execute(&self.pool).await.unwrap();
+        if DB::NAME=="MySQL" {
+            for field in ["failures_count","skipped_trigger_count"] {
+                sqlx::query::<DB>(AssertSqlSafe(format!("UPDATE workflow_schedules SET {field}=18446744073709551615"))).execute(&self.pool).await.unwrap();
+                let row=Self::query("SELECT failures_count,skipped_trigger_count FROM workflow_schedules").fetch_one(&self.pool).await.unwrap();
+                assert!(matches!(DB::number(&row,field),Err(RuntimeError::Refused {status:StatusCode::CONFLICT,reason:"unsupported_stored_integer"})),"unchanged shared counter decoder exposes old 409 path");
+                refused(self.list_schedules(None,"fixture-secret").await.unwrap_err()).await;
+                sqlx::query::<DB>(AssertSqlSafe(format!("UPDATE workflow_schedules SET {field}=0"))).execute(&self.pool).await.unwrap();
+            }
+            // Make a full referenced-table scan materially different from a PK lookup.
+            for index in 0..256 {
+                let instance=format!("plan-instance-{index:03}");let run=format!("plan-run-{index:03}");
+                Self::query("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace) VALUES ($1,'Echo','echo','default')").bind(instance.as_str()).execute(&self.pool).await.unwrap();
+                Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ($1,$2,1,'Echo','echo','default','completed')").bind(run.as_str()).bind(instance.as_str()).execute(&self.pool).await.unwrap();
+            }
+            let plan=sqlx::query::<DB>(AssertSqlSafe(format!("EXPLAIN {} WHERE s.namespace=? AND BINARY s.namespace=BINARY ? AND s.status!='deleted' ORDER BY s.created_at DESC,s.schedule_id LIMIT 51",list_selection(DB::NAME,false))))
+                .bind(self.namespace.as_ref()).bind(self.namespace.as_ref()).fetch_all(&self.pool).await.unwrap();
+            for alias in ["i","r"] {
+                let row=plan.iter().find(|row| DB::optional_string(row,"table").unwrap().as_deref()==Some(alias)).expect("joined plan row");
+                let key=DB::optional_string(row,"key").unwrap();let access=DB::string(row,"type").unwrap();
+                println!("schedule summary {} EXPLAIN {alias}: key={key:?} access={access}",DB::NAME);
+                assert_eq!(key.as_deref(),Some("PRIMARY"));
+                assert!(matches!(access.as_str(),"eq_ref"|"ref"|"const"));
+            }
+        }
     }
 
     /// `ScheduleController::formatListItem`.

@@ -952,6 +952,16 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_schedule_list_complete_summary_and_join_plans() {
+        let db=Database::new().await;
+        let store=super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_schedule_list_summary().await;
+        store.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
     #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
     async fn qualification_schedule_creation_keeps_original_audit_and_unsigned_counters() {
         use super::super::{schedules, store::Store};
