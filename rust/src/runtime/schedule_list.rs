@@ -2,7 +2,9 @@
 //! filters, the schedule visibility query, signed continuation tokens and
 //! list items, with PHP's refusals.
 use super::laravel_rules::{Rule, Rules, errors, normalize};
-use super::schedule_storage::iso8601;
+use super::schedule_storage::{
+    LAST_SKIP_REASON_MAX_BYTES, LAST_SKIPPED_AT_MAX_BYTES, iso8601, last_skip,
+};
 use super::{
     Result, Runtime, RuntimeError,
     backend::Backend,
@@ -595,6 +597,17 @@ fn list_selection(backend: &str, cursor_probe: bool) -> String {
             "({column} IS NOT NULL AND ({length}=0 OR {length}>{limit}))"
         ));
     }
+    let reason_length = byte_length(backend, "s.last_skip_reason");
+    columns.push(format!("CASE WHEN {reason_length}<={LAST_SKIP_REASON_MAX_BYTES} THEN s.last_skip_reason ELSE NULL END AS last_skip_reason"));
+    invalid.push(format!("(s.last_skip_reason IS NOT NULL AND {reason_length}>{LAST_SKIP_REASON_MAX_BYTES})"));
+    let timestamp_text = match backend {
+        "PostgreSQL" => "CAST(s.last_skipped_at AS TEXT)",
+        "MySQL" => "CAST(s.last_skipped_at AS CHAR)",
+        _ => "s.last_skipped_at",
+    };
+    let timestamp_length = byte_length(backend, timestamp_text);
+    columns.push(format!("CASE WHEN {timestamp_length}<={LAST_SKIPPED_AT_MAX_BYTES} THEN s.last_skipped_at ELSE NULL END AS last_skipped_at"));
+    invalid.push(format!("(s.last_skipped_at IS NOT NULL AND {timestamp_length}>{LAST_SKIPPED_AT_MAX_BYTES})"));
     columns.push(format!(
         "CASE WHEN {} THEN 1 ELSE 0 END AS summary_invalid",
         invalid.join(" OR ")
@@ -867,12 +880,40 @@ where
                 assert!(matches!(access.as_str(),"eq_ref"|"ref"|"const"));
             }
         }
+        self.qualify_schedule_last_skip().await;
+    }
+
+    #[cfg(test)]
+    async fn qualify_schedule_last_skip(&self) {
+        let schedule = "skip-projection";
+        Self::query("INSERT INTO workflow_schedules(id,schedule_id,namespace,action,spec) VALUES ($1,$2,$3,$4,$5)")
+            .bind(schedule).bind(schedule).bind(self.namespace.as_ref())
+            .bind(DB::document(&json!({"workflow_type":"echo","task_queue":"test"})))
+            .bind(DB::document(&json!({}))).execute(&self.pool).await.unwrap();
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-05T12:00:01.000001Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let maximum_reason = "🙂".repeat(64);
+        for reason in [None, Some(""), Some("NULL"), Some("  PaUsEd  "), Some(maximum_reason.as_str())] {
+            Self::query("UPDATE workflow_schedules SET last_skip_reason=$1,last_skipped_at=$2 WHERE id=$3")
+                .bind(reason).bind(DB::bind_time(at)).bind(schedule).execute(&self.pool).await.unwrap();
+            let page = self.list_schedules(None,"fixture-secret").await.unwrap();
+            let item = page["schedules"].as_array().unwrap().iter()
+                .find(|item| item["schedule_id"]==schedule).unwrap();
+            let detail = self.describe_schedule(schedule).await.unwrap();
+            assert_eq!(item["last_skip_reason"],json!(reason));
+            assert_eq!(item["last_skipped_at"],"2026-11-05T12:00:01.000001Z");
+            assert_eq!(item["last_skip_reason"],detail["info"]["last_skip_reason"]);
+            assert_eq!(item["last_skipped_at"],detail["info"]["last_skipped_at"]);
+        }
+        Self::query("DELETE FROM workflow_schedules WHERE id=$1").bind(schedule).execute(&self.pool).await.unwrap();
     }
 
     /// `ScheduleController::formatListItem`.
     fn list_item(row: &DB::Row) -> Result<Value> {
         let status = DB::string(row, "status")?;
         let action = DB::optional_document_row(row, "action")?;
+        let skipped = last_skip::<DB>(row)?;
         let time = |field: &str| -> Result<Value> { Ok(json!(DB::optional_instant(row, field)?.map(iso8601))) };
         let mut item = json!({"schedule_id":DB::string(row,"schedule_id")?,
             "workflow_type":action.as_ref().map_or(Value::Null, |action| action["workflow_type"].clone()),
@@ -883,7 +924,8 @@ where
             "next_fire_at":time("next_fire_at")?,"last_fired_at":time("last_fired_at")?,
             "search_attributes":DB::optional_document_row(row,"search_attributes")?,
             "created_at":time("created_at")?,"updated_at":time("updated_at")?,
-            "fires_count":DB::number(row,"fires_count")?});
+            "fires_count":DB::number(row,"fires_count")?,
+            "last_skip_reason":skipped["last_skip_reason"],"last_skipped_at":skipped["last_skipped_at"]});
         let summary = Self::list_summary(row)?;
         item.as_object_mut()
             .expect("list item")
@@ -1079,16 +1121,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn last_skip_projection_bounds_raw_values_before_hydration() {
+        let (_directory, store) = summary_store().await;
+        add_schedule(&store,"skip-bounds").await;
+        for (field, reason, at) in [("last_skip_reason","x".repeat(300000),None),
+            ("last_skipped_at","retained".to_owned(),Some("9".repeat(10000)))] {
+            sqlx::query("UPDATE workflow_schedules SET last_skip_reason=?,last_skipped_at=? WHERE schedule_id='skip-bounds'")
+                .bind(reason).bind(at).execute(&store.pool).await.unwrap();
+            let rows = store.select_schedules(&Selection {status:None,workflow_type:None,predicates:vec![]},None,None,50)
+                .await.unwrap();
+            assert_eq!(<sqlx::Sqlite as Backend>::number(&rows[0],"summary_invalid").unwrap(),1);
+            assert!(<sqlx::Sqlite as Backend>::optional_string(&rows[0],field).unwrap().is_none());
+            assert!(matches!(store.list_schedules(None,"fixture-secret").await,
+                Err(RuntimeError::Refused {status:StatusCode::SERVICE_UNAVAILABLE,reason:"storage_unavailable"})));
+        }
+    }
+
+    #[tokio::test]
     async fn list_summary_has_complete_scalars_and_separate_namespace_bound_current_run() {
         let (_directory, store) = summary_store().await;
         add_schedule(&store, "summary").await;
         sqlx::query("UPDATE workflow_schedules SET failures_count=2,skipped_trigger_count=3,latest_workflow_instance_id='instance',recent_actions='not JSON',buffered_actions='not JSON',last_skip_reason=? WHERE schedule_id='summary'")
-            .bind("unread deferred reason".repeat(10000)).execute(&store.pool).await.unwrap();
+            .bind("retained skip reason").execute(&store.pool).await.unwrap();
         let missing = store.list_schedules(None, "fixture-secret").await.unwrap();
         let item = &missing["schedules"][0];
         assert_eq!(item["failures_count"], 2);
         assert_eq!(item["skipped_trigger_count"], 3);
         assert_eq!(item["latest_workflow_instance_id"], "instance");
+        assert_eq!(item["last_skip_reason"], "retained skip reason");
+        assert_eq!(item.get("last_skipped_at"), Some(&Value::Null));
         assert!(
             item["current_run"].is_null(),
             "missing is unknown, never completed or healthy"
@@ -1097,8 +1158,6 @@ mod tests {
             "recent_actions",
             "buffered_actions",
             "last_action",
-            "last_skip_reason",
-            "last_skipped_at",
         ] {
             assert!(item.get(field).is_none(), "{field} is deferred");
         }

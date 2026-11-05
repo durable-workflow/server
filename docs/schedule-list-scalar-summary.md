@@ -3,7 +3,8 @@
 This is the smaller source slice selected in Server #1014 comment 6644878850.
 It is not the full last-dispatch outcome contract or published capability. Waterline
 #222 keeps the existing describe fallback. No faster polling is justified by this
-partial projection, and describe remains unchanged.
+partial projection. Describe's selected last-skip timestamp preserves microseconds
+as specified below; its other fields keep their existing behavior.
 
 Each list item adds:
 
@@ -13,6 +14,8 @@ Each list item adds:
 | `skipped_trigger_count` | Same counter contract | Same failure |
 | `latest_workflow_instance_id` | Stored identity or null, at most 191 Unicode scalars / 764 UTF-8 bytes | Empty/oversized/invalid UTF-8 fails; a pruned instance preserves this identity |
 | `current_run` | Nullable `{run_id,status,status_bucket,is_terminal}` from that instance's current run | Missing/pruned/wrong-namespace/wrong-instance target is null, meaning unknown |
+| `last_skip_reason` | Nullable complete stored text, at most 64 Unicode scalars / 256 UTF-8 bytes | Invalid UTF-8 or an oversized value fails the request |
+| `last_skipped_at` | Nullable stored UTC instant, formatted as `YYYY-MM-DDTHH:MM:SS.ffffffZ` | Invalid, non-UTC, out-of-range or submicrosecond values fail the request |
 
 The instance and run joins require exact identities and exact schedule namespace
 on both sides. MySQL/MariaDB retain a candidate equality usable by each existing index, then
@@ -44,13 +47,34 @@ Backend decode failures retain the existing storage-unavailable response.
 | Namespace / join identity | Exact text comparison | Exact text comparison | Candidate `left=right` plus `BINARY left=BINARY right` |
 
 The page selects explicit existing list columns and bounded scalar expressions.
-It excludes `recent_actions`, `buffered_actions`, `last_skip_reason` and
-`last_skipped_at` entirely. Recent/last-action, buffer and last-skip fields remain
-**deferred**, including their malformed-member, Unicode and timestamp semantics.
+It excludes `recent_actions` and `buffered_actions` entirely. Recent/last-action
+and buffer fields remain **deferred**, including their malformed-member and
+timestamp semantics.
 No SQL date conversion, substring preview, JSON prefix or invented event ordering
 is introduced. The existing legacy action/input/spec/note/search-attribute fields
 keep their previous size surface; this does not claim a bounded whole response
 or constant database bytes/CPU.
+
+The last-skip pair describes the most recent stored skip, which can precede a
+later successful fire. It does not describe the latest overall dispatch. Both
+keys are always present in each new list item. Null, empty text, literal `NULL`,
+whitespace and letter case remain distinct; no reason is trimmed, normalized or
+shortened. A null value does not prove that a legacy schedule has never skipped.
+The same reason and timestamp appear in describe's `info` object. Only this
+timestamp changes from the previous whole-second rendering to six fractional
+digits and UTC `Z`; no clock sample replaces its stored value. Timestamp text is
+bounded to 64 bytes in the list SQL before decoding, while its decoded value
+must have a year from 1 through 9999 and exact microsecond precision. The
+existing typed SQL timestamp columns and SQLite UTC reader retain their stored
+domain restrictions.
+
+Consumers can recognize only this pair by checking that every returned item has
+both keys with the complete nullable types and timestamp format. Both absent
+means the legacy shape; one absent or either malformed means a partial or
+invalid projection. Mixed legacy and new item shapes are also partial. An empty
+page supplies no evidence of support. This is not
+detection of the full outcome contract and does not remove describe fallback or
+justify faster polling.
 
 The one-to-one joins add no row-level calls. Existing request normalization,
 closed grammar, bound values, filter fingerprint, signed cursor, stale-anchor
@@ -71,11 +95,14 @@ controls retain actual primary-key/access-type output for each referenced join
 after seeding 256 unrelated instances/runs. Those controls require successful
 normal backend qualification; source authorship alone is not plan evidence.
 The existing HTTP schedule-catalog corpus retains its frozen published-PHP
-fixture and expected responses. Native recordings require all four new fields
+fixture and expected responses. Native recordings require all six added fields
 on every list row. Before comparing the older shared response, the comparator
 checks counters and the latest identity against preceding backfill responses,
 the unclaimed current-run state, and the retained trigger-audit identity pair.
-Only those checked additions are removed from that comparison; raw observations
+The last-skip cause and precision are checked before comparison. The retained
+skip audit checks its cause and whole-second instant, while the backend suites
+compare exact stored microseconds between list and describe. Later successful
+fires must preserve that skip. Only those checked additions are removed from that comparison; raw observations
 and every existing field remain intact. Older published PHP recordings can
 retain their original list shape.
 Normal source checks and Server review must qualify the exact SQL/decoder on each backend before this

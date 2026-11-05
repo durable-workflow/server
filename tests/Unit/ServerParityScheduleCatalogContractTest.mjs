@@ -42,6 +42,7 @@ function nativeModel() {
     }
     for (const item of step.response.schedules ?? []) Object.assign(item, {
       failures_count: 0, skipped_trigger_count: 0, latest_workflow_instance_id: null, current_run: null,
+      last_skip_reason: null, last_skipped_at: null,
     });
   }
   const latest = {'bf': steps[58].response.results.at(-1).workflow_id,
@@ -58,6 +59,15 @@ function nativeModel() {
   const audit = steps[70].response.events.filter(event => event.event_type === 'ScheduleTriggered').at(-1);
   audit.workflow_instance_id = skipped.latest_workflow_instance_id;
   audit.workflow_run_id = skipped.current_run.run_id;
+  const skipAudit = steps[70].response.events.filter(event => event.event_type === 'ScheduleTriggerSkipped').at(-1);
+  skipAudit.payload.last_skipped_at = '2026-11-05T12:00:01+00:00';
+  const reasons = {beta: 'status_not_triggerable', bf: 'already_fired_occurrence', 'bf-skip': 'overlap_policy_skip'};
+  for (const item of steps[71].response.schedules) {
+    if (Object.hasOwn(reasons, item.schedule_id)) {
+      item.last_skip_reason = reasons[item.schedule_id];
+      item.last_skipped_at = '2026-11-05T12:00:01.123456Z';
+    }
+  }
   return observation;
 }
 
@@ -74,6 +84,14 @@ for (const [label, mutate] of [
   ['partial summary', o => { delete o.schedule_catalog.steps[4].response.schedules[0].failures_count; }],
   ['wrong failure count', o => { o.schedule_catalog.steps[4].response.schedules[0].failures_count = 1; }],
   ['wrong skip count', o => { o.schedule_catalog.steps[71].response.schedules[1].skipped_trigger_count = 0; }],
+  ['missing last-skip pair', o => { delete o.schedule_catalog.steps[4].response.schedules[0].last_skip_reason; delete o.schedule_catalog.steps[4].response.schedules[0].last_skipped_at; }],
+  ['partial last-skip pair', o => { delete o.schedule_catalog.steps[71].response.schedules[1].last_skipped_at; }],
+  ['last skip cleared by later fire', o => { o.schedule_catalog.steps[71].response.schedules[1].last_skip_reason = null; }],
+  ['last-skip reason truncated', o => { o.schedule_catalog.steps[71].response.schedules[1].last_skip_reason = 'overlap_policy'; }],
+  ['last-skip precision lost', o => { o.schedule_catalog.steps[71].response.schedules[1].last_skipped_at = '2026-11-05T12:00:01Z'; }],
+  ['last-skip timestamp invented', o => { o.schedule_catalog.steps[71].response.schedules[1].last_skipped_at = '2026-11-05T12:00:02.123456Z'; }],
+  ['invalid last-skip calendar', o => { o.schedule_catalog.steps[71].response.schedules[1].last_skipped_at = '2026-02-30T12:00:01.123456Z'; }],
+  ['invented initial skip', o => { o.schedule_catalog.steps[4].response.schedules[0].last_skip_reason = 'status_not_triggerable'; }],
   ['wrong latest workflow', o => { o.schedule_catalog.steps[71].response.schedules[0].latest_workflow_instance_id = '9'.repeat(26); }],
   ['missing current run', o => { o.schedule_catalog.steps[71].response.schedules[0].current_run = null; }],
   ['shortened run identity', o => { o.schedule_catalog.steps[71].response.schedules[0].current_run.run_id = 'short'; }],

@@ -537,3 +537,55 @@ async fn schedules_list_update_and_backfill_as_published_php() {
     runtime.close().await;
     database.remove().await;
 }
+
+
+#[tokio::test]
+async fn last_skip_pair_tracks_repeated_skips_and_survives_a_later_fire() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app,"last-skip-worker",json!(["echo"]),json!([])).await;
+    create(&app,"last-skip","PT3600S",None).await;
+    let never = list(&app,"").await;
+    assert_eq!(never.0,StatusCode::OK);
+    let item = &never.1["schedules"][0];
+    assert_eq!(item.get("last_skip_reason"),Some(&Value::Null));
+    assert_eq!(item.get("last_skipped_at"),Some(&Value::Null));
+    let paused = request(&app,"PATCH","/api/schedules/last-skip",json!({"paused":true})).await;
+    assert_eq!(paused.0,StatusCode::OK,"{}",paused.1);
+    let mut retained = Value::Null;
+    for count in 1..=2 {
+        let skipped = request(&app,"POST","/api/schedules/last-skip/trigger",json!({})).await;
+        assert_eq!(skipped.0,StatusCode::OK,"{}",skipped.1);
+        assert_eq!(skipped.1["outcome"],"skipped");
+        assert_eq!(skipped.1["reason"],"status_not_triggerable");
+        let page = list(&app,"").await;
+        assert_eq!(page.0,StatusCode::OK,"{}",page.1);
+        let item = &page.1["schedules"][0];
+        assert_eq!(item["skipped_trigger_count"],count);
+        assert_eq!(item["last_skip_reason"],"status_not_triggerable");
+        let at = item["last_skipped_at"].as_str().unwrap();
+        assert_eq!(at.len(),27);
+        assert!(at.ends_with('Z'));
+        chrono::DateTime::parse_from_rfc3339(at).unwrap();
+        let detail = request(&app,"GET","/api/schedules/last-skip",Value::Null).await;
+        assert_eq!(detail.0,StatusCode::OK,"{}",detail.1);
+        assert_eq!(item["last_skip_reason"],detail.1["info"]["last_skip_reason"]);
+        assert_eq!(item["last_skipped_at"],detail.1["info"]["last_skipped_at"]);
+        retained = json!({"reason":item["last_skip_reason"],"at":item["last_skipped_at"]});
+    }
+    let resumed = request(&app,"PATCH","/api/schedules/last-skip",json!({"paused":false})).await;
+    assert_eq!(resumed.0,StatusCode::OK,"{}",resumed.1);
+    let fired = request(&app,"POST","/api/schedules/last-skip/trigger",json!({})).await;
+    assert_eq!(fired.0,StatusCode::OK,"{}",fired.1);
+    assert_eq!(fired.1["outcome"],"triggered");
+    let page = list(&app,"").await;
+    assert_eq!(page.0,StatusCode::OK,"{}",page.1);
+    let item = &page.1["schedules"][0];
+    assert_eq!(item["fires_count"],1);
+    assert_eq!(item["skipped_trigger_count"],2);
+    assert_eq!(item["last_skip_reason"],retained["reason"]);
+    assert_eq!(item["last_skipped_at"],retained["at"]);
+    runtime.close().await;
+    database.remove().await;
+}
