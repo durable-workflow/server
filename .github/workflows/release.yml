@@ -40,7 +40,7 @@ jobs:
     name: Build and push Docker image
     runs-on: ubuntu-latest
     environment: dockerhub
-    # The rolling-alias lock the native release's alias job also holds, so a
+    # The rolling-alias lock the native promotion job also holds, so a
     # PHP and a native release never move rolling tags at the same time.
     # cancel-in-progress is false: a running job is never cancelled.
     concurrency:

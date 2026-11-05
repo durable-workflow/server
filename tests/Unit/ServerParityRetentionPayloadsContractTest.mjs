@@ -33,6 +33,7 @@ test('the embedded retention payloads are explicitly inapplicable', () => {
 for (const [label, mutate] of [
   ['a skipped run that holds a payload', state => { state.steps['sole pruned'].result = {outcome: 'skipped', reason: 'external_payload_cleanup_unavailable'}; }],
   ['an uncounted deletion', state => { state.steps['sole pruned'].result.external_payloads_deleted = 0; }],
+  ['a post-commit deletion still pending', state => { state.steps['sole pruned'].cleanup.pending = 1; }],
   ['a payload left after its run', state => { state.steps['sole fetched'] = {status: 200, bytes_match: true}; }],
   ['a held payload deleted', state => { state.steps['shared fetched while held'] = {status: 404, reason: 'external_payload_not_found'}; }],
   ['a peer-held payload counted', state => { state.steps['peer-held pruned'].result.external_payloads_deleted = 1; }],

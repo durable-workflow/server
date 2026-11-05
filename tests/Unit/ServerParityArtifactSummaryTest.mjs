@@ -40,6 +40,26 @@ test('successful summaries preserve exact reports and omit journals, DBs, payloa
   assert.throws(() => summarizeEvidence(source, output), /fresh empty directory/);
 });
 
+test('execution inventories retain exact bytes with explicit truncation and omit unrelated lists', t => {
+  const {source, output} = fixture(t);
+  const inventories = {'execution-listed-tests.txt': 'case_a\ncase_b\n',
+    'execution-shard.txt': 'case_a\n', 'execution-shard-b.txt': 'case_b\n',
+    'mysql-execution-tests-b.txt': 'test result: ok. 1 passed; 0 failed;\n'};
+  for (const [name, content] of Object.entries(inventories)) writeFileSync(join(source, name), content);
+  writeFileSync(join(source, 'execution-unrelated.txt'), 'not a selected-test inventory');
+  const summary = summarizeEvidence(source, output, {outcome: 'success'});
+  for (const [name, content] of Object.entries(inventories)) {
+    assert.equal(readFileSync(join(output, name), 'utf8'), content);
+    assert.equal(summary.retained.find(entry => entry.path === name).tail_only, false);
+  }
+  assert.equal(existsSync(join(output, 'execution-unrelated.txt')), false);
+  const other = fixture(t);
+  writeFileSync(join(other.source, 'execution-listed-tests.txt'), 'x'.repeat(64 * 1024 + 1));
+  const truncated = summarizeEvidence(other.source, other.output, {outcome: 'success'}).retained[0];
+  assert.equal(truncated.retained_bytes, 64 * 1024);
+  assert.equal(truncated.tail_only, true);
+});
+
 test('failed summaries keep bounded diagnostic tails without truncating JSON into a false report', t => {
   const {source, output} = fixture(t);
   const diagnostic = `${'x'.repeat(128 * 1024)}\nHTTP 500 while installing pinned dependency\n`;

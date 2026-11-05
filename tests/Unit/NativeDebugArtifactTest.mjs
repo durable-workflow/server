@@ -279,7 +279,7 @@ function databaseCommand(id) {
   return line.trim().slice(1, -1);
 }
 
-function runDatabaseCommand(t, id, part, binary = true) {
+function runDatabaseCommand(t, id, part, binary = true, listExit = 0) {
   const root = mkdtempSync(join(tmpdir(), 'native-debug-cargo-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   mkdirSync(join(root, 'bin'));
@@ -292,13 +292,20 @@ function runDatabaseCommand(t, id, part, binary = true) {
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CARGO_CALL_LOG, JSON.stringify(args) + '\\n');
-if(args.includes('--list')) console.log('case_a: test\\ncase_b: test');
+if(args.includes('--list')) {
+  console.log('case_a: test\\ncase_b: test');
+  process.exit(Number(process.env.CARGO_LIST_EXIT || 0));
+}
 `, {mode: 0o755});
   const script = databaseCommand(id).replaceAll('/evidence/', `${root}/evidence/`).replaceAll('/target/', `${root}/target/`);
   const run = spawnSync('bash', ['-c', script], {encoding: 'utf8', env: {...process.env,
-    PATH: `${root}/bin:${process.env.PATH}`, CARGO_CALL_LOG: log, DW_PARITY_PART: part, DW_EXECUTION_SHARDS: '2'}});
+    PATH: `${root}/bin:${process.env.PATH}`, CARGO_CALL_LOG: log, CARGO_LIST_EXIT: String(listExit),
+    DW_PARITY_PART: part, DW_EXECUTION_SHARDS: '2'}});
   const calls = readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-  return {...run, calls};
+  const listed = join(root, 'evidence/execution-listed-tests.txt');
+  const selected = join(root, `evidence/execution-shard${part === 'native-tests-b' ? '-b' : ''}.txt`);
+  return {...run, calls, listed: existsSync(listed) ? readFileSync(listed, 'utf8') : null,
+    selected: existsSync(selected) ? readFileSync(selected, 'utf8') : null};
 }
 
 for (const part of ['native-tests', 'native-tests-b']) {
@@ -314,6 +321,14 @@ for (const part of ['native-tests', 'native-tests-b']) {
       ['test', ...flags, '--test', 'execution', '--', '--exact', '--nocapture', '--test-threads=2',
         part === 'native-tests' ? 'case_a' : 'case_b'], ['build', ...flags]);
     assert.deepEqual(run.calls, expected);
+    assert.equal(run.listed, 'case_a\ncase_b\n');
+    assert.equal(run.selected, part === 'native-tests' ? 'case_a\n' : 'case_b\n');
+  });
+  test(`MySQL ${part} refuses a failing test-list command even with partial output`, t => {
+    const run = runDatabaseCommand(t, 'mysql-execution', part, true, 7);
+    assert.notEqual(run.status, 0);
+    assert.equal(run.calls.some(args => args.includes('--exact')), false);
+    assert.equal(run.calls.some(args => args[0] === 'build'), false);
   });
 }
 
