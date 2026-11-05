@@ -13,11 +13,13 @@ jobs:
   scan:
     name: Scan public boundary
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify metadata scan failures
         run: bash tests/Unit/Support/public_boundary_test.sh
