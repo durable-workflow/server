@@ -175,10 +175,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Cache public mirrored build inputs under their canonical image names
-        run: |
-          docker pull mirror.gcr.io/library/php:8.3-apache
-          docker tag mirror.gcr.io/library/php:8.3-apache php:8.3-apache
+      # A mirror's cached index can reference an unavailable child manifest.
+      # Cache the same official input directly, using the existing pull bound.
+      - name: Cache the canonical public PHP build input
+        run: bash scripts/ci/pull-images.sh php:8.3-apache
 
       - name: Key the source-free PHP tool images
         id: php_tools_key
