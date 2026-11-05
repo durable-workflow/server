@@ -37,7 +37,8 @@ exhausted outcomes select no delay. An already-due prepared engine timeout
 retains its engine provenance rather than borrowing the caller's application
 failure. An earlier valid failure whose selected availability reaches the total
 deadline remains an application failure with terminal retry-delay disposition.
-General's reconciliation of that mode-bound projection is pending before freeze.
+General accepted this mode-bound projection in
+[the source decision](https://github.com/durable-workflow/.github/issues/219#issuecomment-6669526988).
 
 The object is proposed engine-owned output shared by outcome history and the
 matching receipt. It is not accepted worker input. Existing receipt identities,
@@ -58,7 +59,7 @@ its 86,400-second executed-backoff ceiling becomes an implicit version-2 cap.
 
 Workflow owns the complete normalized snapshot and existing timeout/range
 binding. Server owns the companion validator, transaction, transport and storage
-bindings. The exact output object, final normalized ranges, timeout projection
+bindings. The exact output object, final normalized ranges
 and HTTP bindings must be reconciled before these bytes are frozen or SDKs
 adopt them. Native implementation, schema, installed/backend qualification and
 release remain separate work.

@@ -19,10 +19,10 @@
       "sha256": "c37fb132129e4557c7ffbd90404763924640262bb5ed10e764f090f69ae12bf5",
       "case_count": 37
     },
-    "prior_rows_mutated": false
+    "prior_rows_mutated": false,
+    "prepared_timeout_projection": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6669526988"
   },
   "adoption_gates": [
-    "General reconciles the prepared-timeout projection before final companion freeze",
     "Core accepts the proposed closed retry_disposition fields and normalized snapshot/range binding",
     "Server binds the full HTTP envelope/refusal matrix to the installed future prepared implementation",
     "Native implements the prepared role and validator/transaction writer before advertisement",
@@ -100,7 +100,14 @@
       "backdated version-1 batch timestamps"
     ],
     "serialization": "UTC RFC3339 with exactly six fractional digits and Z; nullable original schedule-to-close deadline",
-    "prepared_timeout_projection": "preserve existing engine timeout precedence at an already-due deadline; a valid earlier application failure whose selected availability reaches the deadline remains an application failure with terminal retry-delay disposition"
+    "prepared_timeout_projection": "preserve existing engine timeout precedence at an already-due deadline; a valid earlier application failure whose selected availability reaches the deadline remains an application failure with terminal retry-delay disposition",
+    "precedence": [
+      "strict report validation",
+      "matching retained outcome receipt",
+      "fresh original claim and temporal fences using one sample",
+      "actually due engine timeout",
+      "application failure retry selection"
+    ]
   },
   "retry_disposition_proposal": {
     "boundary": "engine-owned object shared exactly by the stored outcome metadata and its prepared receipt; never accepted in a worker report",
@@ -748,9 +755,9 @@
     {
       "id": "local_v2_availability_equal_deadline",
       "carrier": {
-        "failure_time_seconds": 100,
-        "original_deadline_seconds": 105,
-        "override": 5,
+        "failure_time_seconds": 99,
+        "original_deadline_seconds": 100,
+        "override": 1,
         "maximum_interval_seconds": 20,
         "original_claim_live": true
       },
@@ -1027,6 +1034,48 @@
         "loser_recorded": false,
         "loser_reason": "local_activity_outcome_mismatch",
         "loser_mutation_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_late_duplicate_retains_pre_deadline_terminal",
+      "carrier": {
+        "first_valid_outcome": {
+          "failure_time_seconds": 99,
+          "original_deadline_seconds": 100,
+          "override": 1,
+          "committed": true
+        },
+        "reply": "lost",
+        "identical_retry_sample_seconds": 100
+      },
+      "expected": {
+        "duplicate": true,
+        "retained_failure_time_seconds": 99,
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "original_application_failure_preserved": true,
+        "fresh_engine_timeout_calculation_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_completed_at_deadline_engine_timeout",
+      "carrier": {
+        "engine_sample_seconds": 100,
+        "original_deadline_seconds": 100,
+        "submitted_outcome": "completed",
+        "result": "otherwise valid independently encoded Avro result",
+        "lease_and_run_deadlines": "later than sample"
+      },
+      "expected": {
+        "event_type": "ActivityTimedOut",
+        "terminal_classification": "engine_timeout",
+        "submitted_completion_published": false,
+        "engine_timeout_provenance_preserved": true,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
         "new_attempt_count": 0
       }
     }
