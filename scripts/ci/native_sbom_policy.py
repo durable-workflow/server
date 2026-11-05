@@ -311,7 +311,8 @@ def sbom_verification_command(registry: str, child: str, index: str, tag: str, s
     return ["gh", "attestation", "verify", "oci://" + registry + "@" + child,
             "--repo", REPOSITORY, "--signer-workflow", "github.com/" + REPOSITORY + "/.github/workflows/native-release.yml",
             "--source-ref", "refs/tags/" + tag, "--source-digest", source,
-            "--predicate-type", PREDICATE_TYPE, "--deny-self-hosted-runners", "--format", "json"]
+            "--predicate-type", PREDICATE_TYPE, "--deny-self-hosted-runners", "--format", "json",
+            "--bundle-from-oci"]
 
 
 def require_release_invocation(uri: str, run_id: int, attempt: int) -> None:

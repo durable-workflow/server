@@ -166,7 +166,8 @@ class SbomPolicyTests(unittest.TestCase):
             self.assertEqual(command[4:], ["--repo", P.REPOSITORY, "--signer-workflow",
                 "github.com/durable-workflow/server/.github/workflows/native-release.yml",
                 "--source-ref", "refs/tags/3.2.0-rc.1", "--source-digest", source,
-                "--predicate-type", "https://spdx.dev/Document/v2.3", "--deny-self-hosted-runners", "--format", "json"])
+                "--predicate-type", "https://spdx.dev/Document/v2.3", "--deny-self-hosted-runners", "--format", "json",
+                "--bundle-from-oci"])
             self.assertNotIn(index, command)
 
     def test_verification_request_refuses_redirects_indexes_and_cli_injection(self):

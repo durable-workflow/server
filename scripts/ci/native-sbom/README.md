@@ -95,3 +95,13 @@ publication/index and smoke evidence. This guard does not authenticate those
 inputs, fetch an object, validate layer/archive contents, run smoke or scan,
 or authorize an execution. Generation mode remains null and direct execution
 still refuses.
+
+The SBOM verification request explicitly uses `--bundle-from-oci` for each
+fixed registry/child. The [GitHub CLI verifier contract](https://cli.github.com/manual/gh_attestation_verify)
+states that the default retrieves bundles from GitHub, even for an OCI image,
+so the default cannot prove the SBOM attachment exists in each registry.
+Registry-bundle mode checks certificate names as recorded at signing time.
+The future executable must additionally bind the fixed repository ID/current
+publication identity and authenticated exact release invocation, rather than
+infer current repository ownership from recorded names alone. This source
+correction runs no verifier and does not complete those transport gates.
