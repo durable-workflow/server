@@ -49,6 +49,14 @@
       }
     ],
     "available_exception_fields_must_match_response": true,
+    "raw_response_before_ordinary_decode": {
+      "strict_utf8_json_required": true,
+      "duplicate_decoded_member_names_forbidden": true,
+      "duplicate_identical_values_also_forbidden": true,
+      "last_member_wins_or_first_member_wins_not_sufficient": true,
+      "unavailable_raw_uniqueness_proof": "retain_selected_packet",
+      "unique_escaped_member_names": "ordinary JSON decoding applies; compare decoded distinct names and exact scalar values"
+    },
     "normalization_or_aliases_allowed": false,
     "other_response_action": "retain_selected_packet",
     "uncertainty_invariants": {
@@ -69,7 +77,7 @@
       "update_validation"
     ],
     "inputs": "synthetic authorized namespace, registration incarnations, tasks, clocks and faults; no real credentials",
-    "wire_vectors": "bind every wire case ID to actual SDK selected-acceptance handling before payload observers/hydration",
+    "wire_vectors": "bind every decoded and raw wire case ID to actual SDK selected-acceptance handling before payload observers/hydration; enforce strict duplicate-name rejection on the original response before ordinary lossy decoding",
     "authority_vectors": "bind every authority case ID to actual native receipt/claim/registration transaction boundaries on each required backend",
     "race_controls": "independent connections with barriers at actual authority locks, commits, rollback and replacement; a scenario-only model is insufficient",
     "before_after_observations": [
@@ -136,6 +144,136 @@
         "exception_reason": "worker_registration_lost_authority"
       },
       "expected_action": "end_original_registration"
+    },
+    {
+      "id": "refusal-expiry-matching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": 409
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-matching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_reason": "task_offer_expired"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-mismatching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": 500
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-mismatching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_reason": "unrelated_terminal_reason"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-status-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": true
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-status-only-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": "409"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-status-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-reason-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-reason-only-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_reason": 409
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-reason-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
     },
     {
       "id": "refusal-expiry-wrong-http-200",
@@ -487,6 +625,136 @@
         },
         "exception_http_status": true,
         "exception_reason": "task_offer_expired"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-matching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 409
+      },
+      "expected_action": "end_original_registration"
+    },
+    {
+      "id": "refusal-authority-matching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "end_original_registration"
+    },
+    {
+      "id": "refusal-authority-mismatching-exception-status-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 500
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-mismatching-exception-reason-only",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_reason": "unrelated_terminal_reason"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-status-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": true
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-status-only-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": "409"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-status-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-reason-only-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-reason-only-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_reason": 409
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-reason-only-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_reason": null
       },
       "expected_action": "retain_selected_packet"
     },
@@ -1266,6 +1534,167 @@
         "transport_failure": "body_read_failed"
       },
       "expected_action": "retain_selected_packet"
+    }
+  ],
+  "raw_wire_cases": [
+    {
+      "id": "raw-refusal-expiry-exact",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"}"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "raw-refusal-authority-exact",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "end_original_registration"
+    },
+    {
+      "id": "raw-refusal-unique-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_expired\",\"re\\u0061son\":\"task_offer_expired\"}"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "raw-refusal-expiry-duplicate-task-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-expiry-duplicate-task-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":{\"task_id\":\"synthetic-task-A\"},\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-expiry-duplicate-poll-status-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"task_offer_expired\",\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-expiry-duplicate-poll-status-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"draining\",\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-expiry-duplicate-reason-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"task_offer_expired\",\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-expiry-duplicate-reason-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"worker_registration_lost_authority\",\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":\"task_offer_expired\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-expiry-duplicate-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_expired\",\"re\\u0061son\":\"worker_registration_lost_authority\",\"reason\":\"task_offer_expired\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-authority-duplicate-task-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-authority-duplicate-task-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":{\"task_id\":\"synthetic-task-A\"},\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-authority-duplicate-poll-status-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"stale_worker_registration\",\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-authority-duplicate-poll-status-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"poll_status\":\"draining\",\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-authority-duplicate-reason-identical",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"worker_registration_lost_authority\",\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-authority-duplicate-reason-conflicting",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"reason\":\"task_offer_expired\",\"task\":null,\"poll_status\":\"stale_worker_registration\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-authority-duplicate-escaped-key",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"stale_worker_registration\",\"re\\u0061son\":\"task_offer_expired\",\"reason\":\"worker_registration_lost_authority\"}"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "duplicate_decoded_member_name"
+    },
+    {
+      "id": "raw-refusal-truncated-object",
+      "input": {
+        "http_status": 409,
+        "raw_body_utf8": "{\"task\":null,\"poll_status\":\"task_offer_expired\",\"reason\":"
+      },
+      "expected_action": "retain_selected_packet",
+      "required_predecode_refusal": "invalid_json"
     }
   ],
   "authority_cases": [

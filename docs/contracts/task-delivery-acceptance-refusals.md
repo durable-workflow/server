@@ -15,6 +15,15 @@ decoded JSON object containing exactly `task`, `poll_status` and `reason`
 can establish either definitive refusal below. `task` must be literal null.
 Both other values must be strings matching one complete row exactly.
 
+Before ordinary object decoding or field classification, the original response
+must be valid UTF-8 JSON with no duplicate decoded member names. Identical
+duplicates also refuse. A last-member-wins or first-member-wins decoder cannot
+supply this proof: duplicates may collapse into an apparently positive object.
+Escaped and unescaped spellings of the same decoded key count as duplicates.
+A unique escaped key follows ordinary JSON semantics and is compared by its
+decoded name. If the raw response or equivalent duplicate-detecting decode
+proof is unavailable, retain uncertainty.
+
 | poll_status | reason | Client action |
 | --- | --- | --- |
 | `task_offer_expired` | `task_offer_expired` | Resolve this selected logical packet. Preserve the registration and unrelated pending packets. A new logical poll is permitted. |
@@ -26,7 +35,11 @@ uncertain. Wrong types, missing fields, an alternate HTTP status, cross-row
 pairs, whitespace/case substitutions and available exception fields that
 disagree with the body or HTTP status also remain uncertain. A typed exception
 is not required when the response is available, but any available status or
-reason must agree with it.
+reason must agree with it. One matching status with no reason, or one matching
+reason with no status, is permitted. Every present field must have its proper
+type: an integer HTTP status and string reason. A present null is not absence.
+One-field-only disagreement or wrong type remains uncertain, just as when
+both fields are present.
 
 Neither row contains a task payload or authorizes payload observation,
 hydration or execution. An uncertain response preserves the first selected
