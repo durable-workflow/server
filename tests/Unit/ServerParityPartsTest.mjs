@@ -144,7 +144,7 @@ test('the database bootstraps run the native suites only in the native-tests par
   assert.match(mysql.text, /'case "\$DW_PARITY_PART" in native-tests\) shard=1 suffix= ;; native-tests-b\) shard=2 suffix=-b ;; \*\) shard= ;; esac; if \[ "\$DW_PARITY_PART" = native-tests \]; then cargo test [^']*runtime::mysql::[^']* > \/evidence\/mysql-tests\.txt \|\| exit 1; fi; if \[ -n "\$shard" \]; then [^']*cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 \$\(cat \/evidence\/execution-shard\$suffix\.txt\) > \/evidence\/mysql-execution-tests\$suffix\.txt \|\| exit 1; fi; case "\$DW_PARITY_PART" in native-tests\|native-tests-b\) cargo build --locked --offline ;; \*\) test -x \/target\/debug\/durable-workflow-server ;; esac'/);
 });
 
-test('the MySQL 8 labels split their execution tests into two parts, every test in exactly one', () => {
+test('all MySQL and MariaDB labels split execution tests into two parts, every test in exactly one', () => {
   const block = job('mysql-execution');
   assert.match(block, /^ {6}DW_EXECUTION_SHARDS: \$\{\{ matrix\.execution_shards \|\| 1 \}\}$/m);
   // Matrix values come from the label's include entry; the added
@@ -152,7 +152,7 @@ test('the MySQL 8 labels split their execution tests into two parts, every test 
   const include = block.slice(block.indexOf('\n        include:\n'), block.indexOf('\n    env:\n'));
   const entries = include.split(/\n {10}- /).slice(1).map(text => Object.fromEntries(
     [...('label: ' + text.replace(/^label: /, '')).matchAll(/^\s*([a-z_]+): (\S+)$/gm)].map(match => match.slice(1))));
-  const sharded = ['mysql-8.0', 'existing-php-mysql-matrix'];
+  const sharded = ['mysql-8.0', 'existing-php-mysql-matrix', 'mariadb-10.11'];
   for (const name of sharded) {
     const pair = entries.filter(entry => entry.label === name);
     assert.equal(pair.length, 2, JSON.stringify(entries));
