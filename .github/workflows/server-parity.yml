@@ -2399,6 +2399,7 @@ jobs:
             --mode http --url http://parity-server:8080 --target php --output /evidence/php.json \
             --exclude-fixture tests/Fixtures/ServerParity/service-calls.json \
             --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json \
+            --exclude-fixture tests/Fixtures/ServerParity/namespace-delete-payloads.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
@@ -2413,6 +2414,7 @@ jobs:
             --mode embedded --application-root /app --target embedded --output /evidence/embedded.json \
             --exclude-fixture tests/Fixtures/ServerParity/service-calls.json \
             --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json \
+            --exclude-fixture tests/Fixtures/ServerParity/namespace-delete-payloads.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
@@ -2427,6 +2429,7 @@ jobs:
             --mode http --url http://parity-rust:8080 --target rust --output /evidence/rust.json \
             --exclude-fixture tests/Fixtures/ServerParity/service-calls.json \
             --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json \
+            --exclude-fixture tests/Fixtures/ServerParity/namespace-delete-payloads.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
@@ -2440,6 +2443,7 @@ jobs:
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
             --exclude-fixture tests/Fixtures/ServerParity/service-calls.json \
             --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json \
+            --exclude-fixture tests/Fixtures/ServerParity/namespace-delete-payloads.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-pending.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-insertion-activity-completed.json \
             --include-fixture tests/Fixtures/ServerParityPending/patch-created-activity-pending.json \
@@ -2457,12 +2461,17 @@ jobs:
           # reference's SQLite maintenance writer even after five retries.
           schedule_catalog_status=0
           bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 schedule-catalog || schedule_catalog_status=$?
+          # Server #1018: post-commit payload deletion can remain pending
+          # under the frozen PHP reference's SQLite maintenance writer.
+          namespace_delete_payloads_status=0
+          bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 namespace-delete-payloads || namespace_delete_payloads_status=$?
           # A native fixture difference fails the step only after the
           # comparison has run, so one difference cannot hide the rest.
           test "$native_record_status" -eq 0
           test "$compare_status" -eq 0
           test "$service_calls_status" -eq 0
           test "$schedule_catalog_status" -eq 0
+          test "$namespace_delete_payloads_status" -eq 0
       - name: Compare published patch, legacy-marker and range-repair profiles
         if: ${{ matrix.part == 'restarts' }}
         env:
