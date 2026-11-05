@@ -26,7 +26,53 @@ const FIRE_TIMES = [[], [], [], [],
 
 const ids = step => step.response.schedules.map(item => item.schedule_id);
 
-export function checkScheduleCatalog(fixture, observation, workflowId) {
+// Keep the frozen PHP response contract intact. Native's additive fields are
+// checked against the preceding HTTP backfill results before projecting them
+// away for comparison with an older published PHP server.
+function checkedListSummaries(raw, target) {
+  const known = new Map();
+  return raw.map(step => {
+    if (step.status === 200 && step.request.endsWith('/backfill')) {
+      const id = step.response.schedule_id;
+      const state = known.get(id) ?? {failures: 0, skipped: 0, latest: null};
+      for (const result of step.response.results) {
+        if (result.outcome === 'started') state.latest = result.workflow_id;
+        if (result.outcome === 'skipped') state.skipped++;
+        if (result.outcome === 'failed') state.failures++;
+      }
+      known.set(id, state);
+    }
+    if (!Array.isArray(step.response.schedules)) return step;
+    const schedules = step.response.schedules.map(item => {
+      const fields = ['failures_count', 'skipped_trigger_count', 'latest_workflow_instance_id', 'current_run'];
+      const present = fields.filter(field => Object.hasOwn(item, field));
+      if (target !== 'rust' && present.length === 0) return item;
+      assert.deepStrictEqual(present, fields, 'complete schedule list summary');
+      const state = known.get(item.schedule_id) ?? {failures: 0, skipped: 0, latest: null};
+      assert.deepStrictEqual([item.failures_count, item.skipped_trigger_count, item.latest_workflow_instance_id],
+        [state.failures, state.skipped, state.latest], 'summary counters and latest identity match preceding HTTP results');
+      if (state.latest === null) assert.equal(item.current_run, null, 'unfired schedule has unknown current run');
+      else {
+        assert.match(state.latest, /^[0-9A-HJKMNP-TV-Z]{26}$/, 'complete generated workflow identity');
+        assert.ok(item.current_run && typeof item.current_run === 'object', 'started schedule has current run');
+        assert.match(item.current_run.run_id, /^[0-9A-HJKMNP-TV-Z]{26}$/, 'complete current run identity');
+        assert.deepStrictEqual(item.current_run, {run_id: item.current_run.run_id, status: 'pending',
+          status_bucket: 'running', is_terminal: false}, 'unclaimed backfill run remains pending');
+        // The skip schedule also exposes both identities in its retained audit.
+        const audit = raw.find(candidate => candidate.request === `GET schedules/${item.schedule_id}/history?limit=20`);
+        if (audit) {
+          const event = audit.response.events.filter(event => event.event_type === 'ScheduleTriggered').at(-1);
+          assert.deepStrictEqual([state.latest, item.current_run.run_id],
+            [event.workflow_instance_id, event.workflow_run_id], 'list current run matches retained trigger audit');
+        }
+      }
+      return Object.fromEntries(Object.entries(item).filter(([field]) => !fields.includes(field)));
+    });
+    return {...step, response: {...step.response, schedules}};
+  });
+}
+
+export function checkScheduleCatalog(fixture, observation, workflowId, target) {
   const state = observation.schedule_catalog;
   assert.ok(state && typeof state === 'object', 'actual schedule catalog observation');
   if (observation.mode === 'embedded') {
@@ -41,7 +87,8 @@ export function checkScheduleCatalog(fixture, observation, workflowId) {
   assert.ok(Number.isInteger(state.retries) && state.retries >= 0, 'recorded lock retries');
   const raw = state.steps;
   const names = {[namespace]: '@namespace', [state.queue]: '@queue'};
-  const steps = raw.map(step => ({request: step.request, status: step.status, response: normalized(step.response, names)}));
+  const steps = checkedListSummaries(raw, target)
+    .map(step => ({request: step.request, status: step.status, response: normalized(step.response, names)}));
   assert.deepStrictEqual(steps.map(step => step.status), STATUSES, 'schedule catalog step statuses');
   // Newest first, filtered and paged.
   assert.deepStrictEqual(ids(steps[4]), ['delta', 'gamma', 'beta', 'alpha'], 'newest schedules first');
