@@ -15,7 +15,10 @@ is included verbatim as `SPDX-SCHEMA-LICENSE`; attribution is retained here.
 The pin map records exact source/blob, size and SHA-256. This schema validates
 SPDX-2.3 documents using JSON Schema 2019-09. Its references are all local;
 future validation must disable remote retrieval, including instance-supplied
-schema URLs. Vendoring this schema does not qualify a schema-validator package.
+schema URLs. The upstream `spdxVersion` property is only a string, so semantic
+validation must additionally require the exact `SPDX-2.3` literal; schema success
+alone is insufficient. Vendoring this schema does not qualify a schema-validator
+package.
 
 The still-null validator dependency closure and generation mode are explicit
 unfinished source work, not permissive defaults. No workflow currently consumes
