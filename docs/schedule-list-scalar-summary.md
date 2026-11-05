@@ -70,6 +70,14 @@ decoder remains unchanged with its original 409 behavior. MySQL/MariaDB EXPLAIN
 controls retain actual primary-key/access-type output for each referenced join
 after seeding 256 unrelated instances/runs. Those controls require successful
 normal backend qualification; source authorship alone is not plan evidence.
+The existing HTTP schedule-catalog corpus retains its frozen published-PHP
+fixture and expected responses. Native recordings require all four new fields
+on every list row. Before comparing the older shared response, the comparator
+checks counters and the latest identity against preceding backfill responses,
+the unclaimed current-run state, and the retained trigger-audit identity pair.
+Only those checked additions are removed from that comparison; raw observations
+and every existing field remain intact. Older published PHP recordings can
+retain their original list shape.
 Normal source checks and Server review must qualify the exact SQL/decoder on each backend before this
 can be called contract-compliant. No new runtime/image/qualification dispatch,
 schema/UDF, persisted summary, release or frozen-artifact admission follows.

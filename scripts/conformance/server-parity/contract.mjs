@@ -104,7 +104,7 @@ export function instantNanoseconds(value) {
 
 // Only this fixture's declared semantics are projected. The full observation
 // remains in the recording, including implementation metadata and timestamps.
-export function checkObservation(fixture, observation, workflowId, artifacts) {
+export function checkObservation(fixture, observation, workflowId, artifacts, target) {
   if (fixture.continuation) {
     assert.equal(observation.workflow_id, workflowId);
     const record=observation.continuation;
@@ -247,7 +247,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts) {
   const messageStreams = fixture.message_streams ? checkMessageStreams(fixture, observation, workflowId) : null;
   const workflowStreamWrites = fixture.workflow_stream_writes ? checkWorkflowStreamWrites(fixture, observation, workflowId) : null;
   const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId) : null;
-  const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId) : null;
+  const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId, target) : null;
   const signalsBeforeWorker = fixture.signals_before_worker ? checkSignalsBeforeWorker(fixture, observation, workflowId) : null;
   const workerListing = fixture.worker_listing ? checkWorkerListing(fixture, observation, workflowId) : null;
   const workerReplacement = fixture.worker_replacement ? checkWorkerReplacement(fixture, observation, workflowId) : null;
@@ -908,7 +908,7 @@ export function compareRecords(records, expectedFixtureHashes, expectedFixtures,
       if (record.artifacts.sdk_php_source_commit) assert.equal(item.observation.sdk_php_source, record.artifacts.sdk_php_source_commit, 'installed exact source SDK matches tuple');
       if (record.mode === 'embedded') assert.equal(item.observation.workflow_package, record.artifacts.workflow, 'installed Workflow matches tuple');
       assert.deepStrictEqual(item.fixture, baseline.fixture, 'same fixture expectations');
-      const checked = checkObservation(item.fixture, item.observation, item.projection.workflow_id, record.artifacts);
+      const checked = checkObservation(item.fixture, item.observation, item.projection.workflow_id, record.artifacts, record.target);
       assert.deepStrictEqual(item.projection, checked, 'projection matches raw observation');
       assert.deepStrictEqual(checked, baseline.projection, `${record.target}: ${item.fixture_id}`);
     }
