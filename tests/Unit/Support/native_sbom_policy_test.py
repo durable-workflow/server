@@ -148,6 +148,60 @@ class SbomPolicyTests(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(P.Refusal):
                 P.release_asset_manifest(*args)
 
+    def verified_asset_fixture(self):
+        release, subjects, documents = self.release_manifest_fixture()
+        certificate, _, _ = self.certificate_fixture()
+        pairs = {}
+        for registry in P.REGISTRIES:
+            pairs[registry] = {}
+            for platform in P.PLATFORMS:
+                statement = {"_type": "https://in-toto.io/Statement/v1", "predicateType": P.PREDICATE_TYPE,
+                    "subject": [{"name": registry, "digest": {"sha256": subjects[platform]["child_manifest_digest"][7:]}}],
+                    "predicate": json.loads(documents[platform])}
+                pairs[registry][platform] = [{"certificate": copy.deepcopy(certificate), "statement": statement}]
+        return release, subjects, documents, pairs
+
+    def test_complete_current_registry_predicates_return_only_the_three_retained_assets(self):
+        release, subjects, documents, pairs = self.verified_asset_fixture()
+        assets = P.verified_release_assets(release, subjects, documents, pairs)
+        self.assertEqual(set(assets), set(P.ASSET_LIMITS))
+        self.assertEqual(assets[P.SPDX_ASSETS[0]], documents["linux/amd64"])
+        self.assertEqual(assets[P.SPDX_ASSETS[1]], documents["linux/arm64"])
+        self.assertEqual(json.loads(assets[P.MANIFEST_ASSET])["release"], release)
+
+    def test_incomplete_foreign_old_only_and_ambiguous_registry_proof_refuses(self):
+        registry, platform = P.REGISTRIES[0], P.PLATFORMS[0]
+        mutations = [lambda p: p.pop(P.REGISTRIES[1]), lambda p: p[registry].pop(platform),
+            lambda p: p[registry].__setitem__(platform, []),
+            lambda p: p[registry].__setitem__(platform, p[registry][platform] * 5),
+            lambda p: p[registry][platform][0]["certificate"].update(runInvocationURI="https://github.com/durable-workflow/server/actions/runs/123/attempts/1"),
+            lambda p: p[registry][platform][0]["certificate"].update(sourceRepositoryIdentifier="1208272135"),
+            lambda p: p[registry][platform][0]["statement"]["subject"][0].update(name=P.REGISTRIES[1]),
+            lambda p: p[registry][platform][0].update(unverified="extra")]
+        for change in mutations:
+            release, subjects, documents, pairs = self.verified_asset_fixture()
+            change(pairs)
+            with self.subTest(change=change), self.assertRaises(P.Refusal):
+                P.verified_release_assets(release, subjects, documents, pairs)
+        release, subjects, documents, pairs = self.verified_asset_fixture()
+        conflict = copy.deepcopy(pairs[registry][platform][0])
+        conflict["statement"]["predicate"]["name"] = "different-current-predicate"
+        pairs[registry][platform].append(conflict)
+        with self.assertRaisesRegex(P.Refusal, "predicate_mismatch"):
+            P.verified_release_assets(release, subjects, documents, pairs)
+
+    def test_old_verified_attempt_is_not_current_authority_and_identical_current_duplicates_are_safe(self):
+        release, subjects, documents, pairs = self.verified_asset_fixture()
+        expected = P.verified_release_assets(release, subjects, documents, pairs)
+        for registry in P.REGISTRIES:
+            for platform in P.PLATFORMS:
+                current = pairs[registry][platform][0]
+                old = copy.deepcopy(current)
+                old["certificate"]["runInvocationURI"] = "https://github.com/durable-workflow/server/actions/runs/123/attempts/1"
+                old["statement"]["predicate"]["name"] = "old-predicate-is-not-current-proof"
+                pairs[registry][platform] = [old, current, copy.deepcopy(current)]
+        self.assertEqual(P.verified_release_assets(release, subjects, documents, pairs), expected)
+
     def child_fixture(self, architecture="amd64", media_index=0):
         source, tag = "c" * 40, "3.2.0-rc.1"
         config = {"os": "linux", "architecture": architecture, "config": {"Labels": {
@@ -280,7 +334,8 @@ class SbomPolicyTests(unittest.TestCase):
                 "github.com/durable-workflow/server/.github/workflows/native-release.yml",
                 "--source-ref", "refs/tags/3.2.0-rc.1", "--source-digest", source,
                 "--predicate-type", "https://spdx.dev/Document/v2.3", "--deny-self-hosted-runners", "--format", "json",
-                "--bundle-from-oci"])
+                "--bundle-from-oci", "--limit", "4", "--jq",
+                "map({certificate:.verificationResult.signature.certificate,statement:.verificationResult.statement})"])
             self.assertNotIn(index, command)
 
     def test_verification_request_refuses_redirects_indexes_and_cli_injection(self):

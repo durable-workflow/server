@@ -143,3 +143,15 @@ source library. This map is not a signature or qualification receipt, and the
 future caller must establish generation and signed-subject custody first.
 Existing Release assets must retain their original bytes, not be reconstructed
 through this compiler.
+
+`verified_release_assets` returns that complete three-file set only after both
+registries have qualifying current-run predicates for both platforms. The
+verifier request caps bundles at four and projects only its authenticated
+certificate/statement output. Each pair's closed identity is checked. Older
+verified invocations supply no current authority; an exact current pair is
+required, and every current predicate must agree with the retained document.
+Conflicting current predicates, incomplete registry/platform sets and foreign
+subjects refuse the whole result. Twenty-nine synthetic source families pass.
+The future transport must still execute/authenticate those fixed requests and
+bind their actual registry origins. Synthetic dictionaries exercise these
+requirements without supplying cryptographic or publication evidence.

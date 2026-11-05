@@ -35,6 +35,8 @@ MANIFEST_MEDIA_TYPES = ("application/vnd.oci.image.manifest.v1+json",
                         "application/vnd.docker.distribution.manifest.v2+json")
 CONFIG_MEDIA_TYPES = ("application/vnd.oci.image.config.v1+json",
                       "application/vnd.docker.container.image.v1+json")
+VERIFIED_PAIR_PROJECTION = "map({certificate:.verificationResult.signature.certificate,statement:.verificationResult.statement})"
+VERIFIED_PAIR_LIMIT = 4
 
 
 class Refusal(ValueError):
@@ -314,7 +316,7 @@ def sbom_verification_command(registry: str, child: str, index: str, tag: str, s
             "--repo", REPOSITORY, "--signer-workflow", "github.com/" + REPOSITORY + "/.github/workflows/native-release.yml",
             "--source-ref", "refs/tags/" + tag, "--source-digest", source,
             "--predicate-type", PREDICATE_TYPE, "--deny-self-hosted-runners", "--format", "json",
-            "--bundle-from-oci"]
+            "--bundle-from-oci", "--limit", str(VERIFIED_PAIR_LIMIT), "--jq", VERIFIED_PAIR_PROJECTION]
 
 
 def require_release_invocation(uri: str, run_id: int, attempt: int) -> None:
@@ -431,6 +433,52 @@ def release_asset_manifest(release: dict[str, Any], subjects: dict[str, dict[str
         "release": release, "registries": list(REGISTRIES), "documents": members}) + b"\n"
     require(len(result) <= ASSET_LIMITS[MANIFEST_ASSET], "sbom_manifest_size")
     return result
+
+
+def require_current_pairs(pairs: list[dict[str, Any]], release: dict[str, Any], registry: str,
+                          subject: dict[str, str], raw_document: bytes) -> None:
+    require(type(pairs) is list and 1 <= len(pairs) <= VERIFIED_PAIR_LIMIT, "sbom_verified_pair_count")
+    current = 0
+    for pair in pairs:
+        require(type(pair) is dict and set(pair) == {"certificate", "statement"}
+                and type(pair["certificate"]) is dict and type(pair["statement"]) is dict,
+                "sbom_verified_pair_shape")
+        certificate = pair["certificate"]
+        uri = certificate.get("runInvocationURI")
+        require(type(uri) is str, "sbom_verified_pair_invocation")
+        invocation = re.fullmatch(r"https://github\.com/" + re.escape(REPOSITORY)
+            + r"/actions/runs/([1-9][0-9]{0,15})/attempts/([1-9][0-9]{0,15})", uri)
+        require(invocation is not None, "sbom_verified_pair_invocation")
+        run_id, attempt = int(invocation[1]), int(invocation[2])
+        require_certificate_identity(certificate, release["source_commit"], release["tag"], run_id, attempt)
+        if (run_id, attempt) != (release["run_id"], release["run_attempt"]):
+            continue
+        verified_statement_matches(raw_document, pair["statement"], certificate,
+            registry, subject["child_manifest_digest"], release["index_digest"],
+            release["source_commit"], release["tag"], run_id, attempt)
+        current += 1
+    require(current > 0, "sbom_current_attestation_missing")
+
+
+def verified_release_assets(release: dict[str, Any], subjects: dict[str, dict[str, str]],
+                            raw_documents: dict[str, bytes],
+                            verified_pairs: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, bytes]:
+    """Require complete current-run predicates in both registries before return.
+
+    The future transport must obtain each pair from the successful fixed
+    cryptographic-verification command for that registry/child. These arguments
+    alone do not authenticate arbitrary dictionaries or their registry origin.
+    """
+    manifest = release_asset_manifest(release, subjects, raw_documents)
+    require(type(verified_pairs) is dict and set(verified_pairs) == set(REGISTRIES),
+            "sbom_verified_registry_set")
+    for registry in REGISTRIES:
+        by_platform = verified_pairs[registry]
+        require(type(by_platform) is dict and set(by_platform) == set(PLATFORMS), "sbom_verified_platform_set")
+        for platform in PLATFORMS:
+            require_current_pairs(by_platform[platform], release, registry, subjects[platform], raw_documents[platform])
+    return {**{asset: raw_documents[platform] for platform, asset in zip(PLATFORMS, SPDX_ASSETS)},
+            MANIFEST_ASSET: manifest}
 
 
 if __name__ == "__main__":
