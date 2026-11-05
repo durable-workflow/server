@@ -33,9 +33,12 @@ The proposed `retry_disposition` object has closed state-dependent fields in
 the companion. Scheduled decisions retain candidate, cap and checked availability.
 Terminal cap/deadline decisions retain a diagnostic candidate but have no retry
 availability, task, start, following attempt or retry event. Non-retryable and
-exhausted outcomes select no delay. An already-due prepared engine timeout
-retains its engine provenance rather than borrowing the caller's application
-failure. An earlier valid failure whose selected availability reaches the total
+exhausted outcomes select no delay. An already-due overall schedule-to-close timeout retains its engine
+provenance rather than borrowing the caller's application failure. An actual
+start-to-close or heartbeat timeout before that total deadline may instead
+retry under the engine policy when its attempt budget remains. The disposition
+identifies the failure source, actual timeout kind and selected delay source;
+a preempted application override cannot become the timeout retry delay. An earlier valid failure whose selected availability reaches the total
 deadline remains an application failure with terminal retry-delay disposition.
 General accepted this mode-bound projection in
 [the source decision](https://github.com/durable-workflow/.github/issues/219#issuecomment-6669526988).
@@ -53,8 +56,10 @@ grammars, conjunctive mode gates, isolated authoritative identities, deadline
 edges, terminal precedence, reply loss, receipt mismatch, rollback, cold replay,
 checked backend timestamp arithmetic and unchanged version-1 behavior. They are
 requirements for a future real writer/adapter. Their presence or JSON consistency
-is not an executing pass. The portable integer bound is distinct from an actual
-backend duration or timestamp bound. Neither the old 100-report batch limit nor
+is not an executing pass. The companion also binds Core's proposed ten-key stored snapshot and explicit
+new-route attempt/list/type/timeout bounds. These proposed bounds are separate
+from current version-1 facts. The portable integer bound is distinct from an
+actual backend duration or timestamp bound. Neither the old 100-report batch limit nor
 its 86,400-second executed-backoff ceiling becomes an implicit version-2 cap.
 
 Workflow owns the complete normalized snapshot and existing timeout/range

@@ -20,7 +20,8 @@
       "case_count": 37
     },
     "prior_rows_mutated": false,
-    "prepared_timeout_projection": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6669526988"
+    "prepared_timeout_projection": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6669526988",
+    "core_snapshot_range_proposal": "https://github.com/durable-workflow/workflow/pull/1038#issuecomment-6669717376"
   },
   "adoption_gates": [
     "Core accepts the proposed closed retry_disposition fields and normalized snapshot/range binding",
@@ -100,7 +101,7 @@
       "backdated version-1 batch timestamps"
     ],
     "serialization": "UTC RFC3339 with exactly six fractional digits and Z; nullable original schedule-to-close deadline",
-    "prepared_timeout_projection": "preserve existing engine timeout precedence at an already-due deadline; a valid earlier application failure whose selected availability reaches the deadline remains an application failure with terminal retry-delay disposition",
+    "prepared_timeout_projection": "preserve actual engine timeout precedence; start_to_close/heartbeat with remaining total time and attempt budget may retry under policy; actually due schedule_to_close terminates before application override selection",
     "precedence": [
       "strict report validation",
       "matching retained outcome receipt",
@@ -116,7 +117,8 @@
       "snapshot_version": 2,
       "decision": "scheduled or terminal",
       "failure_time": "the stored first accepted engine sample",
-      "original_schedule_to_close_deadline_at": "stored UTC timestamp or null"
+      "original_schedule_to_close_deadline_at": "stored UTC timestamp or null",
+      "failure_source": "application or engine_timeout"
     },
     "common_optional": {
       "requested_delay_seconds": "present iff the valid failed report supplied next_retry_delay_seconds; exact requested integer, including zero; diagnostic input does not prove application"
@@ -124,7 +126,8 @@
     "scheduled_required": {
       "candidate_delay_seconds": "selected nonnegative portable integer",
       "maximum_interval_seconds": "finite cap from retained snapshot 2",
-      "retry_available_at": "checked failure_time plus selected seconds, strictly before original deadline if set"
+      "retry_available_at": "checked failure_time plus selected seconds, strictly before original deadline if set",
+      "delay_source": "policy or failure_override; engine timeouts always policy"
     },
     "scheduled_forbidden": [
       "terminal_classification"
@@ -144,7 +147,8 @@
     ],
     "terminal_delay_required": [
       "candidate_delay_seconds",
-      "maximum_interval_seconds"
+      "maximum_interval_seconds",
+      "delay_source"
     ],
     "terminal_without_selection": [
       "non_retryable",
@@ -158,7 +162,12 @@
     "terminal_forbidden": [
       "retry_available_at"
     ],
-    "unknown_members": "refused by a future consumer; never silently ignored"
+    "unknown_members": "refused by a future consumer; never silently ignored",
+    "conditional_common": {
+      "timeout_kind": "required iff failure_source is engine_timeout; one of start_to_close, schedule_to_close, heartbeat; forbidden otherwise"
+    },
+    "delay_source_rule": "failure_override only for a still-admitted application failure with a supplied valid override; otherwise policy. A preempted application override stays requested diagnostic input only.",
+    "engine_timeout_terminal_classification": "reserved for overall schedule_to_close expiry; start_to_close/heartbeat before the total deadline may schedule the policy retry or terminate under their actual budget/cap/deadline branch"
   },
   "engine_receipt_proposal": {
     "existing_required": [
@@ -214,7 +223,8 @@
     "scheduled": "one ActivityRetryScheduled for the real failed attempt, with matching stored retry_disposition, retry_available_at and actual selected retry_backoff_seconds; no following attempt exists until independently prepared",
     "terminal": "one existing ActivityFailed or ActivityTimedOut outcome for the real attempt; matching retry_disposition; no retry task, following attempt/start or ActivityRetryScheduled",
     "failure_preservation": "cap/deadline retry termination preserves the admitted application failure/type; already-due engine timeout preserves engine timeout provenance instead",
-    "cold_replay": "consume the stored decision and availability; do not evaluate the current policy or clock"
+    "cold_replay": "consume the stored decision and availability; do not evaluate the current policy or clock",
+    "timeout_scheduled": "an actual pre-total-deadline start_to_close/heartbeat timeout may record ActivityRetryScheduled with retry_reason timeout, actual timeout_kind and policy-selected delay; no worker override is applied"
   },
   "ranges": {
     "portable_integer_minimum": 0,
@@ -224,7 +234,7 @@
     "v2_inherits_these_batch_ceilings": false,
     "checked_selection": "a selected retry must also fit the backend duration arithmetic and resulting bindable UTC timestamp before writes; no wrap, clamp, float coercion or immediate fallback",
     "terminal_candidate": "a portable diagnostic integer is not an executed duration or retry availability",
-    "remaining_snapshot_binding": "Core must return exact policy/snapshot keys, finite max-attempt/list bounds and existing timeout field bounds; this proposal does not invent them from the batch limits"
+    "remaining_snapshot_binding": "Core proposed the exact ten-key snapshot, new-route bounds and closed policy above; final joint source reconciliation remains before freeze"
   },
   "cases": [
     {
@@ -1078,6 +1088,534 @@
         "new_retry_event_count": 0,
         "new_attempt_count": 0
       }
+    },
+    {
+      "id": "local_v2_start_to_close_timeout_policy_retry",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "start_to_close",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20,
+        "submitted_failed_override": 1
+      },
+      "expected": {
+        "decision": "scheduled",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "start_to_close",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 5,
+        "retry_available_at_seconds": 95,
+        "submitted_override_applied": false,
+        "event_type": "ActivityRetryScheduled",
+        "retry_reason": "timeout",
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_start_to_close_timeout_exhausted",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "start_to_close",
+        "attempt_number": 3,
+        "max_attempts": 3
+      },
+      "expected": {
+        "decision": "terminal",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "start_to_close",
+        "terminal_classification": "attempts_exhausted",
+        "candidate_delay_member": "absent",
+        "event_type": "ActivityTimedOut",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_start_to_close_timeout_policy_reaches_deadline",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "start_to_close",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 10,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "start_to_close",
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 10,
+        "event_type": "ActivityTimedOut",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_heartbeat_timeout_policy_retry",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "heartbeat",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20,
+        "submitted_failed_override": 1
+      },
+      "expected": {
+        "decision": "scheduled",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "heartbeat",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 5,
+        "retry_available_at_seconds": 95,
+        "submitted_override_applied": false,
+        "event_type": "ActivityRetryScheduled",
+        "retry_reason": "timeout",
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_heartbeat_timeout_exhausted",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "heartbeat",
+        "attempt_number": 3,
+        "max_attempts": 3
+      },
+      "expected": {
+        "decision": "terminal",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "heartbeat",
+        "terminal_classification": "attempts_exhausted",
+        "candidate_delay_member": "absent",
+        "event_type": "ActivityTimedOut",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_heartbeat_timeout_policy_reaches_deadline",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "heartbeat",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 10,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "heartbeat",
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 10,
+        "event_type": "ActivityTimedOut",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_timed_out_report_not_actually_due",
+      "carrier": {
+        "report": {
+          "outcome": "timed_out"
+        },
+        "all_actual_timeout_deadlines": "later than engine sample"
+      },
+      "expected": {
+        "recorded": false,
+        "reason": "local_activity_timeout_not_due",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_range_max_attempts_0",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "max_attempts",
+        "value": 0,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_max_attempts_1",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "max_attempts",
+        "value": 1,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_max_attempts_1024",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "max_attempts",
+        "value": 1024,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_max_attempts_1025",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "max_attempts",
+        "value": 1025,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_backoff_list_length_1024",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "backoff_list_length",
+        "value": 1024,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_backoff_list_length_1025",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "backoff_list_length",
+        "value": 1025,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_error_type_count_128",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "error_type_count",
+        "value": 128,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_error_type_count_129",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "error_type_count",
+        "value": 129,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_error_type_utf8_bytes_255",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "error_type_utf8_bytes",
+        "value": 255,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_error_type_utf8_bytes_256",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "error_type_utf8_bytes",
+        "value": 256,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_timeout_seconds_0",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "timeout_seconds",
+        "value": 0,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_timeout_seconds_1",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "timeout_seconds",
+        "value": 1,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_timeout_seconds_2147483647",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "timeout_seconds",
+        "value": 2147483647,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_timeout_seconds_2147483648",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "timeout_seconds",
+        "value": 2147483648,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_delay_seconds_9007199254740991",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "delay_seconds",
+        "value": 9007199254740991,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_delay_seconds_9007199254740992",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "delay_seconds",
+        "value": 9007199254740992,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_snapshot_missing_required_key",
+      "carrier": {
+        "isolated_closed_shape_mutation": "missing_required_key"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_unknown_key",
+      "carrier": {
+        "isolated_closed_shape_mutation": "unknown_key"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_Boolean_numeric",
+      "carrier": {
+        "isolated_closed_shape_mutation": "Boolean_numeric"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_null_attempt_budget",
+      "carrier": {
+        "isolated_closed_shape_mutation": "null_attempt_budget"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_non_null_schedule_to_start_timeout",
+      "carrier": {
+        "isolated_closed_shape_mutation": "non_null_schedule_to_start_timeout"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_wire_generator_descriptor",
+      "carrier": {
+        "isolated_closed_shape_mutation": "wire_generator_descriptor"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_worker_snapshot_version",
+      "carrier": {
+        "isolated_closed_shape_mutation": "worker_snapshot_version"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_oversized_generated_budget_before_expansion",
+      "carrier": {
+        "isolated_closed_shape_mutation": "oversized_generated_budget_before_expansion"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_terminal_huge_candidate_is_not_duration",
+      "carrier": {
+        "original_claim_live": true,
+        "failure_source": "application",
+        "requested_delay_seconds": 9007199254740991,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "retry_delay_exceeds_policy_cap",
+        "candidate_delay_seconds": 9007199254740991,
+        "retry_available_at_member": "absent",
+        "duration_conversion_for_terminal_candidate": false,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
     }
-  ]
+  ],
+  "prepared_policy_proposal": {
+    "required": {
+      "contract_version": 2,
+      "mode": [
+        "explicit",
+        "generated"
+      ],
+      "backoff_seconds": "ordered list of 0..1024 actual integers in 0..9007199254740991"
+    },
+    "optional": {
+      "max_attempts": "actual integer 1..1024, default 1",
+      "maximum_interval_seconds": "actual integer 0..9007199254740991; canonical mode-specific default",
+      "non_retryable_error_types": "0..128 valid UTF-8 nonblank strings, each <=255 bytes before existing trim/first-occurrence deduplication; default []"
+    },
+    "unknown_members": "refuse, including snapshot_version and generator descriptors",
+    "generator_boundary": "bounded authoring expansion precedes the wire; do not infer or reconstruct a generator from a flattened worker list",
+    "generated_schedule_positions_maximum": 1023
+  },
+  "stored_snapshot_proposal": {
+    "required": {
+      "snapshot_version": 2,
+      "mode": [
+        "explicit",
+        "generated"
+      ],
+      "max_attempts": "actual integer 1..1024",
+      "backoff_seconds": "ordered list of 0..1024 actual integers in 0..9007199254740991",
+      "maximum_interval_seconds": "actual integer 0..9007199254740991",
+      "start_to_close_timeout": "null or actual integer 1..2147483647",
+      "schedule_to_start_timeout": null,
+      "schedule_to_close_timeout": "null or actual integer 1..2147483647",
+      "heartbeat_timeout": "null or actual integer 1..2147483647",
+      "non_retryable_error_types": "ordered list of 0..128 normalized error types, each valid UTF-8 nonblank <=255 original bytes"
+    },
+    "optional": [],
+    "unknown_members": "refuse",
+    "unlimited_null_or_sentinel_attempt_budget": "not part of version 2; preserve existing legacy path",
+    "preparation_deadlines": "checked backend timestamp arithmetic before the original execution/start authority is published"
+  }
 }
