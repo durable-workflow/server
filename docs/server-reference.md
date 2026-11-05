@@ -1203,6 +1203,10 @@ heartbeat, complete, and fail responses include `run_closed_reason` and
 - `POST /api/schedules/{id}/trigger` — Trigger immediately
 - `POST /api/schedules/{id}/backfill` — Backfill missed runs
 
+The native development [scalar summary draft](schedule-list-scalar-summary.md) adds
+counters, latest-instance identity and a nullable current-run summary. Full last-
+dispatch/buffer/skip summaries and published capability remain pending Server #1014.
+
 Schedule listing is namespace-scoped and never returns deleted schedules. The
 optional `status` (`active` or `paused`) and `workflow_type` filters are exact
 matches. `query` accepts equality predicates joined by `AND` for
