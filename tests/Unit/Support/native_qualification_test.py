@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -33,6 +34,145 @@ CONTEXT = {
     "GITHUB_WORKFLOW_REF": E.REPOSITORY + "/" + E.WORKFLOWS["compose"] + "@refs/tags/3.2.0",
     "GITHUB_RUN_ID": "303", "GITHUB_RUN_ATTEMPT": "1",
 }
+
+
+def fake_command_lifecycle(module, exit_code=0, authority_error=False, cleanup_error=None):
+    """No process or signal: an early reap makes the fake PID foreign."""
+    events = []
+
+    class Pipe:
+        def __init__(self, descriptor):
+            self.descriptor = descriptor
+
+        def close(self):
+            events.append("close-pipe")
+
+    class Process:
+        pid = 43210
+        reaped = False
+        stdout, stderr = Pipe(10), Pipe(11)
+
+        def wait(self, timeout=None):
+            events.append("reap")
+            if cleanup_error == "reap":
+                raise module.subprocess.TimeoutExpired("synthetic-private-marker", timeout)
+            self.reaped = True
+            return exit_code if exit_code is not None else -9
+
+    process = Process()
+
+    class Selector:
+        def __init__(self):
+            self.keys = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def register(self, stream, event, data):
+            self.keys[stream.descriptor] = SimpleNamespace(fd=stream.descriptor, fileobj=stream, data=data)
+
+        def unregister(self, stream):
+            del self.keys[stream.descriptor]
+
+        def get_map(self):
+            return self.keys
+
+        def select(self, timeout):
+            return [(value, 1) for value in list(self.keys.values())]
+
+    def observe(kind, pid, flags):
+        assert kind == os.P_PID and pid == process.pid and flags & os.WNOWAIT and flags & os.WNOHANG
+        events.append("observe")
+        if authority_error or process.reaped:
+            raise ChildProcessError("synthetic unowned child")
+        return None if exit_code is None else SimpleNamespace(si_pid=pid, si_code=os.CLD_EXITED, si_status=exit_code)
+
+    def signal_group(pid, sig):
+        assert pid == process.pid and sig == module.signal.SIGKILL
+        events.append("foreign-signal" if process.reaped else "owned-signal")
+        if cleanup_error == "signal":
+            raise PermissionError("synthetic-private-marker")
+
+    clock = [0.0]
+
+    def now():
+        clock[0] += 0.1
+        return clock[0]
+
+    error, result = None, None
+    with patch.object(module.subprocess, "Popen", return_value=process), \
+            patch.object(module.selectors, "DefaultSelector", Selector), \
+            patch.object(module.os, "read", return_value=b""), \
+            patch.object(module.os, "waitid", side_effect=observe), \
+            patch.object(module.os, "killpg", side_effect=signal_group), \
+            patch.object(module.signal, "getsignal", return_value=module.signal.SIG_DFL), \
+            patch.object(module.time, "monotonic", side_effect=now), \
+            patch.object(module.time, "sleep"):
+        commands = module.Commands(1)
+        try:
+            result = commands.run(["synthetic-read-only-cli"])
+        except E.Refusal as caught:
+            error = caught
+    return result, error, events
+
+
+class CommandChildAuthorityTest(unittest.TestCase):
+    def test_success_signals_only_before_the_direct_child_is_reaped(self):
+        result, error, events = fake_command_lifecycle(T)
+        self.assertIsNone(error)
+        self.assertEqual(result, b"")
+        self.assertNotIn("foreign-signal", events)
+        self.assertIn("owned-signal", events)
+        self.assertLess(events.index("owned-signal"), events.index("reap"))
+
+    def test_failure_and_timeout_also_clean_up_before_reaping(self):
+        for code, reason in ((1, "provider_read_failed"), (None, "read_timeout")):
+            with self.subTest(code=code):
+                _, error, events = fake_command_lifecycle(T, exit_code=code)
+                self.assertIsInstance(error, E.Refusal)
+                self.assertEqual(str(error), reason)
+                self.assertNotIn("foreign-signal", events)
+                self.assertIn("owned-signal", events)
+                self.assertLess(events.index("owned-signal"), events.index("reap"))
+
+    def test_unknown_child_authority_never_signals_or_reaps_a_numeric_pid(self):
+        _, error, events = fake_command_lifecycle(T, authority_error=True)
+        self.assertIsInstance(error, E.Refusal)
+        self.assertEqual(str(error), "provider_child_authority_unknown")
+        self.assertNotIn("foreign-signal", events)
+        self.assertNotIn("owned-signal", events)
+        self.assertNotIn("reap", events)
+        self.assertEqual(events.count("close-pipe"), 2)
+
+    def test_missing_nonreaping_primitive_refuses_before_process_creation(self):
+        commands = T.Commands()
+        with patch.object(T.os, "waitid", None), patch.object(T.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(E.Refusal, "provider_child_authority_unavailable"):
+                commands.run(["synthetic-read-only-cli"])
+        spawn.assert_not_called()
+
+    def test_an_automatic_or_custom_reaper_refuses_before_process_creation(self):
+        for handler in (T.signal.SIG_IGN, lambda *args: None):
+            commands = T.Commands()
+            with self.subTest(handler=handler), \
+                    patch.object(T.signal, "getsignal", return_value=handler), \
+                    patch.object(T.subprocess, "Popen") as spawn:
+                with self.assertRaisesRegex(E.Refusal, "provider_child_authority_unavailable"):
+                    commands.run(["synthetic-read-only-cli"])
+            spawn.assert_not_called()
+
+    def test_signal_or_bounded_reap_failure_cannot_return_a_successful_read(self):
+        for fault in ("signal", "reap"):
+            with self.subTest(fault=fault):
+                result, error, events = fake_command_lifecycle(T, cleanup_error=fault)
+                self.assertIsNone(result)
+                self.assertIsInstance(error, E.Refusal)
+                self.assertEqual(str(error), "provider_child_cleanup_failed")
+                self.assertNotIn("foreign-signal", events)
+                self.assertEqual(events.count("close-pipe"), 2)
 
 
 class ResourceCommands:

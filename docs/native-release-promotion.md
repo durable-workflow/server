@@ -103,6 +103,16 @@ raw environment or host configuration enters a promotion receipt. Compose HTTP
 responses use private temporary files and bounded requests; failures print a
 static reason rather than authorization arguments or server logs.
 
+Provider CLI reads have a 30-second per-command deadline within a 180-second
+read budget, bounded stdout and 4 KiB stderr. The synchronous helper owns each
+direct child with default `SIGCHLD` handling. It observes exit using
+[`waitid(WNOWAIT)`](https://man7.org/linux/man-pages/man2/wait.2.html), retaining
+the child's kernel PID reservation until process-group cleanup finishes, then
+reaps with at most one second of cleanup grace. It never reaps first and signals
+the released number afterward. Missing non-reaping primitives or an automatic
+reaper refuse before process creation. Unknown child authority refuses without
+a numeric PID signal; signal/reap failure cannot return a successful read.
+
 Cleanup retains the original body result. It removes only exact owned Compose
 project resources or containers carrying the exact corpus scope OWNER label,
 owned network and observed owned volumes, including labelled standalone helper

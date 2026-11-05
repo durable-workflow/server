@@ -25,10 +25,50 @@ class Commands:
     def __init__(self, seconds: float = 180):
         self.deadline = time.monotonic() + seconds
 
+    @staticmethod
+    def require_wait_authority() -> None:
+        require(callable(getattr(os, "waitid", None))
+                and all(hasattr(os, name) for name in (
+                    "P_PID", "WEXITED", "WNOHANG", "WNOWAIT", "CLD_EXITED", "CLD_KILLED", "CLD_DUMPED"))
+                and signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL,
+                "provider_child_authority_unavailable")
+
+    @staticmethod
+    def child_state(pid: int):
+        # The synchronous caller owns this direct child. WNOWAIT retains the
+        # child's kernel PID reservation until group cleanup has finished.
+        Commands.require_wait_authority()
+        try:
+            state = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except OSError:
+            raise Refusal("provider_child_authority_unknown") from None
+        if state is None or state.si_pid == 0:
+            return None
+        require(state.si_pid == pid and state.si_code in (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED),
+                "provider_child_authority_unknown")
+        return state
+
+    @staticmethod
+    def finish_child(process) -> None:
+        try:
+            # Never signal after releasing the direct child's PID reservation.
+            Commands.child_state(process.pid)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=1)
+        except (OSError, subprocess.SubprocessError):
+            raise Refusal("provider_child_cleanup_failed") from None
+        finally:
+            process.stdout.close()
+            process.stderr.close()
+
     def run(self, argv: list[str], limit: int = JSON_LIMIT,
             env: dict[str, str] | None = None, accepted: tuple[int, ...] = (0,)) -> bytes:
         remaining = min(30, self.deadline - time.monotonic())
         require(remaining > 0, "read_deadline")
+        self.require_wait_authority()
         environment = os.environ.copy()
         environment.pop("GH_DEBUG", None)
         environment.update(GH_HOST=GITHUB_HOST, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
@@ -52,21 +92,21 @@ class Commands:
                             continue
                         key.data.extend(block)
                         require(len(output) <= limit and len(errors) <= 4096, "read_output_bound")
-                require(process.wait(timeout=max(0.01, until - time.monotonic())) in accepted,
-                        "provider_read_failed")
+                require(time.monotonic() < until, "read_timeout")
+                state = self.child_state(process.pid)
+                while state is None:
+                    require(time.monotonic() < until, "read_timeout")
+                    time.sleep(min(0.01, max(0, until - time.monotonic())))
+                    state = self.child_state(process.pid)
+                code = state.si_status if state.si_code == os.CLD_EXITED else -state.si_status
+                require(time.monotonic() < until, "read_timeout")
+                require(code in accepted, "provider_read_failed")
             return bytes(output)
         except (OSError, subprocess.SubprocessError):
             raise Refusal("provider_command_failed") from None
         finally:
             if process is not None:
-                # Kill the whole owned subprocess group, including a blocked CLI child.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
-                process.stdout.close()
-                process.stderr.close()
+                self.finish_child(process)
 
 
 class GitHubRegistryProvider:
