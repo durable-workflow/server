@@ -273,6 +273,29 @@ fn without_quoted(value: &str) -> String {
 }
 
 /// `parseLiteral`.
+fn single_quoted_literal(literal: &str) -> std::result::Result<Value, QueryError> {
+    let invalid = || query_error(format!(
+        "Schedule visibility literal [{literal}] is not a valid quoted string."
+    ));
+    let mut characters = literal[1..].chars();
+    let mut value = String::new();
+    while let Some(character) = characters.next() {
+        match character {
+            '\'' => return if characters.next().is_none() { Ok(json!(value)) } else { Err(invalid()) },
+            '\\' => {
+                let Some(escaped) = characters.next() else { return Err(invalid()); };
+                // Unknown escapes are literal data in PHP's single-quoted grammar.
+                if !matches!(escaped, '\\' | '\'') {
+                    value.push('\\');
+                }
+                value.push(escaped);
+            }
+            other => value.push(other),
+        }
+    }
+    Err(invalid())
+}
+
 fn parse_literal(literal: &str) -> std::result::Result<Value, QueryError> {
     if literal.is_empty() {
         return Err(query_error("Schedule visibility predicate literal must not be empty."));
@@ -286,13 +309,7 @@ fn parse_literal(literal: &str) -> std::result::Result<Value, QueryError> {
         };
     }
     if literal.starts_with('\'') {
-        if literal.len() < 2 || !literal.ends_with('\'') {
-            return Err(query_error(format!(
-                "Schedule visibility literal [{literal}] is not a valid quoted string."
-            )));
-        }
-        let inner = &literal[1..literal.len() - 1];
-        return Ok(json!(inner.replace("\\'", "'").replace("\\\\", "\\")));
+        return single_quoted_literal(literal);
     }
     if literal.eq_ignore_ascii_case("true") {
         return Ok(json!(true));
@@ -307,14 +324,16 @@ fn parse_literal(literal: &str) -> std::result::Result<Value, QueryError> {
             && (text == "0" || !text.starts_with('0'))
     };
     if canonical(digits) {
-        // PHP's (int) saturates at the integer range.
-        return Ok(json!(literal.parse::<i64>().unwrap_or(if literal.starts_with('-') { i64::MIN } else { i64::MAX })));
+        return literal.parse::<i64>().map(|number| json!(number)).map_err(|_| query_error(format!(
+            "Schedule visibility integer literal [{literal}] is outside the signed 64-bit range."
+        )));
     }
     if let Some((whole, fraction)) = digits.split_once('.')
         && canonical(whole)
         && !fraction.is_empty()
         && fraction.bytes().all(|byte| byte.is_ascii_digit())
         && let Ok(number) = literal.parse::<f64>()
+        && number.is_finite()
     {
         return Ok(json!(number));
     }
@@ -1088,6 +1107,47 @@ mod tests {
         assert_eq!(reason("AND Note = 'x'").1, "Schedule visibility query contains an unterminated string or empty predicate.");
         assert_eq!(reason("Note 'x'").1, "Schedule visibility predicates must use: Field = literal.");
         assert_eq!(reason("   ").1, "Schedule visibility query must not be empty.");
+    }
+
+    #[test]
+    fn visibility_queries_consume_the_shared_system_field_vectors() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/Fixtures/ScheduleVisibilityQuery/system-fields.json"
+        )).unwrap();
+        let mut names = std::collections::HashSet::new();
+        for case in fixture["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            assert!(names.insert(name));
+            let query = super::super::laravel_validation::laravel_trim(case["query"].as_str().unwrap());
+            let parsed = parse_query(query, &[]);
+            if let Some(expected) = case.get("predicates") {
+                let actual: Vec<_> = parsed.unwrap().into_iter().map(|predicate| json!({
+                    "field":predicate.field,"column":predicate.column.map(|(_, column)| column),
+                    "type":predicate.kind,"literal":predicate.literal,
+                })).collect();
+                assert_eq!(json!(actual), *expected, "{name}");
+            } else {
+                assert_eq!(parsed.unwrap_err().reason, case["reason"].as_str().unwrap(), "{name}");
+            }
+        }
+        assert!(!names.is_empty());
+    }
+
+    #[test]
+    fn numeric_visibility_literals_preserve_boundaries_and_refuse_overflow() {
+        let definitions = [("Count".into(), "int".into()), ("Weight".into(), "double".into())];
+        for value in [i64::MIN, i64::MAX] {
+            let parsed = parse_query(&format!("Count = {value}"), &definitions).unwrap();
+            assert_eq!(parsed[0].literal, json!(value));
+        }
+        for literal in ["1.0", "-0.0"] {
+            let parsed = parse_query(&format!("Weight = {literal}"), &definitions).unwrap();
+            assert_eq!(parsed[0].literal.as_f64().unwrap().to_bits(), literal.parse::<f64>().unwrap().to_bits());
+        }
+        for query in ["Count = 9223372036854775808".to_owned(), "Count = -9223372036854775809".to_owned(),
+            format!("Weight = {}.0", "9".repeat(400))] {
+            assert_eq!(parse_query(&query, &definitions).unwrap_err().reason, "invalid_schedule_visibility_query");
+        }
     }
 
     #[test]
