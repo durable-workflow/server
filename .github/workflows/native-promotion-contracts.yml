@@ -10,7 +10,8 @@ on:
       - scripts/ci/select-published-compose-image.sh
       - scripts/smoke-published-compose.sh
       - scripts/conformance/server-parity/native-image-corpus.sh
-      - tests/Unit/Support/native_*test.py
+      - tests/Unit/Support/native_alias_*test.py
+      - tests/Unit/Support/native_qualification_test.py
       - .github/workflows/native-*.yml
       - .github/workflows/published-compose.yml
 permissions:
@@ -24,6 +25,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Countercheck provider receipts, cleanup and fail-before writes
-        run: python3 -m unittest discover -s tests/Unit/Support -p 'native_*test.py' -v
+        run: |
+          python3 -m unittest discover -s tests/Unit/Support -p 'native_qualification_test.py' -v
+          python3 -m unittest discover -s tests/Unit/Support -p 'native_alias_*test.py' -v
       - name: Preserve release, candidate and monotonic alias contracts
         run: bash scripts/ci/check-native-release-tags.sh
