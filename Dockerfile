@@ -32,10 +32,15 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
        fi
 
 # The fixed official Apache runtime is pinned for both release architectures.
-FROM php@sha256:d89e8b3d2033c3179dcd9999d913670eb12a07410a95e60205c64e7d0fac7aef AS base
+FROM php@sha256:3614314e50a9b17a0c317dfd100c6346d8881d6565e713556b7a4e8eb3ec4505 AS base
+
+# Bind the fixed APT parent and read the effective client before any package
+# operation. The source proof is docker/apt/parent.v1.json. No self-upgrade.
+COPY docker/apt/require-fixed-apt.sh /usr/local/lib/server-apt/require-fixed-apt.sh
 
 # Both web and CLI roles require the fixed PHP runtime, including cached builds.
-RUN php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3 || PHP_VERSION_ID < 80336) { \
+RUN /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /bin/sh /usr/local/lib/server-apt/require-fixed-apt.sh \
+    && php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3 || PHP_VERSION_ID < 80336) { \
     fwrite(STDERR, "Patched PHP 8.3.36 or later on the 8.3 line is required; found ".PHP_VERSION.PHP_EOL); \
     exit(1); }'
 
@@ -100,7 +105,8 @@ COPY scripts/ci/WorkflowPackageAuthority.php scripts/ci/WorkflowPackageAuthority
 COPY scripts/ci/resolve-workflow-package-authority.php scripts/ci/resolve-workflow-package-authority.php
 COPY scripts/ci/prepare-release-workflow-composer-metadata.php scripts/ci/prepare-release-workflow-composer-metadata.php
 
-RUN apt-get update \
+RUN /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /bin/sh /usr/local/lib/server-apt/require-fixed-apt.sh \
+    && apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
     && eval "$(php scripts/ci/resolve-workflow-package-authority.php --format=shell)" \

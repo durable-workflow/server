@@ -1,0 +1,35 @@
+{
+  "schema": "durable-workflow.server-php-apt-parent.v1",
+  "image": "docker.io/library/php",
+  "php": "8.3.36-apache-trixie",
+  "os": "debian",
+  "release": "13",
+  "floor": "3.0.4",
+  "index": "sha256:3614314e50a9b17a0c317dfd100c6346d8881d6565e713556b7a4e8eb3ec4505",
+  "platforms": {
+    "linux/amd64": {
+      "child": "sha256:8732e645530351f2f16aa7dd7619a44dad614bcfde6b4eb994f9a228d24f9b98",
+      "config": "sha256:d86e74262d39379c3cd57031d8c65119dd5f317d1047aed19b8f4faa836bc267",
+      "attestation": "sha256:90503a9159222147e2e64757068b241eb4f0fc10b7d0f68dc948aefee753f44a",
+      "spdx": "sha256:22d23f0d84be8fe7dd7a09285b7e5d510a55fe6b79a42f226af0090daebad5de",
+      "spdx_bytes": 7219858,
+      "packages": {
+        "apt": "3.0.4",
+        "libapt-pkg7.0": "3.0.4"
+      }
+    },
+    "linux/arm64": {
+      "child": "sha256:ccdca92cf5c884a7d6d8d261d983516bcdbe9bec5055e9be869362a688960c6b",
+      "config": "sha256:32e2e59c07397349a251030797bf34c513f5a99532765f62f0e0dfb1753ece75",
+      "attestation": "sha256:7abf82b397d37e3955d90f9111ba2dd937595a825d17fc7c192f931f391a1bf2",
+      "spdx": "sha256:0b41c46fd80286de185d04e69d7e9b5dbc3875fed0bdc93d4ef5a04f6c40b125",
+      "spdx_bytes": 7317146,
+      "packages": {
+        "apt": "3.0.4",
+        "libapt-pkg7.0": "3.0.4"
+      }
+    }
+  },
+  "advisory": "https://lists.debian.org/debian-security-announce/2026/msg00526.html",
+  "source_only": true
+}
