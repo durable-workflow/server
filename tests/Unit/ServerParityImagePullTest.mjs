@@ -2,13 +2,14 @@
 // their first container (run 40164159608 lost 24 jobs to one "unknown blob").
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chmodSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 
 const workflow = readFileSync(resolve('.github/workflows/server-parity.yml'), 'utf8');
 const script = resolve('scripts/ci/pull-images.sh');
+const featureBase = 'php@sha256:3614314e50a9b17a0c317dfd100c6346d8881d6565e713556b7a4e8eb3ec4505';
 
 function job(name) {
   const start = workflow.indexOf(`\n  ${name}:\n`);
@@ -95,4 +96,49 @@ test('empty arguments are skipped and malformed bounds are refused', () => {
     assert.equal(result.status, 2, JSON.stringify(env));
     assert.deepEqual(result.calls, []);
   }
+});
+
+function featureBaseCache(t, body, canonicalAvailable = true) {
+  const dir = mkdtempSync(join(tmpdir(), 'feature-base-cache-'));
+  t.after(() => rmSync(dir, {recursive: true, force: true}));
+  writeFileSync(join(dir, 'calls'), '');
+  writeFileSync(join(dir, 'docker'), `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CALL_LOG"
+case "$*" in
+  *mirror.gcr.io/library/php*) echo 'manifest not found' >&2; exit 1 ;;
+  'pull --quiet ${featureBase}') [[ "$CANONICAL_AVAILABLE" = true ]] ;;
+  'tag ${featureBase} php:8.3-apache') exit 0 ;;
+  *) exit 3 ;;
+esac
+`);
+  chmodSync(join(dir, 'docker'), 0o755);
+  const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', body], {
+    encoding: 'utf8', timeout: 5000,
+    env: {...process.env, PATH: `${dir}:${process.env.PATH}`, CALL_LOG: join(dir, 'calls'),
+      CANONICAL_AVAILABLE: String(canonicalAvailable), DW_PULL_ATTEMPTS: '1', DW_PULL_BACKOFF_SECONDS: '0'},
+  });
+  return {...result, calls: readFileSync(join(dir, 'calls'), 'utf8').trim().split('\n').filter(Boolean)};
+}
+
+function featureBaseStep() {
+  const source = readFileSync(resolve('.github/workflows/phpunit-feature.yml'), 'utf8');
+  const command = source.match(/- name: Cache the canonical public PHP build input\n {8}run: \|\n((?: {10}[^\n]+\n)+)/)?.[1];
+  assert.ok(command, 'the feature job caches its official PHP input before building');
+  return command.replace(/^ {10}/gm, '');
+}
+
+test('feature base caching survives a missing mirror child without changing its canonical input', t => {
+  const predecessor = featureBaseCache(t, 'docker pull mirror.gcr.io/library/php:8.3-apache\ndocker tag mirror.gcr.io/library/php:8.3-apache php:8.3-apache');
+  assert.equal(predecessor.status, 1);
+  assert.deepEqual(predecessor.calls, ['pull mirror.gcr.io/library/php:8.3-apache']);
+  const result = featureBaseCache(t, featureBaseStep());
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.calls, [`pull --quiet ${featureBase}`, `tag ${featureBase} php:8.3-apache`]);
+});
+
+test('feature base caching preserves canonical registry failure instead of proceeding to build', t => {
+  const result = featureBaseCache(t, featureBaseStep(), false);
+  assert.equal(result.status, 1);
+  assert.deepEqual(result.calls, [`pull --quiet ${featureBase}`]);
+  assert.ok(result.stderr.includes(`could not pull ${featureBase} after 1 attempts`));
 });
