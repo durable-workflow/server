@@ -443,7 +443,8 @@ async fn invalid_visibility_literals_refuse_before_the_schedule_query() {
         assert_eq!((page.0, page.1["reason"].clone()),
             (StatusCode::UNPROCESSABLE_ENTITY, json!("invalid_schedule_visibility_query")), "{query}: {}", page.1);
     }
-    let guarded = list(&app, &format!("query={}", encoded("Count = 9223372036854775807"))).await;
+    // Custom fields deliberately match no schedules. A system field reaches SQL.
+    let guarded = list(&app, &format!("query={}", encoded("Note = 'safe'"))).await;
     assert_eq!((guarded.0, guarded.1["reason"].clone()),
         (StatusCode::SERVICE_UNAVAILABLE, json!("storage_unavailable")));
     runtime.close().await;
