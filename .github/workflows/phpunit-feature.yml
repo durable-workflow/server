@@ -59,6 +59,32 @@ jobs:
           --target server
           --workflow-directory .github/workflows
 
+  sbom-source:
+    name: Native SBOM source components
+    needs: action-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up source-test Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Bootstrap patched pip trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@75587fc33ff40c34f32ef777293dad56bb6f48c7  # clean-trust
+      - name: Install hash-closed SBOM source-test tooling
+        run: >-
+          python -I -m pip install --no-deps --require-hashes --only-binary=:all:
+          --requirement scripts/ci/native-sbom/source-test.requirements.txt
+
+      - name: Check bounded SBOM source components with synthetic inputs
+        run: |
+          python -I -B tests/Unit/Support/native_sbom_archive_test.py
+          python -I -B tests/Unit/Support/native_sbom_policy_test.py
+
   preflight:
     name: Repository contracts
     runs-on: ubuntu-latest
