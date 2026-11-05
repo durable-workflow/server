@@ -1,0 +1,593 @@
+{
+  "schema": "durable-workflow.mysql-json-text-upgrade-vectors.v1",
+  "status": "required future observations; no executor or result",
+  "plan": {
+    "path": "tests/Fixtures/contracts/mysql-json-text/upgrade-plan.v1.json",
+    "sha256": "5c76fbd8d1340e2339f045c75e1c63957dc9fd00f4175c4c5c7db2ec5e644ca5"
+  },
+  "execution_admitted": false,
+  "typed_error_code_bindings": "must be returned by the actual versioned implementation before executing/adopting these observations; this planning inventory invents no current CLI/HTTP error code",
+  "parameter_expansion": "each declared matrix element is a distinct mandatory cell; never count one representative table/column as the complete inventory",
+  "table_interruption_cells": 72,
+  "scope": "fixture-only isolated future source/backend qualification; zero production writes",
+  "cases": [
+    {
+      "id": "fresh_direct_target",
+      "setup": "fresh isolated database, recognized MySQL and exclusive initialization owner",
+      "required_observation": {
+        "complete_target_relations_created_directly": true,
+        "native_json_intermediate_bootstrap": false,
+        "complete_catalog_and_enforcement_verified_before_target_identity": true
+      }
+    },
+    {
+      "id": "fresh_bootstrap_interruption",
+      "setup": "stop between target CREATE relation steps",
+      "required_observation": {
+        "present_relations": "exact complete target only",
+        "missing_relations": "may create under initialization lock",
+        "foreign_or_partial_definition": "refuse",
+        "target_identity_advanced_early": false
+      },
+      "parameters": {
+        "target_relation_names": [
+          "_sqlx_migrations",
+          "activity_attempts",
+          "activity_executions",
+          "dw_external_payload_deletions",
+          "dw_poll_receipts",
+          "dw_query_cache",
+          "dw_server_schema",
+          "dw_service_admission_counters",
+          "dw_service_call_deadlines",
+          "dw_stream_reclaims",
+          "dw_task_completions",
+          "dw_worker_registration_incarnations",
+          "dw_worker_session_holders",
+          "failed_jobs",
+          "jobs",
+          "migrations",
+          "runtime_credentials",
+          "runtime_external_payload_backup_hold",
+          "runtime_external_payload_cleanup_stats",
+          "runtime_external_payload_object_locks",
+          "runtime_external_payloads",
+          "runtime_payload_completion_budgets",
+          "search_attribute_definitions",
+          "workflow_child_calls",
+          "workflow_child_projection_repairs",
+          "workflow_commands",
+          "workflow_durable_stream_items",
+          "workflow_durable_streams",
+          "workflow_failures",
+          "workflow_history_events",
+          "workflow_inbound_stream_items",
+          "workflow_inbound_streams",
+          "workflow_instances",
+          "workflow_links",
+          "workflow_memos",
+          "workflow_messages",
+          "workflow_namespaces",
+          "workflow_run_lineage_entries",
+          "workflow_run_summaries",
+          "workflow_run_timeline_entries",
+          "workflow_run_timer_entries",
+          "workflow_run_timers",
+          "workflow_run_waits",
+          "workflow_runs",
+          "workflow_schedule_history_events",
+          "workflow_schedules",
+          "workflow_search_attributes",
+          "workflow_service_calls",
+          "workflow_service_endpoints",
+          "workflow_service_operations",
+          "workflow_services",
+          "workflow_signal_records",
+          "workflow_task_poll_cursors",
+          "workflow_tasks",
+          "workflow_update_validation_tasks",
+          "workflow_updates",
+          "workflow_worker_build_id_rollouts",
+          "workflow_worker_compatibility_heartbeats",
+          "workflow_worker_registrations",
+          "workflow_worker_sessions"
+        ]
+      }
+    },
+    {
+      "id": "exact_version_8_upgrade",
+      "setup": "exact source marker, ledger/checksum/catalog, recognized engine, stopped writers",
+      "required_observation": {
+        "table_alter_count": 36,
+        "modified_columns": 75,
+        "added_enforced_checks": 75,
+        "complete_target_verification_before_final_ledger_and_marker": true
+      }
+    },
+    {
+      "id": "unsupported_engine_before_any_schema_write",
+      "setup": "old MySQL patch, unrecognized vendor/version or no proven enforced-CHECK surface",
+      "required_observation": {
+        "typed_unsupported_upgrade_refusal": true,
+        "schema_write_count": 0,
+        "throwaway_database_probe_count": 0
+      },
+      "parameters": {
+        "mysql_versions": [
+          "8.0.0",
+          "8.0.15"
+        ],
+        "other": [
+          "unrecognized-version",
+          "non-MySQL-vendor",
+          "missing-enforcement-metadata"
+        ]
+      }
+    },
+    {
+      "id": "source_identity_refusal",
+      "setup": "wrong version, marker, failed ledger or checksum",
+      "required_observation": {
+        "typed_source_refusal": true,
+        "schema_write_count": 0
+      },
+      "parameters": {
+        "mutations": [
+          "version",
+          "marker-owner",
+          "ledger-success",
+          "ledger-checksum"
+        ]
+      }
+    },
+    {
+      "id": "missing_or_contended_owner",
+      "setup": "another initialization owner holds the named lock, or fence is not owned",
+      "required_observation": {
+        "upgrade_refused_or_bounded_wait": true,
+        "nonowner_schema_write_count": 0,
+        "nonowner_target_marker_write_count": 0
+      }
+    },
+    {
+      "id": "loss_before_upgrade_fence",
+      "setup": "connection/owner ends before fence commit",
+      "required_observation": {
+        "no_ddl_started": true,
+        "original_ownership_reconciles_by_readback": true
+      }
+    },
+    {
+      "id": "loss_after_upgrade_fence",
+      "setup": "stop after owned rust-upgrading fence and before the first ALTER",
+      "required_observation": {
+        "writers_refused": true,
+        "resume_requires_exact_source_and_owned_fence": true,
+        "blind_bootstrap_replay": false
+      }
+    },
+    {
+      "id": "recognized_table_interruption",
+      "setup": "stop immediately before or after the complete table ALTER",
+      "required_observation": {
+        "completed_tables": "exact target; skip",
+        "uncompleted_tables": "exact source; execute once",
+        "any_third_definition": "typed refusal",
+        "whole_upgrade_transaction_claim": false
+      },
+      "parameters": {
+        "step_ids": [
+          "table-01-activity_executions",
+          "table-02-dw_poll_receipts",
+          "table-03-dw_task_completions",
+          "table-04-runtime_credentials",
+          "table-05-runtime_payload_completion_budgets",
+          "table-06-workflow_child_calls",
+          "table-07-workflow_commands",
+          "table-08-workflow_durable_stream_items",
+          "table-09-workflow_durable_streams",
+          "table-10-workflow_history_events",
+          "table-11-workflow_instances",
+          "table-12-workflow_links",
+          "table-13-workflow_memos",
+          "table-14-workflow_messages",
+          "table-15-workflow_namespaces",
+          "table-16-workflow_run_lineage_entries",
+          "table-17-workflow_run_summaries",
+          "table-18-workflow_run_timeline_entries",
+          "table-19-workflow_run_timer_entries",
+          "table-20-workflow_run_waits",
+          "table-21-workflow_runs",
+          "table-22-workflow_schedule_history_events",
+          "table-23-workflow_schedules",
+          "table-24-workflow_search_attributes",
+          "table-25-workflow_service_calls",
+          "table-26-workflow_service_endpoints",
+          "table-27-workflow_service_operations",
+          "table-28-workflow_services",
+          "table-29-workflow_signal_records",
+          "table-30-workflow_tasks",
+          "table-31-workflow_update_validation_tasks",
+          "table-32-workflow_updates",
+          "table-33-workflow_worker_build_id_rollouts",
+          "table-34-workflow_worker_compatibility_heartbeats",
+          "table-35-workflow_worker_registrations",
+          "table-36-workflow_worker_sessions"
+        ],
+        "cut_points": [
+          "before-alter",
+          "after-alter-before-ack"
+        ]
+      }
+    },
+    {
+      "id": "lost_ddl_connection",
+      "setup": "table ALTER may have committed before connection loss",
+      "required_observation": {
+        "new_connection_catalog_readback_required": true,
+        "complete_source": "execute the one table step under re-established ownership",
+        "complete_target": "skip",
+        "unknown_or_mixed_definition": "refuse",
+        "assume_rollback_or_blind_add_check": false
+      }
+    },
+    {
+      "id": "foreign_or_partial_table_drift",
+      "setup": "seed manual catalog drift distinct from an atomic-ALTER crash state",
+      "required_observation": {
+        "typed_catalog_refusal": true,
+        "repair_or_normalize_foreign_definition": false
+      },
+      "parameters": {
+        "mutations": [
+          "one-of-several-columns-converted",
+          "missing-check",
+          "extra-check",
+          "wrong-check-clause",
+          "not-enforced-check",
+          "nullability",
+          "default",
+          "comment",
+          "column-order",
+          "collation",
+          "index",
+          "foreign-key",
+          "table-options",
+          "unaffected-table"
+        ]
+      }
+    },
+    {
+      "id": "final_verification_failure",
+      "setup": "all expected table ALTERs finished but one final catalog/check/enforcement read fails or mismatches",
+      "required_observation": {
+        "writers_stay_fenced": true,
+        "target_ledger_and_marker_advance_count": 0,
+        "missing_information_is_success": false
+      }
+    },
+    {
+      "id": "lost_final_identity_commit",
+      "setup": "connection lost after the final marker/ledger transaction may have committed",
+      "required_observation": {
+        "readback_of_marker_ledger_complete_target_required": true,
+        "target_complete": "ordinary target verification; zero repeated ALTERs",
+        "fenced_incomplete": "resume only after exact catalog/ownership reconciliation",
+        "unknown_or_split_identity": "refuse"
+      }
+    },
+    {
+      "id": "older_binary_refuses_target",
+      "setup": "use the prior supported source against the new target ownership/catalog",
+      "required_observation": {
+        "refusal_before_data_writes": true,
+        "automatic_downconversion": false
+      }
+    },
+    {
+      "id": "mariadb_unchanged",
+      "setup": "recognized MariaDB with exact current catalog/marker",
+      "required_observation": {
+        "this_mysql_upgrade_step_count": 0,
+        "schema_version": 8,
+        "catalog_bytes_unchanged": true,
+        "new_mysql_patch_floor_applied": false
+      }
+    },
+    {
+      "id": "invalid_json_refused_by_database",
+      "setup": "isolated source fixture attempts a malformed text write, independently of HTTP parser refusal",
+      "required_observation": {
+        "enforced_database_check_refuses": true,
+        "retained_original_value_unchanged": true,
+        "generic_setup_failure_is_validation_pass": false
+      },
+      "parameters": {
+        "column_refs": [
+          "activity_executions.retry_policy",
+          "activity_executions.parallel_group_path",
+          "activity_executions.activity_options",
+          "dw_poll_receipts.response",
+          "dw_task_completions.receipt",
+          "runtime_credentials.roles",
+          "runtime_credentials.claims",
+          "runtime_payload_completion_budgets.context",
+          "runtime_payload_completion_budgets.slots",
+          "runtime_payload_completion_budgets.objects",
+          "workflow_child_calls.retry_policy",
+          "workflow_child_calls.timeout_policy",
+          "workflow_child_calls.arguments",
+          "workflow_child_calls.metadata",
+          "workflow_commands.context",
+          "workflow_durable_stream_items.payload",
+          "workflow_durable_streams.metadata",
+          "workflow_history_events.payload",
+          "workflow_instances.visibility_labels",
+          "workflow_instances.memo",
+          "workflow_links.parallel_group_path",
+          "workflow_memos.value",
+          "workflow_memos.portable_value",
+          "workflow_messages.metadata",
+          "workflow_namespaces.external_payload_storage",
+          "workflow_run_lineage_entries.payload",
+          "workflow_run_summaries.visibility_labels",
+          "workflow_run_timeline_entries.payload",
+          "workflow_run_timer_entries.payload",
+          "workflow_run_waits.payload",
+          "workflow_runs.visibility_labels",
+          "workflow_schedule_history_events.payload",
+          "workflow_schedules.spec",
+          "workflow_schedules.action",
+          "workflow_schedules.memo",
+          "workflow_schedules.search_attributes",
+          "workflow_schedules.visibility_labels",
+          "workflow_schedules.recent_actions",
+          "workflow_schedules.buffered_actions",
+          "workflow_search_attributes.value_keyword_list",
+          "workflow_service_calls.deadline_policy",
+          "workflow_service_calls.idempotency_policy",
+          "workflow_service_calls.cancellation_policy",
+          "workflow_service_calls.retry_policy",
+          "workflow_service_calls.boundary_policy",
+          "workflow_service_calls.metadata",
+          "workflow_service_calls.outcome_metadata",
+          "workflow_service_calls.caller_principal_roles",
+          "workflow_service_calls.caller_principal_claims",
+          "workflow_service_endpoints.boundary_policy",
+          "workflow_service_endpoints.metadata",
+          "workflow_service_operations.handler_binding",
+          "workflow_service_operations.deadline_policy",
+          "workflow_service_operations.idempotency_policy",
+          "workflow_service_operations.cancellation_policy",
+          "workflow_service_operations.retry_policy",
+          "workflow_service_operations.boundary_policy",
+          "workflow_service_operations.metadata",
+          "workflow_services.boundary_policy",
+          "workflow_services.metadata",
+          "workflow_signal_records.validation_errors",
+          "workflow_tasks.payload",
+          "workflow_update_validation_tasks.command_context",
+          "workflow_update_validation_tasks.validation_errors",
+          "workflow_updates.validation_errors",
+          "workflow_worker_build_id_rollouts.workflow_types",
+          "workflow_worker_compatibility_heartbeats.supported",
+          "workflow_worker_registrations.supported_workflow_types",
+          "workflow_worker_registrations.workflow_definition_fingerprints",
+          "workflow_worker_registrations.workflow_command_contracts",
+          "workflow_worker_registrations.supported_activity_types",
+          "workflow_worker_registrations.capabilities",
+          "workflow_worker_registrations.capability_manifest",
+          "workflow_worker_registrations.process_metrics",
+          "workflow_worker_sessions.requirements"
+        ],
+        "raw_texts": [
+          "{",
+          "{\"x\":NaN}",
+          "{\"x\":}"
+        ]
+      }
+    },
+    {
+      "id": "sql_null_and_json_null_distinct",
+      "setup": "use the actual source binder and database readback",
+      "required_observation": {
+        "sql_null": "accepted on exactly 67 nullable columns; refused on eight NOT NULL columns",
+        "json_null_text": "valid JSON document distinct from SQL NULL",
+        "default_and_comment_contracts_preserved": true
+      },
+      "parameters": {
+        "column_refs": [
+          "activity_executions.retry_policy",
+          "activity_executions.parallel_group_path",
+          "activity_executions.activity_options",
+          "dw_poll_receipts.response",
+          "dw_task_completions.receipt",
+          "runtime_credentials.roles",
+          "runtime_credentials.claims",
+          "runtime_payload_completion_budgets.context",
+          "runtime_payload_completion_budgets.slots",
+          "runtime_payload_completion_budgets.objects",
+          "workflow_child_calls.retry_policy",
+          "workflow_child_calls.timeout_policy",
+          "workflow_child_calls.arguments",
+          "workflow_child_calls.metadata",
+          "workflow_commands.context",
+          "workflow_durable_stream_items.payload",
+          "workflow_durable_streams.metadata",
+          "workflow_history_events.payload",
+          "workflow_instances.visibility_labels",
+          "workflow_instances.memo",
+          "workflow_links.parallel_group_path",
+          "workflow_memos.value",
+          "workflow_memos.portable_value",
+          "workflow_messages.metadata",
+          "workflow_namespaces.external_payload_storage",
+          "workflow_run_lineage_entries.payload",
+          "workflow_run_summaries.visibility_labels",
+          "workflow_run_timeline_entries.payload",
+          "workflow_run_timer_entries.payload",
+          "workflow_run_waits.payload",
+          "workflow_runs.visibility_labels",
+          "workflow_schedule_history_events.payload",
+          "workflow_schedules.spec",
+          "workflow_schedules.action",
+          "workflow_schedules.memo",
+          "workflow_schedules.search_attributes",
+          "workflow_schedules.visibility_labels",
+          "workflow_schedules.recent_actions",
+          "workflow_schedules.buffered_actions",
+          "workflow_search_attributes.value_keyword_list",
+          "workflow_service_calls.deadline_policy",
+          "workflow_service_calls.idempotency_policy",
+          "workflow_service_calls.cancellation_policy",
+          "workflow_service_calls.retry_policy",
+          "workflow_service_calls.boundary_policy",
+          "workflow_service_calls.metadata",
+          "workflow_service_calls.outcome_metadata",
+          "workflow_service_calls.caller_principal_roles",
+          "workflow_service_calls.caller_principal_claims",
+          "workflow_service_endpoints.boundary_policy",
+          "workflow_service_endpoints.metadata",
+          "workflow_service_operations.handler_binding",
+          "workflow_service_operations.deadline_policy",
+          "workflow_service_operations.idempotency_policy",
+          "workflow_service_operations.cancellation_policy",
+          "workflow_service_operations.retry_policy",
+          "workflow_service_operations.boundary_policy",
+          "workflow_service_operations.metadata",
+          "workflow_services.boundary_policy",
+          "workflow_services.metadata",
+          "workflow_signal_records.validation_errors",
+          "workflow_tasks.payload",
+          "workflow_update_validation_tasks.command_context",
+          "workflow_update_validation_tasks.validation_errors",
+          "workflow_updates.validation_errors",
+          "workflow_worker_build_id_rollouts.workflow_types",
+          "workflow_worker_compatibility_heartbeats.supported",
+          "workflow_worker_registrations.supported_workflow_types",
+          "workflow_worker_registrations.workflow_definition_fingerprints",
+          "workflow_worker_registrations.workflow_command_contracts",
+          "workflow_worker_registrations.supported_activity_types",
+          "workflow_worker_registrations.capabilities",
+          "workflow_worker_registrations.capability_manifest",
+          "workflow_worker_registrations.process_metrics",
+          "workflow_worker_sessions.requirements"
+        ]
+      }
+    },
+    {
+      "id": "precision_new_write_read_paths",
+      "setup": "write through actual native application text/codec path after target adoption",
+      "required_observation": {
+        "application_produced_document_text_preserved_in_storage": true,
+        "binary64_and_int64_identity_preserved": true,
+        "mysql_json_numeric_projection_used_as_recovered_authority": false,
+        "all_required_readers_must_pass": true
+      },
+      "parameters": {
+        "readers": [
+          "direct-column",
+          "HTTP-history",
+          "activity-metadata",
+          "run-diagnostics",
+          "memo-and-search",
+          "continuation",
+          "immutable-task-and-poll-receipts",
+          "export/import",
+          "cold-replay"
+        ]
+      }
+    },
+    {
+      "id": "legacy_rounded_rows_remain_honest",
+      "setup": "capture exactly what the old native JSON column currently returns before fenced upgrade",
+      "required_observation": {
+        "postupgrade_text_matches_that_legacy_representation": true,
+        "lost_original_digits_reconstructed": false,
+        "old_published_php_exception_removed": false
+      }
+    },
+    {
+      "id": "bounded_reads_and_query_plans",
+      "setup": "execute exact existing bounded/index-led readers on selected target MySQL endpoints",
+      "required_observation": {
+        "history_and_metadata_byte_caps_preserved": true,
+        "plus_one_pages_and_scalar_limits_preserved": true,
+        "index_led_namespace_and_identity_predicates_preserved": true,
+        "query_site_source_inventory_is_backend_pass": false
+      }
+    },
+    {
+      "id": "rollback_boundary",
+      "setup": "stop before cutover, then separately consider new target writes",
+      "required_observation": {
+        "before_new_writes": "only separately admitted verified quiescent pre-upgrade restore",
+        "after_new_writes": "qualified compatible target binary or forward repair",
+        "preupgrade_restore_after_cutover": "separate disaster-recovery and post-cutover reconciliation/RPO decision",
+        "lossy_downconversion_or_auto_restore": false
+      }
+    },
+    {
+      "id": "native_exception_retirement",
+      "setup": "successful exact source and selected endpoint qualification after implementation",
+      "required_observation": {
+        "native_mysql_json_doubles_exception": "remove only for exact newly qualified native subject",
+        "published_php_exception": "retain",
+        "frozen_or_older_native_artifact_carry": false
+      }
+    }
+  ],
+  "numeric_cases": [
+    {
+      "id": "reported_ulp_case_1",
+      "raw_json_document": "{\"x\":1.4820142857142857}",
+      "expected_binary64_x_big_endian_hex": "3ff7b6549c959001",
+      "required": "actual application-produced numeric text and typed binary64 readback; JSON_VALID parser refusal is a source/product failure to resolve, never a skipped pass"
+    },
+    {
+      "id": "reported_ulp_case_2",
+      "raw_json_document": "{\"x\":124435.71428571429}",
+      "expected_binary64_x_big_endian_hex": "40fe613b6db6db6e",
+      "required": "actual application-produced numeric text and typed binary64 readback; JSON_VALID parser refusal is a source/product failure to resolve, never a skipped pass"
+    },
+    {
+      "id": "negative_zero",
+      "raw_json_document": "{\"x\":-0.0}",
+      "expected_binary64_x_big_endian_hex": "8000000000000000",
+      "required": "actual application-produced numeric text and typed binary64 readback; JSON_VALID parser refusal is a source/product failure to resolve, never a skipped pass"
+    },
+    {
+      "id": "smallest_positive_binary64",
+      "raw_json_document": "{\"x\":5e-324}",
+      "expected_binary64_x_big_endian_hex": "0000000000000001",
+      "required": "actual application-produced numeric text and typed binary64 readback; JSON_VALID parser refusal is a source/product failure to resolve, never a skipped pass"
+    },
+    {
+      "id": "largest_finite_binary64",
+      "raw_json_document": "{\"x\":1.7976931348623157e308}",
+      "expected_binary64_x_big_endian_hex": "7fefffffffffffff",
+      "required": "actual application-produced numeric text and typed binary64 readback; JSON_VALID parser refusal is a source/product failure to resolve, never a skipped pass"
+    },
+    {
+      "id": "signed_int64_min",
+      "raw_json_document": "{\"x\":-9223372036854775808}",
+      "expected_signed_int64_x_decimal": "-9223372036854775808"
+    },
+    {
+      "id": "signed_int64_max",
+      "raw_json_document": "{\"x\":9223372036854775807}",
+      "expected_signed_int64_x_decimal": "9223372036854775807"
+    }
+  ],
+  "existing_float_authority": {
+    "path": "tests/Fixtures/ServerParity/json-doubles.json",
+    "sha256": "997dfc9058be312e698fbd56724341b7cdb8ecf94094cbb75e19587628650f07",
+    "mutated": false
+  },
+  "remaining_gates": [
+    "actual bootstrap/flavor/version/catalog/resume/query implementation",
+    "independent exact source review and typed-refusal bindings",
+    "selected backend/endpoint and capacity/deadline/cleanup admission",
+    "all actual source/backend/read/export/replay controls; no data-integrity substitution"
+  ]
+}
