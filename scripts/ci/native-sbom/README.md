@@ -27,3 +27,14 @@ validation, exact Server child predicates, retained raw bytes/checksum map,
 Release asset equality/idempotency and fail-before controls remain required
 before a normal source/CI and Security review. No pull, build, tool/scan,
 attestation, registry, Release or frozen-subject operation is admitted here.
+
+The source-only `../native_sbom_policy.py` now performs fixed-schema validation
+with remote retrieval disabled, followed by exact SPDX/tool identity, namespace,
+unique element IDs and internal relationship checks. Declared files must be
+linked; a package with `filesAnalyzed=true` must have file coverage. An explicit
+`false` does not invent complete file enumeration. It retains raw SHA-256/size
+separately from canonical predicate equality and requires distinct platform
+namespaces. Eight synthetic test families cover these boundaries. Their formal
+schema checks use the already-installed jsonschema4.19.2 solely as local source
+check tooling. No dependency was installed or qualified, and direct execution of
+the library refuses until the executable/dependency closure is completed.
