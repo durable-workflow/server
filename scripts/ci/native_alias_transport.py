@@ -16,6 +16,9 @@ from native_alias_evidence import (ARCHIVE_LIMIT, DIGEST, DOCKERHUB_IMAGE, GHCR_
                                    matching, require, strict_json)
 
 
+GITHUB_HOST = "github.com"
+
+
 class Commands:
     """No shell, polling, automatic retries, unbounded output or provider logs."""
 
@@ -28,7 +31,7 @@ class Commands:
         require(remaining > 0, "read_deadline")
         environment = os.environ.copy()
         environment.pop("GH_DEBUG", None)
-        environment.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1", GH_PAGER="cat")
+        environment.update(GH_HOST=GITHUB_HOST, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
         if env:
             environment.update(env)
         process = None
@@ -75,11 +78,11 @@ class GitHubRegistryProvider:
                 and re.fullmatch(r"[A-Za-z0-9_./?=&-]+", path) is not None
                 and ".." not in path, "provider_api_path")
         return strict_json(self.commands.run(
-            ["gh", "api", "--hostname", "github.com", "--method", "GET", path]), JSON_LIMIT)
+            ["gh", "api", "--hostname", GITHUB_HOST, "--method", "GET", path]), JSON_LIMIT)
 
     def archive(self, artifact_id: int) -> bytes:
         require(type(artifact_id) is int and artifact_id > 0, "artifact_id")
-        return self.commands.run(["gh", "api", "--hostname", "github.com", "--method", "GET",
+        return self.commands.run(["gh", "api", "--hostname", GITHUB_HOST, "--method", "GET",
                                   f"repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip"],
                                  ARCHIVE_LIMIT)
 
@@ -88,7 +91,7 @@ class GitHubRegistryProvider:
         # transport or rate limits. Only the fixed API's parsed HTTP 404 counts.
         from native_alias_evidence import FINAL_TAG
         require(matching(tag, FINAL_TAG), "final_release_required")
-        response = self.commands.run(["gh", "api", "--hostname", "github.com", "--method", "GET",
+        response = self.commands.run(["gh", "api", "--hostname", GITHUB_HOST, "--method", "GET",
                                       "--include", f"repos/{REPOSITORY}/releases/tags/{tag}"],
                                      accepted=(0, 1))
         headers, separator, body = response.partition(b"\r\n\r\n")

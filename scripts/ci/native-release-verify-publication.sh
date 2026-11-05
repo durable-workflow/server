@@ -44,7 +44,8 @@ expected="$workflow workflow_dispatch completed success $tag $commit $run_attemp
 
 # Both exact tags name one index.
 digest() {
-  "$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1" || fail "cannot read $1."
+  local subject="$1"
+  "$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$subject" || fail "cannot read $subject."
 }
 index=$(digest "$GHCR_IMAGE:$version")
 [[ "$index" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "exact version tag has no index digest."

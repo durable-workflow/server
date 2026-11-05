@@ -6,22 +6,48 @@ run-name: Native alias promotion ${{ github.ref_name }}
 on:
   workflow_dispatch:
     inputs:
+      tag:
+        description: 'Exact final native tag used as this dispatch ref and by the evidence manifest'
+        required: true
+        type: string
       evidence:
         description: 'Closed native-alias-promotion-evidence.v1 JSON manifest with exact current run attempts and artifact IDs/digests'
         required: true
         type: string
 
-permissions:
-  contents: read
-  actions: read
-  attestations: read
-  packages: read
+permissions: {}
 
 jobs:
+  plan:
+    name: Validate exact promotion dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out dispatch commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Refuse a wrong ref or source before privileged jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTION_EVIDENCE: ${{ inputs.evidence }}
+          PROMOTION_TAG: ${{ inputs.tag }}
+        run: python3 scripts/ci/native_alias_promote.py plan
+
   verify:
     name: Verify existing native qualification
+    needs: plan
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      packages: read
     steps:
       - name: Check out exact tag tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -30,21 +56,17 @@ jobs:
           persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
-      - name: Read GHCR with the repository token
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify provider-owned qualification without writes
         env:
           GH_TOKEN: ${{ github.token }}
           PROMOTION_EVIDENCE: ${{ inputs.evidence }}
+          PROMOTION_TAG: ${{ inputs.tag }}
         run: python3 scripts/ci/native_alias_promote.py verify
 
   promote:
     name: Promote qualified native aliases
-    needs: verify
+    needs: [plan, verify]
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: dockerhub-native
@@ -79,4 +101,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PROMOTION_EVIDENCE: ${{ inputs.evidence }}
+          PROMOTION_TAG: ${{ inputs.tag }}
         run: python3 scripts/ci/native_alias_promote.py promote

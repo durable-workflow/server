@@ -30,8 +30,9 @@ ARCHIVE_LIMIT = 65536
 JSON_LIMIT = 1048576
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-FINAL_TAG = re.compile(r"(?:native-[0-9]+|[3-9]|[1-9][0-9]+)\.[0-9]+\.[0-9]+\Z")
-PLATFORMS = ("linux/amd64", "linux/arm64")
+FINAL_TAG = re.compile(r"(?:native-\d+|[3-9]|[1-9]\d+)\.\d+\.\d+\Z", re.ASCII)
+AMD64 = "linux/amd64"
+PLATFORMS = (AMD64, "linux/arm64")
 PROFILES = ("local", "production")
 WORKFLOWS = {
     "release": ".github/workflows/native-release.yml",
@@ -103,7 +104,7 @@ def canonical(value: Any) -> bytes:
     try:
         return (json.dumps(value, ensure_ascii=False, sort_keys=True,
                            separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
-    except (UnicodeError, ValueError, RecursionError):
+    except (ValueError, RecursionError):
         raise Refusal("invalid_canonical_json") from None
 
 
@@ -138,7 +139,7 @@ def strict_json(data: bytes, limit: int) -> Any:
         return json.loads(data.decode("utf-8", errors="strict"),
                           object_pairs_hook=pairs, parse_float=not_integer,
                           parse_constant=not_integer)
-    except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
+    except (RecursionError, ValueError) as error:
         if isinstance(error, Refusal):
             raise
         raise Refusal("invalid_json") from None
@@ -283,8 +284,11 @@ def workflow_run(provider: Provider, selected: dict[str, Any], role: str,
             and literal(run.get("workflow_id"), workflow["id"])
             and workflow.get("path") == WORKFLOWS[role], "provider_workflow_identity")
     image = GHCR_IMAGE + "@" + release["index_digest"]
-    title = (f"Native {release['tag']} at {release['source_commit']}" if role == "release"
-             else ("Native image parity " if role == "corpus" else "Published Compose ") + image)
+    if role == "release":
+        title = f"Native {release['tag']} at {release['source_commit']}"
+    else:
+        prefix = "Native image parity " if role == "corpus" else "Published Compose "
+        title = prefix + image
     require(run.get("display_title") == title, "provider_dispatch_input_binding")
     timestamp(run.get("run_started_at"))
     timestamp(run.get("updated_at"))
@@ -439,8 +443,8 @@ def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
             artifact_checks.append((selected["artifact_id"], selected["artifact_digest"],
                                     "native-corpus-promotion-receipt", run, job))
             record = receipt(provider, *artifact_checks[-1])
-            bind_receipt(record, role, selected, run, job, release, "linux/amd64", None,
-                         subjects["linux/amd64"])
+            bind_receipt(record, role, selected, run, job, release, AMD64, None,
+                         subjects[AMD64])
             artifact_ids.append(selected["artifact_id"])
         else:
             for cell in selected["cells"]:

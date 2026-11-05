@@ -17,6 +17,7 @@ from native_alias_transport import GitHubRegistryProvider
 def dispatch(value: dict) -> None:
     release = value["release"]
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
+            and os.environ.get("PROMOTION_TAG") == release["tag"]
             and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
             and os.environ.get("GITHUB_REF") == "refs/tags/" + release["tag"]
             and os.environ.get("GITHUB_SHA") == release["source_commit"]
@@ -34,14 +35,26 @@ def qualify(value: dict, provider, mode: str) -> dict:
     return proof
 
 
+def plan(value: dict, provider) -> None:
+    dispatch(value)
+    source = value["release"]["source_commit"]
+    comparison = provider.api(f"repos/{REPOSITORY}/compare/{source}...main")
+    require(type(comparison) is dict and comparison.get("status") in ("ahead", "identical")
+            and type(comparison.get("base_commit")) is dict
+            and comparison["base_commit"].get("sha") == source, "promotion_source_not_on_main")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("verify", "promote", "release-order"))
+    parser.add_argument("mode", choices=("plan", "verify", "promote", "release-order"))
     args = parser.parse_args()
     raw = os.environ.get("PROMOTION_EVIDENCE", "").encode("utf-8")
     require(len(raw) <= MANIFEST_LIMIT, "manifest_size")
     value = manifest(raw)
     provider = GitHubRegistryProvider()
+    if args.mode == "plan":
+        plan(value, provider)
+        return
     proof = qualify(value, provider, args.mode)
     if args.mode == "verify":
         sys.stdout.buffer.write(canonical(proof))
@@ -81,7 +94,7 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (Refusal, OSError, UnicodeError, ValueError, KeyError) as error:
+    except (OSError, ValueError, KeyError) as error:
         reason = str(error) if isinstance(error, Refusal) else "local_input_or_transport"
         print("Native promotion refused: " + reason, file=sys.stderr)
         raise SystemExit(1) from None

@@ -18,8 +18,9 @@ moves `X.Y`, `X` or `latest`. A final release follows this order:
    promotion workflow dispatches.
 3. Review the exact current run attempts, provider job identities and five
    canonical receipt artifacts. Dispatch `native-alias-promotion.yml` from the
-   exact release tag with that data-only selection manifest.
-4. The read-only job verifies the selection. After environment approval, the
+   exact release tag, a matching `tag` input and that data-only selection manifest.
+4. An unconditional, unprivileged plan first binds ref, tag, manifest source and
+   protected-main ancestry. The read-only job then verifies the selection. After environment approval, the
    mutation job repeats the entire verification while holding
    `durable-workflow-server-rolling-aliases`, then calls the existing monotonic
    alias helper. Only this job receives packages-write and existing Docker Hub
@@ -109,6 +110,9 @@ containers. Names and network attachment discover candidates but never authorize
 removal. Every discovered corpus container must have the exact OWNER label
 before any removal; a foreign collision stops with zero removals. Successful independent Docker inventory reads must then show zero
 owned containers, networks and volumes. API failure is unknown, never absence.
+An anonymous volume must be mounted by an inspected owned container and have
+either no labels or only the exact Engine anonymous marker. Foreign labels
+refuse. Cleanup logs only a bounded static reason code when refusing.
 There is no raw by-name fallback. The isolation checker recognizes only this
 closed always-run kind/scope invocation bound to job identity and reviewed
 helper/transport/predicate source bytes. Unknown ownership/API state retains

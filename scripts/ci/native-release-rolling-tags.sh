@@ -26,6 +26,7 @@ set -eEuo pipefail
 source scripts/ci/native-registry-absence.sh
 fail() { printf 'Native rolling tags failed: %s\n' "$1" >&2; exit 1; }
 docker_bin=${DOCKER:-docker}
+manifest_digest_format='{{.Manifest.Digest}}'
 
 # A plain tag is native only from major 3, above every PHP release; native-
 # names the tags published before plain ones.
@@ -46,7 +47,7 @@ images=("$GHCR_IMAGE" "$DOCKERHUB_IMAGE")
 
 # The published release first: both exact tags must name the attested index.
 for image in "${images[@]}"; do
-  digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$version") \
+  digest=$("$docker_bin" buildx imagetools inspect --format "$manifest_digest_format" "$image:$version") \
     || fail "cannot read $image:$version."
   [[ "$digest" == "$INDEX_DIGEST" ]] || fail "$image:$version is $digest, not the attested $INDEX_DIGEST."
 done
@@ -108,7 +109,7 @@ if [[ "${VERIFY_ONLY:-false}" == true ]]; then
       [[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "qualified live alias must be final."
       if newer "$current" "$version"; then continue; fi
       [[ "$current" == "$version" ]] || fail "qualified live alias is older."
-      digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$alias")
+      digest=$("$docker_bin" buildx imagetools inspect --format "$manifest_digest_format" "$image:$alias")
       [[ "$digest" == "$INDEX_DIGEST" ]] || fail "qualified live alias names another index."
     done
   done
@@ -124,7 +125,7 @@ for alias in "${candidates[@]}"; do
     current=$(current_release "$image:$alias")
     state=absent
     if [[ -n "$current" ]]; then
-      state=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$alias")
+      state=$("$docker_bin" buildx imagetools inspect --format "$manifest_digest_format" "$image:$alias")
       [[ "$state" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "alias digest unreadable."
     fi
     snapshots["$image:$alias"]="$current $state"
@@ -158,17 +159,17 @@ for image in "${images[@]}"; do
   # Re-read BOTH exact tags and every selected alias immediately before EACH
   # registry write. Previously confirmed writes must still name this index.
   for checked in "${images[@]}"; do
-    digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$checked:$version")
+    digest=$("$docker_bin" buildx imagetools inspect --format "$manifest_digest_format" "$checked:$version")
     [[ "$digest" == "$INDEX_DIGEST" ]] || { partial; fail "exact tag changed before write."; }
     for alias in "${aliases[@]}"; do
       if [[ " ${confirmed[*]:-} " == *" $checked "* ]]; then
-        state=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$checked:$alias")
+        state=$("$docker_bin" buildx imagetools inspect --format "$manifest_digest_format" "$checked:$alias")
         [[ "$state" == "$INDEX_DIGEST" ]] || { partial; fail "confirmed alias changed."; }
       else
         current=$(current_release "$checked:$alias")
         state=absent
         if [[ -n "$current" ]]; then
-          state=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$checked:$alias")
+          state=$("$docker_bin" buildx imagetools inspect --format "$manifest_digest_format" "$checked:$alias")
         fi
         [[ "$current $state" == "${snapshots["$checked:$alias"]}" ]] \
           || { partial; fail "alias changed before write."; }
@@ -182,7 +183,7 @@ for image in "${images[@]}"; do
   printf -- '- alias write attempted: `%s` at `%s`\n' "$image" "$INDEX_DIGEST" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
   "$docker_bin" buildx imagetools create "${args[@]}" "$image@$INDEX_DIGEST"
   for alias in "${aliases[@]}"; do
-    digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$alias")
+    digest=$("$docker_bin" buildx imagetools inspect --format "$manifest_digest_format" "$image:$alias")
     [[ "$digest" == "$INDEX_DIGEST" ]] || { partial; fail "post-write alias mismatch."; }
   done
   confirmed+=("$image")
@@ -193,7 +194,7 @@ done
 # Each moved alias names exactly the attested index.
 for image in "${images[@]}"; do
   for alias in "${aliases[@]}"; do
-    digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$alias")
+    digest=$("$docker_bin" buildx imagetools inspect --format "$manifest_digest_format" "$image:$alias")
     [[ "$digest" == "$INDEX_DIGEST" ]] || fail "$image:$alias is $digest, not $INDEX_DIGEST."
   done
 done

@@ -38,9 +38,9 @@ fi
 
 # The digest the latest alias names now; empty when it does not exist.
 latest_digest() {
-  local output
-  if ! output=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1:latest" 2>&1); then
-    native_registry_subject_missing "$1:latest" "$output" && return 0
+  local image="$1" output
+  if ! output=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:latest" 2>&1); then
+    native_registry_subject_missing "$image:latest" "$output" && return 0
     fail "cannot establish the current latest alias."
   fi
   [[ "$output" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "latest alias returned no valid digest."

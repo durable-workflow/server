@@ -21,18 +21,38 @@ from native_alias_evidence import (COMPOSE_OBSERVATIONS, CORPUS_JOB, CORPUS_OBSE
 from native_alias_transport import Commands, GitHubRegistryProvider
 
 OWNER = "dev.durable-workflow.qualification.scope"
+COMPOSE_OWNER = "com.docker.compose.project"
+LABEL_FILTER = "label="
+OBJECT_ID = r"[0-9a-f]{64}"
+VOLUME_NAME = r"[A-Za-z0-9_.-]+"
 CLEANUP_KEYS = {"api_ok", "verified_absent", "container_count", "network_count", "volume_count"}
+ROOT = Path.cwd().resolve()
+STATE_PATHS = (
+    "qualification-state/image.json", "qualification-state/observations.json",
+    "qualification-state/cleanup.json", "qualification-state/body-cleanup.json",
+    "parity-evidence/native-image-corpus.json", "promotion-receipt/receipt.json",
+)
+
+
+def state_path(path: Path) -> Path:
+    # Select a fixed workspace path, never use a caller-controlled path at a file sink.
+    for relative in STATE_PATHS:
+        target = ROOT / relative
+        if path in (Path(relative), target):
+            require(not target.is_symlink() and not target.parent.is_symlink(), "qualification_path_symlink")
+            return target
+    raise Refusal("qualification_path_not_allowed")
 
 
 def read(path: Path) -> Any:
-    with path.open("rb") as stream:
+    with state_path(path).open("rb") as stream:
         return strict_json(stream.read(JSON_LIMIT + 1), JSON_LIMIT)
 
 
 def write(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Owned job workspace files only; artifact finalization uses a fresh directory.
-    path.write_bytes(canonical(value))
+    target = state_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(canonical(value))
 
 
 def eligible_context(role: str, image: str) -> bool:
@@ -47,6 +67,11 @@ def eligible_context(role: str, image: str) -> bool:
 
 
 def inspect(commands: Commands, resource: str, identity: str) -> dict[str, Any]:
+    if resource not in ("container", "image", "network", "volume"):
+        raise Refusal("docker_resource_kind")
+    # Leading CLI options, whitespace, separators and paths are never identities.
+    if not re.fullmatch(r"(?:sha256:[0-9a-f]{64}|[A-Za-z0-9][A-Za-z0-9_.-]{0,180})", identity):
+        raise Refusal("docker_resource_identity")
     value = strict_json(commands.run(["docker", resource, "inspect", identity]), JSON_LIMIT)
     require(type(value) is list and len(value) == 1 and type(value[0]) is dict,
             "docker_inspect_shape")
@@ -86,56 +111,66 @@ def lines(commands: Commands, args: list[str], expression: str) -> set[str]:
     return set(value)
 
 
+def owned_networks(commands: Commands, role: str, scope: str) -> tuple[set[str], set[str]]:
+    selector = LABEL_FILTER + COMPOSE_OWNER + "=" + scope if role == "compose" else "name=^" + scope + "$"
+    networks = lines(commands, ["network", "ls", "-q", "--no-trunc", "--filter", selector], OBJECT_ID)
+    attached = set()
+    for identity in networks:
+        data = inspect(commands, "network", identity)
+        labels = data.get("Labels")
+        owner = COMPOSE_OWNER if role == "compose" else OWNER
+        require(data.get("Id") == identity and type(labels) is dict and labels.get(owner) == scope
+                and type(data.get("Containers")) is dict, "cleanup_network_ownership")
+        if role == "corpus":
+            require(data.get("Name") == scope, "cleanup_network_name")
+        require(all(re.fullmatch(OBJECT_ID, item) for item in data["Containers"]), "cleanup_network_container")
+        attached.update(data["Containers"])
+    return networks, attached
+
+
+def owned_mounts(commands: Commands, mounts: list, role: str, scope: str) -> set[str]:
+    volumes = set()
+    for mount in mounts:
+        if type(mount) is not dict or mount.get("Type") != "volume":
+            continue
+        name = mount.get("Name")
+        require(type(name) is str and re.fullmatch(VOLUME_NAME, name), "cleanup_volume_identity")
+        metadata = inspect(commands, "volume", name)
+        labels = metadata.get("Labels")
+        anonymous = (re.fullmatch(OBJECT_ID, name) is not None
+                     and labels in (None, {}, {"com.docker.volume.anonymous": ""}))
+        compose = role == "compose" and type(labels) is dict and labels.get(COMPOSE_OWNER) == scope
+        # The exact Engine anonymous marker is not an owner grant: the volume
+        # must also be mounted by the already inspected, positively owned container.
+        require(metadata.get("Name") == name and (anonymous or compose), "cleanup_volume_owner")
+        volumes.add(name)
+    return volumes
+
+
 def owned_inventory(commands: Commands, role: str, scope: str) -> tuple[set[str], set[str], set[str]]:
-    containers, networks, volumes = set(), set(), set()
-    if role == "compose":
-        label = "com.docker.compose.project=" + scope
-        containers = lines(commands, ["container", "ls", "-aq", "--no-trunc", "--filter", "label=" + label],
-                           r"[0-9a-f]{64}")
-        networks = lines(commands, ["network", "ls", "-q", "--no-trunc", "--filter", "label=" + label],
-                         r"[0-9a-f]{64}")
-        volumes = lines(commands, ["volume", "ls", "-q", "--filter", "label=" + label], r"[A-Za-z0-9_.-]+")
+    networks, containers = owned_networks(commands, role, scope)
+    owner = COMPOSE_OWNER if role == "compose" else OWNER
+    containers |= lines(commands, ["container", "ls", "-aq", "--no-trunc", "--filter",
+                                  LABEL_FILTER + owner + "=" + scope], OBJECT_ID)
+    volumes = set()
+    if role == "corpus":
+        containers |= lines(commands, ["container", "ls", "-aq", "--no-trunc", "--filter",
+                                      "name=^/" + scope + "-"], OBJECT_ID)
     else:
-        networks = lines(commands, ["network", "ls", "-q", "--no-trunc", "--filter", "name=^" + scope + "$"],
-                         r"[0-9a-f]{64}")
-        containers = lines(commands, ["container", "ls", "-aq", "--no-trunc", "--filter", "name=^/" + scope + "-"],
-                           r"[0-9a-f]{64}")
-        containers |= lines(commands, ["container", "ls", "-aq", "--no-trunc", "--filter", "label=" + OWNER + "=" + scope],
-                            r"[0-9a-f]{64}")
-        for network in networks:
-            data = inspect(commands, "network", network)
-            require(data.get("Name") == scope and type(data.get("Containers")) is dict
-                    and type(data.get("Labels")) is dict and data["Labels"].get(OWNER) == scope,
-                    "cleanup_network_ownership")
-            require(all(re.fullmatch(r"[0-9a-f]{64}", identity) for identity in data["Containers"]),
-                    "cleanup_network_container")
-            containers.update(data["Containers"])
+        volumes = lines(commands, ["volume", "ls", "-q", "--filter", LABEL_FILTER + owner + "=" + scope], VOLUME_NAME)
+        for name in volumes:
+            data = inspect(commands, "volume", name)
+            require(data.get("Name") == name and type(data.get("Labels")) is dict
+                    and data["Labels"].get(owner) == scope, "cleanup_volume_owner")
+    # Discovering a prefix or attached resource never grants ownership. Validate
+    # the complete candidate set, including mounts, before the first removal.
     for identity in containers:
         data = inspect(commands, "container", identity)
         require(data.get("Id") == identity and type(data.get("Config")) is dict
                 and type(data.get("Mounts")) is list, "cleanup_container_identity")
-        if role == "compose":
-            labels = data["Config"].get("Labels")
-            require(type(labels) is dict and labels.get("com.docker.compose.project") == scope,
-                    "cleanup_container_owner")
-        else:
-            # Prefixes and network membership discover candidates, never grant
-            # removal authority. Validate every candidate before the first rm.
-            labels = data["Config"].get("Labels")
-            require(type(labels) is dict and labels.get(OWNER) == scope,
-                    "cleanup_container_owner")
-        for mount in data["Mounts"]:
-            if type(mount) is dict and mount.get("Type") == "volume":
-                name = mount.get("Name")
-                require(type(name) is str and re.fullmatch(r"[A-Za-z0-9_.-]+", name), "cleanup_volume_identity")
-                metadata = inspect(commands, "volume", name)
-                labels = metadata.get("Labels") or {}
-                # An unlabelled anonymous volume belongs to the observed owned container.
-                # A named Compose volume must independently carry the same project label.
-                require((re.fullmatch(r"[0-9a-f]{64}", name) and not labels)
-                        or (role == "compose" and type(labels) is dict
-                            and labels.get("com.docker.compose.project") == scope), "cleanup_volume_owner")
-                volumes.add(name)
+        labels = data["Config"].get("Labels")
+        require(type(labels) is dict and labels.get(owner) == scope, "cleanup_container_owner")
+        volumes |= owned_mounts(commands, data["Mounts"], role, scope)
     require(len(containers) <= 64 and len(networks) <= 8 and len(volumes) <= 64, "cleanup_resource_bound")
     return containers, networks, volumes
 
@@ -150,14 +185,28 @@ def cleanup(commands: Commands, role: str, scope: str) -> dict[str, Any]:
         commands.run(["docker", "network", "rm", *sorted(networks)])
     # rm -v can already remove anonymous volumes. A successful list distinguishes
     # absence from unavailable Docker; never reinterpret an inspect failure as 404.
-    remaining = lines(commands, ["volume", "ls", "-q"], r"[A-Za-z0-9_.-]+") & volumes
+    remaining = lines(commands, ["volume", "ls", "-q"], VOLUME_NAME) & volumes
     if remaining:
         commands.run(["docker", "volume", "rm", *sorted(remaining)])
     after_containers, after_networks, after_volumes = owned_inventory(commands, role, scope)
-    after_volumes |= lines(commands, ["volume", "ls", "-q"], r"[A-Za-z0-9_.-]+") & volumes
+    after_volumes |= lines(commands, ["volume", "ls", "-q"], VOLUME_NAME) & volumes
     require(not after_containers and not after_networks and not after_volumes, "cleanup_not_absent")
     return {"api_ok": True, "verified_absent": True, "container_count": 0,
             "network_count": 0, "volume_count": 0}
+
+
+def qualification_observations(role: str, profile: str | None, value: Any) -> dict:
+    keys = CORPUS_OBSERVATIONS if role == "corpus" else COMPOSE_OBSERVATIONS
+    observations = closed(value, keys, "qualification_observation_shape")
+    if role == "corpus":
+        require(all(literal(item, 0) for item in observations.values()), "qualification_corpus_failed")
+    else:
+        require(profile in ("local", "production")
+                and all(item is True for key, item in observations.items()
+                        if key != "production_default_token_refused")
+                and literal(observations["production_default_token_refused"], profile == "production" or None),
+                "qualification_compose_failed")
+    return observations
 
 
 def finalize(provider: GitHubRegistryProvider, role: str, image: str, platform: str,
@@ -174,16 +223,7 @@ def finalize(provider: GitHubRegistryProvider, role: str, image: str, platform: 
     require(cleanup_result["api_ok"] is True and cleanup_result["verified_absent"] is True
             and all(literal(cleanup_result[key], 0) for key in CLEANUP_KEYS - {"api_ok", "verified_absent"}),
             "qualification_cleanup_failed")
-    keys = CORPUS_OBSERVATIONS if role == "corpus" else COMPOSE_OBSERVATIONS
-    observations = closed(observations, keys, "qualification_observation_shape")
-    if role == "corpus":
-        require(all(literal(value, 0) for value in observations.values()), "qualification_corpus_failed")
-    else:
-        require(profile in ("local", "production")
-                and all(value is True for key, value in observations.items()
-                        if key != "production_default_token_refused")
-                and literal(observations["production_default_token_refused"], True if profile == "production" else None),
-                "qualification_compose_failed")
+    observations = qualification_observations(role, profile, observations)
     source = os.environ["GITHUB_SHA"]
     run_id, attempt = int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"])
     require(positive(run_id) and positive(attempt), "qualification_run")
@@ -259,7 +299,10 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except (Refusal, OSError, UnicodeError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError) as error:
         # Never print Docker/API bodies, HTTP registration payloads or credentials.
-        print("native qualification refused; no positive receipt finalized", file=sys.stderr)
+        reason = str(error) if isinstance(error, Refusal) else "local_input_or_transport"
+        if re.fullmatch(r"[a-z_]{1,80}", reason) is None:
+            reason = "local_input_or_transport"
+        print("native qualification refused: " + reason + "; no positive receipt finalized", file=sys.stderr)
         raise SystemExit(1) from None

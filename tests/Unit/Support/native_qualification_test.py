@@ -27,6 +27,7 @@ INDEX, CHILD, CONFIG = ["sha256:" + letter * 64 for letter in "abc"]
 CID, NID, VOLUME = [letter * 64 for letter in "def"]
 SCOPE = "published-compose-301-1-smoke-amd64-local"
 CONTEXT = {
+    "PROMOTION_TAG": "3.2.0",
     "GITHUB_REPOSITORY": E.REPOSITORY, "GITHUB_EVENT_NAME": "workflow_dispatch",
     "GITHUB_REF": "refs/tags/3.2.0", "GITHUB_REF_NAME": "3.2.0", "GITHUB_SHA": SOURCE,
     "GITHUB_WORKFLOW_REF": E.REPOSITORY + "/" + E.WORKFLOWS["compose"] + "@refs/tags/3.2.0",
@@ -42,6 +43,7 @@ class ResourceCommands:
         self.corpus_owner = SCOPE
         self.container_name = "/" + SCOPE + "-server"
         self.volume_owner = None
+        self.network_owner = SCOPE
         self.fail_list = self.leak = False
 
     def run(self, argv, limit=E.JSON_LIMIT, env=None):
@@ -50,6 +52,9 @@ class ResourceCommands:
         if operation == "ls":
             if self.fail_list:
                 raise E.Refusal("fake_api_unavailable")
+            if resource == "volume" and "--filter" in argv and (
+                    type(self.volume_owner) is not dict or self.volume_owner.get(Q.COMPOSE_OWNER) != SCOPE):
+                return b""
             return ("\n".join(sorted(getattr(self, resource + "s"))) +
                     ("\n" if getattr(self, resource + "s") else "")).encode()
         if operation == "inspect":
@@ -64,7 +69,8 @@ class ResourceCommands:
             elif resource == "volume":
                 value = {"Name": VOLUME, "Labels": self.volume_owner}
             elif resource == "network":
-                value = {"Id": NID, "Name": SCOPE, "Containers": {CID: {}}, "Labels": {Q.OWNER: SCOPE}}
+                value = {"Id": NID, "Name": SCOPE, "Containers": {CID: {}},
+                         "Labels": {Q.OWNER: self.network_owner, Q.COMPOSE_OWNER: self.network_owner}}
             else:
                 value = {"Id": CONFIG, "Architecture": "amd64", "Os": "linux",
                          "Config": {"Labels": {"org.opencontainers.image.revision": SOURCE,
@@ -112,6 +118,43 @@ class ProducerTests(unittest.TestCase):
                                   "container_count": 0, "network_count": 0, "volume_count": 0})
         self.assertEqual(commands.removed, [("container", {CID}), ("network", {NID}), ("volume", {VOLUME})])
         self.assertGreaterEqual(sum(args[2] == "ls" for args in commands.reads), 8)
+
+    def test_engine_anonymous_marker_requires_owned_mount_and_no_foreign_labels(self):
+        for role in ("compose", "corpus"):
+            commands = ResourceCommands()
+            commands.volume_owner = {"com.docker.volume.anonymous": ""}
+            self.assertIs(Q.cleanup(commands, role, SCOPE)["verified_absent"], True)
+            for labels in ({"com.docker.volume.anonymous": "", "owner": "foreign"},
+                           {"com.docker.volume.anonymous": "not-the-engine-marker"}):
+                commands = ResourceCommands()
+                commands.volume_owner = labels
+                with self.subTest(role=role, labels=labels), self.assertRaisesRegex(E.Refusal, "cleanup_volume_owner"):
+                    Q.cleanup(commands, role, SCOPE)
+                self.assertEqual(commands.removed, [])
+
+    def test_foreign_network_never_authorizes_any_removal(self):
+        for role in ("compose", "corpus"):
+            commands = ResourceCommands()
+            commands.network_owner = "foreign"
+            with self.subTest(role=role), self.assertRaisesRegex(E.Refusal, "cleanup_network_ownership"):
+                Q.cleanup(commands, role, SCOPE)
+            self.assertEqual(commands.removed, [])
+
+    def test_cli_resource_and_file_paths_are_closed_before_any_sink(self):
+        commands = ResourceCommands()
+        for identity in ("--format={{.Config.Env}}", "../private", "server\n--format=env", "x/y"):
+            with self.subTest(identity=identity), self.assertRaisesRegex(E.Refusal, "docker_resource_identity"):
+                Q.inspect(commands, "container", identity)
+        self.assertEqual(commands.reads, [])
+        for path in ("../private", "/tmp/private", "qualification-state/../private", "qualification-state/other.json"):
+            candidate = Path(path)
+            with self.subTest(path=path), self.assertRaisesRegex(E.Refusal, "qualification_path_not_allowed"):
+                Q.state_path(candidate)
+        with tempfile.TemporaryDirectory() as directory, patch.object(Q, "ROOT", Path(directory)):
+            target = Path(directory) / "qualification-state"
+            target.symlink_to(Path(directory), target_is_directory=True)
+            with self.assertRaisesRegex(E.Refusal, "qualification_path_symlink"):
+                Q.state_path(Path("qualification-state/image.json"))
 
     def test_cleanup_unavailable_is_unknown_and_foreign_resources_are_not_removed(self):
         for field, value in (("fail_list", True), ("owner", "another-project"),
@@ -211,6 +254,26 @@ class ReadCommands:
 
 
 class TransportTests(unittest.TestCase):
+    def test_unprivileged_plan_requires_exact_tag_and_accepted_main_source(self):
+        value = {"release": {"tag": "3.2.0", "source_commit": SOURCE}}
+        context = {**CONTEXT, "GITHUB_WORKFLOW_REF": E.REPOSITORY + "/.github/workflows/native-alias-promotion.yml@refs/tags/3.2.0"}
+        from unittest.mock import Mock
+        provider = Mock()
+        with patch.dict(os.environ, context, clear=True):
+            for status in ("ahead", "identical"):
+                provider.api.return_value = {"status": status, "base_commit": {"sha": SOURCE}}
+                P.plan(value, provider)
+            for comparison in ({"status": "behind", "base_commit": {"sha": SOURCE}},
+                               {"status": "diverged", "base_commit": {"sha": SOURCE}},
+                               {"status": "ahead", "base_commit": {"sha": "f" * 40}}, {}):
+                provider.api.return_value = comparison
+                with self.subTest(comparison=comparison), self.assertRaisesRegex(E.Refusal, "promotion_source_not_on_main"):
+                    P.plan(value, provider)
+            provider.reset_mock()
+            with patch.dict(os.environ, {"PROMOTION_TAG": "3.2.1"}), self.assertRaisesRegex(E.Refusal, "promotion_dispatch_identity"):
+                P.plan(value, provider)
+            provider.api.assert_not_called()
+
     def test_api_only_targets_fixed_owning_repository_and_host(self):
         commands = ReadCommands(b"{}")
         provider = T.GitHubRegistryProvider(commands)
@@ -259,15 +322,17 @@ class TransportTests(unittest.TestCase):
             self.assertIs(T.GitHubRegistryProvider(commands).release_exists("3.2.0"), expected)
         for response in (b"unauthorized", b"HTTP/2.0 503 Error\r\n\r\n{}",
                          b"HTTP/2.0 404 Not Found\r\nContent-Type: application/json\r\n\r\n{}"):
+            provider = T.GitHubRegistryProvider(ReadCommands(response))
             with self.subTest(response=response), self.assertRaises(E.Refusal):
-                T.GitHubRegistryProvider(ReadCommands(response)).release_exists("3.2.0")
+                provider.release_exists("3.2.0")
 
     def test_commands_bound_output_time_and_sanitize_errors(self):
         for code, limit, seconds in (("print('x'*10000)", 10, 1),
                                      ("import time; time.sleep(1)", 100, .03),
                                      ("import sys; sys.stderr.write('private-marker'); sys.exit(1)", 100, 1)):
+            commands = T.Commands(seconds)
             with self.subTest(code=code), self.assertRaises(E.Refusal) as caught:
-                T.Commands(seconds).run([sys.executable, "-c", code], limit)
+                commands.run([sys.executable, "-c", code], limit)
             self.assertNotIn("private-marker", str(caught.exception))
         self.assertEqual(T.Commands().run([sys.executable, "-c", "print('bounded')"]), b"bounded\n")
 
@@ -292,12 +357,9 @@ class TransportTests(unittest.TestCase):
                 provider.selected["corpus"]["workflow_blob"] = "f" * 40
             elif fault == "archive":
                 provider.archives[501] += b"extra"
-            writes = []
             with patch.dict(os.environ, context, clear=True), self.subTest(fault=fault):
                 with self.assertRaises(E.Refusal):
-                    proof = P.qualify(provider.selected, provider, "promote")
-                    writes.append(proof)
-                self.assertEqual(writes, [])
+                    P.qualify(provider.selected, provider, "promote")
 
 
 class WorkflowContracts(unittest.TestCase):

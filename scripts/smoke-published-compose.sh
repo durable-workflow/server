@@ -92,7 +92,7 @@ cleanup() {
   python3 "$ROOT_DIR/scripts/ci/native_qualification.py" cleanup --kind compose --scope "$PROJECT" \
     --output "$OBSERVATION_DIR/body-cleanup.json" || cleanup_status=$?
   rm -rf "$HTTP_DIR"
-  if [ "$body_status" -ne 0 ]; then exit "$body_status"; fi
+  if [[ "$body_status" -ne 0 ]]; then exit "$body_status"; fi
   exit "$cleanup_status"
 }
 
