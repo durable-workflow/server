@@ -421,6 +421,33 @@ fn encoded(text: &str) -> String {
 }
 
 #[tokio::test]
+async fn invalid_visibility_literals_refuse_before_the_schedule_query() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime);
+    for (name, kind) in [("Count", "int"), ("Weight", "double")] {
+        let registered = request(&app, "POST", "/api/search-attributes", json!({"name":name,"type":kind})).await;
+        assert!(registered.0.is_success(), "{}", registered.1);
+    }
+    for query in ["Count = -9223372036854775808", "Count = 9223372036854775807", "Weight = 1.0"] {
+        let page = list(&app, &format!("query={}", encoded(query))).await;
+        assert_eq!(page.0, StatusCode::OK, "{query}: {}", page.1);
+    }
+    // A valid query must fail after this guard. Invalid literals must still
+    // return their parser refusal without reaching the unavailable table.
+    database.execute("ALTER TABLE workflow_schedules RENAME TO unavailable_schedule_query_guard").await;
+    for query in ["Count = 9223372036854775808".to_owned(), "Count = -9223372036854775809".to_owned(),
+        format!("Weight = {}.0", "9".repeat(400)), "Note = 'a' 'b'".to_owned(), "Note = 'a''b'".to_owned(),
+        "Note = 'a'\t'b'".to_owned(), "Note = 'a' 'b' AND Status = 'active'".to_owned()] {
+        let page = list(&app, &format!("query={}", encoded(&query))).await;
+        assert_eq!((page.0, page.1["reason"].clone()),
+            (StatusCode::UNPROCESSABLE_ENTITY, json!("invalid_schedule_visibility_query")), "{query}: {}", page.1);
+    }
+    assert_eq!(list(&app, &format!("query={}", encoded("Count = 9223372036854775807"))).await.0,
+        StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
 async fn schedules_list_update_and_backfill_as_published_php() {
     use super::namespaces::{create as create_namespace, scoped};
     let database = TestDatabase::new().await;
