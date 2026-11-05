@@ -2385,7 +2385,8 @@
     "response_headers": {
       "X-Durable-Workflow-Protocol-Version": "$protocol_version",
       "Content-Type": "application/json media type; unrelated standard headers are not an equality contract"
-    }
+    },
+    "counter_scope": "preflight lookup/fetch/clock counters begin after the existing independently scoped auth/protocol/runtime-role admission; they count durable task/attempt/claim/registration reads and payload resolution, not source-module loading or pre-existing credential authorization"
   },
   "canonical_projection": {
     "override": "prepared failed report.next_retry_delay_seconds maps to canonical application failure.next_retry_delay_seconds only",
