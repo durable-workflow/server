@@ -1,0 +1,188 @@
+{
+  "schema": "durable-workflow.native-activity-retry-adapters.v1",
+  "status": "source proposal; no executor, producer or qualification result",
+  "runtime_enabled": false,
+  "canonical": {
+    "repository": "durable-workflow/workflow",
+    "commit": "0aa1536e6198a6667ddedf62b48215b6e9e8a6f8",
+    "path": "resources/protocol/activity-retry-policy-v2-vectors.json",
+    "sha256": "8d576f1d50bcbfb123cb09682a4fbac53cb018a3cd369021c38d69866849781c",
+    "case_count": 54,
+    "mutate_canonical_rows": false
+  },
+  "authority": {
+    "decision": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6643667500",
+    "native_bindings": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6647329559",
+    "native_reference_commit": "ea993064428fa9e0294520aa3efd498bef5b64dc",
+    "capability": "activity_retry_delay_override_v1",
+    "failure_override_field": "failure.next_retry_delay_seconds"
+  },
+  "executor_requirements": {
+    "context": "otherwise valid synthetic authorized activity failure; original task/run/execution/attempt identity and complete before/after durable snapshot",
+    "carrier": "the actual native HTTP handler and authoritative failure transaction; no scenario-only decision model",
+    "raw_lexemes": "splice only the declared synthetic lexeme into an otherwise valid request; these strings are test bytes, not JSON numeric fixture values",
+    "typed_cases": "also exercise every canonical invalid_override_* case as its original actual JSON type",
+    "time": "one fixed authoritative failure sample retaining subsecond precision; each supported backend's checked bindable timestamp range",
+    "snapshots": "task/attempt/activity/history/receipt state, original deadlines and retry-task/event counts; no raw payload, credential or provider error output",
+    "retention": "compare the committed engine disposition and original availability after uncertainty; never recompute at replay time",
+    "result_scope": "an absent executor, unavailable backend or unimplemented version-2 producer is unqualified, never pass"
+  },
+  "cases": [
+    {
+      "id": "native_transport_nan",
+      "canonical_ids": ["invalid_override_integral_float"],
+      "carrier": {"override_json_lexeme": "NaN", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_positive_infinity",
+      "canonical_ids": ["invalid_override_fractional_float"],
+      "carrier": {"override_json_lexeme": "Infinity", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_negative_infinity",
+      "canonical_ids": ["invalid_override_negative"],
+      "carrier": {"override_json_lexeme": "-Infinity", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_overflowing_exponent",
+      "canonical_ids": ["invalid_override_overflow"],
+      "carrier": {"override_json_lexeme": "1e9999", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_trailing_document_bytes",
+      "canonical_ids": ["zero_override_is_present"],
+      "carrier": {"override_json_lexeme": "0", "append_after_document_utf8": " trailing", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_missing_json_content_type",
+      "canonical_ids": ["zero_override_is_present"],
+      "carrier": {"override_json_lexeme": "0", "omit_content_type": true},
+      "expected": {"http_status": 415, "classification": "existing-json-content-type-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_typed_exponent_is_float",
+      "canonical_ids": ["invalid_override_integral_float"],
+      "carrier": {"override_json_lexeme": "1e0", "content_type": "application/json"},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "coercion": false}
+    },
+    {
+      "id": "native_typed_nan_string",
+      "canonical_ids": ["invalid_override_string"],
+      "carrier": {"override_json_lexeme": "\"NaN\"", "content_type": "application/json"},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "transport_parse_failure": false}
+    },
+    {
+      "id": "native_json_bound_is_not_timestamp_bound",
+      "canonical_ids": ["invalid_override_overflow"],
+      "carrier": {"override_json_lexeme": "9007199254740991", "failure_sample": "fixed-valid-native-timestamp", "precondition": "duration-or-resulting-timestamp-not-representable"},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "wrap_clamp_or_immediate_retry": false}
+    },
+    {
+      "id": "native_backend_timestamp_addition_overflow",
+      "canonical_ids": ["invalid_override_overflow"],
+      "carrier": {"override_json_lexeme": "1", "failure_sample": "maximum-bindable-backend-timestamp", "backends": ["sqlite", "postgresql", "mysql", "mariadb"]},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "backend_error_counted_as_validation_pass": false}
+    },
+    {
+      "id": "native_subsecond_failure_sample_preserved",
+      "canonical_ids": ["override_replaces_policy", "override_before_deadline"],
+      "carrier": {"failure_sample_subsecond_microseconds": 123456, "override_json_lexeme": "5", "original_deadline": "strictly-after-resulting-availability"},
+      "expected": {"availability_adds_exact_whole_seconds": 5, "availability_subsecond_microseconds": 123456, "serialization_clock_resample": false, "original_deadline_unchanged": true}
+    },
+    {
+      "id": "native_exact_subsecond_deadline_boundary",
+      "canonical_ids": ["override_reaches_deadline", "override_passes_deadline", "zero_at_original_deadline_is_terminal"],
+      "carrier": {"failure_sample_subsecond_microseconds": 123456, "deadline_cases": ["availability-equals-original-deadline", "availability-after-original-deadline"]},
+      "expected": {"decision": "terminal", "reason": "retry_delay_exceeds_schedule_to_close", "retry_task_count": 0, "activity_retry_scheduled_count": 0, "round_to_seconds": false, "original_deadline_unchanged": true}
+    },
+    {
+      "id": "native_activity_attempt_belongs_to_original_task",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "submit-another-tasks-activity-attempt-id"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "durable_write_count": 0, "foreign_attempt_or_task_mutated": false}
+    },
+    {
+      "id": "native_attempt_number_matches_task_fence",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "stored-attempt-number-differs-from-original-task-attempt-count"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "durable_write_count": 0}
+    },
+    {
+      "id": "native_wrong_lease_owner",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "otherwise-current-failure-with-another-synthetic-owner"},
+      "expected": {"http_status": 409, "reason": "lease_owner_mismatch", "durable_write_count": 0}
+    },
+    {
+      "id": "native_expired_original_lease",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "otherwise-current-failure-at-or-after-original-lease-expiry"},
+      "expected": {"http_status": 409, "reason": "lease_expired", "durable_write_count": 0, "deadline_extension": false}
+    },
+    {
+      "id": "native_cross_namespace_cannot_reach_original_task",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "submit-original-task-and-attempt-in-another-authorized-synthetic-namespace"},
+      "expected": {"classification": "existing-native-namespace-task-refusal", "durable_write_count": 0, "either_namespace_mutated": false}
+    },
+    {
+      "id": "native_registration_replacement_revokes_original_claim",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"actions": ["claim-original-attempt", "commit-worker-registration-replacement", "submit-old-original-attempt"]},
+      "expected": {"classification": "existing-native-attempt-or-lease-fence-refusal", "old_claim_accepted": false, "durable_write_count_from_old_report": 0, "replacement_authority_changed": false}
+    },
+    {
+      "id": "native_two_connections_same_original_attempt",
+      "canonical_ids": ["duplicate_failure_adds_no_attempt"],
+      "carrier": {"actions": ["barrier-two-independent-connections", "report-same-current-attempt-with-different-valid-overrides"]},
+      "expected": {"maximum_committed_failure_outcomes": 1, "maximum_additional_retry_tasks": 1, "mixed_disposition_fields": false, "loser_preserves_existing_native_fence_route": true}
+    },
+    {
+      "id": "native_duplicate_keeps_stale_acknowledgement",
+      "canonical_ids": ["duplicate_failure_adds_no_attempt"],
+      "carrier": {"actions": ["commit-original-failure", "repeat-identical-failure"]},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "next_task_id": null, "additional_retry_task_count": 0, "retained_disposition_unchanged": true}
+    },
+    {
+      "id": "native_lost_ack_cold_replay_keeps_original_availability",
+      "canonical_ids": ["lost_acknowledgement_cold_retry", "version_2_cold_replay_uses_retained_outcome"],
+      "carrier": {"actions": ["commit-original-failure", "drop-http-acknowledgement", "replace-process-with-same-durable-state", "repeat-identical-failure-at-later-clock"]},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "additional_retry_task_count": 0, "retained_disposition_unchanged": true, "original_availability_unchanged": true, "recompute_policy_or_clock": false}
+    },
+    {
+      "id": "native_conflicting_duplicate_cannot_rewrite_delay",
+      "canonical_ids": ["duplicate_failure_adds_no_attempt", "lost_acknowledgement_cold_retry"],
+      "carrier": {"actions": ["commit-original-failure", "retry-same-original-attempt-with-different-valid-delay"]},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "additional_retry_task_count": 0, "retained_disposition_unchanged": true, "original_availability_unchanged": true}
+    },
+    {
+      "id": "native_scheduled_rows_and_event_agree",
+      "canonical_ids": ["zero_override_is_present", "override_replaces_policy", "override_at_cap", "empty_explicit_cap_accepts_override", "derived_cap_uses_largest_entry"],
+      "carrier": {"actions": ["submit-canonical-current-failure", "read-original-attempt-retry-task-event-and-engine-disposition"]},
+      "expected": {"retry_task_count": 1, "activity_retry_scheduled_count": 1, "selected_delay_and_original_attempt_identity_match_everywhere": true, "original_failure_preserved": true, "original_deadline_unchanged": true}
+    },
+    {
+      "id": "native_terminal_disposition_is_separate_from_application_failure",
+      "canonical_ids": ["override_exceeds_cap", "empty_default_cap_refuses_positive_override", "policy_reaches_deadline", "zero_at_original_deadline_is_terminal"],
+      "carrier": {"actions": ["submit-canonical-current-failure", "read-terminal-failure-and-workflow-resume-state"]},
+      "expected": {"retry_task_count": 0, "activity_retry_scheduled_count": 0, "engine_reason_replaces_application_exception": false, "original_failure_preserved": true, "original_deadline_unchanged": true, "ordinary_terminal_resume_path": true}
+    },
+    {
+      "id": "native_capability_and_snapshot_are_independent_gates",
+      "canonical_ids": ["missing_capability", "nonliteral_capability_false", "nonliteral_capability_string", "nonliteral_capability_integer", "legacy_snapshot_cannot_accept_override"],
+      "carrier": {"actions": ["submit-valid-present-override-with-each-canonical-gate-mutation"]},
+      "expected": {"literal_capability_and_snapshot_2_both_required": true, "durable_write_count": 0, "silent_ignore_or_implicit_upgrade": false}
+    },
+    {
+      "id": "native_legacy_and_recorded_availability_not_reinterpreted",
+      "canonical_ids": ["legacy_snapshot_cannot_accept_override", "core_snapshot_1_repeats_last", "core_snapshot_1_explicit_empty", "core_snapshot_1_no_generated_cap", "legacy_sdk_recorded_zero_tail"],
+      "carrier": {"actions": ["load-original-legacy-snapshot-and-recorded-outcomes", "cold-replay-at-later-clock"]},
+      "expected": {"version_2_defaults_applied": false, "recorded_zero_tail_preserved": true, "original_availability_unchanged": true, "implicit_snapshot_upgrade": false}
+    }
+  ]
+}
