@@ -53,3 +53,13 @@ unset/root; future confinement must explicitly enforce a nonroot UID, read-only
 filesystem, bounded scratch/output/resources, no capabilities, no-new-privileges,
 no network, daemon socket or host credential mounts. That execution source is
 still incomplete. Neither image layers nor wheels were acquired or executed.
+
+The proposed deterministic raw assets are `server-linux-amd64.spdx.json`,
+`server-linux-arm64.spdx.json` and `server-sbom-manifest.json`.
+`exact_release_asset_bytes` rejects absent, extra, renamed, empty, oversized or
+changed bytes for this set. Canonically equivalent JSON is insufficient for
+existing raw assets. This helper accepts only previously verified expected
+bytes; it does not authenticate a checksum map, signature, provider asset or
+image tuple. The future caller must verify those independently and bound each
+download before calling it. Ten synthetic test families now cover the source
+library. No transport, replacement or publication is implemented by this helper.

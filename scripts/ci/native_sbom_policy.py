@@ -20,6 +20,9 @@ SCHEMA_SHA256 = "4126dc29f15e92feec92e9622f4939131ad58b125d6f578aa93e980a6e6f321
 TOOL_CREATOR = "Tool: syft-1.55.0"
 IDENTIFIER = re.compile(r"SPDXRef-[A-Za-z0-9.-]+\Z")
 COLLECTION_LIMIT = 100000
+SPDX_ASSETS = ("server-linux-amd64.spdx.json", "server-linux-arm64.spdx.json")
+MANIFEST_ASSET = "server-sbom-manifest.json"
+ASSET_LIMITS = {**dict.fromkeys(SPDX_ASSETS, RAW_LIMIT), MANIFEST_ASSET: 65536}
 
 
 class Refusal(ValueError):
@@ -64,7 +67,7 @@ def canonical(value: Any) -> bytes:
 def schema_check(document: Any) -> None:
     # The source/schema checks here use an already-installed validator. A
     # future executable must first enforce the separately pinned dependency
-    # closure; that closure is currently null and no executable is wired.
+    # closure. Candidate metadata exists, but no executable is wired/qualified.
     from jsonschema import Draft201909Validator
     from referencing import Registry
     from referencing.exceptions import NoSuchResource
@@ -165,6 +168,29 @@ def distinct_platform_documents(amd64: bytes, arm64: bytes) -> tuple[dict[str, A
     pair = document(amd64), document(arm64)
     require(pair[0]["namespace"] != pair[1]["namespace"], "spdx_namespace_reused")
     return pair
+
+
+def exact_release_asset_bytes(expected: dict[str, bytes], observed: dict[str, bytes]) -> dict[str, Any]:
+    """Require retained raw bytes for an existing Release, with no replacement.
+
+    The caller must FIRST verify the source/index/child/tool/attestation tuple,
+    signed predicates, and checksum-map contents. This function proves byte
+    equality only; it cannot authenticate a caller-supplied expected map.
+    Transport must bound downloads before passing bytes to this function.
+    """
+    names = set(ASSET_LIMITS)
+    require(type(expected) is dict and type(observed) is dict
+            and set(expected) == set(observed) == names, "sbom_release_asset_names")
+    result = {}
+    for name, limit in ASSET_LIMITS.items():
+        original, retained = expected[name], observed[name]
+        require(type(original) is bytes and type(retained) is bytes
+                and 0 < len(original) <= limit and 0 < len(retained) <= limit,
+                "sbom_release_asset_size")
+        # Canonical JSON equality is deliberately insufficient for raw assets.
+        require(original == retained, "sbom_release_asset_bytes_changed")
+        result[name] = {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()}
+    return result
 
 
 if __name__ == "__main__":

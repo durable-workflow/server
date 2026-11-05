@@ -34,6 +34,42 @@ def encoded(value):
 
 
 class SbomPolicyTests(unittest.TestCase):
+    def test_existing_release_requires_all_three_exact_raw_assets(self):
+        arm = fixture()
+        arm["documentNamespace"] += "-arm64"
+        expected = {P.SPDX_ASSETS[0]: encoded(fixture()), P.SPDX_ASSETS[1]: encoded(arm),
+                    P.MANIFEST_ASSET: b'{"synthetic":"previously-verified-map"}\n'}
+        observed = dict(expected)
+        result = P.exact_release_asset_bytes(expected, observed)
+        self.assertEqual(set(result), set(expected))
+        for name in expected:
+            self.assertEqual(result[name]["bytes"], len(expected[name]))
+        for name in expected:
+            for changed in (expected[name] + b"\n", expected[name][:-1], b"different"):
+                altered = {**observed, name: changed}
+                with self.subTest(name=name, changed=changed[:20]), self.assertRaisesRegex(P.Refusal, "bytes_changed"):
+                    P.exact_release_asset_bytes(expected, altered)
+        # Predicates may be canonically equal; raw Release assets must still
+        # have exactly the retained generation bytes, without reformatting.
+        compact = json.dumps(fixture(), separators=(",", ":")).encode()
+        self.assertEqual(P.predicate_matches(expected[P.SPDX_ASSETS[0]], compact)["package_count"], 1)
+        altered = {**observed, P.SPDX_ASSETS[0]: compact}
+        with self.assertRaisesRegex(P.Refusal, "bytes_changed"):
+            P.exact_release_asset_bytes(expected, altered)
+
+    def test_existing_release_refuses_absent_extra_renamed_or_unbounded_assets(self):
+        expected = dict.fromkeys(P.ASSET_LIMITS, b"synthetic-preverified-bytes")
+        for name in expected:
+            missing = {key: value for key, value in expected.items() if key != name}
+            renamed = {**missing, name.upper(): expected[name]}
+            for observed in (missing, renamed, {**expected, "unexpected.json": b"extra"}):
+                with self.subTest(name=name), self.assertRaisesRegex(P.Refusal, "asset_names"):
+                    P.exact_release_asset_bytes(expected, observed)
+            for value in (b"", "not bytes", b"x" * (P.ASSET_LIMITS[name] + 1)):
+                altered = {**expected, name: value}
+                with self.subTest(name=name, size=len(value)), self.assertRaisesRegex(P.Refusal, "asset_size"):
+                    P.exact_release_asset_bytes(expected, altered)
+
     def test_shape_and_semantics_retain_raw_bytes_identity(self):
         raw = encoded(fixture())
         result = P.document(raw)
