@@ -157,7 +157,8 @@
     ],
     "terminal_without_selection_forbidden": [
       "candidate_delay_seconds",
-      "maximum_interval_seconds"
+      "maximum_interval_seconds",
+      "delay_source"
     ],
     "terminal_forbidden": [
       "retry_available_at"
@@ -1577,6 +1578,53 @@
         "new_retry_event_count": 0,
         "new_attempt_count": 0
       }
+    },
+    {
+      "id": "local_v2_flattened_generated_wire_tail_preserved",
+      "carrier": {
+        "wire_policy_mode": "generated",
+        "max_attempts": 1024,
+        "backoff_list_length": 1024,
+        "all_entries": "valid and no larger than supplied finite cap"
+      },
+      "expected": {
+        "wire_shape": "accepted",
+        "stored_list_length": 1024,
+        "unused_supplied_tail_preserved": true,
+        "invented_exact_length_rule": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_authoring_generated_expansion_positions",
+      "carrier": {
+        "boundary": "authoring expansion before flattened worker wire",
+        "max_attempts": 1024
+      },
+      "expected": {
+        "maximum_generated_retry_positions": 1023,
+        "first_attempt_included_in_budget": true,
+        "before_work_bound_checked": true,
+        "flattened_wire_exact_length_inferred": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_terminal_without_selection_delay_source_forbidden",
+      "carrier": {
+        "otherwise_valid_disposition": {
+          "decision": "terminal",
+          "terminal_classification": "attempts_exhausted"
+        },
+        "extra_member": {
+          "delay_source": "policy"
+        }
+      },
+      "expected": {
+        "disposition_shape": "refused",
+        "selected_delay_claim": false,
+        "runtime_result": null
+      }
     }
   ],
   "prepared_policy_proposal": {
@@ -1595,7 +1643,8 @@
     },
     "unknown_members": "refuse, including snapshot_version and generator descriptors",
     "generator_boundary": "bounded authoring expansion precedes the wire; do not infer or reconstruct a generator from a flattened worker list",
-    "generated_schedule_positions_maximum": 1023
+    "generated_schedule_positions_maximum": 1023,
+    "flattened_generated_wire_tail": "the shared <=1024 list bound is intentional; retain every admitted supplied entry, including unused tails; no inferred max_attempts-1 exact-length wire restriction"
   },
   "stored_snapshot_proposal": {
     "required": {
