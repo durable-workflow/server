@@ -169,13 +169,26 @@ key IDs appear only in an explicitly reviewed diagnostic contract.
 
 ### Configuration and enforceable retention
 
-The proposed dedicated key-ring setting is bounded before container parsing.
-It has an exact schema with 1..4 entries and no duplicate/unknown fields,
-duplicate case-sensitive IDs or automatic eviction. Specify one canonical
-RFC 4648 representation for key text and verify it by re-encoding. Validate
-every supplied original encoded string under the shared static-credential
-fixture before decode/selection, including read-only entries. Do not scan
-decoded entropy as token text. Zeroize decoded buffers and removable parser
+The proposed dedicated setting is `DW_TASK_DELIVERY_SEAL_KEYS`, with no legacy
+alias. Bound its original UTF-8 text to 4096 bytes before parsing. An absent
+setting disables support. A supplied empty string, malformed UTF-8, oversized
+value or invalid container refuses configuration; none selects a fallback.
+The closed container is an object with exactly `schema` and `keys`, where
+`schema` is `durable-workflow.task-delivery-seal-keys.v1` and `keys` is an
+ordered array of 1..4 entries. Each entry has exactly `id` and `key_base64`.
+Duplicate or unknown fields at either level, duplicate case-sensitive IDs,
+wrong types and extra entries refuse. IDs use the frame's 1..32-byte ASCII
+alphabet. Container JSON formatting is not itself credential text.
+
+`key_base64` uses only canonical padded RFC 4648 standard base64, not the
+frame's URL-safe alphabet. Exactly 32 decoded bytes require 44 ASCII bytes
+ending with one `=`. Reject whitespace, omitted/extra padding, URL-safe
+substitutions and nonzero unused bits. Decode and canonical standard-base64
+re-encode equivalence is required. Validate every original `key_base64`
+string under the shared static-credential fixture before any key is decoded
+or selected, including read-only entries. Do not trim or normalize it and do
+not scan decoded entropy as token text. Errors name only the setting and a
+typed configuration reason. Zeroize decoded buffers and removable parser
 and key-schedule copies, and provide no revealing serialization/debug path.
 
 The first key may issue and all retained keys may read. Missing configuration

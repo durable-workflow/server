@@ -36,7 +36,36 @@
     "scope": "run on each source backend required by the owning PR; installed proxy/restart/capacity acceptance is separate",
     "no_result_inference": "parsing or enumerating this data is not a passing execution"
   },
-  "security_source_direction": {"review": "https://github.com/durable-workflow/server/issues/931#issuecomment-6646286980", "status": "design direction accepted; implementation acceptance held", "algorithm": "full-round-XChaCha20Poly1305", "key_bytes": 32, "nonce_bytes": 24, "tag_bytes": 16, "maximum_plaintext_bytes": 6000, "decoded_frame_bytes": {"minimum": 40, "maximum": 6040}, "maximum_frame_bytes_with_32_byte_key_id": 8092, "requirements": ["exact-reviewed-locked-graph", "supported-zeroization-feature", "fallible-os-rng", "closed-canonical-parsers", "persisted-key-id-references", "enforceable-rotation-and-startup-preflight"]},
+  "security_source_direction": {
+    "review": "https://github.com/durable-workflow/server/issues/931#issuecomment-6646286980",
+    "status": "design direction accepted; implementation acceptance held",
+    "algorithm": "full-round-XChaCha20Poly1305",
+    "key_bytes": 32,
+    "nonce_bytes": 24,
+    "tag_bytes": 16,
+    "maximum_plaintext_bytes": 6000,
+    "decoded_frame_bytes": {"minimum": 40, "maximum": 6040},
+    "maximum_frame_bytes_with_32_byte_key_id": 8092,
+    "requirements": ["exact-reviewed-locked-graph", "supported-zeroization-feature", "fallible-os-rng", "closed-canonical-parsers", "persisted-key-id-references", "enforceable-rotation-and-startup-preflight"],
+    "key_ring_proposal": {
+      "setting": "DW_TASK_DELIVERY_SEAL_KEYS",
+      "maximum_raw_utf8_bytes": 4096,
+      "absent": "unsupported",
+      "supplied_empty": "configuration-refusal",
+      "container_fields": ["schema", "keys"],
+      "schema": "durable-workflow.task-delivery-seal-keys.v1",
+      "minimum_entries": 1,
+      "maximum_entries": 4,
+      "entry_fields": ["id", "key_base64"],
+      "key_id_ascii_pattern": "[A-Za-z0-9_-]{1,32}",
+      "key_text_encoding": "RFC4648-standard-padded-canonical",
+      "key_text_ascii_bytes": 44,
+      "key_text_trailing_padding_bytes": 1,
+      "canonical_reencode_required": true,
+      "validate_all_original_key_text_before_any_decode_or_selection": true,
+      "validate_container_formatting_as_credential_text": false
+    }
+  },
   "cases": [
     {
       "id": "offer-lost",
@@ -291,6 +320,36 @@
       "scope": "required source controls; not executed",
       "actions": ["exercise-authentication-decoding-key-lookup-load-and-rng-errors"],
       "expected": {"token_key_plaintext_digest_or_authority_values_in_diagnostics": false}
+    },
+    {
+      "id": "keyring-presence-and-raw-size",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["omit-setting", "supply-empty-setting", "supply-invalid-utf8", "supply-valid-container-at-4096-bytes", "supply-container-at-4097-bytes"],
+      "expected": {"absence_supported": false, "empty_or_invalid_utf8_accepted": false, "raw_limit_checked_before_parse": true, "maximum_raw_utf8_bytes": 4096}
+    },
+    {
+      "id": "keyring-container-version-and-shape",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["supply-wrong-or-missing-schema", "supply-duplicate-or-unknown-container-field", "supply-unordered-object-instead-of-keys-array", "supply-empty-array-or-wrong-entry-type"],
+      "expected": {"configuration_accepted": false, "alternate_or_legacy_parser_used": false}
+    },
+    {
+      "id": "keyring-id-byte-boundaries",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["exercise-valid-ascii-id-at-1-and-32-bytes", "exercise-empty-33-byte-or-nonascii-id", "exercise-case-distinct-ids"],
+      "expected": {"valid_id_byte_range": [1, 32], "invalid_id_accepted": false, "id_case_folded": false}
+    },
+    {
+      "id": "keyring-key-text-unused-bits",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["supply-44-byte-standard-base64-with-nonzero-unused-bits", "supply-url-safe-substitution-or-wrong-padding", "supply-canonical-32-byte-synthetic-key"],
+      "expected": {"noncanonical_key_accepted": false, "canonical_key_bytes": 32, "canonical_text_bytes": 44, "canonical_padding_bytes": 1}
+    },
+    {
+      "id": "keyring-ordered-two-key-read",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["configure-two-distinct-valid-synthetic-keys", "issue-packet", "read-test-packets-under-either-retained-id"],
+      "expected": {"issuing_key_index": 0, "both_read_keys_usable": true, "every_original_text_validated_before_selection": true, "decoded_entropy_text_scanned": false}
     }
   ]
 }
