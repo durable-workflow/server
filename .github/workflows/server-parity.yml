@@ -28,6 +28,7 @@ on:
       - tests/Fixtures/HistoryBudget/**
       - tests/Fixtures/ServerUpgrade/**
       - tests/Fixtures/ServerParity/**
+      - tests/Fixtures/ServerParityObservations/**
       - tests/Fixtures/ServerParityBaselines/**
       - tests/Fixtures/ServerParityNormalization/**
       - tests/Unit/ServerParityRunnerTest.mjs
@@ -61,6 +62,8 @@ on:
       - tests/Unit/ServerParityOperatorMetricsContractTest.mjs
       - tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs
       - tests/Unit/ServerParityConcurrentWaitsContractTest.mjs
+      - tests/Unit/ServerParityParallelChildAllContractTest.mjs
+      - tests/Unit/ServerParityClosedWaitTimeoutsContractTest.mjs
       - tests/Unit/ServerParityHistoryExportWaitsContractTest.mjs
       - tests/Unit/ServerParityContinueTransfersContractTest.mjs
       - tests/Unit/ServerParityLargeCommandBatchesContractTest.mjs
@@ -2267,6 +2270,8 @@ jobs:
               tests/Unit/ServerParityOperatorMetricsContractTest.mjs \
               tests/Unit/ServerParityActivityLeaseRenewalContractTest.mjs \
               tests/Unit/ServerParityConcurrentWaitsContractTest.mjs \
+              tests/Unit/ServerParityParallelChildAllContractTest.mjs \
+              tests/Unit/ServerParityClosedWaitTimeoutsContractTest.mjs \
               tests/Unit/ServerParityHistoryExportWaitsContractTest.mjs \
               tests/Unit/ServerParityContinueTransfersContractTest.mjs \
               tests/Unit/ServerParityChildDescriptionsContractTest.mjs \

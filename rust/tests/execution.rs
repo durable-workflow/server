@@ -285,8 +285,13 @@ mod timed_signal_waits;
 #[path = "execution/timed_condition_waits.rs"]
 mod timed_condition_waits;
 
+#[path = "execution/closed_wait_timeouts.rs"]
+mod closed_wait_timeouts;
+
 #[path = "execution/parallel_all.rs"]
 mod parallel_all;
+#[path = "execution/parallel_children.rs"]
+mod parallel_children;
 
 #[path = "execution/workflow_failures.rs"]
 mod workflow_failures;

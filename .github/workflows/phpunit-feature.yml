@@ -152,6 +152,9 @@ jobs:
       - name: Prove the image installs and checks the fixed Brotli decoder
         run: python3 -m unittest tests/Unit/Support/brotli_trust_test.py
 
+      - name: Check published failover image identity and recovery result gates
+        run: python3 -m unittest discover -s tests/Unit/Support -p 'single_region_failover*test.py'
+
   feature:
     name: PHPUnit feature suite
     needs: action-policy
