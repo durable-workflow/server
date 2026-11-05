@@ -9,6 +9,7 @@ import {spawnSync} from 'node:child_process';
 
 const workflow = readFileSync(resolve('.github/workflows/server-parity.yml'), 'utf8');
 const script = resolve('scripts/ci/pull-images.sh');
+const featureBase = 'php@sha256:3614314e50a9b17a0c317dfd100c6346d8881d6565e713556b7a4e8eb3ec4505';
 
 function job(name) {
   const start = workflow.indexOf(`\n  ${name}:\n`);
@@ -105,7 +106,8 @@ function featureBaseCache(t, body, canonicalAvailable = true) {
 printf '%s\n' "$*" >> "$CALL_LOG"
 case "$*" in
   *mirror.gcr.io/library/php*) echo 'manifest not found' >&2; exit 1 ;;
-  'pull --quiet php:8.3-apache') [[ "$CANONICAL_AVAILABLE" = true ]] ;;
+  'pull --quiet ${featureBase}') [[ "$CANONICAL_AVAILABLE" = true ]] ;;
+  'tag ${featureBase} php:8.3-apache') exit 0 ;;
   *) exit 3 ;;
 esac
 `);
@@ -120,9 +122,9 @@ esac
 
 function featureBaseStep() {
   const source = readFileSync(resolve('.github/workflows/phpunit-feature.yml'), 'utf8');
-  const command = source.match(/- name: Cache the canonical public PHP build input\n {8}run: (.+)\n/)?.[1];
+  const command = source.match(/- name: Cache the canonical public PHP build input\n {8}run: \|\n((?: {10}[^\n]+\n)+)/)?.[1];
   assert.ok(command, 'the feature job caches its official PHP input before building');
-  return command;
+  return command.replace(/^ {10}/gm, '');
 }
 
 test('feature base caching survives a missing mirror child without changing its canonical input', t => {
@@ -131,12 +133,12 @@ test('feature base caching survives a missing mirror child without changing its 
   assert.deepEqual(predecessor.calls, ['pull mirror.gcr.io/library/php:8.3-apache']);
   const result = featureBaseCache(t, featureBaseStep());
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.calls, ['pull --quiet php:8.3-apache']);
+  assert.deepEqual(result.calls, [`pull --quiet ${featureBase}`, `tag ${featureBase} php:8.3-apache`]);
 });
 
 test('feature base caching preserves canonical registry failure instead of proceeding to build', t => {
   const result = featureBaseCache(t, featureBaseStep(), false);
   assert.equal(result.status, 1);
-  assert.deepEqual(result.calls, ['pull --quiet php:8.3-apache']);
-  assert.match(result.stderr, /could not pull php:8\.3-apache after 1 attempts/);
+  assert.deepEqual(result.calls, [`pull --quiet ${featureBase}`]);
+  assert.ok(result.stderr.includes(`could not pull ${featureBase} after 1 attempts`));
 });

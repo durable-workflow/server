@@ -175,10 +175,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # A mirror's cached index can reference an unavailable child manifest.
-      # Cache the same official input directly, using the existing pull bound.
+      # The mirror misses this index's amd64 attestation companion (90503a91).
+      # Retain that exact official index and runtime; use the canonical registry.
       - name: Cache the canonical public PHP build input
-        run: bash scripts/ci/pull-images.sh php:8.3-apache
+        run: |
+          php_base=php@sha256:3614314e50a9b17a0c317dfd100c6346d8881d6565e713556b7a4e8eb3ec4505
+          bash scripts/ci/pull-images.sh "$php_base"
+          docker tag "$php_base" php:8.3-apache
 
       - name: Key the source-free PHP tool images
         id: php_tools_key
