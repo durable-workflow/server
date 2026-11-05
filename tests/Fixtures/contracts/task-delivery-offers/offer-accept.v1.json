@@ -1,0 +1,187 @@
+{
+  "schema": "durable-workflow.task-delivery-scenarios.v1",
+  "status": "draft contract data; no executor or qualification result",
+  "source_issue": "https://github.com/durable-workflow/server/issues/931",
+  "reference_sources": {
+    "retired_server_php_commit": "ed302326f0f73c383df88a918c8378755e0a56fe",
+    "held_sdk_php_commit": "034c0f4dc2fbbc1671fe9b1cdfd0fa36c2576c2e"
+  },
+  "contract": {
+    "schema": "durable-workflow.task-delivery.v1",
+    "version": "offer-accept.v1",
+    "minimum_protocol_version": "1.20",
+    "worker_capability": "task_delivery_offers",
+    "header": "X-Durable-Workflow-Task-Delivery",
+    "endpoint_suffix": "/offers",
+    "acceptance_timeout_seconds": {
+      "default": 2,
+      "minimum": 1,
+      "maximum": 10,
+      "actual_integer_required": true
+    },
+    "offer_token_maximum_bytes": 8192,
+    "unaccepted_offer_reserves_task": false,
+    "endpoints": {
+      "workflow": ["workflow", "update_validation"],
+      "activity": ["activity"],
+      "query": ["query"],
+      "update-validation": ["update_validation"]
+    }
+  },
+  "executor_requirements": {
+    "inputs": "synthetic authorized registration, tasks, clocks and faults; no real credentials",
+    "packets": "seal synthetic authoritative contexts with the reviewed implementation; do not use placeholder tokens",
+    "database": "exercise actual claim/receipt transactions, not a scenario-only model",
+    "comparison": "compare task authority and attempts, start history and receipt before and after every phase",
+    "scope": "run on each source backend required by the owning PR; installed proxy/restart/capacity acceptance is separate",
+    "no_result_inference": "parsing or enumerating this data is not a passing execution"
+  },
+  "cases": [
+    {
+      "id": "offer-lost",
+      "kinds": ["workflow", "activity", "query", "update_validation"],
+      "actions": ["observe-ready-task", "drop-offer-response", "peer-claim"],
+      "expected": {"offer_started_attempts": 0, "offer_start_events": 0, "peer_claims_same_task": true}
+    },
+    {
+      "id": "offer-peer-wins",
+      "actions": ["observe-ready-task", "peer-claims-task", "accept-original-offer"],
+      "expected": {"new_claims_from_accept": 0, "peer_authority_unchanged": true}
+    },
+    {
+      "id": "offer-expired-unaccepted",
+      "actions": ["observe-ready-task", "advance-past-offer-expiry", "accept-original-offer", "start-new-logical-poll"],
+      "expected": {"refusal_status": 409, "reason": "task_offer_expired", "task": null, "old_accept_started_attempts": 0, "new_poll_eligible": true}
+    },
+    {
+      "id": "accept-lost",
+      "actions": ["observe-ready-task", "accept-and-commit", "drop-accept-response", "retry-identical-packet"],
+      "expected": {"total_new_claims": 1, "same_task_owner_attempt": true, "new_start_events_on_retry": 0}
+    },
+    {
+      "id": "accept-after-offer-expiry",
+      "actions": ["observe-ready-task", "accept-and-commit", "advance-past-offer-expiry-with-live-lease", "retry-identical-packet"],
+      "expected": {"replay_accepted_claim": true, "total_new_claims": 1, "new_start_events_on_retry": 0}
+    },
+    {
+      "id": "accept-concurrent-same",
+      "actions": ["observe-ready-task", "accept-same-packet-concurrently-through-independent-connections"],
+      "expected": {"total_new_claims": 1, "all_delivered_claims_same_task_owner_attempt": true}
+    },
+    {
+      "id": "accept-alternative-offers",
+      "actions": ["observe-two-eligible-tasks-under-same-logical-poll", "accept-alternative-packets-concurrently"],
+      "expected": {"maximum_committed_claims": 1, "unselected_task_claimable_by_peer": true, "no_other_task_substituted_for_selected_packet": true}
+    },
+    {
+      "id": "accept-after-lease-renewal",
+      "actions": ["accept-and-commit", "renew-same-claim", "advance-past-original-lease-expiry-before-renewed-expiry", "retry-identical-packet"],
+      "expected": {"replay_current_live_claim": true, "same_task_owner_attempt": true, "new_start_events_on_retry": 0}
+    },
+    {
+      "id": "accept-after-task-replacement",
+      "actions": ["accept-and-commit", "end-claim-and-replace-attempt", "retry-original-packet"],
+      "expected": {"old_claim_delivered": false, "new_claims_from_retry": 0, "replacement_authority_unchanged": true}
+    },
+    {
+      "id": "registration-replaced",
+      "actions": ["observe-ready-task", "register-replacement-worker", "accept-old-packet"],
+      "expected": {"refusal_status": 409, "reason": "worker_registration_lost_authority", "task": null, "new_claims_from_accept": 0}
+    },
+    {
+      "id": "same-second-replaced",
+      "actions": ["observe-ready-task", "register-same-worker-id-and-process-metadata-within-same-stored-second", "accept-old-packet"],
+      "expected": {"refusal_status": 409, "reason": "worker_registration_lost_authority", "task": null, "new_claims_from_accept": 0}
+    },
+    {
+      "id": "routing-changed",
+      "actions": ["observe-ready-task", "change-registration-routing-fence", "accept-old-packet"],
+      "expected": {"new_claims_from_accept": 0, "old_packet_has_authority": false}
+    },
+    {
+      "id": "cross-namespace",
+      "actions": ["observe-ready-task", "submit-packet-in-another-authorized-namespace"],
+      "expected": {"new_claims_from_accept": 0, "neither_namespace_task_authority_changed": true}
+    },
+    {
+      "id": "changed-packet",
+      "actions": ["observe-ready-task", "change-one-sealed-byte", "accept-mutated-packet"],
+      "expected": {"new_claims_from_accept": 0, "seal_rejected_before_claim": true}
+    },
+    {
+      "id": "kind-workflow",
+      "endpoint": "workflow",
+      "requested_kinds": ["workflow"],
+      "offered_kind": "workflow",
+      "expected": {"selected_kind_allowed": true, "accepted_kind_must_equal": "workflow"}
+    },
+    {
+      "id": "kind-validator",
+      "endpoint": "workflow",
+      "requested_kinds": ["update_validation"],
+      "offered_kind": "update_validation",
+      "expected": {"selected_kind_allowed": true, "accepted_kind_must_equal": "update_validation"}
+    },
+    {
+      "id": "kind-mixed-order",
+      "endpoint": "workflow",
+      "request_kind_orders": [["workflow", "update_validation"], ["update_validation", "workflow"]],
+      "offered_kind": "update_validation",
+      "expected": {"same_normalized_kind_set": true, "selected_kind_allowed": true, "accepted_kind_must_equal": "update_validation"}
+    },
+    {
+      "id": "kind-unrequested",
+      "endpoint": "workflow",
+      "requested_kinds": ["workflow"],
+      "offered_kind": "update_validation",
+      "expected": {"selected_kind_allowed": false, "accept_requests_sent": 0}
+    },
+    {
+      "id": "kind-accepted-substitution",
+      "endpoint": "workflow",
+      "requested_kinds": ["workflow", "update_validation"],
+      "selected_kind": "update_validation",
+      "accepted_kind": "workflow",
+      "expected": {"execution_authorized": false, "discard_uncertain_selected_packet": false}
+    },
+    {
+      "id": "accept-db-precommit-fault",
+      "actions": ["observe-ready-task", "fault-after-claim-writes-before-commit", "inspect-authoritative-storage"],
+      "expected": {"new_claims_committed": 0, "new_attempts_committed": 0, "new_start_events_committed": 0, "accepted_receipts_committed": 0}
+    },
+    {
+      "id": "accept-db-uncertain-commit",
+      "actions": ["observe-ready-task", "commit-acceptance", "lose-database-commit-response", "retry-identical-packet-through-new-connection"],
+      "expected": {"total_new_claims": 1, "same_task_owner_attempt": true, "legacy_poll_requests": 0}
+    },
+    {
+      "id": "mixed-old-node",
+      "actions": ["accept-and-commit", "drop-accept-response", "route-identical-retry-to-old-node-404-or-405", "retry-identical-packet-on-capable-node"],
+      "expected": {"retain_selected_packet_after_old_node": true, "legacy_poll_requests": 0, "total_new_claims": 1}
+    },
+    {
+      "id": "proxy-short-wait",
+      "scope": "separately admitted installed acceptance",
+      "actions": ["cut-offer-poll-before-configured-wait", "start-task-in-abandoned-poll-window", "observe-live-worker-delivery-and-warning-diagnostics"],
+      "expected": {"abandoned_task_leases": 0, "wait_capacity_starvation": false, "observed_cutoff_and_configured_wait_reported": true}
+    },
+    {
+      "id": "restart-wait-capacity",
+      "scope": "separately admitted installed acceptance",
+      "actions": ["hold-wait-capacity", "abruptly-restart-server-process", "resume-api-with-same-durable-state", "admit-live-waiter"],
+      "expected": {"dead_process_owns_wait_slots": false, "task_authority_derived_from_capacity_hint": false}
+    },
+    {
+      "id": "worker-replacement-capacity",
+      "scope": "separately admitted installed acceptance",
+      "actions": ["hold-old-worker-poll", "replace-worker-registration", "release-old-owner-wait-capacity", "poll-as-replacement"],
+      "expected": {"old_worker_can_claim": false, "replacement_eligible": true, "global_and_namespace_limits_preserved": true}
+    },
+    {
+      "id": "other-replica-live-waiter",
+      "scope": "separately admitted installed acceptance",
+      "actions": ["hold-live-waiter-on-peer-replica", "clean-up-dead-local-owner"],
+      "expected": {"peer_live_waiter_preserved": true, "foreign_owner_slot_released": false, "global_and_namespace_limits_preserved": true}
+    }
+  ]
+}
