@@ -138,6 +138,8 @@ done
 if rolling_control FAIL_HUB_WRITE=true; then fail "second-registry failure must stop."; fi
 test "$(grep -c 'imagetools create' "$scratch/calls")" = 2 || fail "partial run must attempt exactly two forward writes."
 grep -q 'confirmed=ghcr.io/example/native; no rollback' "$scratch/summary" || fail "partial run lost confirmed registry record."
+test "$(grep -c 'alias write attempted:' "$scratch/summary")" = 2 || fail "each attempt must be persisted before a failed or hanging write."
+test "$(grep -c 'alias write confirmed:' "$scratch/summary")" = 1 || fail "only verified writes may be persisted as confirmed."
 if rolling_control POST_WRITE_MISMATCH=true; then fail "post-write mismatch must stop."; fi
 test "$(grep -c 'imagetools create' "$scratch/calls")" = 1 || fail "post-write mismatch must not touch registry two or roll back."
 grep -q 'no rollback' "$scratch/summary" || fail "uncertain run must record no rollback."
