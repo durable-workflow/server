@@ -60,14 +60,19 @@ Presence of `report.next_retry_delay_seconds`, including an invalid null value,
 signals only untrusted feature intent. After existing auth, protocol and
 runtime-role admission, validate that supplied field and its closed failed-report
 shape before task, attempt, original-claim or registration reads. A passing
-preflight grants no capability, stored mode or snapshot authority.
+preflight grants no capability, stored mode or snapshot authority. Check override
+value/type and failed-only placement first. An invalid or forbidden override
+uses the proposed strict `invalid_activity_retry_delay` 422 reply. Other closed
+report errors use the existing `invalid_local_activity_outcome` engine-refusal
+409 reply, including a valid supplied override beside an invalid message or
+unknown report member. Neither refusal requires a durable lookup in this phase.
 
 Without that member, preserve the legacy lookup and validation order. After
 scoped original-claim lookup actually establishes the conjunctive version-2
 mode, run the same pure report validator before fresh registration/fence work,
 failure-clock sampling or payload resolution. A malformed legacy report does
-not acquire a new early refusal merely by sharing this endpoint. The zero-task-
-lookup guarantee therefore applies to malformed supplied overrides. A pure
+not acquire a new early refusal merely by sharing this endpoint. The guarantee of no task lookups therefore applies to refusals in the
+new-member phase. A pure
 validator invoked after mode selection has zero reads of its own, not a claim
 that the request performed no earlier reads. No new request marker, capability
 or global protocol version selects these phases.

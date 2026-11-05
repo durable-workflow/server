@@ -2206,7 +2206,10 @@
         "failure_clock_sample_count": 0,
         "durable_mutation_count": 0,
         "next_callback_count": 0,
-        "new_http_reason_alias_selected": false
+        "new_http_reason_alias_selected": false,
+        "http_status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome"
       }
     },
     {
@@ -2231,6 +2234,101 @@
         "policy_or_clock_selection_count": 0,
         "durable_mutation_count": 0,
         "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_http_valid_override_invalid_message",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17,
+          "next_retry_delay_seconds": 0
+        },
+        "preflight_phase": "new_member_present",
+        "scoped_original_mode": "unread and unknown"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "v2_support_inferred": false
+      }
+    },
+    {
+      "id": "local_v2_http_valid_override_unknown_report_member",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic",
+          "next_retry_delay_seconds": 0,
+          "unknown_report_member": true
+        },
+        "preflight_phase": "new_member_present",
+        "scoped_original_mode": "unread and unknown"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "v2_support_inferred": false
+      }
+    },
+    {
+      "id": "local_v2_http_invalid_override_and_invalid_message",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17,
+          "next_retry_delay_seconds": null
+        },
+        "preflight_phase": "new_member_present",
+        "scoped_original_mode": "unread and unknown"
+      },
+      "expected": {
+        "http_status": 422,
+        "response_family": "strict_override_refusal",
+        "reason": "invalid_activity_retry_delay",
+        "generic_report_error_preempts_override": false,
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "v2_support_inferred": false
+      }
+    },
+    {
+      "id": "local_v2_http_forbidden_override_and_invalid_completed_result",
+      "carrier": {
+        "report": {
+          "outcome": "completed",
+          "result": 17,
+          "next_retry_delay_seconds": 0
+        },
+        "preflight_phase": "new_member_present",
+        "scoped_original_mode": "unread and unknown"
+      },
+      "expected": {
+        "http_status": 422,
+        "response_family": "strict_override_refusal",
+        "reason": "invalid_activity_retry_delay",
+        "generic_report_error_preempts_override": false,
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "v2_support_inferred": false
       }
     }
   ],
@@ -2327,8 +2425,26 @@
         "authority": "all required capability, contract and snapshot fields must be read and verified from the original scoped authority; unread fields are unknown",
         "new_marker_capability_or_protocol": false
       },
-      "zero_task_lookup_guarantee": "malformed supplied next_retry_delay_seconds and its failed-report shape only; absent-member reports keep mode-dependent lookup/validation precedence",
-      "function_purity": "both invocations perform zero storage/fetch/callback/failure-clock effects themselves; a post-mode invocation does not erase earlier scoped authority reads"
+      "zero_task_lookup_guarantee": "refusals in the new-member-present phase, including strict override and remaining report-shape failures; absent-member reports keep mode-dependent lookup/validation precedence",
+      "function_purity": "both invocations perform zero storage/fetch/callback/failure-clock effects themselves; a post-mode invocation does not erase earlier scoped authority reads",
+      "error_precedence": [
+        {
+          "check": "a supplied next_retry_delay_seconds has an actual integer in the portable range and outcome is failed",
+          "failure": {
+            "status": 422,
+            "response_family": "strict_override_refusal",
+            "reason": "invalid_activity_retry_delay"
+          }
+        },
+        {
+          "check": "remaining closed report keys, required members/types and inline/reference envelope structural form",
+          "failure": {
+            "status": 409,
+            "response_family": "engine_refusal",
+            "reason": "invalid_local_activity_outcome"
+          }
+        }
+      ]
     },
     "transaction": "recheck admitted shape, immutable original mode/identity, matching retained failed/timeout decision and fresh fences under the existing canonical locks; no controller-only validation grants writer authority",
     "bindings": {
