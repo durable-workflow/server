@@ -315,6 +315,16 @@ class TransportTests(unittest.TestCase):
             with self.subTest(fault=fault), self.assertRaises(E.Refusal):
                 registry.index_subjects(E.GHCR_IMAGE, INDEX, SOURCE, "3.2.0")
 
+    def test_registry_cli_rejects_option_or_argument_injection_before_any_command(self):
+        commands = ReadCommands(b"{}")
+        provider = T.GitHubRegistryProvider(commands)
+        for image, digest in (("--format=env", INDEX), ("foreign.invalid/server", INDEX),
+                              (E.GHCR_IMAGE, "--format=env"), (E.GHCR_IMAGE, INDEX + "\n--format=env"),
+                              (E.GHCR_IMAGE, "sha256:" + "a" * 63)):
+            with self.subTest(image=image, digest=digest), self.assertRaisesRegex(E.Refusal, "registry_subject"):
+                provider.registry_json(image, digest)
+        self.assertEqual(commands.calls, [])
+
     def test_release_absence_requires_authoritative_http_404(self):
         for status, body, expected in (("404 Not Found", {"message": "Not Found"}, False),
                                        ("200 OK", {"id": 42, "tag_name": "3.2.0"}, True)):

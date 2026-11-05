@@ -117,8 +117,10 @@ class GitHubRegistryProvider:
         return value["sha"]
 
     def registry_json(self, image: str, digest: str, image_config: bool = False) -> Any:
-        require(image in (GHCR_IMAGE, DOCKERHUB_IMAGE) and matching(digest, DIGEST),
-                "registry_subject")
+        if image not in (GHCR_IMAGE, DOCKERHUB_IMAGE):
+            raise Refusal("registry_subject")
+        if type(digest) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+            raise Refusal("registry_subject")
         arguments = ["docker", "buildx", "imagetools", "inspect"]
         arguments += ["--format", "{{json .Image}}"] if image_config else ["--raw"]
         return strict_json(self.commands.run(arguments + [image + "@" + digest]), JSON_LIMIT)

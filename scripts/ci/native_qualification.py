@@ -52,7 +52,8 @@ def read(path: Path) -> Any:
 def write(path: Path, value: Any) -> None:
     target = state_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(canonical(value))
+    with target.open("wb") as stream:
+        stream.write(canonical(value))
 
 
 def eligible_context(role: str, image: str) -> bool:
