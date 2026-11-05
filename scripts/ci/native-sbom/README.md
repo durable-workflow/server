@@ -20,8 +20,8 @@ validation must additionally require the exact `SPDX-2.3` literal; schema succes
 alone is insufficient. Vendoring this schema does not qualify a schema-validator
 package.
 
-The still-null validator dependency closure and generation mode are explicit
-unfinished source work, not permissive defaults. No workflow currently consumes
+The validator dependency closure now names the exact metadata proposal below;
+generation mode and confinement remain unfinished, never permissive defaults. No workflow currently consumes
 these inputs. The complete generation/confinement, independent schema/semantic
 validation, exact Server child predicates, retained raw bytes/checksum map,
 Release asset equality/idempotency and fail-before controls remain required
@@ -38,3 +38,18 @@ namespaces. Eight synthetic test families cover these boundaries. Their formal
 schema checks use the already-installed jsonschema4.19.2 solely as local source
 check tooling. No dependency was installed or qualified, and direct execution of
 the library refuses until the executable/dependency closure is completed.
+
+The candidate offline validator closure is `validator-pins.v1.json`: official
+Python 3.13.18 slim-bookworm immutable index and selected amd64/arm64 child/config
+pairs, plus JSON Schema 4.26.0, attrs26.1.0, specifications2025.9.1,
+referencing0.37.0 and rpds-py2026.9.1. Each package has a concrete public wheel
+URL/size/SHA-256; the rpds wheel is CPython3.13/Linux-architecture specific.
+The official-images source block and selected active dependency edges are
+retained. No optional format extras are selected; typing-extensions is inactive
+for Python3.13. The two derived requirements files use local `/deps` paths for
+an eventual network-disabled `--no-index --no-deps --require-hashes` install.
+They do not authorize a download or install. Python's observed image user is
+unset/root; future confinement must explicitly enforce a nonroot UID, read-only
+filesystem, bounded scratch/output/resources, no capabilities, no-new-privileges,
+no network, daemon socket or host credential mounts. That execution source is
+still incomplete. Neither image layers nor wheels were acquired or executed.

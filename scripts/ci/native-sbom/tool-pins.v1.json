@@ -4,7 +4,11 @@
     "generator_binary_qualified": false,
     "metadata_source_only": true,
     "scan_or_publication_admitted": false,
-    "schema_validator_dependency_closure": null
+    "schema_validator_dependency_closure": {
+      "path": "scripts/ci/native-sbom/validator-pins.v1.json",
+      "sha256": "9b140b139b299d22bd92420a4ae2ff570eeb19c7977f485557b6119c407ad314",
+      "status": "candidate_metadata_not_executed"
+    }
   },
   "attestation_action": {
     "commit": "1e69f48acb82d1966a394da916b4c1698aa569d6",
