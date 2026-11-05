@@ -28,6 +28,18 @@ owned smoke name. Do not use global tags to name the additional archive:
 [Buildx 0.38.1](https://github.com/docker/buildx/blob/v0.38.1/build/opt.go)
 copies those names to every image exporter.
 
+Output order is part of this proposal. Put the unnamed OCI exporter first and
+the existing named registry (or PR daemon) exporter last. The exact
+[BuildKit response merger](https://github.com/moby/buildkit/blob/v0.34.2/solver/llbsolver/export.go)
+collects results by exporter position, then overwrites duplicate response keys
+in that order. Appending OCI after the registry output could replace the
+publisher's `containerimage.digest` with an archive-specific digest. Future
+source controls must reject that order and independently bind the resulting
+registry digest/config to the actual immutable registry and smoke observations.
+An aggregate build response alone is not registry-subject authority. Preserve
+the existing registry output arguments and never substitute the archive digest
+when a publication or smoke read fails.
+
 Read-only historical provider log `42056550973` / job `127346371667` records
 Buildx 0.38.1, BuildKit 0.34.2 and Engine 29.4.2. This is existing-tool evidence,
 not a new exporter invocation or future runtime qualification. The exact
