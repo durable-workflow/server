@@ -1,0 +1,1713 @@
+{
+  "schema": "durable-workflow.task-delivery-acceptance-refusals.v1",
+  "status": "source contract data; no classifier, executor, capability or qualification result",
+  "source_issue": "https://github.com/durable-workflow/server/issues/931",
+  "decisions": {
+    "general": "https://github.com/durable-workflow/server/issues/931#issuecomment-6659034006",
+    "security_design": "https://github.com/durable-workflow/server/issues/931#issuecomment-6659043856"
+  },
+  "parent_fixture": {
+    "commit": "955da4e870ef76e7df1bcd24beaae037df63a8f4",
+    "path": "tests/Fixtures/contracts/task-delivery-offers/offer-accept.v1.json",
+    "sha256": "cac2bc6852a09db9526c623c3683772ebbba7d3f1d0b401fb92ae2026cd32b11",
+    "bytes": 18142,
+    "case_count": 49,
+    "unchanged_required": true
+  },
+  "contract": {
+    "applies_to": "a selected acceptance packet; ordinary discovery before selection retains its separate poll contract",
+    "http_status": 409,
+    "body_type": "JSON object",
+    "exact_body_keys": [
+      "task",
+      "poll_status",
+      "reason"
+    ],
+    "task": null,
+    "poll_status_type": "string",
+    "reason_type": "string",
+    "allowed_responses": [
+      {
+        "id": "expiry",
+        "body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "action": "resolve_selected_packet",
+        "requires": "authoritative serialized no-acceptance proof; committed live receipt wins over deadline"
+      },
+      {
+        "id": "authority_loss",
+        "body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "action": "end_original_registration",
+        "requires": "authoritative proof original incarnation can no longer execute; mode/freshness label alone is insufficient"
+      }
+    ],
+    "available_exception_fields_must_match_response": true,
+    "normalization_or_aliases_allowed": false,
+    "other_response_action": "retain_selected_packet",
+    "uncertainty_invariants": {
+      "original_packet_endpoint_registration_poll_and_kind_set_preserved": true,
+      "unrelated_pending_packets_preserved": true,
+      "payload_observation_hydration_execution_authorized": false,
+      "new_logical_poll_authorized": false,
+      "legacy_claim_authorized": false,
+      "end_original_registration_authorized": false
+    },
+    "per_response_scope": "expiry resolves only selected packet; proved authority loss ends only the original registration, never a replacement incarnation"
+  },
+  "source_executor_requirements": {
+    "kinds": [
+      "workflow",
+      "activity",
+      "query",
+      "update_validation"
+    ],
+    "inputs": "synthetic authorized namespace, registration incarnations, tasks, clocks and faults; no real credentials",
+    "wire_vectors": "bind every wire case ID to actual SDK selected-acceptance handling before payload observers/hydration",
+    "authority_vectors": "bind every authority case ID to actual native receipt/claim/registration transaction boundaries on each required backend",
+    "race_controls": "independent connections with barriers at actual authority locks, commits, rollback and replacement; a scenario-only model is insufficient",
+    "before_after_observations": [
+      "logical poll and selected packet identity",
+      "current original/replacement incarnation and fence",
+      "receipt task/kind/owner/attempt",
+      "current lease authority including renewal",
+      "attempt counter",
+      "task-start history",
+      "unrelated pending logical polls"
+    ],
+    "receipt_precedence": "serialize before a negative decision; durable live receipt replays same current claim after offer expiry and restart; fenced/ended claim never replays",
+    "no_result_inference": "enumerating or validating this source data proves no native transaction, SDK execution, installed capability or runtime result"
+  },
+  "wire_cases": [
+    {
+      "id": "refusal-expiry-exact",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "refusal-authority-loss-exact",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "end_original_registration"
+    },
+    {
+      "id": "refusal-expiry-matching-exception",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "task_offer_expired"
+      },
+      "expected_action": "resolve_selected_packet"
+    },
+    {
+      "id": "refusal-authority-matching-exception",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "end_original_registration"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-200",
+      "input": {
+        "http_status": 200,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-400",
+      "input": {
+        "http_status": 400,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-401",
+      "input": {
+        "http_status": 401,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-403",
+      "input": {
+        "http_status": 403,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-404",
+      "input": {
+        "http_status": 404,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-405",
+      "input": {
+        "http_status": 405,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-408",
+      "input": {
+        "http_status": 408,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-410",
+      "input": {
+        "http_status": 410,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-422",
+      "input": {
+        "http_status": 422,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-429",
+      "input": {
+        "http_status": 429,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-500",
+      "input": {
+        "http_status": 500,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-wrong-http-503",
+      "input": {
+        "http_status": 503,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-missing-task",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-missing-poll-status",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-missing-reason",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-extra-task-offer-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired",
+          "task_offer": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-extra-task-offer-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired",
+          "task_offer": {
+            "task_id": "synthetic-task-A"
+          }
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-extra-retryable-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired",
+          "retryable": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-extra-retry-after-ms-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired",
+          "retry_after_ms": 0
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-extra-task-id-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired",
+          "task_id": "synthetic-task-A"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-extra-result-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired",
+          "result": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-cross-pair",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-reason-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-status-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": 500,
+        "exception_reason": "task_offer_expired"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-reason-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": 409,
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-status-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": "409",
+        "exception_reason": "task_offer_expired"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": 409,
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-expiry-exception-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        },
+        "exception_http_status": true,
+        "exception_reason": "task_offer_expired"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-200",
+      "input": {
+        "http_status": 200,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-400",
+      "input": {
+        "http_status": 400,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-401",
+      "input": {
+        "http_status": 401,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-403",
+      "input": {
+        "http_status": 403,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-404",
+      "input": {
+        "http_status": 404,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-405",
+      "input": {
+        "http_status": 405,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-408",
+      "input": {
+        "http_status": 408,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-410",
+      "input": {
+        "http_status": 410,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-422",
+      "input": {
+        "http_status": 422,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-429",
+      "input": {
+        "http_status": 429,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-500",
+      "input": {
+        "http_status": 500,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-wrong-http-503",
+      "input": {
+        "http_status": 503,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-missing-task",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-missing-poll-status",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "reason": "worker_registration_lost_authority"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-missing-reason",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-extra-task-offer-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority",
+          "task_offer": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-extra-task-offer-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority",
+          "task_offer": {
+            "task_id": "synthetic-task-A"
+          }
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-extra-retryable-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority",
+          "retryable": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-extra-retry-after-ms-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority",
+          "retry_after_ms": 0
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-extra-task-id-value",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority",
+          "task_id": "synthetic-task-A"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-extra-result-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority",
+          "result": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-cross-pair",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-reason-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 409,
+        "exception_reason": "task_offer_expired"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-status-disagrees",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 500,
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-reason-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 409,
+        "exception_reason": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-status-wrong-type",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": "409",
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": 409,
+        "exception_reason": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-authority-exception-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "worker_registration_lost_authority"
+        },
+        "exception_http_status": true,
+        "exception_reason": "worker_registration_lost_authority"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-http-status-string",
+      "input": {
+        "http_status": "409",
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-http-status-boolean",
+      "input": {
+        "http_status": true,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-http-status-null",
+      "input": {
+        "http_status": null,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-http-status-fraction",
+      "input": {
+        "http_status": 409.5,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-poll-status-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": null,
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-poll-status-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": false,
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-poll-status-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": 409,
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-poll-status-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": [],
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-poll-status-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": {},
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-reason-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": null
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-reason-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": false
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-reason-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": 409
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-reason-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": []
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-reason-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": {}
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-task-not-null-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": false,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-task-not-null-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": 0,
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-task-not-null-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": "",
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-task-not-null-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": [],
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-task-not-null-object",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": {},
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-task-not-null-payload",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": {
+            "task_id": "synthetic-task-A"
+          },
+          "poll_status": "task_offer_expired",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-body-null",
+      "input": {
+        "http_status": 409,
+        "decoded_body": null
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-body-array",
+      "input": {
+        "http_status": 409,
+        "decoded_body": []
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-body-boolean",
+      "input": {
+        "http_status": 409,
+        "decoded_body": false
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-body-string",
+      "input": {
+        "http_status": 409,
+        "decoded_body": "task_offer_expired"
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-body-integer",
+      "input": {
+        "http_status": 409,
+        "decoded_body": 409
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-legacy-draining",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "draining",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-legacy-stopped",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stopped",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-legacy-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-legacy-heartbeat-underscore-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "heartbeat_stale",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-legacy-heartbeat-stale",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "heartbeat-stale",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-legacy-stale-underscore-worker-underscore-registration",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-legacy-stale-reason",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "stale_worker_registration",
+          "reason": "stale_worker_registration"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-empty-poll",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "empty"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-offered-response",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "offered",
+          "task_offer": {
+            "task_id": "synthetic-task-A"
+          }
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-reason-leading-space",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "task_offer_expired",
+          "reason": " task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-poll-status-case-change",
+      "input": {
+        "http_status": 409,
+        "decoded_body": {
+          "task": null,
+          "poll_status": "TASK_OFFER_EXPIRED",
+          "reason": "task_offer_expired"
+        }
+      },
+      "expected_action": "retain_selected_packet"
+    },
+    {
+      "id": "refusal-unreadable-body",
+      "input": {
+        "http_status": 409,
+        "decoded_body": null,
+        "transport_failure": "body_read_failed"
+      },
+      "expected_action": "retain_selected_packet"
+    }
+  ],
+  "authority_cases": [
+    {
+      "id": "authority-expired-never-accepted",
+      "before": "original registration current; selected offer is past deadline; no claim or receipt",
+      "ordered_actions": [
+        "take logical-poll/claim authority locks",
+        "read authoritative receipt and task in serialized state",
+        "confirm no acceptance can commit for the selected packet",
+        "emit expiry refusal"
+      ],
+      "expected": {
+        "outcome": "expiry_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "task_offer_expired",
+            "reason": "task_offer_expired"
+          }
+        },
+        "new_claims": 0,
+        "new_attempts": 0,
+        "new_start_events": 0,
+        "registration_preserved": true
+      }
+    },
+    {
+      "id": "authority-acceptance-commits-before-expiry-reader",
+      "before": "valid acceptance owns authority locks before deadline; expiry reader is concurrent",
+      "ordered_actions": [
+        "acceptance commits receipt, live lease, attempt and start event atomically",
+        "expiry reader waits for the same authority locks",
+        "advance past offer deadline",
+        "expiry reader observes committed live receipt",
+        "retry original selected packet"
+      ],
+      "expected": {
+        "outcome": "replay_original_live_claim",
+        "total_new_claims": 1,
+        "retry_new_attempts": 0,
+        "retry_new_start_events": 0,
+        "same_task_owner_attempt": true,
+        "expiry_refusal_forbidden": true
+      }
+    },
+    {
+      "id": "authority-expiry-decision-wins-before-late-acceptance",
+      "before": "past deadline; no committed receipt; independent acceptance is concurrent",
+      "ordered_actions": [
+        "expiry reader acquires shared transition authority first",
+        "read authoritative receipt/task and decide expiry under the locks",
+        "release transaction",
+        "late acceptance rechecks deadline and authoritative state under the same locks"
+      ],
+      "expected": {
+        "outcome": "expiry_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "task_offer_expired",
+            "reason": "task_offer_expired"
+          }
+        },
+        "total_new_claims": 0,
+        "total_new_attempts": 0,
+        "total_new_start_events": 0,
+        "acceptance_cannot_commit_after_refusal": true
+      }
+    },
+    {
+      "id": "authority-inflight-acceptance-rolls-back",
+      "before": "acceptance has uncommitted receipt/lease/attempt/start writes; expiry reader waits",
+      "ordered_actions": [
+        "roll back all acceptance writes",
+        "expiry reader acquires authority locks after rollback",
+        "observe no committed receipt and expired original packet"
+      ],
+      "expected": {
+        "outcome": "expiry_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "task_offer_expired",
+            "reason": "task_offer_expired"
+          }
+        },
+        "total_new_claims": 0,
+        "total_new_attempts": 0,
+        "total_new_start_events": 0
+      }
+    },
+    {
+      "id": "authority-commit-ack-lost",
+      "before": "acceptance transaction commits but caller receives a commit/transport error",
+      "ordered_actions": [
+        "retain selected packet on uncertain commit acknowledgement",
+        "advance past offer deadline",
+        "retry identical packet through another connection",
+        "serialize and read authoritative committed receipt/task"
+      ],
+      "expected": {
+        "outcome": "replay_original_live_claim",
+        "total_new_claims": 1,
+        "retry_new_attempts": 0,
+        "retry_new_start_events": 0,
+        "same_task_owner_attempt": true,
+        "legacy_claim_requests": 0
+      }
+    },
+    {
+      "id": "authority-lagging-replica-misses-receipt",
+      "before": "primary has a committed live claim; an older replica cannot see its receipt",
+      "ordered_actions": [
+        "route retry past deadline to lagging replica",
+        "refuse to infer absence from stale state",
+        "retain selected packet until authoritative serialized read is possible"
+      ],
+      "expected": {
+        "outcome": "uncertain",
+        "selected_packet_preserved": true,
+        "expiry_refusal_forbidden": true,
+        "payload_execution_authorized": false
+      }
+    },
+    {
+      "id": "authority-receipt-read-fails",
+      "before": "receipt/task authority read is unavailable or transaction outcome is unknown",
+      "ordered_actions": [
+        "fail authoritative read or serialization",
+        "do not manufacture a no-claim proof from timeout/error/empty response"
+      ],
+      "expected": {
+        "outcome": "uncertain",
+        "selected_packet_preserved": true,
+        "definitive_refusal_forbidden": true,
+        "payload_execution_authorized": false
+      }
+    },
+    {
+      "id": "authority-replay-after-process-restart",
+      "before": "acceptance committed a live claim and durable receipt before process exit",
+      "ordered_actions": [
+        "restart accepting process",
+        "advance past offer deadline while lease remains live",
+        "retry original packet on a fresh capable process",
+        "read durable receipt and current authority"
+      ],
+      "expected": {
+        "outcome": "replay_original_live_claim",
+        "total_new_claims": 1,
+        "retry_new_attempts": 0,
+        "retry_new_start_events": 0,
+        "same_task_owner_attempt": true
+      }
+    },
+    {
+      "id": "authority-renewed-live-claim",
+      "before": "committed claim was renewed beyond its original lease and offer deadline",
+      "ordered_actions": [
+        "advance beyond original lease expiry but before current renewed lease expiry",
+        "retry identical selected packet",
+        "read receipt and current lease rather than original token deadline"
+      ],
+      "expected": {
+        "outcome": "replay_original_live_claim",
+        "same_task_owner_attempt": true,
+        "retry_new_attempts": 0,
+        "retry_new_start_events": 0
+      }
+    },
+    {
+      "id": "authority-live-receipt-premature-prune",
+      "before": "a live replayable claim exists but its receipt has incorrectly disappeared",
+      "ordered_actions": [
+        "detect inability to establish required durable live-claim receipt invariant",
+        "do not translate missing receipt into an expired-unaccepted claim"
+      ],
+      "expected": {
+        "outcome": "invariant_failure_uncertain",
+        "selected_packet_preserved": true,
+        "expiry_refusal_forbidden": true,
+        "implementation_qualification_must_fail": true
+      }
+    },
+    {
+      "id": "authority-draining-retains-live-claim",
+      "before": "original registration and committed claim remain authoritative; worker mode becomes draining",
+      "ordered_actions": [
+        "retry selected packet past offer deadline",
+        "read committed live receipt before considering worker mode"
+      ],
+      "expected": {
+        "outcome": "replay_original_live_claim",
+        "same_task_owner_attempt": true,
+        "mode_alone_cannot_erase_receipt": true,
+        "authority_loss_refusal_forbidden": true,
+        "retry_new_attempts": 0,
+        "retry_new_start_events": 0
+      }
+    },
+    {
+      "id": "authority-draining-no-proof",
+      "before": "only a draining lifecycle label is known; actual original claim/registration authority has not been proved lost",
+      "ordered_actions": [
+        "receive a draining label while an acceptance is selected",
+        "preserve original packet and await one of the exact proved outcomes"
+      ],
+      "expected": {
+        "outcome": "uncertain",
+        "selected_packet_preserved": true,
+        "end_original_registration": false,
+        "payload_execution_authorized": false
+      }
+    },
+    {
+      "id": "authority-stopped-label-no-proof",
+      "before": "only a stopped lifecycle label is known; no authoritative ended-identity proof",
+      "ordered_actions": [
+        "inspect lifecycle label without replacing authoritative receipt/registration read"
+      ],
+      "expected": {
+        "outcome": "uncertain",
+        "selected_packet_preserved": true,
+        "end_original_registration": false
+      }
+    },
+    {
+      "id": "authority-heartbeat-label-no-proof",
+      "before": "heartbeat is stale or freshness lookup is unavailable; authority revocation is unproved",
+      "ordered_actions": [
+        "do not equate heartbeat age with an authoritative execution fence"
+      ],
+      "expected": {
+        "outcome": "uncertain",
+        "selected_packet_preserved": true,
+        "end_original_registration": false
+      }
+    },
+    {
+      "id": "authority-replaced-registration-fenced",
+      "before": "replacement incarnation has authoritatively fenced original registration and all its execution authority",
+      "ordered_actions": [
+        "serialize replacement and original-packet acceptance under normal transition authority",
+        "read original identity/fence and prove original worker can no longer execute",
+        "emit authority-loss refusal"
+      ],
+      "expected": {
+        "outcome": "authority_loss_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "stale_worker_registration",
+            "reason": "worker_registration_lost_authority"
+          }
+        },
+        "new_claims_from_old_packet": 0,
+        "replacement_authority_unchanged": true
+      }
+    },
+    {
+      "id": "authority-ended-registration-proved",
+      "before": "original registration ended and authoritative task/lease state proves it cannot execute",
+      "ordered_actions": [
+        "read original registration identity plus current claim/lease authority under transition locks",
+        "prove actual authority loss rather than infer it from mode text"
+      ],
+      "expected": {
+        "outcome": "authority_loss_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "stale_worker_registration",
+            "reason": "worker_registration_lost_authority"
+          }
+        },
+        "new_claims_from_old_packet": 0
+      }
+    },
+    {
+      "id": "authority-same-second-replacement",
+      "before": "same worker ID and process metadata recur within one stored timestamp second; original incarnation differs",
+      "ordered_actions": [
+        "use durable incarnation/credential/fence identity rather than timestamp or worker ID alone",
+        "prove original execution authority revoked"
+      ],
+      "expected": {
+        "outcome": "authority_loss_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "stale_worker_registration",
+            "reason": "worker_registration_lost_authority"
+          }
+        },
+        "new_claims_from_old_packet": 0,
+        "replacement_authority_unchanged": true
+      }
+    },
+    {
+      "id": "authority-registration-row-unavailable",
+      "before": "original registration lookup is missing through incomplete/failed observation, not proved authoritative absence",
+      "ordered_actions": [
+        "refuse authority-loss conclusion without a complete authoritative identity/fence read"
+      ],
+      "expected": {
+        "outcome": "uncertain",
+        "selected_packet_preserved": true,
+        "end_original_registration": false
+      }
+    },
+    {
+      "id": "authority-selected-claim-ended-registration-current",
+      "before": "selected claim has ended or its task attempt changed, but original registration still has execution authority for other work",
+      "ordered_actions": [
+        "forbid replay of ended/replaced selected claim",
+        "do not infer registration-wide authority loss from this task alone",
+        "retain original packet without inventing a third definitive refusal pair"
+      ],
+      "expected": {
+        "outcome": "uncertain",
+        "selected_packet_preserved": true,
+        "old_payload_replayed": false,
+        "end_original_registration": false,
+        "other_claim_authority_unchanged": true
+      }
+    },
+    {
+      "id": "authority-replacement-wins-race",
+      "before": "replacement and acceptance race on independent connections for the original incarnation",
+      "ordered_actions": [
+        "replacement acquires authority locks first",
+        "replacement commits fence/ended original execution authority",
+        "old acceptance then reads current registration and task authority"
+      ],
+      "expected": {
+        "outcome": "authority_loss_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "stale_worker_registration",
+            "reason": "worker_registration_lost_authority"
+          }
+        },
+        "total_new_claims_from_old_packet": 0,
+        "total_new_attempts_from_old_packet": 0,
+        "total_new_start_events_from_old_packet": 0
+      }
+    },
+    {
+      "id": "authority-acceptance-wins-then-replacement",
+      "before": "valid acceptance and replacement race on independent connections",
+      "ordered_actions": [
+        "acceptance acquires authority locks first and atomically commits one claim/receipt/attempt/start",
+        "replacement then serializes and revokes original execution authority",
+        "retry original selected packet after replacement",
+        "read receipt but also current authority; never replay a fenced claim"
+      ],
+      "expected": {
+        "outcome": "authority_loss_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "stale_worker_registration",
+            "reason": "worker_registration_lost_authority"
+          }
+        },
+        "total_new_claims": 1,
+        "retry_new_attempts": 0,
+        "retry_new_start_events": 0,
+        "old_payload_replayed_after_fence": false
+      }
+    },
+    {
+      "id": "authority-expired-offer-live-registration-other-claim",
+      "before": "selected offer never accepted and is expired; task is now leased by a peer; original registration remains current",
+      "ordered_actions": [
+        "serialize receipt/task read and prove no selected-packet acceptance can commit",
+        "preserve peer lease and original registration"
+      ],
+      "expected": {
+        "outcome": "expiry_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "task_offer_expired",
+            "reason": "task_offer_expired"
+          }
+        },
+        "new_claims_from_selected_packet": 0,
+        "peer_authority_unchanged": true,
+        "registration_preserved": true
+      }
+    },
+    {
+      "id": "authority-refusal-preserves-unrelated-polls",
+      "before": "two distinct logical polls are pending on the same registration; only selected poll A is proved expired",
+      "ordered_actions": [
+        "receive exact expiry refusal for A",
+        "resolve only A",
+        "preserve pending original packet and identity for B"
+      ],
+      "expected": {
+        "outcome": "expiry_refusal",
+        "response": {
+          "http_status": 409,
+          "body": {
+            "task": null,
+            "poll_status": "task_offer_expired",
+            "reason": "task_offer_expired"
+          }
+        },
+        "poll_b_packet_unchanged": true,
+        "registration_preserved": true
+      }
+    },
+    {
+      "id": "authority-inconsistent-envelope-preserves-all",
+      "before": "selected poll A and unrelated B are pending; transport/exception/body disagree",
+      "ordered_actions": [
+        "receive mixed or extra-key refusal candidate",
+        "preserve A and B",
+        "suppress payload observer, hydration and execution",
+        "do not begin a replacement logical poll or legacy claim"
+      ],
+      "expected": {
+        "outcome": "uncertain",
+        "selected_packet_preserved": true,
+        "poll_b_packet_unchanged": true,
+        "end_original_registration": false,
+        "new_logical_poll_requests": 0,
+        "legacy_claim_requests": 0
+      }
+    }
+  ]
+}
