@@ -62,11 +62,25 @@ cat > "$scratch/docker" <<'FAKE'
 printf '%s\n' "$*" >> "$CALL_LOG"
 ref=${!#}
 if [[ "$*" == *"imagetools inspect --format {{json .Image}}"* ]]; then
+  if [[ "${RACE_REF:-}" == "$ref" ]]; then
+    count=$(( $(cat "$RACE_COUNTER" 2>/dev/null || echo 0) + 1 )); echo "$count" > "$RACE_COUNTER"
+    if ((count > 1)); then echo '{"config":{"Labels":{"dev.durable-workflow.release.tag":"3.9.0"}}}'; exit 0; fi
+  fi
   label=$(awk -v r="$ref" '$1 == r { print $2 }' <<<"${ALIAS_STATE:-}")
   [[ -z "$label" ]] && { echo "ERROR: $ref: not found" >&2; exit 1; }
   [[ "$label" == unreadable ]] && { echo "ERROR: unauthorized" >&2; exit 1; }
   printf '{"linux/amd64":{"config":{"Labels":{"dev.durable-workflow.release.tag":"%s"}}}}\n' "$label"
+elif [[ "$*" == *"imagetools create"* ]]; then
+  touch "$CALL_LOG.written"
+  if [[ "${FAIL_HUB_WRITE:-false}" == true && "$ref" == example/native@* ]]; then exit 73; fi
 elif [[ "$*" == *"imagetools inspect"* ]]; then
+  if [[ "${RACE_EXACT:-false}" == true && "$ref" == ghcr.io/example/native:3.0.0 ]]; then
+    count=$(( $(cat "$RACE_COUNTER" 2>/dev/null || echo 0) + 1 )); echo "$count" > "$RACE_COUNTER"
+    if ((count > 1)); then printf 'sha256:%064d\n' 0; exit 0; fi
+  fi
+  if [[ "${POST_WRITE_MISMATCH:-false}" == true && -f "$CALL_LOG.written" && "$ref" == ghcr.io/example/native:3.0 ]]; then
+    printf 'sha256:%064d\n' 0; exit 0
+  fi
   if [[ "$ref" =~ :[0-9]+\.[0-9]+\.[0-9]+$ ]]; then printf '%s\n' "${EXACT_DIGEST:-$INDEX_DIGEST}"; else printf '%s\n' "$INDEX_DIGEST"; fi
 fi
 FAKE
@@ -108,6 +122,35 @@ grep -q 'imagetools create' "$scratch/calls" && fail "aliases were written after
 want "unreadable alias" "$(rolling $'2.11.8' native-3.0.0 'example/native:latest unreadable')" "FAILED"
 grep -q 'imagetools create' "$scratch/calls" && fail "aliases were written though an alias could not be read."
 expect "INDEX_DIGEST must be the verified index digest" RELEASE_TAG=native-3.0.0 "${images[@]}" RELEASE_IMAGE_KNOWN_TAGS=x bash scripts/ci/native-release-rolling-tags.sh
+# Detectable changes before the first write leave zero writes. A second
+# registry failure or post-write mismatch records partial/uncertain state and
+# never issues a rollback. These are fake registries, not network experiments.
+rolling_control() {
+  : > "$scratch/calls"; : > "$scratch/summary"; rm -f "$scratch/counter" "$scratch/calls.written"
+  env -i PATH="$PATH" DOCKER="$scratch/docker" CALL_LOG="$scratch/calls" GITHUB_STEP_SUMMARY="$scratch/summary" \
+    INDEX_DIGEST="$index" "${images[@]}" RELEASE_TAG=3.0.0 RELEASE_IMAGE_KNOWN_TAGS=3.0.0 \
+    RACE_COUNTER="$scratch/counter" "$@" bash scripts/ci/native-release-rolling-tags.sh >/dev/null 2>&1
+}
+for race in 'RACE_REF=ghcr.io/example/native:3.0' RACE_EXACT=true; do
+  if rolling_control "$race" ALIAS_STATE='ghcr.io/example/native:3.0 3.0.0'; then fail "changed pre-write state must refuse."; fi
+  grep -q 'imagetools create' "$scratch/calls" && fail "pre-write race wrote aliases."
+done
+if rolling_control FAIL_HUB_WRITE=true; then fail "second-registry failure must stop."; fi
+test "$(grep -c 'imagetools create' "$scratch/calls")" = 2 || fail "partial run must attempt exactly two forward writes."
+grep -q 'confirmed=ghcr.io/example/native; no rollback' "$scratch/summary" || fail "partial run lost confirmed registry record."
+if rolling_control POST_WRITE_MISMATCH=true; then fail "post-write mismatch must stop."; fi
+test "$(grep -c 'imagetools create' "$scratch/calls")" = 1 || fail "post-write mismatch must not touch registry two or roll back."
+grep -q 'no rollback' "$scratch/summary" || fail "uncertain run must record no rollback."
+# Final Release ordering cannot run the writer. Exact live aliases pass;
+# missing/older aliases refuse; uniformly newer final aliases may supersede.
+for state in "" 'ghcr.io/example/native:3.0 2.11.8'; do
+  if rolling_control VERIFY_ONLY=true ALIAS_STATE="$state"; then fail "unpromoted live state must refuse."; fi
+  grep -q 'imagetools create' "$scratch/calls" && fail "live-state verification mutated aliases."
+done
+live_state=$'ghcr.io/example/native:3.0 3.0.0\nexample/native:3.0 3.0.0\nghcr.io/example/native:3 3.0.0\nexample/native:3 3.0.0\nghcr.io/example/native:latest 3.0.0\nexample/native:latest 3.0.0'
+rolling_control VERIFY_ONLY=true ALIAS_STATE="$live_state" || fail "qualified same-index live state must pass."
+grep -q 'imagetools create' "$scratch/calls" && fail "same-index live-state verification wrote."
+
 # The GitHub Release, from protected main (native-github-release.yml): it
 # verifies the tag, the run, both exact tags and the provenance, then marks
 # a final Latest only when the live latest alias names its index in both
@@ -122,8 +165,9 @@ case "$1 $2" in
     while [[ $# -gt 0 && "$1" != --notes ]]; do shift; done
     printf '%s' "${2:-}" > "$GH_NOTES"; exit 0 ;;
   "attestation verify")
-    printf '%s\n' "$*" > "$GH_ATTEST_LOG"
+    printf '%s\n' "$*" >> "$GH_ATTEST_LOG"
     [[ "${ATTEST:-ok}" == ok ]] || exit 1
+    [[ "${ATTEST_FAIL_IMAGE:-}" != "$3" ]] || exit 1
     printf '%s\n' "${ATTEST_URI:-https://github.com/example/server/actions/runs/${RUN_ID}/attempts/1}"; exit 0 ;;
 esac
 path=$2
@@ -132,7 +176,7 @@ case "$path" in
   repos/example/server/git/tags/*) printf 'commit %s\n' "$COMMIT" ;;
   repos/example/server/compare/*) printf '%s\n' "${COMPARE:-ahead}" ;;
   repos/example/server/releases/latest) printf '%s\n' "${LATEST_TAG:-}" ;;
-  repos/example/server/actions/runs/*) printf '%s\n' "${RUN_LINE:-.github/workflows/native-release.yml workflow_dispatch completed success $RELEASE_TAG $COMMIT}" ;;
+  repos/example/server/actions/runs/*) printf '%s\n' "${RUN_LINE:-.github/workflows/native-release.yml workflow_dispatch completed success $RELEASE_TAG $COMMIT ${RUN_ATTEMPT:-1}}" ;;
   *) exit 1 ;;
 esac
 FAKE
@@ -151,13 +195,22 @@ else
 fi
 FAKE
 chmod +x "$scratch/gh" "$scratch/release-docker"
+# The publication/Release unit controls stub only the independently tested
+# qualification verifier; its actual provider/receipt/zero-write tests run below.
+cat > "$scratch/python3" <<'FAKE'
+#!/usr/bin/env bash
+[[ "$1" == */native_alias_promote.py && "$2" == release-order ]] || exit 1
+[[ -n "${PROMOTION_EVIDENCE:-}" ]] || exit 1
+exit "${QUALIFICATION_STATUS:-0}"
+FAKE
+chmod +x "$scratch/python3"
 newer_index=sha256:$(printf '%064d' 0 | tr 0 b)
 gh_release() { # release tag, latest state [, VAR=value ...] -> the Latest choice
   local tag=$1 state=$2; shift 2
   : > "$scratch/gh_calls"; : > "$scratch/gh_attest"
-  env -i PATH="$PATH" GH="$scratch/gh" GH_LOG="$scratch/gh_calls" GH_ATTEST_LOG="$scratch/gh_attest" GH_NOTES="$scratch/gh_notes" \
+  env -i PATH="$scratch:$PATH" GH="$scratch/gh" GH_LOG="$scratch/gh_calls" GH_ATTEST_LOG="$scratch/gh_attest" GH_NOTES="$scratch/gh_notes" \
     DOCKER="$scratch/release-docker" "${images[@]}" GITHUB_REPOSITORY=example/server \
-    RELEASE_TAG="$tag" RELEASE_RUN_ID=41 RUN_ID=41 COMMIT="$commit" INDEX="$index" LATEST_STATE="$state" "$@" \
+    RELEASE_TAG="$tag" RELEASE_RUN_ID=41 RELEASE_RUN_ATTEMPT=1 PROMOTION_EVIDENCE=synthetic-selected-evidence RUN_ID=41 COMMIT="$commit" INDEX="$index" LATEST_STATE="$state" "$@" \
     bash scripts/ci/native-release-github-release.sh >/dev/null 2>&1 || { echo FAILED; return; }
   grep -q -- '^release create ' "$scratch/gh_calls" || { echo none; return; }
   grep -q -- '--verify-tag --title ' "$scratch/gh_calls" || { echo FAILED; return; }
@@ -174,6 +227,8 @@ grep -q -- "--source-ref refs/tags/3.1.0 --source-digest $commit" "$scratch/gh_a
   || fail "the provenance must be checked against the tag ref and its commit."
 grep -q -- "--signer-workflow github.com/example/server/.github/workflows/native-release.yml" "$scratch/gh_attest" \
   || fail "the provenance must name native-release.yml as its signer."
+grep -q 'oci://ghcr.io/example/native@' "$scratch/gh_attest" && grep -q 'oci://example/native@' "$scratch/gh_attest" \
+  || fail "both registry provenance subjects must verify."
 backport=$(rolling $'2.11.8\nnative-3.0.1\n3.1.0' 3.0.2 $'ghcr.io/example/native:3 3.1.0\nexample/native:3 3.1.0\nghcr.io/example/native:latest 3.1.0\nexample/native:latest 3.1.0')
 want "3.0.2 backport behind 3.1.0" "$backport" "3.0"
 want_release "3.0.2 backport behind 3.1.0" "$(gh_release 3.0.2 "$theirs")" "--latest=false"
@@ -218,8 +273,18 @@ want_release "run from another ref" "$(gh_release 3.0.2 "$ours" RUN_LINE=".githu
 want_release "run at another commit" "$(gh_release 3.0.2 "$ours" RUN_LINE=".github/workflows/native-release.yml workflow_dispatch completed success 3.0.2 fedcba9876543210fedcba9876543210fedcba98")" "FAILED"
 want_release "registries name different indexes" "$(gh_release 3.0.2 "$ours" HUB_EXACT="$newer_index")" "FAILED"
 want_release "provenance does not verify" "$(gh_release 3.0.2 "$ours" ATTEST=fail)" "FAILED"
+want_release "Docker Hub provenance does not verify" "$(gh_release 3.0.2 "$ours" ATTEST_FAIL_IMAGE="oci://example/native@$index")" "FAILED"
+test ! -s "$scratch/gh_calls" || fail "Release was created after Docker Hub provenance failure."
 want_release "provenance from another run" "$(gh_release 3.0.2 "$ours" ATTEST_URI=https://github.com/example/server/actions/runs/42/attempts/1)" "FAILED"
 want_release "provenance from a run id prefix" "$(gh_release 3.0.2 "$ours" ATTEST_URI=https://github.com/example/server/actions/runs/411/attempts/1)" "FAILED"
+
+want_release "missing exact publication attempt" "$(gh_release 3.0.2 "$ours" RELEASE_RUN_ATTEMPT=)" "FAILED"
+want_release "publication current attempt changed" "$(gh_release 3.0.2 "$ours" RELEASE_RUN_ATTEMPT=2)" "FAILED"
+want_release "provenance from another attempt" "$(gh_release 3.0.2 "$ours" ATTEST_URI=https://github.com/example/server/actions/runs/41/attempts/2)" "FAILED"
+want_release "qualification refusal" "$(gh_release 3.0.2 "$ours" QUALIFICATION_STATUS=1)" "FAILED"
+test ! -s "$scratch/gh_calls" || fail "Release was created despite qualification refusal."
+want_release "final missing qualification" "$(gh_release 3.0.2 "$ours" PROMOTION_EVIDENCE=)" "FAILED"
+want_release "candidate needs no alias qualification" "$(gh_release 3.1.0-rc.1 "$ours" PROMOTION_EVIDENCE= QUALIFICATION_STATUS=1)" "--prerelease --latest=false"
 
 # Release identity: only a strict native- label admits a release image, and
 # only when its server reports exactly that version.
@@ -311,7 +376,7 @@ rm -f "$scratch/git" "$scratch/git-count"
 # the resolver's inventory rather than reading the tags again.
 # The GitHub Release job holds it too, so Latest is decided with no alias
 # moving underneath it.
-for workflow in .github/workflows/release.yml .github/workflows/native-release.yml .github/workflows/native-github-release.yml; do
+for workflow in .github/workflows/release.yml .github/workflows/native-alias-promotion.yml .github/workflows/native-github-release.yml; do
   test "$(grep -c '^      group: durable-workflow-server-rolling-aliases$' "$workflow")" = 1 \
     || fail "$workflow must hold the durable-workflow-server-rolling-aliases lock in one job."
 done
@@ -450,8 +515,7 @@ tag_gate="github.ref == format('refs/tags/{0}', inputs.tag)"
 expected_conditions="plan=none
 build-amd64=$tag_gate
 build-arm64=$tag_gate
-publish=$tag_gate
-aliases=$tag_gate && needs.plan.outputs.dockerhub == 'true'"
+publish=$tag_gate"
 test "$job_conditions" = "$expected_conditions" \
   || fail "native-release.yml job conditions changed; expected:
 $expected_conditions

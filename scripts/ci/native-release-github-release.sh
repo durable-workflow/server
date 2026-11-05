@@ -24,59 +24,16 @@
 # DOCKERHUB_IMAGE. GH and DOCKER override the gh and docker commands.
 set -euo pipefail
 fail() { printf 'GitHub Release failed: %s\n' "$1" >&2; exit 1; }
-gh_bin=${GH:-gh}
-docker_bin=${DOCKER:-docker}
-: "${GITHUB_REPOSITORY:?}" "${GHCR_IMAGE:?}" "${DOCKERHUB_IMAGE:?}"
-repo=$GITHUB_REPOSITORY
-workflow=.github/workflows/native-release.yml
+# Reuse the same read-only authority checks as protected alias promotion.
+source "$(dirname "${BASH_SOURCE[0]}")/native-release-verify-publication.sh"
 
-# A plain tag is native only from major 3; native- names the earlier ones.
-tag=${RELEASE_TAG:-}
-if ! [[ "$tag" =~ ^(native-[0-9]+|[3-9]|[1-9][0-9]+)\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-  fail "RELEASE_TAG must be X.Y.Z or X.Y.Z-rc.N from major 3, or native-X.Y.Z(-rc.N)."
+# A future final Release cannot precede exact qualification and live alias
+# promotion (or a strictly newer live successor). Old/missing evidence refuses;
+# the operator must decide a concrete legacy case, not annotate an old run.
+if [[ "$version" != *-* ]]; then
+  python3 "$(dirname "${BASH_SOURCE[0]}")/native_alias_promote.py" release-order \
+    || fail "qualified live-alias order is not proved."
 fi
-version=${tag#native-}
-run_id=${RELEASE_RUN_ID:-}
-[[ "$run_id" =~ ^[1-9][0-9]*$ ]] || fail "RELEASE_RUN_ID must be the release run's numeric id."
-
-# The tag's commit, through an annotated tag object if there is one.
-object=$("$gh_bin" api "repos/$repo/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha') \
-  || fail "cannot read tag $tag."
-if [[ "$object" == tag\ * ]]; then
-  object=$("$gh_bin" api "repos/$repo/git/tags/${object#tag }" --jq '.object.type + " " + .object.sha') \
-    || fail "cannot read the tag object of $tag."
-fi
-[[ "$object" =~ ^commit\ ([0-9a-f]{40})$ ]] || fail "tag $tag does not name a commit ($object)."
-commit=${BASH_REMATCH[1]}
-status=$("$gh_bin" api "repos/$repo/compare/$commit...main" --jq .status) || fail "cannot compare $commit with main."
-[[ "$status" == ahead || "$status" == identical ]] || fail "$commit is not on main (compare status: $status)."
-
-# The release run.
-run=$("$gh_bin" api "repos/$repo/actions/runs/$run_id" \
-  --jq '[.path, .event, .status, .conclusion, .head_branch, .head_sha] | join(" ")') \
-  || fail "cannot read run $run_id."
-expected="$workflow workflow_dispatch completed success $tag $commit"
-[[ "$run" == "$expected" ]] || fail "run $run_id is '$run', not '$expected'."
-
-# Both exact tags name one index.
-digest() {
-  "$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1" || fail "cannot read $1."
-}
-index=$(digest "$GHCR_IMAGE:$version")
-[[ "$index" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "$GHCR_IMAGE:$version has no index digest ('$index')."
-hub=$(digest "$DOCKERHUB_IMAGE:$version")
-[[ "$hub" == "$index" ]] || fail "$DOCKERHUB_IMAGE:$version is $hub, not $index."
-
-# Its provenance: signed by the release workflow from the tag, at the
-# commit, in this run.
-invocations=$("$gh_bin" attestation verify "oci://$GHCR_IMAGE@$index" --repo "$repo" \
-  --signer-workflow "github.com/$repo/$workflow" --source-ref "refs/tags/$tag" --source-digest "$commit" \
-  --deny-self-hosted-runners --format json \
-  --jq '.[].verificationResult.signature.certificate.runInvocationURI') \
-  || fail "the provenance of $index does not verify for $tag at $commit."
-grep -qE "^https://github\.com/$repo/actions/runs/$run_id/attempts/[0-9]+$" <<<"$invocations" \
-  || fail "the provenance of $index names no attempt of run $run_id."
-
 
 # The digest the latest alias names now; empty when it does not exist.
 latest_digest() {

@@ -276,7 +276,7 @@ class EvidenceTests(unittest.TestCase):
         record=FakeProvider().make_receipt("corpus","linux/amd64",None,2001)
         invalid = [packed(record,"../receipt.json"),packed(record,mode=stat.S_IFLNK|0o777),
                    packed(record,extra="extra.json"),packed(b'{"x":1,"x":2}\n'),
-                   packed(b'{"x":1.0}\n'),packed(b' {"x":1}\n'),
+                   packed(b'{"x":1.0}\n'),packed(b'{"x":"\\ud800"}\n'),packed(b' {"x":1}\n'),
                    packed(b'{"padding":"'+b'a'*40000+b'"}\n'),b'prefix'+packed(record),packed(record)+b'trailing']
         for i, data in enumerate(invalid):
             with self.subTest(i=i),self.assertRaises(E.Refusal):E.archive_receipt(data)

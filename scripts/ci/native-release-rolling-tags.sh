@@ -22,7 +22,7 @@
 # GHCR_IMAGE, DOCKERHUB_IMAGE, and the Git tags as RELEASE_IMAGE_KNOWN_TAGS
 # (one per line) or RELEASE_IMAGE_TAG_SOURCE_URL (git ls-remote). DOCKER
 # overrides the docker command.
-set -euo pipefail
+set -eEuo pipefail
 fail() { printf 'Native rolling tags failed: %s\n' "$1" >&2; exit 1; }
 docker_bin=${DOCKER:-docker}
 
@@ -85,22 +85,48 @@ current_release() {
   local ref=$1 output label
   if ! output=$("$docker_bin" buildx imagetools inspect --format '{{json .Image}}' "$ref" 2>&1); then
     grep -qiE 'not found|manifest unknown|name unknown' <<<"$output" && return 0
-    fail "cannot read the current $ref: $(head -c 300 <<<"$output")"
+    fail "cannot read a current alias."
   fi
   label=$(jq -r 'if has("linux/amd64") then .["linux/amd64"] else . end
     | .config.Labels["dev.durable-workflow.release.tag"] // empty' <<<"$output" 2>/dev/null) \
     || fail "cannot read the release of the current $ref."
   label=${label#native-}
   [[ "$label" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] \
-    || fail "the current $ref carries no readable release tag ('$label')."
+    || fail "a current alias carries no readable release tag."
   printf '%s\n' "$label"
 }
 
+# Final Release creation uses the same version rules, but cannot manufacture
+# promotion: every applicable alias in BOTH registries must already name this
+# index or a strictly newer final release. Candidates never enter this script.
+if [[ "${VERIFY_ONLY:-false}" == true ]]; then
+  for alias in "$minor" "$major" latest; do
+    for image in "${images[@]}"; do
+      current=$(current_release "$image:$alias")
+      [[ -n "$current" ]] || fail "qualified live alias is absent."
+      [[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "qualified live alias must be final."
+      if newer "$current" "$version"; then continue; fi
+      [[ "$current" == "$version" ]] || fail "qualified live alias is older."
+      digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$alias")
+      [[ "$digest" == "$INDEX_DIGEST" ]] || fail "qualified live alias names another index."
+    done
+  done
+  printf 'Qualified live alias state verified.\n'
+  exit 0
+fi
+
+declare -A snapshots=()
 aliases=()
 for alias in "${candidates[@]}"; do
   keep=1
   for image in "${images[@]}"; do
     current=$(current_release "$image:$alias")
+    state=absent
+    if [[ -n "$current" ]]; then
+      state=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$alias")
+      [[ "$state" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "alias digest unreadable."
+    fi
+    snapshots["$image:$alias"]="$current $state"
     if [[ -n "$current" ]] && newer "$current" "$version"; then
       printf '%s:%s already names %s, newer than %s; it stays.\n' "$image" "$alias" "$current" "$version"
       keep=0
@@ -115,10 +141,48 @@ if ((${#aliases[@]} == 0)); then
   exit 0
 fi
 
+# This repository lock coordinates owned writers. Registries offer no CAS:
+# an external writer can still race AFTER these reads. A mismatch is a stop,
+# with explicit partial/uncertain state and no automatic rollback.
+confirmed=()
+attempted=none
+partial() {
+  printf 'Native alias promotion stopped; attempted=%s confirmed=%s; no rollback.\n' \
+    "$attempted" "${confirmed[*]:-none}" >&2
+  printf -- '- alias promotion stopped; attempted=%s confirmed=%s; no rollback.\n' \
+    "$attempted" "${confirmed[*]:-none}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+}
+trap partial ERR
 for image in "${images[@]}"; do
+  # Re-read BOTH exact tags and every selected alias immediately before EACH
+  # registry write. Previously confirmed writes must still name this index.
+  for checked in "${images[@]}"; do
+    digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$checked:$version")
+    [[ "$digest" == "$INDEX_DIGEST" ]] || { partial; fail "exact tag changed before write."; }
+    for alias in "${aliases[@]}"; do
+      if [[ " ${confirmed[*]:-} " == *" $checked "* ]]; then
+        state=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$checked:$alias")
+        [[ "$state" == "$INDEX_DIGEST" ]] || { partial; fail "confirmed alias changed."; }
+      else
+        current=$(current_release "$checked:$alias")
+        state=absent
+        if [[ -n "$current" ]]; then
+          state=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$checked:$alias")
+        fi
+        [[ "$current $state" == "${snapshots["$checked:$alias"]}" ]] \
+          || { partial; fail "alias changed before write."; }
+      fi
+    done
+  done
   args=()
   for alias in "${aliases[@]}"; do args+=(--tag "$image:$alias"); done
+  attempted=$image
   "$docker_bin" buildx imagetools create "${args[@]}" "$image@$INDEX_DIGEST"
+  for alias in "${aliases[@]}"; do
+    digest=$("$docker_bin" buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$alias")
+    [[ "$digest" == "$INDEX_DIGEST" ]] || { partial; fail "post-write alias mismatch."; }
+  done
+  confirmed+=("$image")
 done
 
 # Each moved alias names exactly the attested index.

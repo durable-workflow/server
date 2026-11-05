@@ -18,6 +18,7 @@ export DW_SERVER_PLATFORM="$SERVER_PLATFORM"
 unset DOCKER_DEFAULT_PLATFORM
 
 BASE_URL="http://server:8080"
+published=""
 
 export SERVER_PORT
 
@@ -58,27 +59,26 @@ compose() {
   docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
 }
 
+OBSERVATION_DIR="${DW_QUALIFICATION_DIR:-$ROOT_DIR/qualification-state}"
+mkdir -p "$OBSERVATION_DIR"
+HTTP_DIR=$(mktemp -d)
+chmod 0700 "$HTTP_DIR"
+
 curl_json_with_retry() {
   local output="$1"
   shift
 
   for attempt in $(seq 1 60); do
     if [ "$ENDPOINT_MODE" = "container" ]; then
-      if compose exec -T server curl -fsS "$@" >"$output"; then
-        cat "$output"
-        echo
+      if compose exec -T server curl -fsS --connect-timeout 2 --max-time 5 --max-filesize 1048576 "$@" >"$output"; then
         return 0
       fi
-    elif curl -fsS "$@" >"$output"; then
-      cat "$output"
-      echo
+    elif curl -fsS --connect-timeout 2 --max-time 5 --max-filesize 1048576 "$@" >"$output"; then
       return 0
     fi
 
     if [ "$attempt" -eq 60 ]; then
-      echo "Request failed after ${attempt} attempts: curl $*" >&2
-      compose ps >&2 || true
-      compose logs server >&2 || true
+      echo "Published Compose request did not succeed within its bound" >&2
       return 1
     fi
 
@@ -87,7 +87,13 @@ curl_json_with_retry() {
 }
 
 cleanup() {
-  compose down -v --remove-orphans >/dev/null 2>&1 || true
+  local body_status=$? cleanup_status=0
+  trap - EXIT
+  python3 "$ROOT_DIR/scripts/ci/native_qualification.py" cleanup --kind compose --scope "$PROJECT" \
+    --output "$OBSERVATION_DIR/body-cleanup.json" || cleanup_status=$?
+  rm -rf "$HTTP_DIR"
+  if [ "$body_status" -ne 0 ]; then exit "$body_status"; fi
+  exit "$cleanup_status"
 }
 
 trap cleanup EXIT
@@ -115,6 +121,10 @@ fi
 
 compose pull
 compose up -d --wait
+container=$(compose ps -q server)
+python3 "$ROOT_DIR/scripts/ci/native_qualification.py" observe-image --kind compose \
+  --image "${DW_SERVER_IMAGE:-}" --container "$container" --platform "$SERVER_PLATFORM" \
+  --output "$OBSERVATION_DIR/image.json"
 
 if [ "$ENDPOINT_MODE" = "host" ]; then
   published="$(compose port server 8080)"
@@ -133,13 +143,13 @@ fi
 
 echo "  resolved endpoint: $BASE_URL"
 
-curl_json_with_retry /tmp/dw-server-compose-health.json "${BASE_URL}/api/health"
-curl_json_with_retry /tmp/dw-server-compose-ready.json "${BASE_URL}/api/ready"
-curl_json_with_retry /tmp/dw-server-compose-cluster.json \
+curl_json_with_retry "$HTTP_DIR"/health.json "${BASE_URL}/api/health"
+curl_json_with_retry "$HTTP_DIR"/ready.json "${BASE_URL}/api/ready"
+curl_json_with_retry "$HTTP_DIR"/cluster.json \
   -H "Authorization: Bearer ${AUTH_TOKEN}" \
   "${BASE_URL}/api/cluster/info"
 
-curl_json_with_retry /tmp/dw-server-compose-worker.json \
+curl_json_with_retry "$HTTP_DIR"/worker.json \
   -X POST "${BASE_URL}/api/worker/register" \
   -H "Authorization: Bearer ${WORKER_AUTH_TOKEN}" \
   -H "Content-Type: application/json" \
@@ -147,29 +157,50 @@ curl_json_with_retry /tmp/dw-server-compose-worker.json \
   -H "X-Durable-Workflow-Protocol-Version: 1.0" \
   -d "{\"worker_id\":\"${WORKER_ID}\",\"task_queue\":\"${TASK_QUEUE}\",\"runtime\":\"python\"}"
 
-DW_SMOKE_WORKER_ID="$WORKER_ID" DW_SMOKE_TASK_QUEUE="$TASK_QUEUE" python3 - <<'PY'
+DW_SMOKE_HTTP_DIR="$HTTP_DIR" DW_SMOKE_WORKER_ID="$WORKER_ID" DW_SMOKE_NATIVE="$NATIVE_PUBLISHED" \
+DW_SMOKE_ENDPOINT_MODE="$ENDPOINT_MODE" DW_SMOKE_BIND_ADDRESS="${published%%:*}" \
+DW_SMOKE_OBSERVATION_DIR="$OBSERVATION_DIR" python3 - <<'OBSERVATIONS'
 import json
 import os
 from pathlib import Path
 
-health = json.loads(Path("/tmp/dw-server-compose-health.json").read_text())
-ready = json.loads(Path("/tmp/dw-server-compose-ready.json").read_text())
-cluster = json.loads(Path("/tmp/dw-server-compose-cluster.json").read_text())
-worker = json.loads(Path("/tmp/dw-server-compose-worker.json").read_text())
-
-assert health.get("status") == "serving", health
-assert ready.get("status") == "ready", ready
-assert cluster.get("version"), cluster
-assert worker.get("worker_id") == os.environ["DW_SMOKE_WORKER_ID"], worker
-assert worker.get("registered") is True, worker
-PY
+root = Path(os.environ["DW_SMOKE_HTTP_DIR"])
+try:
+    health, ready, cluster, worker = [json.loads((root / name).read_bytes()) for name in
+                                     ("health.json", "ready.json", "cluster.json", "worker.json")]
+    identity = json.loads((Path(os.environ["DW_SMOKE_OBSERVATION_DIR"]) / "image.json").read_bytes())
+    expected_version = identity.get("image_release_tag", "").removeprefix("native-")
+    results = {
+        "health_serving": health.get("status") == "serving",
+        "ready": ready.get("status") == "ready",
+        "cluster_version_matches_release": cluster.get("version") == expected_version if identity.get("eligible") else bool(cluster.get("version")),
+        "worker_registered": worker.get("worker_id") == os.environ["DW_SMOKE_WORKER_ID"] and worker.get("registered") is True,
+        "loopback_binding": os.environ["DW_SMOKE_ENDPOINT_MODE"] == "host" and os.environ["DW_SMOKE_BIND_ADDRESS"] == "127.0.0.1",
+        "unset_token_refused": os.environ["DW_SMOKE_NATIVE"] == "true",
+        "production_default_token_refused": None,
+    }
+    if not all(results[key] for key in ("health_serving", "ready", "cluster_version_matches_release", "worker_registered")):
+        raise ValueError("smoke assertions")
+    (Path(os.environ["DW_SMOKE_OBSERVATION_DIR"]) / "observations.json").write_text(json.dumps(results) + "\n")
+except (ValueError, OSError, AttributeError):
+    raise SystemExit("Published Compose response assertions failed") from None
+OBSERVATIONS
 
 if [ "$PROFILE" = "production" ]; then
-  status="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer dev-token" "${BASE_URL}/api/cluster/info" || true)"
+  status="$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer dev-token" "${BASE_URL}/api/cluster/info")"
   if [ "$status" != "401" ]; then
     echo "production profile accepted dev-token (HTTP $status)" >&2
     exit 1
   fi
+  python3 - "$OBSERVATION_DIR/observations.json" <<'PRODUCTION'
+import json
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+value = json.loads(path.read_bytes())
+value["production_default_token_refused"] = True
+path.write_text(json.dumps(value) + "\n")
+PRODUCTION
 fi
 
 echo "Published Compose smoke passed"

@@ -1,0 +1,82 @@
+name: Native alias promotion
+run-name: Native alias promotion ${{ github.ref_name }}
+
+# Consumes existing exact-index qualification. Never dispatches a qualifier,
+# builds/pulls an image, creates a Release, or changes candidate aliases.
+on:
+  workflow_dispatch:
+    inputs:
+      evidence:
+        description: 'Closed native-alias-promotion-evidence.v1 JSON manifest with exact current run attempts and artifact IDs/digests'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
+  packages: read
+
+jobs:
+  verify:
+    name: Verify existing native qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact tag tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+      - name: Read GHCR with the repository token
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify provider-owned qualification without writes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTION_EVIDENCE: ${{ inputs.evidence }}
+        run: python3 scripts/ci/native_alias_promote.py verify
+
+  promote:
+    name: Promote qualified native aliases
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: dockerhub-native
+    concurrency:
+      group: durable-workflow-server-rolling-aliases
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      packages: write
+    steps:
+      - name: Check out exact tag tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+      - name: Log in to Docker Hub
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Repeat qualification under approval and lock before promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTION_EVIDENCE: ${{ inputs.evidence }}
+        run: python3 scripts/ci/native_alias_promote.py promote

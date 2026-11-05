@@ -1,9 +1,13 @@
 name: Published Compose Smoke
+run-name: Published Compose ${{ inputs.server_image || github.ref }}
 
 on:
   pull_request:
     paths:
       - docker-compose.published.yml
+      - scripts/ci/native_qualification.py
+      - scripts/ci/native_alias_transport.py
+      - scripts/ci/native_alias_evidence.py
       - scripts/smoke-published-compose.sh
       - scripts/ci/select-published-compose-image.sh
       - .github/workflows/published-compose.yml
@@ -16,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: published-compose-${{ github.event_name }}-${{ github.ref }}
@@ -26,6 +31,8 @@ jobs:
     name: ${{ matrix.platform }} ${{ matrix.profile }} published image
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    env:
+      DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.shard }}
 
     strategy:
       fail-fast: false
@@ -58,20 +65,51 @@ jobs:
           INPUT_SERVER_IMAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.server_image || '' }}
         run: scripts/ci/select-published-compose-image.sh
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
+
       - name: Smoke published Compose stack
+        id: body
         env:
           DW_SERVER_PLATFORM: ${{ matrix.platform }}
           DW_PUBLISHED_COMPOSE_PROFILE: ${{ matrix.profile }}
-          DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.shard }}
           SERVER_PORT: "0"
           DW_AUTH_TOKEN: published-compose-token
         run: scripts/smoke-published-compose.sh
 
-      - name: Clean up published Compose stack
+      - name: Verify owned qualification cleanup
+        id: cleanup
+        if: always()
+        run: |
+          # Only strict owned cleanup/readback can qualify the receipt. The
+          # partial-setup fallback never changes its saved failure into success.
+          cleanup_status=0
+          python3 scripts/ci/native_qualification.py cleanup --kind compose \
+            --scope "$DW_PUBLISHED_COMPOSE_PROJECT" --output qualification-state/cleanup.json || cleanup_status=$?
+          docker ps -aq --filter "label=com.docker.compose.project=$DW_PUBLISHED_COMPOSE_PROJECT" | xargs -r docker rm -f >/dev/null 2>&1 || true
+          docker network ls -q --filter "label=com.docker.compose.project=$DW_PUBLISHED_COMPOSE_PROJECT" | xargs -r docker network rm >/dev/null 2>&1 || true
+          docker volume ls -q --filter "label=com.docker.compose.project=$DW_PUBLISHED_COMPOSE_PROJECT" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
+          test "$cleanup_status" = 0
+
+      - name: Finalize promotion receipt
         if: always()
         env:
-          DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.shard }}
+          GH_TOKEN: ${{ github.token }}
+          QUALIFICATION_BODY_OUTCOME: ${{ steps.body.outcome }}
+          QUALIFICATION_CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          PLATFORM: ${{ matrix.platform }}
+          PROFILE: ${{ matrix.profile }}
         run: >-
-          docker compose -p "$DW_PUBLISHED_COMPOSE_PROJECT"
-          -f docker-compose.published.yml down -v --remove-orphans
-          >/dev/null 2>&1 || true
+          python3 scripts/ci/native_qualification.py finalize --kind compose --image "${DW_SERVER_IMAGE:-}"
+          --platform "$PLATFORM" --profile "$PROFILE"
+          --identity qualification-state/image.json --observations qualification-state/observations.json
+          --cleanup qualification-state/cleanup.json --output promotion-receipt/receipt.json
+
+      - name: Keep promotion receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: native-compose-promotion-receipt-${{ matrix.shard }}
+          path: promotion-receipt/receipt.json
+          retention-days: 14
+          if-no-files-found: error

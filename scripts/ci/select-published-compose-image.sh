@@ -17,6 +17,8 @@ curl_bin="${CURL:-curl}"
 : "${GITHUB_ENV:?}"
 
 if [ -n "${INPUT_SERVER_IMAGE:-}" ]; then
+  [[ "$INPUT_SERVER_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./_:@-]{0,255}$ ]] \
+    || fail "manual image reference must be one bounded single-line reference."
   printf 'DW_SERVER_IMAGE=%s\n' "$INPUT_SERVER_IMAGE" >> "$GITHUB_ENV"
   exit 0
 fi

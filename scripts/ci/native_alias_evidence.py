@@ -14,6 +14,7 @@ import re
 import stat
 import struct
 import zipfile
+import zlib
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -99,8 +100,25 @@ def matching(value: Any, expression: re.Pattern[str]) -> bool:
 
 
 def canonical(value: Any) -> bytes:
-    return (json.dumps(value, ensure_ascii=False, sort_keys=True,
-                       separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+    try:
+        return (json.dumps(value, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+    except (UnicodeError, ValueError, RecursionError):
+        raise Refusal("invalid_canonical_json") from None
+
+
+def zip_extra(data: bytes) -> None:
+    # GitHub's ZIP writer may carry the standard extended timestamp. Unknown
+    # fields are unnecessary carriers; no ZIP64 is needed for a <=32-KiB member.
+    seen = set()
+    while data:
+        require(len(data) >= 4, "artifact_extra_field")
+        kind, length = struct.unpack_from("<HH", data)
+        require(kind == 0x5455 and kind not in seen and 1 <= length <= 13
+                and len(data) >= 4 + length, "artifact_extra_field")
+        value, data = data[4:4 + length], data[4 + length:]
+        require(value[0] <= 7 and length == 1 + 4 * value[0].bit_count(), "artifact_extra_timestamp")
+        seen.add(kind)
 
 
 def strict_json(data: bytes, limit: int) -> Any:
@@ -204,6 +222,8 @@ def archive_receipt(data: bytes) -> dict[str, Any]:
                     and not (local_flags & 1), "artifact_local_encoding")
             name_length, extra_length = struct.unpack_from("<HH", data, 26)
             require(data[30:30 + name_length] == b"receipt.json", "artifact_local_name")
+            zip_extra(entry.extra)
+            zip_extra(data[30 + name_length:30 + name_length + extra_length])
             end = 30 + name_length + extra_length + entry.compress_size
             require(end <= directory_at, "artifact_overlapping_directory")
             descriptor = data[end:directory_at]
@@ -217,7 +237,7 @@ def archive_receipt(data: bytes) -> dict[str, Any]:
             else:
                 require(not descriptor, "artifact_unindexed_data")
             body = archive.read(entry)
-    except (zipfile.BadZipFile, RuntimeError, OSError, EOFError, struct.error):
+    except (zipfile.BadZipFile, RuntimeError, OSError, EOFError, struct.error, zlib.error):
         raise Refusal("artifact_archive_invalid") from None
     value = strict_json(body, RECEIPT_LIMIT)
     require(type(value) is dict and canonical(value) == body, "receipt_not_canonical")
