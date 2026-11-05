@@ -424,7 +424,7 @@ fn encoded(text: &str) -> String {
 async fn invalid_visibility_literals_refuse_before_the_schedule_query() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
-    let app = router(runtime);
+    let app = router(runtime.clone());
     for (name, kind) in [("Count", "int"), ("Weight", "double")] {
         let registered = request(&app, "POST", "/api/search-attributes", json!({"name":name,"type":kind})).await;
         assert!(registered.0.is_success(), "{}", registered.1);
@@ -443,8 +443,11 @@ async fn invalid_visibility_literals_refuse_before_the_schedule_query() {
         assert_eq!((page.0, page.1["reason"].clone()),
             (StatusCode::UNPROCESSABLE_ENTITY, json!("invalid_schedule_visibility_query")), "{query}: {}", page.1);
     }
-    assert_eq!(list(&app, &format!("query={}", encoded("Count = 9223372036854775807"))).await.0,
-        StatusCode::INTERNAL_SERVER_ERROR);
+    let guarded = list(&app, &format!("query={}", encoded("Count = 9223372036854775807"))).await;
+    assert_eq!((guarded.0, guarded.1["reason"].clone()),
+        (StatusCode::SERVICE_UNAVAILABLE, json!("storage_unavailable")));
+    runtime.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]
