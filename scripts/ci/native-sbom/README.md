@@ -52,7 +52,10 @@ They do not authorize a download or install. Python's observed image user is
 unset/root; future confinement must explicitly enforce a nonroot UID, read-only
 filesystem, bounded scratch/output/resources, no capabilities, no-new-privileges,
 no network, daemon socket or host credential mounts. That execution source is
-still incomplete. Neither image layers nor wheels were acquired or executed.
+still incomplete. The original metadata checkpoint acquired neither image
+layers nor wheels. The ordinary development tests described below may install
+the hash-closed wheels as test tooling; the confined validator's installation
+and execution admission fields remain false.
 
 The candidate also records its installer's source identity. The exact official
 Python build enables `ensurepip`; the signed CPython 3.13.18 tag's immutable
