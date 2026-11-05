@@ -85,7 +85,7 @@
     {
       "id": "native_backend_timestamp_addition_overflow",
       "canonical_ids": ["invalid_override_overflow"],
-      "carrier": {"override_json_lexeme": "1", "failure_sample": "maximum-bindable-backend-timestamp", "backends": ["sqlite", "postgresql", "mysql", "mariadb"]},
+      "carrier": {"override_json_lexeme": "1", "failure_sample": "maximum-bindable-backend-timestamp-minus-500000-microseconds", "lease_expires_at": "maximum-bindable-backend-timestamp", "original_schedule_to_close_seconds": null, "backends": ["sqlite", "postgresql", "mysql", "mariadb"]},
       "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "backend_error_counted_as_validation_pass": false}
     },
     {
