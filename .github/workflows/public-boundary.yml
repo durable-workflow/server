@@ -18,6 +18,16 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Qualify the PHP APT source prerequisite without packages
+        run: |
+          /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/python3 -I --version
+          /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/python3 -I tests/Unit/Support/php_apt_test.py
+          /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/python3 -I tests/Unit/Support/brotli_trust_test.py
+          /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/python3 -I scripts/ci/verify-php-apt-source.py
+          /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /bin/sh -n docker/apt/require-fixed-apt.sh
+          /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/shellcheck docker/apt/require-fixed-apt.sh
 
       - name: Verify metadata scan failures
         run: bash tests/Unit/Support/public_boundary_test.sh
