@@ -484,8 +484,8 @@ jobs:
       # Each database runs in six parts on separate runners: the native
       # database suites and TLS checks, the shared corpus, its profiles and
       # restart cases, the published-SDK direction profiles, the corrected
-      # marker cohort, and the other cohorts. The two MySQL 8 labels add a
-      # seventh, native-tests-b, for half their execution tests. Every part
+      # marker cohort, and the other cohorts. Each label adds a seventh,
+      # native-tests-b, for half its execution tests. Every part
       # bootstraps the same database and native build; no part depends on
       # another.
       matrix:
@@ -496,9 +496,8 @@ jobs:
             image: mirror.gcr.io/library/mysql@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
             # The expanded original was OOM-killed at 1 GiB during native pressure.
             memory: 2g
-            # The two MySQL 8 labels' native suites were the slowest parts
-            # (about 21 min each, most of it the execution tests), so their
-            # execution tests run in two halves: native-tests runs the first
+            # The native execution suites run in two halves to keep one
+            # database label from holding the result: native-tests runs the first
             # and native-tests-b the second. The bytewise-sorted test list is
             # dealt round-robin, so each listed test runs in exactly one half
             # and a new test joins one.
@@ -522,6 +521,12 @@ jobs:
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
             # Both expanded originals exhausted the 512 MiB DB fixture ceiling.
             memory: 1g
+            execution_shards: 2
+          - label: mariadb-10.11
+            part: native-tests-b
+            image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
+            memory: 1g
+            execution_shards: 2
     env:
       DW_PARITY_PART: ${{ matrix.part }}
       DW_EXECUTION_SHARDS: ${{ matrix.execution_shards || 1 }}
@@ -707,7 +712,7 @@ jobs:
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             "${NATIVE_RUST_IMAGE}" -c \
-            'case "$DW_PARITY_PART" in native-tests) shard=1 suffix= ;; native-tests-b) shard=2 suffix=-b ;; *) shard= ;; esac; if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt || exit 1; fi; if [ -n "$shard" ]; then cargo test --locked --offline --test execution -- --list --format terse | sed -n "s/: test\$//p" | LC_ALL=C sort | awk -v count="$DW_EXECUTION_SHARDS" -v shard="$shard" "(NR - 1) % count == shard - 1" > /evidence/execution-shard$suffix.txt && test -s /evidence/execution-shard$suffix.txt && cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 $(cat /evidence/execution-shard$suffix.txt) > /evidence/mysql-execution-tests$suffix.txt || exit 1; fi; case "$DW_PARITY_PART" in native-tests|native-tests-b) cargo build --locked --offline ;; *) test -x /target/debug/durable-workflow-server ;; esac'
+            'case "$DW_PARITY_PART" in native-tests) shard=1 suffix= ;; native-tests-b) shard=2 suffix=-b ;; *) shard= ;; esac; set -o pipefail; if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::mysql:: -- --ignored --skip runtime::mysql::tests::bootstrap_child --nocapture --test-threads=2 > /evidence/mysql-tests.txt || exit 1; fi; if [ -n "$shard" ]; then cargo test --locked --offline --test execution -- --list --format terse | sed -n "s/: test\$//p" | LC_ALL=C sort | tee /evidence/execution-listed-tests.txt | awk -v count="$DW_EXECUTION_SHARDS" -v shard="$shard" "(NR - 1) % count == shard - 1" > /evidence/execution-shard$suffix.txt && test -s /evidence/execution-shard$suffix.txt && cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 $(cat /evidence/execution-shard$suffix.txt) > /evidence/mysql-execution-tests$suffix.txt || exit 1; fi; case "$DW_PARITY_PART" in native-tests|native-tests-b) cargo build --locked --offline ;; *) test -x /target/debug/durable-workflow-server ;; esac'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=mysql -e DB_HOST=parity-mysql -e DB_DATABASE=native_ref \
             -e DB_USERNAME=root -e DB_PASSWORD=parity-disposable-password \

@@ -18,6 +18,7 @@ function priority(path, failed) {
   if (failed && (/\.stderr$/.test(name) || /(?:stderr|error|failure|bootstrap|install|build).*(?:\.log|\.txt)$/.test(name)
       || /^(?:php|rust|native)(?:[-.].*)?\.log$/.test(name) || /server\.log$/.test(name))) return 2;
   if (/^(identity|build|database-state|database-memory-limit)\.json$/.test(name)) return 3;
+  if (/^execution-(listed-tests|shard(?:-b)?)\.txt$/.test(name)) return 4;
   if (/(?:-status|-integrity|-version|-revision|-controls|-contract)\.txt$/.test(name) || /\.status$/.test(name)
       || /^(SHA256SUMS|source-hashes\.sha256)$/.test(name)) return 4;
   return null;
