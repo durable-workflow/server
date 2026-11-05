@@ -55,14 +55,29 @@ They retain the distinct controller-missing, controller-stale and structured
 engine refusals rather than accepting arbitrary `recorded:false` shapes.
 No new top-level reason alias is selected.
 
-The future handler must run a pure report shape/type/override preflight before
-its task, attempt, original-claim or registration lookup. Current Server checks
-only that the report is an array before those lookups, so Core's later strict
-normalizer alone does not establish this ordering. Recheck admitted shape and
-fences under the authoritative transaction. The pure preflight cannot read
-storage, fetch payloads, invoke a callback or sample the failure clock.
-Core's entire current normalizer cannot be lifted into this phase: its
-completed branch resolves payload envelopes.
+The future handler uses two phases to select the pure report preflight.
+Presence of `report.next_retry_delay_seconds`, including an invalid null value,
+signals only untrusted feature intent. After existing auth, protocol and
+runtime-role admission, validate that supplied field and its closed failed-report
+shape before task, attempt, original-claim or registration reads. A passing
+preflight grants no capability, stored mode or snapshot authority.
+
+Without that member, preserve the legacy lookup and validation order. After
+scoped original-claim lookup actually establishes the conjunctive version-2
+mode, run the same pure report validator before fresh registration/fence work,
+failure-clock sampling or payload resolution. A malformed legacy report does
+not acquire a new early refusal merely by sharing this endpoint. The zero-task-
+lookup guarantee therefore applies to malformed supplied overrides. A pure
+validator invoked after mode selection has zero reads of its own, not a claim
+that the request performed no earlier reads. No new request marker, capability
+or global protocol version selects these phases.
+
+Current Server only checks that the report is an array before lookup. These
+phases are future handler requirements. Recheck admitted shape, original mode
+and fences under the authoritative transaction. The pure validator cannot read
+storage, fetch payloads, invoke a callback or sample the failure clock. Core's
+entire current normalizer cannot be lifted into this phase: its completed
+branch resolves payload envelopes.
 
 The retained fetch-free retry-decision recovery applies to failed and timed-out
 reports with pure normalized fingerprints. Completed external-reference

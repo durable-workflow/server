@@ -1727,7 +1727,8 @@
           "outcome": "failed",
           "message": "synthetic",
           "next_retry_delay_seconds": null
-        }
+        },
+        "preflight_phase": "new_member_present"
       },
       "expected": {
         "http_status": 422,
@@ -1747,7 +1748,8 @@
           "outcome": "failed",
           "message": "synthetic",
           "next_retry_delay_seconds": null
-        }
+        },
+        "preflight_phase": "new_member_present"
       },
       "expected": {
         "http_status": 422,
@@ -1767,7 +1769,8 @@
           "outcome": "failed",
           "message": "synthetic",
           "next_retry_delay_seconds": null
-        }
+        },
+        "preflight_phase": "new_member_present"
       },
       "expected": {
         "http_status": 422,
@@ -1787,7 +1790,8 @@
           "outcome": "failed",
           "message": "synthetic",
           "next_retry_delay_seconds": null
-        }
+        },
+        "preflight_phase": "new_member_present"
       },
       "expected": {
         "http_status": 422,
@@ -2018,7 +2022,8 @@
       "id": "local_v2_shape_preflight_completed_reference_no_fetch",
       "carrier": {
         "report": "completed with structurally valid external envelope",
-        "scoped_claim_authority": "not yet read"
+        "scoped_claim_authority": "actually read and proves the conjunctive v2 mode",
+        "preflight_phase": "new_member_absent_proven_v2"
       },
       "expected": {
         "shape_phase_only": true,
@@ -2026,7 +2031,9 @@
         "payload_fetch_count": 0,
         "callback_count": 0,
         "failure_clock_sample_count": 0,
-        "payload_authority_or_bytes_qualified": false
+        "payload_authority_or_bytes_qualified": false,
+        "counter_scope": "pure validator invocation only; earlier scoped authority reads are outside these counters",
+        "request_zero_lookup_claim": false
       }
     },
     {
@@ -2118,6 +2125,113 @@
         "controller_missing_shape_accepted": false,
         "setup_or_backend_error_counts_as_pass": false
       }
+    },
+    {
+      "id": "local_v2_dispatch_no_member_legacy_missing_precedes_malformed",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17
+        },
+        "next_retry_delay_seconds_member": "absent",
+        "scoped_task_attempt": "missing",
+        "original_mode": "not read"
+      },
+      "expected": {
+        "http_status": 404,
+        "response_family": "controller_attempt_missing",
+        "reason": "activity_attempt_not_found",
+        "early_v2_preflight_count": 0,
+        "legacy_precedence_preserved": true,
+        "v2_support_inferred": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_dispatch_no_member_legacy_stale_precedes_malformed",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17
+        },
+        "next_retry_delay_seconds_member": "absent",
+        "scoped_original_claim": "valid legacy mode",
+        "fresh_registration": "stale with no retained outcome and no cancellation exception"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "controller_registration_stale",
+        "reason": "stale_worker_registration",
+        "early_v2_preflight_count": 0,
+        "legacy_precedence_preserved": true,
+        "v2_support_inferred": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_dispatch_no_member_v2_after_real_mode",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic"
+        },
+        "next_retry_delay_seconds_member": "absent",
+        "scoped_original_claim": "actually read and proves every conjunctive v2 gate"
+      },
+      "expected": {
+        "phase": "new_member_absent_proven_v2",
+        "pure_validation": "accept shape only after actual mode lookup",
+        "fresh_registration_or_fence_before_pure_validation": false,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "request_zero_lookup_claim": false,
+        "mode_from_request_presence": false
+      }
+    },
+    {
+      "id": "local_v2_dispatch_no_member_v2_malformed_after_real_mode",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17
+        },
+        "next_retry_delay_seconds_member": "absent",
+        "scoped_original_claim": "actually read and proves every conjunctive v2 gate"
+      },
+      "expected": {
+        "phase": "new_member_absent_proven_v2",
+        "pure_validation": "refuse before fresh registration/fence/clock/payload work",
+        "request_zero_lookup_claim": false,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "new_http_reason_alias_selected": false
+      }
+    },
+    {
+      "id": "local_v2_dispatch_supplied_valid_override_cannot_grant_mode",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic",
+          "next_retry_delay_seconds": 0
+        },
+        "phase_a": "pure validation accepts",
+        "scoped_original_claim": "actual local contract version 1; other required gates valid"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "prepared_capability_refusal",
+        "required_capability": "activity_retry_delay_override_v1",
+        "unavailable": [
+          "local_activity_contract_version"
+        ],
+        "v2_support_inferred": false,
+        "policy_or_clock_selection_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
     }
   ],
   "prepared_policy_proposal": {
@@ -2184,7 +2298,6 @@
     "baseline": "valid independent auth/namespace/protocol and original prepared graph; all unrelated gates must be live before an isolated semantic control can qualify",
     "request_scope": "existing controller outer claim/report validation and normalization remain separate; this proposal closes the nested v2 report and response families, not a new global protocol",
     "pure_preflight": {
-      "placement": "after existing auth/protocol/runtime-role admission, before namespace task/attempt/claim/registration lookup",
       "checks": [
         "closed report keys",
         "actual field types",
@@ -2198,7 +2311,24 @@
         "callback",
         "failure-clock sample"
       ],
-      "not_reusable_as_is": "Core normalizePortableReport resolves completed payload envelopes before returning; only its pure shape/type interpretation may be shared"
+      "not_reusable_as_is": "Core normalizePortableReport resolves completed payload envelopes before returning; only its pure shape/type interpretation may be shared",
+      "dispatch": {
+        "new_member_present": {
+          "selector": "report is an object and has its own next_retry_delay_seconds member, including null; untrusted intent only, never mode authority",
+          "placement": "after existing auth/protocol/runtime-role and outer claim/report validation, before task/attempt/original-claim/registration reads",
+          "action": "purely validate the supplied override and closed failed-report shape; reject malformed input without durable lookup",
+          "success": "continue scoped original identity/mode lookup; no v2 support is inferred from presence or validation success"
+        },
+        "new_member_absent": {
+          "placement": "preserve the existing scoped task/attempt/original-claim lookup order",
+          "legacy": "retain existing legacy report validation and refusal precedence; do not move its malformed-report check ahead of lookup or registration",
+          "proven_v2": "only after actual scoped original-claim/mode/snapshot lookup establishes the conjunction, run the same pure closed-report validator before fresh registration/fence/clock/write or payload work"
+        },
+        "authority": "all required capability, contract and snapshot fields must be read and verified from the original scoped authority; unread fields are unknown",
+        "new_marker_capability_or_protocol": false
+      },
+      "zero_task_lookup_guarantee": "malformed supplied next_retry_delay_seconds and its failed-report shape only; absent-member reports keep mode-dependent lookup/validation precedence",
+      "function_purity": "both invocations perform zero storage/fetch/callback/failure-clock effects themselves; a post-mode invocation does not erase earlier scoped authority reads"
     },
     "transaction": "recheck admitted shape, immutable original mode/identity, matching retained failed/timeout decision and fresh fences under the existing canonical locks; no controller-only validation grants writer authority",
     "bindings": {
@@ -2386,7 +2516,7 @@
       "X-Durable-Workflow-Protocol-Version": "$protocol_version",
       "Content-Type": "application/json media type; unrelated standard headers are not an equality contract"
     },
-    "counter_scope": "preflight lookup/fetch/clock counters begin after the existing independently scoped auth/protocol/runtime-role admission; they count durable task/attempt/claim/registration reads and payload resolution, not source-module loading or pre-existing credential authorization"
+    "counter_scope": "after existing independently scoped auth/protocol/runtime-role and outer claim/report validation; malformed supplied overrides count all subsequent task/attempt/claim/registration reads as zero; post-mode pure-validator counters cover only the function invocation and do not claim zero earlier request lookups"
   },
   "canonical_projection": {
     "override": "prepared failed report.next_retry_delay_seconds maps to canonical application failure.next_retry_delay_seconds only",
