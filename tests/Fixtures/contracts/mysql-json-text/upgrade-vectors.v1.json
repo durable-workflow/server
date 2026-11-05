@@ -3,7 +3,7 @@
   "status": "required future observations; no executor or result",
   "plan": {
     "path": "tests/Fixtures/contracts/mysql-json-text/upgrade-plan.v1.json",
-    "sha256": "5c76fbd8d1340e2339f045c75e1c63957dc9fd00f4175c4c5c7db2ec5e644ca5"
+    "sha256": "060a615e62b1a893f668e43193dbb1a49541ec6816f68e723efe6d76b93a3ce3"
   },
   "execution_admitted": false,
   "typed_error_code_bindings": "must be returned by the actual versioned implementation before executing/adopting these observations; this planning inventory invents no current CLI/HTTP error code",

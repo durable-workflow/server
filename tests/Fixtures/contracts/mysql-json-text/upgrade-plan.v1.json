@@ -7,7 +7,7 @@
     "https://github.com/durable-workflow/server/issues/1016#issuecomment-6644575285",
     "https://github.com/durable-workflow/server/issues/1016#issuecomment-6645839849"
   ],
-  "source_commit": "c9a75838f0d70fd5237f4cbcf70f9f046f1e5d42",
+  "source_commit": "223cb6f4c3e944c9fe308c3fc02bde9191fad66f",
   "source_inputs": [
     {
       "path": "rust/migrations/mysql/0003_full_schema.sql",
@@ -59,9 +59,9 @@
     },
     {
       "path": "rust/src/runtime/mysql.rs",
-      "blob": "25193b22e718c5d2a692abca06a969c046df0ed8",
-      "sha256": "6190c76ffebcaa451c3451dc0e45c0020bb054412ff4db8002591a09635ae200",
-      "bytes": 104545
+      "blob": "1df6bacc32bf565a159bb42f2358d756b98ead1e",
+      "sha256": "6a20a12b3edc36e822c95d51ef94bf618ea4f92144923dc04fa2a12bd5e6e0fc",
+      "bytes": 104983
     },
     {
       "path": "rust/src/runtime/schema_upgrade.rs",
@@ -77,9 +77,9 @@
     },
     {
       "path": "rust/src/runtime/schedule_list.rs",
-      "blob": "ee4f90577f0df65577f29d3931eb060cadf5e40c",
-      "sha256": "ed848e7690eef57f35043d640e25abdae00e1722dbf31d841a6be4f44c29179e",
-      "bytes": 33874
+      "blob": "80357d0a5c169b35ead8062d78b65a82f6f012a2",
+      "sha256": "355c3fc5946a89e94acf1c50c6de04b6f21b1dc04d5920be43963bd1a86011f7",
+      "bytes": 57370
     },
     {
       "path": "rust/src/runtime/operator_metrics.rs",
@@ -199,9 +199,9 @@
       },
       {
         "path": "rust/src/runtime/schedule_list.rs",
-        "blob": "ee4f90577f0df65577f29d3931eb060cadf5e40c",
-        "sha256": "ed848e7690eef57f35043d640e25abdae00e1722dbf31d841a6be4f44c29179e",
-        "bytes": 33874
+        "blob": "80357d0a5c169b35ead8062d78b65a82f6f012a2",
+        "sha256": "355c3fc5946a89e94acf1c50c6de04b6f21b1dc04d5920be43963bd1a86011f7",
+        "bytes": 57370
       },
       {
         "path": "rust/src/runtime/operator_metrics.rs",
@@ -354,18 +354,18 @@
       {
         "path": "rust/src/runtime/schedule_list.rs",
         "line": 69,
-        "source_line_sha256": "aa097e6af95ae6c4ec3d550bb624d71c284014c94d0191ff404911346808620c",
+        "source_line_sha256": "65a1f570a37fe72a4b02f21b00aaee82162fe5d121722d3b03228284ea4db79a",
         "symbol": null,
         "review_classification": "JSON-string-or-boolean-predicate; no precision-authoritative numeric projection",
-        "source_fragment": "(Self::WorkflowType, _) => \"JSON_UNQUOTE(JSON_EXTRACT(action,'$.\\\"workflow_type\\\"'))\","
+        "source_fragment": "(Self::WorkflowType, _) => \"JSON_UNQUOTE(JSON_EXTRACT(s.action,'$.\\\"workflow_type\\\"'))\","
       },
       {
         "path": "rust/src/runtime/schedule_list.rs",
         "line": 70,
-        "source_line_sha256": "77c5c9e537e665e755611b9b1cf8fb5ba081e75e582d294e3b29d1f67d604349",
+        "source_line_sha256": "e5c692f22174e8ebe4140a088ce4729b4bccfe800550218de68b7cb725f26c97",
         "symbol": null,
         "review_classification": "JSON-string-or-boolean-predicate; no precision-authoritative numeric projection",
-        "source_fragment": "(Self::TaskQueue, _) => \"JSON_UNQUOTE(JSON_EXTRACT(action,'$.\\\"task_queue\\\"'))\","
+        "source_fragment": "(Self::TaskQueue, _) => \"JSON_UNQUOTE(JSON_EXTRACT(s.action,'$.\\\"task_queue\\\"'))\","
       },
       {
         "path": "rust/src/runtime/operator_metrics.rs",

@@ -2,7 +2,8 @@
 
 These files compile the selected planning step for Server #1016. They do not
 implement an upgrader, assign a schema version, execute SQL, or qualify a target
-catalog. The source is the exact post-#1032 main commit `c9a75838`.
+catalog. The inspected source is accepted main `223cb6f4`; its pinned native
+inputs include #1031's scalar schedule summary.
 
 `upgrade-plan.v1.json` pins the version-8 inputs and describes all 75 JSON
 columns in 36 tables. Each table has one candidate ALTER, preserved column
@@ -36,4 +37,6 @@ The 24 pinned production query sites are a static review inventory. They do not
 prove all document readers, preserved plans, or text-column behavior. Later
 source changes must be reconciled. The actual bootstrap/flavor/version/catalog,
 resumption, query/reader implementation, exact source/backend qualification,
-Security review and General's invocation/release gates remain outstanding.
+privileged-upgrade Security review and General's invocation/release gates
+remain outstanding. Ordinary planning-source integration uses normal required
+checks and does not activate those database effects.
