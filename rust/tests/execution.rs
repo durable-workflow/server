@@ -30,6 +30,9 @@ mod memos;
 #[path = "execution/continuations.rs"]
 mod continuations;
 
+#[path = "execution/replay_clock.rs"]
+mod replay_clock;
+
 #[path = "execution/admission.rs"]
 mod admission;
 

@@ -2500,6 +2500,10 @@ where
                     claim["deadlines"] = deadlines;
                 }
             } else {
+                if kind == "workflow" {
+                    let replay_clock = self.worker_replay_clock(tx, &task, &run).await?;
+                    super::replay_clock::annotate(&mut claim, replay_clock, &self.namespace);
+                }
                 claim["workflow_task_attempt"] = json!(attempt);
                 claim["arguments"] = wire(&DB::string(&run, "arguments")?);
                 if let Some(update_id) = task_payload["workflow_update_id"].as_str() {
