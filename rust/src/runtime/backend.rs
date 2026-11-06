@@ -497,6 +497,12 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    // The wake query can otherwise start from a run and range-check every
+    // task in its queue, even with the explicit live-status predicate. Keep
+    // the task status range first, then look up each candidate's run by PK.
+    // All filters, ordering, limits and bound values use the common templates.
+    const TASK_CANDIDATES_SQL: &str = super::store::task_candidates_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r");
+    const POLL_WAKE_TASKS_SQL: &str = super::cross_kind_poll::poll_wake_tasks_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r");
     type EncodedInteger = Option<i64>;
     // MariaDB's Laravel driver may store the owner as its uuid type.
     const BACKUP_HOLD_CLOCK: &str = "SELECT UTC_TIMESTAMP(6) AS database_time";
