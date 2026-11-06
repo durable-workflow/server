@@ -588,11 +588,30 @@ mod tests {
         }
     }
 
-    /// A request dropped while its transaction's `BEGIN` is in flight must not
-    /// leave the pooled connection inside a transaction. With published SQLx
-    /// 0.9.0 it did (vendor/sqlx-postgres/DURABLE-PATCH.md): the next borrower's
-    /// probe ran inside it, native's read snapshot `BEGIN` then failed with
-    /// 25001, and every later statement on that connection with 25P02.
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_poll_cache_single_statement_writes() {
+        let db = Database::new().await;
+        let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_query_poll_cache_writes().await;
+        store.qualify_workflow_poll_cache_writes().await;
+        store.qualify_summary_projection_bytes().await;
+        store.qualify_summary_history_pages().await;
+        store.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_poll_transaction_counts() {
+        let db = Database::new().await;
+        let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_workflow_poll_transactions().await;
+        store.qualify_query_poll_transactions().await;
+        store.close().await;
+        db.remove().await;
+    }
+
     #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_sweep_expiry_and_batch_bounds() {
@@ -633,6 +652,11 @@ mod tests {
         db.remove().await;
     }
 
+    /// A request dropped while its transaction's `BEGIN` is in flight must not
+    /// leave the pooled connection inside a transaction. With published SQLx
+    /// 0.9.0 it did (vendor/sqlx-postgres/DURABLE-PATCH.md): the next borrower's
+    /// probe ran inside it, native's read snapshot `BEGIN` then failed with
+    /// 25001, and every later statement on that connection with 25P02.
     #[tokio::test]
     #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
     async fn qualification_a_begin_cancelled_in_flight_leaves_no_transaction_behind() {

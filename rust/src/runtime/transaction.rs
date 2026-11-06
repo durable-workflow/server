@@ -6,9 +6,15 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+pub(super) struct PollSavepoint {
+    summaries: BTreeSet<String>,
+    workflow_poll_replayed: Option<String>,
+}
+
 pub(super) struct Transaction<'a, DB: Backend> {
     inner: sqlx::Transaction<'a, DB>,
     summaries: BTreeSet<String>,
+    pub(super) workflow_poll_replayed: Option<String>,
     pub(super) history_budget: super::history_budget::Config,
     /// A workflow task completion's history meter (Workflow #930).
     pub(super) meter: Option<super::history_meter::Meter>,
@@ -24,6 +30,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
         Self {
             inner,
             summaries: BTreeSet::new(),
+            workflow_poll_replayed: None,
             history_budget,
             meter: None,
             scope_history: None,
@@ -89,6 +96,29 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// Poll refusal preserves the earlier request binding, while discarding
+    /// a partial claim. Budget charges stay consumed and discarded reads
+    /// cannot survive in the transaction's cancellation-history cache.
+    pub(super) async fn poll_savepoint(&mut self) -> Result<PollSavepoint> {
+        // MySQL does not support savepoint commands in its prepared-statement
+        // protocol. Send these fixed transaction-control literals directly.
+        (&mut **self).execute("SAVEPOINT dw_poll_claim").await?;
+        Ok(PollSavepoint { summaries: self.summaries.clone(), workflow_poll_replayed: self.workflow_poll_replayed.clone() })
+    }
+
+    pub(super) async fn rollback_poll_claim(&mut self, saved: PollSavepoint) -> Result<()> {
+        (&mut **self).execute("ROLLBACK TO SAVEPOINT dw_poll_claim").await?;
+        self.summaries = saved.summaries;
+        self.workflow_poll_replayed = saved.workflow_poll_replayed;
+        self.scope_history = None;
+        self.release_poll_claim().await
+    }
+
+    pub(super) async fn release_poll_claim(&mut self) -> Result<()> {
+        (&mut **self).execute("RELEASE SAVEPOINT dw_poll_claim").await?;
+        Ok(())
+    }
+
     pub(super) async fn commit(mut self) -> Result<()> {
         // A completion whose meter refused cannot commit, even if a caller
         // swallowed the refusal; dropping the transaction rolls it back.

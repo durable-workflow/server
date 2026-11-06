@@ -38,6 +38,12 @@ pub(super) struct WorkflowPollRequest {
     pub(super) kinds: Vec<&'static str>,
 }
 
+impl WorkflowPollRequest {
+    pub(super) fn replayed_in<DB: crate::runtime::backend::Backend>(&self, tx: &Transaction<'_, DB>) -> bool {
+        tx.workflow_poll_replayed.as_deref() == Some(self.keys.binding.as_str())
+    }
+}
+
 /// The request ID with surrounding space removed, as Laravel's TrimStrings
 /// and the poller's `nonEmptyString` leave it. A blank ID asks for no
 /// idempotency.
@@ -133,17 +139,17 @@ store_methods! {
     /// At the start of a poll: bind the request ID to its kind set, then
     /// replay its answer if that answer is still deliverable. A stale lease
     /// is forgotten, and the caller polls afresh under the same ID.
-    pub(super) async fn replay_workflow_poll(
+    pub(super) async fn replay_workflow_poll_in(
         &self,
+        tx: &mut Transaction<'_, DB>,
         request: &WorkflowPollRequest,
         worker_id: &str,
         queue: &str,
     ) -> Result<Option<Value>> {
-        let mut tx = self.begin().await?;
-        self.sweep_workflow_poll_rows(&mut tx).await?;
-        Self::bind_workflow_poll(&mut tx, request).await?;
-        let replay = self.deliverable_workflow_poll(&mut tx, request, worker_id, queue).await?;
-        tx.commit().await?;
+        self.sweep_workflow_poll_rows(tx).await?;
+        Self::bind_workflow_poll(tx, request).await?;
+        let replay = self.deliverable_workflow_poll(tx, request, worker_id, queue).await?;
+        tx.workflow_poll_replayed = Some(request.keys.binding.clone());
         Ok(replay)
     }
 
@@ -315,14 +321,29 @@ store_methods! {
     }
 
     async fn put_workflow_poll_row(tx: &mut Transaction<'_, DB>, key: &str, value: &Value, ttl: i64) -> Result<()> {
-        let exists = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&mut **tx).await?.is_some();
-        let expiration = epoch() + ttl;
-        if exists {
-            Self::query(DB::QUERY_CACHE_UPDATE).bind(value.to_string()).bind(expiration).bind(key).execute(&mut **tx).await?;
-        } else {
-            Self::query(DB::QUERY_CACHE_INSERT).bind(key).bind(value.to_string()).bind(expiration).execute(&mut **tx).await?;
-        }
+        Self::query(DB::QUERY_CACHE_PUT).bind(key).bind(value.to_string())
+            .bind(epoch() + ttl).execute(&mut **tx).await?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) async fn qualify_workflow_poll_cache_writes(&self) {
+        let mut tx = self.begin().await.unwrap();
+        let key = "dw-native-workflow-poll:upsert-control";
+        for (index, value) in [json!({"first":true}), json!({"replacement":null}), json!({"expired":"replaced"})].into_iter().enumerate() {
+            let (result, count) = super::sql_counts::measure(Self::put_workflow_poll_row(&mut tx, key, &value, 60)).await;
+            result.unwrap();
+            assert_eq!(count.total(), 1);
+            assert_eq!(count.count(DB::QUERY_CACHE_PUT), 1);
+            let row = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&mut *tx).await.unwrap();
+            assert_eq!(DB::string(&row,"value").unwrap(), value.to_string());
+            assert!(DB::number(&row,"expiration").unwrap() > epoch());
+            if index == 1 {
+                Self::query(DB::QUERY_CACHE_UPDATE).bind(value.to_string()).bind(1_i64).bind(key).execute(&mut *tx).await.unwrap();
+            }
+        }
+        tx.rollback().await.unwrap();
+        assert!(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&self.pool).await.unwrap().is_none());
     }
 
     // Workers send a fresh request ID with most polls, so retire a bounded

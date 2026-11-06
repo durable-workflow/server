@@ -149,6 +149,11 @@ pub(super) fn worker_build<DB: Backend>(row: &DB::Row) -> Result<Option<String>>
         .map(|build| build.trim().to_owned())
         .filter(|build| !build.is_empty()))
 }
+enum FirstProbe {
+    Replayed(Value),
+    Claimed(Result<Option<Value>>),
+}
+
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     pub(super) wake: Arc<Notify>,
@@ -179,6 +184,8 @@ pub(super) struct Store<DB: Backend> {
     // production claims continue to sample the existing canonical clock.
     #[cfg(test)]
     pub(super) test_claim_at: Option<DateTime<Utc>>,
+    #[cfg(test)]
+    pub(super) test_transitions: Arc<std::sync::atomic::AtomicUsize>,
 }
 /// The `closed_reason` a terminal history event gives its run, or `None` for
 /// an event that does not close the run.
@@ -301,6 +308,8 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) fn query(sql: &'static str) -> sqlx::query::Query<'static, DB, DB::Arguments> {
+        #[cfg(test)]
+        super::sql_counts::record(sql);
         // Dialect conversion starts from a compiled static template. Runtime
         // values are always encoded by bind(), never interpolated into SQL.
         sqlx::query(sqlx::AssertSqlSafe(DB::statement(sql)))
@@ -308,6 +317,8 @@ where
     pub(super) fn scalar(
         sql: &'static str,
     ) -> sqlx::query::QueryScalar<'static, DB, i64, DB::Arguments> {
+        #[cfg(test)]
+        super::sql_counts::record(sql);
         sqlx::query_scalar(sqlx::AssertSqlSafe(DB::statement(sql)))
     }
     pub(super) fn new(pool: Pool<DB>) -> Self {
@@ -330,6 +341,8 @@ where
             poll_sweeps: Arc::default(),
             #[cfg(test)]
             test_claim_at: None,
+            #[cfg(test)]
+            test_transitions: Arc::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -352,6 +365,8 @@ where
             poll_sweeps: self.poll_sweeps.clone(),
             #[cfg(test)]
             test_claim_at: self.test_claim_at,
+            #[cfg(test)]
+            test_transitions: self.test_transitions.clone(),
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -393,6 +408,8 @@ where
         self.pool.close().await;
     }
     pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
+        #[cfg(test)]
+        self.test_transitions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         DB::begin(&self.pool)
             .await
             .map(|inner| Transaction::new(inner, self.history_budget))
@@ -1959,11 +1976,7 @@ where
                 if DB::string(&registration, "task_queue")? != queue {
                     return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
                 }
-                let request = self.workflow_poll_request(worker_id, queue, id, default_wait, &["workflow"]).await?;
-                if let Some(replay) = self.replay_workflow_poll(&request, worker_id, queue).await? {
-                    return replayed_poll(replay, encoding);
-                }
-                Some(request)
+                Some(self.workflow_poll_request(worker_id, queue, id, default_wait, &["workflow"]).await?)
             }
             _ => None,
         };
@@ -1982,18 +1995,28 @@ where
         loop {
             // Register the notification before probing.
             let wake = self.wake.notified();
-            // A replaced or silent registration ends the held poll, before
-            // every probe and inside the claim.
-            let current = match &fence {
-                Some(fence) => self.worker_poll_fence_holds(fence, worker_id).await?,
-                None => true,
-            };
-            let mut claimed = if !current {
-                Err(super::worker_poll_fence::stale_claim())
-            } else if std::mem::take(&mut first) || self.task_poll_ready(&body, kind, poll_request.as_ref()).await? {
-                self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await
-            } else {
-                Ok(None)
+            let first_probe = std::mem::take(&mut first);
+            let (current, mut claimed) = match &poll_request {
+                Some(request) if first_probe => {
+                    match self.replay_or_claim(&body, kind, protocol_version, page, request, fence.as_ref()).await? {
+                        FirstProbe::Replayed(answer) => return replayed_poll(answer, encoding),
+                        FirstProbe::Claimed(claimed) => (true, claimed),
+                    }
+                }
+                _ => {
+                    let current = match &fence {
+                        Some(fence) => self.worker_poll_fence_holds(fence, worker_id).await?,
+                        None => true,
+                    };
+                    let claimed = if !current {
+                        Err(super::worker_poll_fence::stale_claim())
+                    } else if first_probe || self.task_poll_ready(&body, kind, poll_request.as_ref()).await? {
+                        self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await
+                    } else {
+                        Ok(None)
+                    };
+                    (current, claimed)
+                }
             };
             // As `WorkflowTaskPoller::nextTask`: a workflow probe that claimed
             // nothing recovers the queue's abandoned leases, and claims again
@@ -2164,6 +2187,46 @@ where
         Ok(claimed)
     }
 
+    /// One first workflow probe: replay and claim while holding the same
+    /// transition lock. A refused claim rolls back to the already-validated
+    /// binding, retaining the old refusal and committed binding behavior.
+    async fn replay_or_claim(
+        &self,
+        body: &Value,
+        kind: &str,
+        protocol_version: &str,
+        page: Option<i64>,
+        request: &super::workflow_poll_requests::WorkflowPollRequest,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+    ) -> Result<FirstProbe> {
+        let worker_id = text(body, "worker_id")?;
+        let queue = text(body, "task_queue")?;
+        let mut tx = self.begin().await?;
+        if let Some(answer) = self.replay_workflow_poll_in(&mut tx, request, worker_id, queue).await? {
+            tx.commit().await?;
+            return Ok(FirstProbe::Replayed(answer));
+        }
+        if let Some(fence) = fence
+            && !self.worker_poll_fence_holds_in(&mut tx, fence, worker_id).await?
+        {
+            tx.commit().await?;
+            return Ok(FirstProbe::Claimed(Err(super::worker_poll_fence::stale_claim())));
+        }
+        let saved = tx.poll_savepoint().await?;
+        let claimed = match self.claim_in(&mut tx, body, kind, protocol_version, page, Some(request)).await {
+            Ok(claimed) => {
+                tx.release_poll_claim().await?;
+                Ok(claimed)
+            }
+            Err(error) => {
+                tx.rollback_poll_claim(saved).await?;
+                Err(error)
+            }
+        };
+        tx.commit().await?;
+        Ok(FirstProbe::Claimed(claimed))
+    }
+
     /// One claim inside the caller's transaction, which commits it: a
     /// multiplexed probe claims, turns the queue's cursor and records the
     /// poll request's answer as one unit.
@@ -2194,7 +2257,9 @@ where
         // binding row, locked here, makes it wait for that one's answer. Only
         // a workflow answer replays as a workflow claim; a multiplexed probe
         // replays a validation answer itself before claiming.
-        if let Some(request) = poll_request {
+        if let Some(request) = poll_request
+            && !request.replayed_in(tx)
+        {
             Self::bind_workflow_poll(tx, request).await?;
             if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, queue).await?
                 && answer["task"]["task_kind"] != "update_validation"

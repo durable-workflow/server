@@ -78,6 +78,7 @@ pub(super) trait Backend: Database {
         "INSERT INTO dw_query_cache(\"key\",value,expiration) VALUES ($1,$2,$3)";
     const QUERY_CACHE_UPDATE: &str =
         "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE \"key\"=$3";
+    const QUERY_CACHE_PUT: &str = "INSERT INTO dw_query_cache(\"key\",value,expiration) VALUES ($1,$2,$3) ON CONFLICT (\"key\") DO UPDATE SET value=excluded.value,expiration=excluded.expiration";
     const QUERY_CACHE_DELETE: &str = "DELETE FROM dw_query_cache WHERE \"key\"=$1";
     const QUERY_CACHE_DELETE_EXPIRED: &str = "DELETE FROM dw_query_cache WHERE \"key\"=$1 AND expiration<=$2";
     // One primary-key page of the whole cache table, for the one-time
@@ -578,6 +579,7 @@ impl Backend for MySql {
         "INSERT INTO dw_query_cache(`key`,value,expiration) VALUES ($1,$2,$3)";
     const QUERY_CACHE_UPDATE: &str =
         "UPDATE dw_query_cache SET value=$1,expiration=$2 WHERE `key`=$3";
+    const QUERY_CACHE_PUT: &str = "INSERT INTO dw_query_cache(`key`,value,expiration) VALUES ($1,$2,$3) ON DUPLICATE KEY UPDATE value=VALUES(value),expiration=VALUES(expiration)";
     const QUERY_CACHE_DELETE: &str = "DELETE FROM dw_query_cache WHERE `key`=$1";
     const QUERY_CACHE_DELETE_EXPIRED: &str = "DELETE FROM dw_query_cache WHERE `key`=$1 AND expiration<=$2";
     const QUERY_CACHE_PAGE: &str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key`>$1 ORDER BY `key` LIMIT 64";

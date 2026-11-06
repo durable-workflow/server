@@ -48,6 +48,14 @@ enum QueryClaim {
     Blocked(&'static str),
 }
 
+/// Private handoff from the immediate poll after it checked this proof,
+/// fence and fresh current-request row under the same transition lock.
+struct CheckedQueryPoll<'a> {
+    proof: &'a str,
+}
+
+pub(super) const QUERY_WORKER_PROOF_SQL: &str = "SELECT w.worker_id,w.namespace,w.last_heartbeat_at,i.token,i.worker_id AS incarnation_worker_id,i.namespace AS incarnation_namespace FROM workflow_worker_registrations w JOIN dw_worker_registration_incarnations i ON i.worker_id=w.worker_id AND i.namespace=w.namespace AND i.status='active' WHERE w.namespace=$1 AND w.worker_id=$2 AND w.status='active' LIMIT 2";
+
 const LEASED_WORKFLOW_TASKS: &str = "SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='leased' AND (lease_expires_at IS NULL OR lease_expires_at>$2)";
 
 /// Laravel binds "now" in whole seconds when PHP compares task leases.
@@ -1036,7 +1044,7 @@ where
     where
         E: Executor<'e, Database = DB>,
     {
-        let rows = Self::query("SELECT w.worker_id,w.namespace,w.last_heartbeat_at,i.token,i.worker_id AS incarnation_worker_id,i.namespace AS incarnation_namespace FROM workflow_worker_registrations w JOIN dw_worker_registration_incarnations i ON i.worker_id=w.worker_id AND i.namespace=w.namespace AND i.status='active' WHERE w.namespace=$1 AND w.worker_id=$2 AND w.status='active' LIMIT 2")
+        let rows = Self::query(QUERY_WORKER_PROOF_SQL)
             .bind(namespace.to_owned()).bind(owner.to_owned()).fetch_all(executor).await?;
         if rows.len() != 1 {
             return Ok(None);
@@ -1138,6 +1146,22 @@ where
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
         keys: Option<&poll_requests::PollKeys>,
     ) -> Result<QueryClaim> {
+        let mut tx = self.begin().await?;
+        let claim = self.claim_query_in(&mut tx, body, config, expected_proof, fence, keys, None).await?;
+        tx.commit().await?;
+        Ok(claim)
+    }
+
+    async fn claim_query_in(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        body: &Value,
+        config: &QueryTaskConfig,
+        expected_proof: &str,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+        keys: Option<&poll_requests::PollKeys>,
+        checked: Option<CheckedQueryPoll<'_>>,
+    ) -> Result<QueryClaim> {
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
         let request_id = body
@@ -1145,29 +1169,32 @@ where
             .filter(|value| !value.is_null())
             .map(|_| text(body, "poll_request_id"))
             .transpose()?;
-        let mut tx = self.begin().await?;
         let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND status='active'")
             .bind(self.namespace.as_ref()).bind(owner)
-            .fetch_optional(&mut *tx).await?;
+            .fetch_optional(&mut **tx).await?;
         let Some(worker) = worker else {
             return Ok(QueryClaim::StaleWorker);
         };
-        let proof =
-            Self::query_worker_proof(&mut *tx, self.namespace.as_ref(), owner, config).await?;
-        let Some(proof) = proof.filter(|proof| proof == expected_proof) else {
-            return Ok(QueryClaim::StaleWorker);
+        let proof = match checked {
+            Some(checked) if checked.proof == expected_proof => checked.proof.to_owned(),
+            _ => {
+                let proof = Self::query_worker_proof(&mut **tx, self.namespace.as_ref(), owner, config).await?;
+                let Some(proof) = proof.filter(|proof| proof == expected_proof) else {
+                    return Ok(QueryClaim::StaleWorker);
+                };
+                if let Some(fence) = fence
+                    && !self.worker_poll_fence_holds_in(tx, fence, owner).await?
+                {
+                    return Ok(QueryClaim::StaleWorker);
+                }
+                if let Some(keys) = keys
+                    && !Self::poll_request_is_current(tx, keys).await?
+                {
+                    return Ok(QueryClaim::Superseded);
+                }
+                proof
+            }
         };
-        if let Some(fence) = fence
-            && !self.worker_poll_fence_holds_in(&mut tx, fence, owner).await?
-        {
-            return Ok(QueryClaim::StaleWorker);
-        }
-        if let Some(keys) = keys
-            && !Self::poll_request_is_current(&mut tx, keys).await?
-        {
-            tx.commit().await?;
-            return Ok(QueryClaim::Superseded);
-        }
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
@@ -1181,7 +1208,7 @@ where
             return Ok(QueryClaim::Empty);
         }
         let mut held = None;
-        for (key, mut task) in self.query_entries(&mut tx).await? {
+        for (key, mut task) in self.query_entries(tx).await? {
             if !matches!(task["status"].as_str(), Some("pending" | "leased"))
                 || task["namespace"] != self.namespace.as_ref()
                 || authority::deadline(&task).is_none_or(|deadline| deadline <= authority::now())
@@ -1203,7 +1230,7 @@ where
             {
                 let existing_owner = task["lease_owner"].as_str().unwrap_or("");
                 let existing_proof = Self::query_worker_proof(
-                    &mut *tx,
+                    &mut **tx,
                     self.namespace.as_ref(),
                     existing_owner,
                     config,
@@ -1220,20 +1247,19 @@ where
                         && request_id.is_some_and(|id| task["poll_request_id"] == id)
                     {
                         let delivered = Self::query_delivery(&task);
-                        tx.commit().await?;
                         return Ok(QueryClaim::Task(delivered));
                     }
                     continue;
                 }
             }
-            if let Some(hold) = Self::query_hold(&mut tx, &task).await? {
+            if let Some(hold) = Self::query_hold(tx, &task).await? {
                 if held != Some("workflow_task_leased") {
                     held = Some(hold);
                 }
                 continue;
             }
-            if !Self::query_delivery_history(&mut tx, &mut task).await? {
-                Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
+            if !Self::query_delivery_history(tx, &mut task).await? {
+                Self::put_query(tx, &key, &task, authority::expiration(&task)?).await?;
                 continue;
             }
             let next_attempt = task["query_task_attempt"]
@@ -1252,12 +1278,10 @@ where
             task["lease_expires_at"] = json!(authority::wire(expires));
             task["registration_incarnation"] = json!(proof);
             task["poll_request_id"] = request_id.map_or(Value::Null, |id| json!(id));
-            Self::put_query(&mut tx, &key, &task, authority::expiration(&task)?).await?;
-            tx.commit().await?;
+            Self::put_query(tx, &key, &task, authority::expiration(&task)?).await?;
             return Ok(QueryClaim::Task(Self::query_delivery(&task)));
         }
-        // Commit cleanup even when no compatible task is found.
-        tx.commit().await?;
+        // The caller commits cleanup even when no compatible task is found.
         Ok(held.map_or(QueryClaim::Empty, QueryClaim::Blocked))
     }
 

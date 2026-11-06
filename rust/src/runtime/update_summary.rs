@@ -130,11 +130,12 @@ where
     pub(super) async fn apply_update_summary(
         tx: &mut Transaction<'_, DB>,
         run: &str,
+        read_rows: bool,
         history: &UpdateSummaryHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,u.id AS update_id,u.workflow_command_id,u.workflow_instance_id AS update_instance,u.update_name,u.status AS update_status,u.command_sequence AS update_command_sequence,u.workflow_sequence,c.id AS matched_command_id,c.command_sequence AS matched_command_sequence FROM workflow_run_waits w LEFT JOIN workflow_updates u ON u.id=w.resume_source_id AND u.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='update' ORDER BY w.command_sequence,w.wait_id")
-            .bind(run).fetch_all(&mut **tx).await?;
+        let rows = if read_rows { Self::query("SELECT w.*,u.id AS update_id,u.workflow_command_id,u.workflow_instance_id AS update_instance,u.update_name,u.status AS update_status,u.command_sequence AS update_command_sequence,u.workflow_sequence,c.id AS matched_command_id,c.command_sequence AS matched_command_sequence FROM workflow_run_waits w LEFT JOIN workflow_updates u ON u.id=w.resume_source_id AND u.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='update' ORDER BY w.command_sequence,w.wait_id")
+            .bind(run).fetch_all(&mut **tx).await? } else { Vec::new() };
         if rows.len() != history.updates.len() {
             return Ok(false);
         }

@@ -19,11 +19,25 @@ pub(super) struct ActiveSummary {
     pub(super) task_id: Option<String>,
     pub(super) task_type: Option<String>,
     pub(super) task_status: Option<String>,
-    available_at: Option<DateTime<Utc>>,
-    lease_expires_at: Option<DateTime<Utc>>,
+    pub(super) available_at: Option<DateTime<Utc>>,
+    pub(super) lease_expires_at: Option<DateTime<Utc>>,
     pub(super) wait: Option<SummaryWait>,
     pub(super) repair_blocked: Option<&'static str>,
     pub(super) problem: bool,
+}
+
+/// Each zero count skips only the corresponding read, never its validation.
+pub(super) struct ProjectionCensus {
+    other_waits: i64,
+    repairs: i64,
+    failed_tasks: i64,
+    received_signals: i64,
+    external_waits: i64,
+    timers: i64,
+    activities: i64,
+    children: i64,
+    updates: i64,
+    pub(super) failures: i64,
 }
 
 pub(super) struct SummaryWait {
@@ -48,9 +62,36 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn projection_census(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<ProjectionCensus> {
+        let row = Self::query("SELECT (SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child','update')) AS other_waits,(SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$2 AND task_type='workflow' AND repair_count>0) AS repairs,(SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$3 AND task_type='workflow' AND status='failed') AS failed_tasks,(SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$4 AND status='received') AS received_signals,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$5 AND (w.status='open' OR (w.status='resolved' AND w.source_status='timed_out')) AND w.kind IN ('condition','signal')) AS external_waits,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$6 AND w.kind='timer' AND w.status='open') AS timers,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$7 AND w.kind='activity' AND w.status='open') AS activities,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$8 AND w.kind='child') AS children,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$9 AND w.kind='update') AS updates,(SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=$10) AS failures")
+            .bind(run_id).bind(run_id).bind(run_id).bind(run_id).bind(run_id)
+            .bind(run_id).bind(run_id).bind(run_id).bind(run_id).bind(run_id)
+            .fetch_one(&mut **tx).await?;
+        Ok(ProjectionCensus {
+            other_waits: DB::number(&row,"other_waits")?, repairs: DB::number(&row,"repairs")?,
+            failed_tasks: DB::number(&row,"failed_tasks")?, received_signals: DB::number(&row,"received_signals")?,
+            external_waits: DB::number(&row,"external_waits")?, timers: DB::number(&row,"timers")?,
+            activities: DB::number(&row,"activities")?, children: DB::number(&row,"children")?,
+            updates: DB::number(&row,"updates")?, failures: DB::number(&row,"failures")?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) async fn projection_census_reference(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<ProjectionCensus> {
+        // The old projector always performed these reads. Keep that path
+        // independent of the combined census and never prune a detail read.
+        let other_waits = Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child','update')")
+            .bind(run_id).fetch_one(&mut **tx).await?;
+        let repairs = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND repair_count>0")
+            .bind(run_id).fetch_one(&mut **tx).await?;
+        Ok(ProjectionCensus { other_waits, repairs, failed_tasks:1, received_signals:1,
+            external_waits:1, timers:1, activities:1, children:1, updates:1, failures:1 })
+    }
+
     pub(super) async fn active_task_summary(
         tx: &mut Transaction<'_, DB>,
         run: &DB::Row,
+        census: &ProjectionCensus,
         external_waits: &ExternalWaitHistory,
         timers: &TimerSummaryHistory,
         activities: &ActivitySummaryHistory,
@@ -63,8 +104,7 @@ where
             return Ok(None);
         }
         let run_id = DB::string(run, "id")?;
-        if Self::scalar("SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child','update')")
-            .bind(&run_id).fetch_one(&mut **tx).await? > 0 { return Ok(None); }
+        if census.other_waits > 0 { return Ok(None); }
         let at = now();
         let mut summary = ActiveSummary {
             state: "repair_needed".into(),
@@ -76,10 +116,12 @@ where
             lease_expires_at: None,
             wait: None,
             repair_blocked: None,
-            problem: Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND repair_count>0").bind(&run_id).fetch_one(&mut **tx).await? > 0,
+            problem: census.repairs > 0,
         };
-        let failed = Self::query("SELECT payload,last_error FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='failed' ORDER BY id LIMIT 101")
-            .bind(&run_id).fetch_all(&mut **tx).await?;
+        let failed = if census.failed_tasks > 0 {
+            Self::query("SELECT payload,last_error FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='failed' ORDER BY id LIMIT 101")
+                .bind(&run_id).fetch_all(&mut **tx).await?
+        } else { Vec::new() };
         if failed.len() == 101 {
             return Ok(None);
         }
@@ -116,6 +158,7 @@ where
         // waits to be applied, and needs repair. It describes the run ahead of
         // timers, conditions, children and signal waits.
         if summary.task_id.is_none()
+            && census.received_signals > 0
             && let Some(signal) = Self::query("SELECT id,signal_name,received_at FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,CASE WHEN received_at IS NULL THEN 1 ELSE 0 END,received_at,id LIMIT 1")
                 .bind(&run_id).fetch_optional(&mut **tx).await?
         {
@@ -146,13 +189,13 @@ where
             });
             return Ok(Some(summary));
         }
-        if !Self::apply_external_wait_summary(tx, &run_id, external_waits, &mut summary).await? {
+        if !Self::apply_external_wait_summary(tx, &run_id, census.external_waits > 0, external_waits, &mut summary).await? {
             return Ok(None);
         }
-        if !Self::apply_timer_summary(tx, &run_id, timers, &mut summary).await? {
+        if !Self::apply_timer_summary(tx, &run_id, census.timers > 0, timers, &mut summary).await? {
             return Ok(None);
         }
-        if !Self::apply_activity_summary(tx, &run_id, activities, &mut summary).await? {
+        if !Self::apply_activity_summary(tx, &run_id, census.activities > 0, activities, &mut summary).await? {
             return Ok(None);
         }
         if summary
@@ -170,10 +213,10 @@ where
             }
             summary.wait = wait;
         }
-        if !Self::apply_child_summary(tx, &run_id, children, &mut summary).await? {
+        if !Self::apply_child_summary(tx, &run_id, census.children > 0, children, &mut summary).await? {
             return Ok(None);
         }
-        if !Self::apply_update_summary(tx, &run_id, updates, &mut summary).await? {
+        if !Self::apply_update_summary(tx, &run_id, census.updates > 0, updates, &mut summary).await? {
             return Ok(None);
         }
         if summary.wait.is_none() && summary.task_id.is_none() {
@@ -284,6 +327,7 @@ where
         Ok(true)
     }
 
+    #[cfg(test)]
     pub(super) async fn write_active_summary_fields(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
