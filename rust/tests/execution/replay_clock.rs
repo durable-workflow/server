@@ -21,7 +21,7 @@ async fn clock_poll(app: &Router, fields: Value) -> Value {
 
 fn without_cached_clock(text: &str) -> Option<String> {
     let mut value: Value = serde_json::from_str(text).unwrap();
-    value["task"].as_object_mut()?.remove("replay_clock")?;
+    value.get_mut("task")?.as_object_mut()?.remove("replay_clock")?;
     Some(value.to_string())
 }
 

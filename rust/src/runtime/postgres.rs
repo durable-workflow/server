@@ -1651,7 +1651,7 @@ mod tests {
         assert_eq!(kept,"seeded at version 9");
         let row = catalog(&mut connection).await.unwrap().into_iter().find(|(_, name, _)| name=="workflow_history_events_run_type_sequence_index").unwrap();
         println!("replay_clock_actual_postgres_index={}",serde_json::to_string(&row).unwrap());
-        connection.execute("DROP INDEX workflow_history_events_run_type_sequence_index").await.unwrap();
+        sqlx::query("DROP INDEX workflow_history_events_run_type_sequence_index").execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
         refused(PostgresStorage::open(db.options.clone()).await,"native_schema_catalog_mismatch");
         db.remove().await;
