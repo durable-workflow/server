@@ -12,6 +12,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionClass;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
@@ -255,30 +256,34 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
         $this->assertSame($before, $this->state());
     }
 
-    public function test_total_deadline_preserves_selection_and_engine_timeout_precedence(): void
+    public static function totalDeadlines(): array
     {
-        foreach ([99, 100] as $seconds) {
-            $this->travelTo(\Illuminate\Support\Carbon::parse('2026-11-06T00:00:00Z'));
-            $task = $this->claim();
-            $prepared = $this->local($task, 'prepare', $this->descriptor([
-                'start_to_close_timeout' => 200, 'schedule_to_close_timeout' => 100,
-            ]))->assertOk()->json();
-            $before = ActivityAttempt::query()->count();
-            $this->travel($seconds)->seconds();
-            $reply = $this->outcome($task, $prepared['activity_attempt_id'],
-                ['outcome' => 'failed', 'message' => 'caller failure', 'next_retry_delay_seconds' => 1])
-                ->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('created_task_ids', [])->json();
-            $this->assertSame('terminal', $reply['retry_disposition']['decision']);
-            $this->assertSame($seconds === 99 ? 'application' : 'engine_timeout', $reply['retry_disposition']['failure_source']);
-            if ($seconds === 99) {
-                $this->assertSame('retry_delay_exceeds_schedule_to_close', $reply['retry_disposition']['terminal_classification']);
-            } else {
-                $this->assertSame('schedule_to_close', $reply['retry_disposition']['timeout_kind']);
-            }
-            $this->assertSame($before, ActivityAttempt::query()->count());
-            $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $task['run_id'])
-                ->where('event_type', HistoryEventType::ActivityRetryScheduled)->count());
+        return ['before original deadline' => [99], 'at original deadline' => [100]];
+    }
+
+    #[DataProvider('totalDeadlines')]
+    public function test_total_deadline_preserves_selection_and_engine_timeout_precedence(int $seconds): void
+    {
+        $task = $this->claim();
+        $prepared = $this->local($task, 'prepare', $this->descriptor([
+            'start_to_close_timeout' => 200, 'schedule_to_close_timeout' => 100,
+        ]))->assertOk()->json();
+        $before = ActivityAttempt::query()->count();
+        $this->travel($seconds)->seconds();
+        WorkerRegistration::query()->where('worker_id', 'retry-worker')->update(['last_heartbeat_at' => now()]);
+        $reply = $this->outcome($task, $prepared['activity_attempt_id'],
+            ['outcome' => 'failed', 'message' => 'caller failure', 'next_retry_delay_seconds' => 1])
+            ->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('created_task_ids', [])->json();
+        $this->assertSame('terminal', $reply['retry_disposition']['decision']);
+        $this->assertSame($seconds === 99 ? 'application' : 'engine_timeout', $reply['retry_disposition']['failure_source']);
+        if ($seconds === 99) {
+            $this->assertSame('retry_delay_exceeds_schedule_to_close', $reply['retry_disposition']['terminal_classification']);
+        } else {
+            $this->assertSame('schedule_to_close', $reply['retry_disposition']['timeout_kind']);
         }
+        $this->assertSame($before, ActivityAttempt::query()->count());
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $task['run_id'])
+            ->where('event_type', HistoryEventType::ActivityRetryScheduled)->count());
     }
 
     private function assertNoAuthorityRows(): void
@@ -337,10 +342,9 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
 
     private function outcome(array $task, string $attempt, array $report): TestResponse
     {
-        return $this->withHeaders($this->headers())->call('POST', "/api/worker/workflow-tasks/{$task['task_id']}/local-activities/{$attempt}/outcome",
-            [], [], [], ['CONTENT_TYPE' => 'application/json'], json_encode([
-                'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'], 'report' => $report,
-            ], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION));
+        return $this->postJson("/api/worker/workflow-tasks/{$task['task_id']}/local-activities/{$attempt}/outcome", [
+            'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'], 'report' => $report,
+        ], $this->headers(), JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
     }
 
     private function headers(): array

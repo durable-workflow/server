@@ -254,7 +254,7 @@ class ActivityAttemptStatusTest extends TestCase
 
         $this->withHeaders($this->headers())->postJson($this->path($task, 'complete'), $this->fence($task) + ['result' => null])
             ->assertConflict()->assertJsonPath('recorded', false)->assertJsonPath('reason', $reason);
-        $this->assertSame($before, $this->snapshot($task));
+        $this->assertRefusedOutcomeSnapshot($before, $task, 'completed', $reason);
     }
 
     #[DataProvider('expiredOutcomeProvider')]
@@ -277,7 +277,7 @@ class ActivityAttemptStatusTest extends TestCase
             ->postJson($this->path($task, $action), $this->fence($task) + $payload)
             ->assertStatus(409)->assertJsonPath('recorded', false)->assertJsonPath('reason', 'lease_expired');
 
-        $this->assertSame($before, $this->snapshot($task));
+        $this->assertRefusedOutcomeSnapshot($before, $task, $action === 'complete' ? 'completed' : 'failed', 'lease_expired');
     }
 
     public static function deadlineProvider(): array
@@ -663,6 +663,32 @@ class ActivityAttemptStatusTest extends TestCase
     private function observe(array $task, array $overrides = [], string $namespace = 'default'): TestResponse
     {
         return $this->withHeaders($this->headers($namespace))->postJson($this->path($task), array_replace($this->fence($task), $overrides));
+    }
+
+    private function assertRefusedOutcomeSnapshot(array $before, array $task, string $outcome, string $reason): void
+    {
+        $after = $this->snapshot($task);
+        // Maintained Core records a bounded rejection audit. The locked older
+        // package has no recorder and must retain its original history count.
+        $audited = class_exists(\Workflow\V2\Support\ActivityOutcomeRejection::class);
+        $this->assertSame($before[4] + ($audited ? 1 : 0), $after[4]);
+        unset($before[4], $after[4]);
+        $this->assertSame($before, $after);
+        if (! $audited) {
+            return;
+        }
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $task['run_id'])
+            ->where('event_type', 'ActivityOutcomeRejected')->sole();
+        $this->assertSame($task['task_id'], $event->workflow_task_id);
+        $expected = ['activity_execution_id' => $task['activity_execution_id'],
+            'activity_attempt_id' => $task['activity_attempt_id'],
+            'attempt_number' => ActivityAttempt::query()->findOrFail($task['activity_attempt_id'])->attempt_number,
+            'lease_owner' => $task['lease_owner'], 'outcome' => $outcome, 'reason' => $reason,
+            'observed_at' => now()->toJSON()];
+        $actual = $event->payload;
+        ksort($expected);
+        ksort($actual);
+        $this->assertSame($expected, $actual);
     }
 
     private function snapshot(array $task): array
