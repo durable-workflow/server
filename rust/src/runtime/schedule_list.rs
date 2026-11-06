@@ -1196,16 +1196,30 @@ mod tests {
         add_schedule(&store,"skip-bounds").await;
         for (field, reason, at) in [("last_skip_reason","x".repeat(300000),None),
             ("last_skip_reason",format!("\0{}","x".repeat(300000)),None),
-            ("last_skipped_at","retained".to_owned(),Some("9".repeat(10000)))] {
+            ("last_skipped_at","retained".to_owned(),Some("invalid timestamp ".repeat(1000)))] {
             sqlx::query("UPDATE workflow_schedules SET last_skip_reason=?,last_skipped_at=? WHERE schedule_id='skip-bounds'")
                 .bind(reason).bind(at).execute(&store.pool).await.unwrap();
+            if field == "last_skipped_at" {
+                let stored_type: String = sqlx::query_scalar("SELECT typeof(last_skipped_at) FROM workflow_schedules WHERE schedule_id='skip-bounds'")
+                    .fetch_one(&store.pool).await.unwrap();
+                assert_eq!(stored_type,"text","the oversized fixture must remain text under DATETIME affinity");
+            }
             let rows = store.select_schedules(&Selection {status:None,workflow_type:None,predicates:vec![]},None,None,50)
                 .await.unwrap();
-            assert_eq!(<sqlx::Sqlite as Backend>::number(&rows[0],"summary_invalid").unwrap(),1);
+            assert_eq!(<sqlx::Sqlite as Backend>::number(&rows[0],"summary_invalid").unwrap(),1,"{field}");
             assert!(<sqlx::Sqlite as Backend>::optional_string(&rows[0],field).unwrap().is_none());
             assert!(matches!(store.list_schedules(None,"fixture-secret").await,
                 Err(RuntimeError::Refused {status:StatusCode::SERVICE_UNAVAILABLE,reason:"storage_unavailable"})));
         }
+        // DATETIME's NUMERIC affinity converts oversized decimal text to REAL.
+        // That is malformed timestamp storage, distinct from oversized text.
+        sqlx::query("UPDATE workflow_schedules SET last_skip_reason='retained',last_skipped_at=? WHERE schedule_id='skip-bounds'")
+            .bind("9".repeat(10000)).execute(&store.pool).await.unwrap();
+        let stored_type: String = sqlx::query_scalar("SELECT typeof(last_skipped_at) FROM workflow_schedules WHERE schedule_id='skip-bounds'")
+            .fetch_one(&store.pool).await.unwrap();
+        assert_eq!(stored_type,"real");
+        assert!(matches!(store.list_schedules(None,"fixture-secret").await,
+            Err(RuntimeError::Refused {status:StatusCode::SERVICE_UNAVAILABLE,reason:"storage_unavailable"})));
     }
 
     #[tokio::test]
