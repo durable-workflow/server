@@ -157,3 +157,60 @@ canonical original mode/snapshot to the retained claim under the existing outer
 transaction. The current bound bridge does not expose that role. Native
 implementation, schema, installed/backend qualification and release remain
 separate work.
+
+## Guarded Server adapter
+
+The source adapter targets Core's optional interface and pure helpers at
+`ce24207ef86856e64f97b939c9aeef9d1fb387c8`. The locked package and default
+bridge remain unchanged. No retry capability is advertised by this adapter.
+Policy-member or override presence selects only untrusted intent. A real bound
+`PreparedLocalActivityRetryTaskBridge`, the original issued capability and
+canonical contract/snapshot authority are required independently.
+
+A successful version-2 preparation receives a distinct private
+`durable-workflow.server.prepared-local-authority/v2` receipt. Its exact keys
+are `schema`, `claim`, `activity_execution_id`, `activity_attempt_id`,
+`worker_attempt_id`, `local_activity_contract_version`, `retry_policy_snapshot`,
+`preparation_history_event_id` and `descriptor_fingerprint`. The contract value
+comes from canonical Core preparation. The complete normalized snapshot and
+unique correlated Started event must agree on every read. A legacy receipt is
+never rewritten or promoted. The hosting task's later current claim cannot
+replace the original callback's issued claim.
+
+A new private preparation receipt also requires the bound role's literal
+`prepared: true` and `duplicate: false` result. A duplicate can only read an
+already retained matching receipt. It cannot recreate missing Server authority
+from an existing Core graph.
+
+A fresh recovery also retains a separate closed private
+`durable-workflow.server.prepared-local-recovery-authority/v2` receipt on the
+recovering task. Its keys are `schema`, `claim`, `activity_execution_id`,
+`activity_attempt_id`, `local_activity_contract_version`, `retry_policy_snapshot`,
+`preparation_history_event_id`, `descriptor_fingerprint` and `engine_event`.
+The copied engine projection contains the event ID/type/history sequence,
+strict integer activity sequence and insertion time,
+retry-task identity, original recovery envelope and scalar retry decision.
+The decision's retained failure sample and history insertion time are distinct
+clocks. Their values are preserved independently rather than equated.
+
+Recovery reads the original callback authority and the recovering claim
+independently. An exact duplicate binds the old attempt even after a following
+attempt exists. A complete unchanged private recovery receipt permits Core's
+matching committed duplicate before fresh registration, quota or clock work.
+It grants no fresh writer authority. Missing receipts are never backfilled from
+an existing engine event, and changed graph, event or output identities roll
+back the transaction. Fresh recovery still requires the current recovering
+claim and registration fence. Preparation and fresh recovery retain their
+Server authority atomically with the Core writer. Physical callback stop remains
+unknown.
+
+Completed external payload uploads retain their existing completion-lease,
+namespace, storage and reference checks. The original receipt and supervisor
+control dispatch use the same proven mode as the outcome route. This adds no
+fetch-free completed replay guarantee. Failed and timed-out pure report checks
+perform no payload resolution.
+
+Normal locked-package tests cover unavailable-role precedence and unchanged
+legacy authority. The exact candidate writer/transaction/transport comparison
+and all semantic cases remain required qualification work. PHP syntax or pure
+intent controls alone do not qualify a prepared writer or enable a runtime role.

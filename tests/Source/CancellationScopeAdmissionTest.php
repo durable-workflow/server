@@ -22,6 +22,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
 use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -494,10 +495,11 @@ final class CancellationScopeAdmissionTest extends TestCase
     {
         $task = $this->claim();
         $current = app(WorkflowTaskBridge::class);
-        $bridge = \Mockery::mock(WorkflowTaskBridge::class.', '.CancellationScopeAdmission::class);
+        $bridge = \Mockery::mock(ProtocolAwareWorkflowTaskBridge::class.', '.CancellationScopeAdmission::class);
         $bridge->shouldReceive('status')->andReturnUsing(fn (string $id) => $current->status($id));
         $bridge->shouldReceive('validateCancellationScopeMembership')->twice()->andReturn(null, 'operation_scope_not_recorded');
         $bridge->shouldNotReceive('complete');
+        $bridge->shouldNotReceive('completeForProtocol');
         $this->app->instance(WorkflowTaskBridge::class, $bridge);
         $this->complete($task, 'root')->assertStatus(409)->assertJsonPath('reason', 'operation_scope_not_recorded');
         $this->assertDatabaseCount('workflow_durable_stream_items', 0);

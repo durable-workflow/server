@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "57"
+  version: "58"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -2373,6 +2373,22 @@ components:
       type: object
       additionalProperties: false
       required: [type, activity_type, arguments]
+      allOf:
+        - if:
+            required: [retry_policy]
+            properties:
+              retry_policy:
+                type: object
+                anyOf:
+                  - required: [contract_version]
+                  - required: [snapshot_version]
+                  - required: [mode]
+                  - required: [maximum_interval_seconds]
+          then:
+            properties:
+              start_to_close_timeout: { type: [integer, "null"], minimum: 1, maximum: 2147483647 }
+              schedule_to_close_timeout: { type: [integer, "null"], minimum: 1, maximum: 2147483647 }
+              heartbeat_timeout: { type: [integer, "null"], minimum: 1, maximum: 2147483647 }
       properties:
         type: { type: string, const: record_local_activity }
         activity_type: { type: string, minLength: 1 }
@@ -2410,10 +2426,38 @@ components:
           items: { type: object }
         retry_policy:
           type: [object, "null"]
+          description: Versioned members select only untrusted contract-2 intent. Admission requires the actual optional retry bridge and the original activity_retry_delay_override_v1 claim capability. Legacy policies retain their existing path.
+          allOf:
+            - if:
+                type: object
+                anyOf:
+                  - required: [contract_version]
+                  - required: [snapshot_version]
+                  - required: [mode]
+                  - required: [maximum_interval_seconds]
+              then: { $ref: "#/components/schemas/PreparedLocalRetryPolicyV2" }
           properties:
             max_attempts: { type: [integer, "null"], minimum: 1 }
             backoff_seconds: { type: array, items: { type: integer, minimum: 0 } }
             non_retryable_error_types: { type: array, items: { type: string } }
+    PreparedLocalRetryPolicyV2:
+      type: object
+      additionalProperties: false
+      required: [contract_version, mode, backoff_seconds]
+      description: Flattened prepared-per-attempt policy. This schema does not grant mode or callback admission. The complete retained ten-key snapshot must be version 2 and match original Started authority. New-route timeouts are null or integers 1..2147483647; schedule-to-start remains null. Backend timestamp checks remain independent of the portable delay bound.
+      properties:
+        contract_version: { type: integer, const: 2 }
+        mode: { type: string, enum: [explicit, generated] }
+        max_attempts: { type: integer, minimum: 1, maximum: 1024 }
+        backoff_seconds:
+          type: array
+          maxItems: 1024
+          items: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        maximum_interval_seconds: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        non_retryable_error_types:
+          type: array
+          maxItems: 128
+          items: { type: string, minLength: 1, maxLength: 255, x-durable-workflow-max-utf8-bytes: 255 }
     PreparedLocalRecoverRequest:
       allOf:
         - $ref: "#/components/schemas/PreparedLocalClaimRequest"
@@ -2543,6 +2587,11 @@ components:
                     message: { type: string }
                     exception_type: { type: string, minLength: 1, maxLength: 255 }
                     non_retryable: { type: boolean, default: false }
+                    next_retry_delay_seconds:
+                      type: integer
+                      minimum: 0
+                      maximum: 9007199254740991
+                      description: Failed-only optional supplied delay. Absence differs from zero. Requires the installed retry role plus original claim capability, local contract 2 and retained snapshot 2; never upgrades a legacy report. Strict override failures are 422; other closed report failures are 409 invalid_local_activity_outcome.
                 - type: object
                   additionalProperties: false
                   required: [outcome]
