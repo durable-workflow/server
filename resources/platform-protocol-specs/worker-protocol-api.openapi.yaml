@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "57"
+  version: "58"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1707,6 +1707,9 @@ components:
       additionalProperties: true
       required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
+        claimed_task_ready_age:
+          type: boolean
+          description: Literal true supports optional authoritative ready_age_ms on actual workflow/activity claims. Unknown legacy origins and old stored poll answers may omit the measurement. No query or update-validation measurement is supplied.
         query_task_authority:
           type: boolean
           description: Original query timing and atomic outcome fences with non-renewing protocol-1.20 query status. A 1.19 status request is explicitly unavailable.
@@ -2067,6 +2070,8 @@ components:
       additionalProperties: true
       required: [task_kind, task_id, workflow_id, run_id, workflow_task_attempt, history_events, lease_owner, lease_expires_at]
       properties:
+        ready_age_ms:
+          $ref: "#/components/schemas/ClaimedTaskReadyAgeMs"
         task_kind: { type: string, const: workflow }
         task_id: { type: string, minLength: 1 }
         workflow_id: { type: string, minLength: 1 }
@@ -2948,6 +2953,11 @@ components:
                 - update_validator_worker_lost
             error: { type: string, minLength: 1 }
             status: { type: integer, enum: [404, 409] }
+    ClaimedTaskReadyAgeMs:
+      type: integer
+      minimum: 0
+      maximum: 9007199254740991
+      description: Known task eligibility to the same committed lease timestamp, floored to milliseconds after checking the signed duration. Real zero is valid. Unknown, invalid, negative or unrepresentable measurements are omitted. Cached poll replay retains the original value.
     ActivityTaskClaim:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
@@ -2959,6 +2969,8 @@ components:
               additionalProperties: true
               required: [task_id, activity_type, attempt]
               properties:
+                ready_age_ms:
+                  $ref: "#/components/schemas/ClaimedTaskReadyAgeMs"
                 task_id: { type: string }
                 activity_type: { type: string }
                 attempt: { type: integer, minimum: 1 }

@@ -423,8 +423,8 @@ where
                         .execute(&mut **tx).await?;
                 }
             }
-            Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,last_claim_failed_at=NULL,last_claim_error=NULL WHERE id=$1")
-                .bind(&task_id).execute(&mut **tx).await?;
+            Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,last_claim_failed_at=NULL,last_claim_error=NULL,ready_origin_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(now())).bind(&task_id).execute(&mut **tx).await?;
         }
         Ok(())
     }

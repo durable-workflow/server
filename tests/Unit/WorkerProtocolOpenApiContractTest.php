@@ -26,6 +26,38 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->spec = $spec;
     }
 
+    public function test_ready_age_is_an_optional_bounded_actual_integer(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        foreach ([0, 1, 9007199254740991] as $value) {
+            $schema->assertReferenceMatches('#/components/schemas/ClaimedTaskReadyAgeMs', $value);
+        }
+        $capabilities = $this->spec['components']['schemas']['WorkerServerCapabilities'];
+        $this->assertSame('boolean', $capabilities['properties']['claimed_task_ready_age']['type']);
+        $this->assertNotContains('claimed_task_ready_age', $capabilities['required']);
+        $task = $this->spec['components']['schemas']['WorkflowTask'];
+        $this->assertNotContains('ready_age_ms', $task['required']);
+        $this->assertSame('#/components/schemas/ClaimedTaskReadyAgeMs', $task['properties']['ready_age_ms']['$ref']);
+        $activity = $this->spec['components']['schemas']['ActivityTaskClaim']['allOf'][1]['properties']['task'];
+        $this->assertNotContains('ready_age_ms', $activity['required']);
+        $this->assertSame('#/components/schemas/ClaimedTaskReadyAgeMs', $activity['properties']['ready_age_ms']['$ref']);
+    }
+
+    public static function invalidReadyAge(): iterable
+    {
+        foreach ([null, true, false, '0', '1', 0.0, 1.5, -1, 9007199254740992] as $index => $value) {
+            yield (string) $index => [$value];
+        }
+    }
+
+    #[DataProvider('invalidReadyAge')]
+    public function test_ready_age_refuses_coercion_negative_and_out_of_range_values(mixed $value): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml')
+            ->assertReferenceMatches('#/components/schemas/ClaimedTaskReadyAgeMs', $value);
+    }
+
     public function test_http_spec_publishes_the_runtime_negotiation_contract(): void
     {
         $negotiation = $this->spec['x-durable-workflow-worker-protocol-negotiation'];
