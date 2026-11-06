@@ -167,6 +167,10 @@ pub(super) struct Store<DB: Backend> {
     /// When this server last ran a task repair pass, shared by its namespaces
     /// as PHP shares its loop throttle key.
     pub(super) repair_pass_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    // A per-store source-test clock for deterministic claim arithmetic. All
+    // production claims continue to sample the existing canonical clock.
+    #[cfg(test)]
+    pub(super) test_claim_at: Option<DateTime<Utc>>,
 }
 /// The `closed_reason` a terminal history event gives its run, or `None` for
 /// an event that does not close the run.
@@ -314,6 +318,8 @@ where
             workflow_task_recovery_scan_limit: 5,
             repair_codec: Arc::new(Semaphore::new(1)),
             repair_pass_at: Arc::default(),
+            #[cfg(test)]
+            test_claim_at: None,
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -332,6 +338,8 @@ where
             workflow_task_recovery_scan_limit: self.workflow_task_recovery_scan_limit,
             repair_codec: self.repair_codec.clone(),
             repair_pass_at: self.repair_pass_at.clone(),
+            #[cfg(test)]
+            test_claim_at: self.test_claim_at,
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -1811,8 +1819,8 @@ where
             // Match PHP's registration boundary: return original workflow leases
             // to ready without a repair command/history event. Token rotation
             // and lease release commit together; failure restores the old attempt.
-            Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE namespace=$1 AND lease_owner=$2 AND task_type='workflow' AND status='leased'")
-                .bind(self.namespace.as_ref()).bind(worker_id).execute(&mut *tx).await?;
+            Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,ready_origin_at=$1 WHERE namespace=$2 AND lease_owner=$3 AND task_type='workflow' AND status='leased'")
+                .bind(DB::bind_time(now())).bind(self.namespace.as_ref()).bind(worker_id).execute(&mut *tx).await?;
             Self::release_replaced_activity_leases(&mut tx, self.namespace.as_ref(), worker_id)
                 .await?;
         }
@@ -2387,7 +2395,11 @@ where
             } else {
                 self.cancellation_lease_expiry(&run)?
             };
+            let ready_origin = super::ready_age::origin::<DB>(&task, kind);
+            #[cfg(not(test))]
             let leased_at = now();
+            #[cfg(test)]
+            let leased_at = self.test_claim_at.unwrap_or_else(now);
             // `PollRequestLeaseBinding::bindClaimedTask`: a workflow claim
             // records its poll request ID, or clears an older one.
             if kind == "workflow"
@@ -2412,9 +2424,9 @@ where
                     "updated_at":DB::instant(&worker,"updated_at")?,"last_heartbeat_at":DB::instant(&worker,"last_heartbeat_at")?,
                     "task_id":task_id,"run_id":run_id,"lease_owner":worker_id,"attempt":attempt});
             }
-            Self::query("UPDATE workflow_tasks SET status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3,leased_at=$4,payload=$5 WHERE id=$6")
+            Self::query("UPDATE workflow_tasks SET ready_origin_at=CASE WHEN status='leased' AND task_type='workflow' THEN $6 ELSE ready_origin_at END,status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3,leased_at=$4,payload=$5 WHERE id=$7")
                 .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
-                .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut **tx).await?;
+                .bind(DB::document(&task_payload)).bind(DB::optional_time(ready_origin)).bind(&task_id).execute(&mut **tx).await?;
             // A lease is worker authority, not an authored lifecycle commit.
             if kind == "workflow" {
                 Self::query("UPDATE workflow_run_waits SET task_status='leased',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3 AND ((kind='child' AND status IN ('resolved','cancelled')) OR (kind='update' AND status='open'))")
@@ -2427,6 +2439,7 @@ where
                 "run_id": run_id, "workflow_instance_id": DB::string(&run,"workflow_instance_id")?, "workflow_run_id": run_id,
                 "workflow_type": DB::string(&run,"workflow_type")?, "namespace": self.namespace.as_ref(), "payload_codec": "avro",
                 "queue": queue, "task_queue": queue, "lease_owner": worker_id, "lease_expires_at": super::cooperative::timestamp(expires)});
+            super::ready_age::annotate(&mut claim, kind, ready_origin, leased_at);
             if let Some(activity) = activity {
                 let activity_id = DB::string(&activity, "id")?;
                 let policy =
@@ -2799,9 +2812,9 @@ where
                 // Copy routing in SQL so JSON/null representations remain
                 // native to each backend. A new lease increments this carried
                 // attempt count rather than restarting it at one.
-                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,attempt_count,available_at,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,payload,connection,queue,compatibility,priority,fairness_key,fairness_weight) SELECT $1,r.id,r.namespace,'workflow','ready',t.attempt_count,$2,$3,$4,$5,$6,$7,COALESCE(t.connection,r.connection),COALESCE(t.queue,r.queue),COALESCE(t.compatibility,r.compatibility),COALESCE(t.priority,r.priority,5),COALESCE(t.fairness_key,r.fairness_key),COALESCE(t.fairness_weight,r.fairness_weight,1) FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$8")
+                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,attempt_count,available_at,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,payload,connection,queue,compatibility,priority,fairness_key,fairness_weight,ready_origin_at) SELECT $1,r.id,r.namespace,'workflow','ready',t.attempt_count,$2,$3,$4,$5,$6,$7,COALESCE(t.connection,r.connection),COALESCE(t.queue,r.queue),COALESCE(t.compatibility,r.compatibility),COALESCE(t.priority,r.priority,5),COALESCE(t.fairness_key,r.fairness_key),COALESCE(t.fairness_weight,r.fairness_weight,1),$9 FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$8")
                     .bind(&next).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created))
-                    .bind(DB::document(&payload)).bind(task_id).execute(&mut *tx).await?;
+                    .bind(DB::document(&payload)).bind(task_id).bind(DB::bind_time(created)).execute(&mut *tx).await?;
                 next_task_id = Some(next);
             }
             tx.commit().await?;
@@ -4391,11 +4404,12 @@ where
         let created = now();
         let dispatched_at = dispatched.then_some(created);
         let fairness_key = DB::optional_string(&run, "fairness_key")?;
-        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+        Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight,compatibility,ready_origin_at) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
         .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
         .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::optional_time(dispatched_at)).bind(DB::optional_time(dispatched_at))
         .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
         .bind(DB::optional_string(&run, "compatibility")?.as_deref())
+        .bind(DB::optional_time(matches!(kind, "workflow" | "activity").then_some(created)))
         .execute(&mut **tx).await?;
         Ok(task_id)
     }
@@ -5227,7 +5241,7 @@ pub(crate) fn capabilities() -> Value {
         "sticky_execution": false, "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
-        "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
+        "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
         "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true});
     value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
     value["supported_workflow_task_commands"]

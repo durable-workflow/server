@@ -663,7 +663,7 @@ store_methods! {
                 if let Some(execution) = &execution {
                     Self::close_current_attempt(tx, execution, "expired", at).await?;
                 }
-                Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$1,repair_available_at=NULL,last_error=NULL,updated_at=$2 WHERE id=$3")
+                Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$1,repair_available_at=NULL,last_error=NULL,updated_at=$2,ready_origin_at=$2 WHERE id=$3")
                     .bind(repair_count).bind(DB::bind_time(at)).bind(&task_id).execute(&mut **tx).await?;
             }
             "failed" if super::task_repair::replay_blocked::<DB>(task)? => {
@@ -673,7 +673,7 @@ store_methods! {
                 if let Some(fields) = payload.as_object_mut() {
                     fields.retain(|key, _| !key.starts_with("replay_blocked"));
                 }
-                Self::query("UPDATE workflow_tasks SET status='ready',payload=$1,leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$2,repair_available_at=NULL,last_error=NULL,updated_at=$3 WHERE id=$4")
+                Self::query("UPDATE workflow_tasks SET status='ready',payload=$1,leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$2,repair_available_at=NULL,last_error=NULL,updated_at=$3,ready_origin_at=$3 WHERE id=$4")
                     .bind(DB::document(&payload)).bind(repair_count).bind(DB::bind_time(at)).bind(&task_id).execute(&mut **tx).await?;
             }
             _ => return Ok(Recovered::Nothing),

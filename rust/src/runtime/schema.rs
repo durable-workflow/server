@@ -11,14 +11,14 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 8;
+pub(super) const VERSION: i64 = 9;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions".into(),
+            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/sqlite/0003_full_schema.sql"),
@@ -31,7 +31,9 @@ fn migrator() -> &'static Migrator {
                 "\n",
                 include_str!("../../migrations/sqlite/0007_service_calls.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")
             )
             .into_sql_str(),
             false,
@@ -44,7 +46,30 @@ fn migrator() -> &'static Migrator {
 /// step files themselves never change once released.
 fn earlier_migration(version: i64) -> Option<&'static Migration> {
     static V7: OnceLock<Migration> = OnceLock::new();
+    static V8: OnceLock<Migration> = OnceLock::new();
     match version {
+        8 => Some(
+            V8.get_or_init(|| Migration::new(
+                8,
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions".into(),
+                MigrationType::Simple,
+                concat!(
+                include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")
+            ).into_sql_str(),
+                false,
+            )),
+        ),
+
         7 => Some(V7.get_or_init(|| {
             Migration::new(
                 7,
@@ -74,6 +99,7 @@ fn earlier_migration(version: i64) -> Option<&'static Migration> {
 fn step(version: i64) -> Option<&'static str> {
     match version {
         7 => Some(include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")),
+        8 => Some(include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")),
         _ => None,
     }
 }
@@ -174,7 +200,9 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/sqlite/0007_service_calls.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")
         ),
     )
 }
@@ -230,7 +258,8 @@ pub(super) async fn php_source_catalog(connection: &mut SqliteConnection) -> Res
     if owned {
         return Err(refuse(StatusCode::CONFLICT, "upgrade_source_already_owned"));
     }
-    let expected: Catalog = expected_catalog()
+    // The PHP reference predates this native-only column.
+    let expected: Catalog = earlier_catalog(earlier_migration(8).expect("released v8 schema"))
         .await?
         .iter()
         .filter(|(_, name, table, _)| {
@@ -663,6 +692,12 @@ mod tests {
     }
 
     #[test]
+    fn released_version_8_bootstrap_keeps_its_checksum() {
+        let hex: String = earlier_migration(8).unwrap().checksum.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(hex, include_str!("../../migrations/sqlite/0008_checksum.txt").trim());
+    }
+
+    #[test]
     fn released_step_files_keep_the_checksum_their_release_recorded() {
         // Release candidates 1 and 2 recorded this checksum for version 7.
         // Editing 0003-0007 would make their databases unrecognisable.
@@ -673,6 +708,26 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         assert_eq!(hex, include_str!("../../migrations/sqlite/0007_checksum.txt").trim());
+    }
+
+    #[tokio::test]
+    async fn version_8_upgrade_keeps_legacy_ready_origin_unknown() {
+        let directory=tempfile::tempdir().unwrap();
+        let path=directory.path().join("v8.sqlite");
+        let mut connection=SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path).create_if_missing(true)).await.unwrap();
+        Migrator::with_migrations(vec![earlier_migration(8).unwrap().clone()]).run(&mut connection).await.unwrap();
+        sqlx::raw_sql("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace) VALUES ('legacy-instance','Legacy','legacy','default');
+INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ('legacy-run','legacy-instance',1,'Legacy','legacy','default','pending');
+INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,namespace,available_at,created_at) VALUES ('legacy-task','legacy-run','workflow','ready','default','2026-01-01 00:00:00','2026-01-01 00:00:00');").execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        let report=super::super::schema_upgrade::upgrade_sqlite(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["from_schema_version"],8);
+        let pool=super::super::sqlite::open(path.to_str().unwrap()).await.unwrap();
+        let origin: Option<String>=sqlx::query_scalar("SELECT ready_origin_at FROM workflow_tasks WHERE id='legacy-task'").fetch_one(&pool).await.unwrap();
+        assert!(origin.is_none());
+        let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM workflow_tasks WHERE id='legacy-task' AND status='ready'").fetch_one(&pool).await.unwrap();
+        assert_eq!(count,1);
+        pool.close().await;
     }
 
     #[tokio::test]
@@ -731,7 +786,7 @@ mod tests {
             // An edited earlier catalog is not version 7 as released.
             ("ALTER TABLE workflow_namespaces ADD COLUMN unexpected TEXT", "native_schema_catalog_mismatch"),
             ("UPDATE _sqlx_migrations SET checksum=X'00'", "native_migration_history_mismatch"),
-            ("UPDATE dw_server_schema SET version=9", "native_schema_newer_than_binary"),
+            ("UPDATE dw_server_schema SET version=99", "native_schema_newer_than_binary"),
             ("UPDATE dw_server_schema SET version=5", "unsupported_rust_schema"),
             ("UPDATE dw_server_schema SET engine='php'", "unsupported_rust_schema"),
         ] {

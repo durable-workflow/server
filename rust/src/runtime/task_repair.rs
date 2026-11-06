@@ -304,9 +304,9 @@ where
             }
             let queue = DB::optional_string(&execution, "queue")?.unwrap_or(run_queue);
             let task_id = Self::create_task_dispatched(tx, &run_id, &queue, "activity", payload, false).await?;
-            Self::query("UPDATE workflow_tasks SET repair_count=1,attempt_count=$1,available_at=$2 WHERE id=$3")
+            Self::query("UPDATE workflow_tasks SET repair_count=1,attempt_count=$1,available_at=$2,ready_origin_at=$4 WHERE id=$3")
                 .bind(DB::number(&execution, "attempt_count")?.max(0)).bind(DB::bind_time(available.unwrap_or_else(now)))
-                .bind(&task_id).execute(&mut **tx).await?;
+                .bind(&task_id).bind(DB::optional_time(available)).execute(&mut **tx).await?;
             Self::retarget_wait(tx, &run_id, "activity", &execution_id, "activity", &task_id).await?;
             return Ok(task_id);
         }
@@ -641,7 +641,7 @@ where
             .as_object_mut()
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "invalid_workflow_task_payload"))?
             .retain(|key, _| !key.starts_with("replay_blocked"));
-        Self::query("UPDATE workflow_tasks SET status='ready',payload=$1,leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$2,repair_available_at=NULL,last_error=NULL,updated_at=$3 WHERE id=$4")
+        Self::query("UPDATE workflow_tasks SET status='ready',payload=$1,leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$2,repair_available_at=NULL,last_error=NULL,updated_at=$3,ready_origin_at=$3 WHERE id=$4")
             .bind(DB::document(&task_payload)).bind(repair_count).bind(DB::bind_time(now())).bind(&task_id).execute(&mut **tx).await?;
         let repaired = Self::query("SELECT * FROM workflow_tasks WHERE id=$1")
             .bind(&task_id)

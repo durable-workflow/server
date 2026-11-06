@@ -581,7 +581,7 @@ where
         let retry_task = Self::create_task(&mut tx,&run_id,&DB::string(&activity,"queue")?,"activity",
             json!({"activity_execution_id":activity_id,"retry_of_task_id":task_id,"retry_after_attempt_id":attempt_id,
                 "retry_after_attempt":count,"retry_backoff_seconds":backoff,"max_attempts":max,"retry_policy":policy})).await?;
-        Self::query("UPDATE workflow_tasks SET available_at=$1,attempt_count=$2 WHERE id=$3")
+        Self::query("UPDATE workflow_tasks SET available_at=$1,ready_origin_at=$1,attempt_count=$2 WHERE id=$3")
             .bind(DB::bind_time(available))
             .bind(count)
             .bind(&retry_task)

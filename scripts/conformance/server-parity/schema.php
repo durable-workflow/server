@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__.'/ready-origin-schema.php';
+
 // Inspect two independent SQLite files without loading either runtime.
 // The PHP file must come from the image pinned in php-baseline.json; this
 // checks the real published catalog, not a second copy of the native DDL.
@@ -37,7 +39,7 @@ function catalog(string $filename): array
 }
 
 $php = catalog($argv[1]);
-$native = catalog($argv[2]);
+$native = projectSqliteReadyOrigin(catalog($argv[2]));
 $nativeOnly = ['_sqlx_migrations', 'dw_server_schema', 'dw_task_completions', 'dw_poll_receipts', 'dw_workflow_tasks_poll', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_incarnation_authority', 'dw_worker_incarnation_retention', 'dw_worker_session_holders', 'dw_stream_reclaims', 'dw_service_call_deadlines', 'dw_stream_reclaims_due', 'dw_service_call_deadlines_due', 'dw_service_admission_counters', 'dw_service_admission_counters_expiry', 'dw_external_payload_deletions', 'dw_external_payload_deletions_uri', 'dw_external_payload_deletions_due'];
 $native = array_values(array_filter($native, static fn (array $row): bool => ! in_array($row['name'], $nativeOnly, true)));
 if ($php !== $native) {
