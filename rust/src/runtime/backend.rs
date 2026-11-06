@@ -402,6 +402,7 @@ impl Encode<'_, Postgres> for PostgresDocument {
 }
 
 impl Backend for Postgres {
+    const TASK_CANDIDATES_SQL: &str = super::postgres::TASK_CANDIDATES_SQL;
     type EncodedInteger = Option<i64>;
     type EncodedFloat = Option<f64>;
     type EncodedFlag = Option<bool>;

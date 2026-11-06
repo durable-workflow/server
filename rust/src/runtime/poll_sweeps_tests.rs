@@ -192,7 +192,10 @@ store_methods! {
             }
             for (sql, wake) in [(DB::TASK_CANDIDATES_SQL, false),(DB::POLL_WAKE_TASKS_SQL,true)] {
                 let compiled = DB::statement(sql);
-                let predecessor = compiled.replace(" AND t.status IN ('ready','leased')", "")
+                let baseline = if DB::NAME == "PostgreSQL" && !wake {
+                    DB::statement(super::store::TASK_CANDIDATES_SQL)
+                } else { compiled.clone() };
+                let predecessor = baseline.replace(" AND t.status IN ('ready','leased')", "")
                     .replace(" FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN ", " JOIN ");
                 let expected = self.poll_work_candidates(&predecessor, wake).await;
                 let actual = self.poll_work_candidates(&compiled, wake).await;
