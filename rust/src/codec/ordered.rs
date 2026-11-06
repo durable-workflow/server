@@ -1,6 +1,6 @@
 //! Ordered protocol values through Apache's schema-aware serde writer.
 //! The official writer owns headers, union selection and binary primitives.
-use super::{CodecError, VALUE_SCHEMA, Value};
+use super::{CodecError, Value};
 use apache_avro::{AvroSchema, Schema, SpecificSingleObjectWriter};
 use serde::{
     Serialize, Serializer,
@@ -16,7 +16,9 @@ struct Entries<'a>(&'a BTreeMap<String, Value>);
 
 impl AvroSchema for WireValue<'_> {
     fn get_schema() -> Schema {
-        Schema::parse_str(VALUE_SCHEMA).expect("immutable protocol Value schema")
+        super::protocol_schema()
+            .expect("immutable protocol Value schema")
+            .clone()
     }
 }
 
