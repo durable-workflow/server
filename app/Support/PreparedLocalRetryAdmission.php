@@ -107,7 +107,7 @@ final class PreparedLocalRetryAdmission
     }
 
     /** Persist only after the actual optional bridge prepared under the outer transaction. */
-    public static function remember(WorkflowTask $task, ActivityAttempt $attempt, array $claim): bool
+    public static function remember(WorkflowTask $task, ActivityAttempt $attempt, array $claim, array $reply): bool
     {
         if (DB::transactionLevel() < 1 || ! self::backendSupported()
             || PreparedLocalActivityPolicy::currentClaim($task) !== $claim || ! self::claimSupports($claim)) {
@@ -125,6 +125,10 @@ final class PreparedLocalRetryAdmission
         if (array_key_exists($attempt->id, $receipts)) {
             // A v1 receipt, or a changed v2 graph, is never rewritten.
             return self::originalClaim($task, $attempt, $claim['lease_owner'], $claim['attempt']) === $claim;
+        }
+        if (($reply['prepared'] ?? null) !== true || ($reply['duplicate'] ?? null) !== false) {
+            // A replay cannot repair missing host admission authority.
+            return false;
         }
         $receipts[$attempt->id] = ['schema' => self::SCHEMA, 'claim' => $claim,
             'activity_execution_id' => $attempt->activity_execution_id,

@@ -157,7 +157,7 @@ final class PreparedLocalActivityController
                     $attemptId = $reply['activity_attempt_id'] ?? null;
                     $attempt = is_string($attemptId) ? ActivityAttempt::query()->find($attemptId) : null;
                     if (! $task instanceof WorkflowTask || ! $attempt instanceof ActivityAttempt
-                        || ! ($retry ? PreparedLocalRetryAdmission::remember($task, $attempt, $claim)
+                        || ! ($retry ? PreparedLocalRetryAdmission::remember($task, $attempt, $claim, $reply)
                             : PreparedLocalActivityPolicy::remember($task, $attempt, $claim))) {
                         throw new PreparedLocalActivityAdmissionRefused;
                     }

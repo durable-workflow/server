@@ -177,6 +177,11 @@ unique correlated Started event must agree on every read. A legacy receipt is
 never rewritten or promoted. The hosting task's later current claim cannot
 replace the original callback's issued claim.
 
+A new private preparation receipt also requires the bound role's literal
+`prepared: true` and `duplicate: false` result. A duplicate can only read an
+already retained matching receipt. It cannot recreate missing Server authority
+from an existing Core graph.
+
 A fresh recovery also retains a separate closed private
 `durable-workflow.server.prepared-local-recovery-authority/v2` receipt on the
 recovering task. Its keys are `schema`, `claim`, `activity_execution_id`,

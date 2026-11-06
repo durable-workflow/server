@@ -121,6 +121,21 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
             ['outcome' => 'failed', 'message' => []])->assertStatus(404)->assertJsonPath('reason', 'activity_attempt_not_found');
     }
 
+    public function test_preparation_duplicate_cannot_recreate_missing_original_authority(): void
+    {
+        $task = $this->claim();
+        $prepared = $this->local($task, 'prepare')->assertOk()->json();
+        $stored = WorkflowTask::query()->findOrFail($task['task_id']);
+        $payload = $stored->payload;
+        unset($payload['_server_prepared_local_activity_claims'][$prepared['activity_attempt_id']]);
+        $stored->forceFill(['payload' => $payload])->save();
+        $before = $this->state();
+
+        $this->local($task, 'prepare')->assertStatus(409)->assertJsonPath('reason', 'prepared_local_activity_not_supported');
+        $this->assertSame($before, $this->state());
+        $this->assertArrayNotHasKey($prepared['activity_attempt_id'], $stored->fresh()->payload['_server_prepared_local_activity_claims']);
+    }
+
     public function test_outcome_duplicate_preserves_the_committed_decision_after_time_and_registration_change(): void
     {
         $task = $this->claim();
