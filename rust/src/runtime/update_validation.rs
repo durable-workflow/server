@@ -977,21 +977,19 @@ where
             Some(id) => Some(self.workflow_poll_request(&worker_id, &task_queue, id, default_wait, kinds).await?),
             None => None,
         };
-        if let Some(request) = &request
-            && let Some(answer) = self.replay_workflow_poll(request, &worker_id, &task_queue).await?
-        {
-            return Self::replayed(answer, encoding);
-        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         let mut pace = super::poll_readiness::ReadPace::new();
+        let mut first = true;
         loop {
             let wake = self.wake.notified();
+            let first_probe = std::mem::take(&mut first);
             let current = match &fence {
+                _ if first_probe && request.is_some() => true,
                 Some(fence) => self.worker_poll_fence_holds(fence, &worker_id).await?,
                 None => true,
             };
             let probed = if current {
-                self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref(), fence.as_ref()).await?
+                self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref(), fence.as_ref(), first_probe).await?
             } else {
                 Some(Probe::Stale)
             };
@@ -1033,38 +1031,71 @@ where
         page: Option<i64>,
         request: Option<&WorkflowPollRequest>,
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+        first: bool,
+    ) -> Result<Option<Probe>> {
+        let mut tx = self.begin().await?;
+        if first && let Some(request) = request
+            && let Some(answer) = self.replay_workflow_poll_in(&mut tx, request, text(body, "worker_id")?, text(body, "task_queue")?).await?
+        {
+            tx.commit().await?;
+            return Ok(Some(Probe::Replayed(answer)));
+        }
+        let saved = tx.poll_savepoint().await?;
+        let probed = match self.probe_task_kinds_in(&mut tx, body, kinds, protocol_version, page, request, fence).await {
+            Ok(probed) => {
+                tx.release_poll_claim().await?;
+                Ok(probed)
+            }
+            Err(error) => {
+                tx.rollback_poll_claim(saved).await?;
+                Err(error)
+            }
+        };
+        tx.commit().await?;
+        probed
+    }
+
+    async fn probe_task_kinds_in(
+        &self,
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        body: &Value,
+        kinds: &[&'static str],
+        protocol_version: &str,
+        page: Option<i64>,
+        request: Option<&WorkflowPollRequest>,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
     ) -> Result<Option<Probe>> {
         let worker_id = text(body, "worker_id")?;
         let task_queue = text(body, "task_queue")?;
-        let mut tx = self.begin().await?;
         if let Some(fence) = fence
-            && !self.worker_poll_fence_holds_in(&mut tx, fence, worker_id).await?
+            && !self.worker_poll_fence_holds_in(tx, fence, worker_id).await?
         {
             return Ok(Some(Probe::Stale));
         }
         // A concurrent duplicate may have leased since this poll began: the
         // binding row, locked first, makes it wait for that one's answer.
-        if let Some(request) = request {
-            Self::bind_workflow_poll(&mut tx, request).await?;
-            if let Some(answer) = self.deliverable_workflow_lease(&mut tx, request, worker_id, task_queue).await? {
-                tx.commit().await?;
+        if let Some(request) = request
+            && !request.replayed_in(tx)
+        {
+            Self::bind_workflow_poll(tx, request).await?;
+            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, task_queue).await? {
                 return Ok(Some(Probe::Replayed(answer)));
             }
         }
         let multiplexed = kinds.len() > 1;
-        let first = if multiplexed { self.lock_task_kind_cursor(&mut tx, task_queue).await? } else { kinds[0].to_owned() };
+        let first = if multiplexed { self.lock_task_kind_cursor(tx, task_queue).await? } else { kinds[0].to_owned() };
         let mut order = kinds.to_vec();
         order.sort_by_key(|kind| *kind != first);
         for kind in order {
             let leased = if kind == "workflow" {
-                self.claim_in(&mut tx, body, "workflow", protocol_version, page, request).await?.map(|task| {
+                self.claim_in(tx, body, "workflow", protocol_version, page, request).await?.map(|task| {
                     Leased::Workflow(json!({"task":task,"poll_status":"leased","server_capabilities":super::store::capabilities()}))
                 })
-            } else if let Some(claim) = self.claim_update_validation_in(&mut tx, worker_id, task_queue).await? {
+            } else if let Some(claim) = self.claim_update_validation_in(tx, worker_id, task_queue).await? {
                 if let Some(request) = request {
                     let delivered = json!({"task_kind":"update_validation","update_validation_task_id":claim.task_id,
                         "update_validation_attempt":claim.attempt,"lease_expires_at":super::cooperative::timestamp(claim.expires)});
-                    Self::remember_workflow_poll(&mut tx, request, &json!({"task":delivered,"poll_status":"leased"})).await?;
+                    Self::remember_workflow_poll(tx, request, &json!({"task":delivered,"poll_status":"leased"})).await?;
                 }
                 Some(Leased::Validation(claim.task_id))
             } else {
@@ -1072,13 +1103,11 @@ where
             };
             if let Some(leased) = leased {
                 if multiplexed {
-                    self.turn_task_kind(&mut tx, task_queue, kind).await?;
+                    self.turn_task_kind(tx, task_queue, kind).await?;
                 }
-                tx.commit().await?;
                 return Ok(Some(Probe::Leased(leased)));
             }
         }
-        tx.commit().await?;
         Ok(None)
     }
 }

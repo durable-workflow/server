@@ -4,7 +4,7 @@
 //! request from the same worker ends an older one that is still waiting.
 use super::{
     Backend, ColumnIndex, Decode, Duration, Encode, Executor, IntoArguments, QueryTaskConfig, Result, Store,
-    Transaction, Type, Value, authority, json, key, now, poll_result, text,
+    Transaction, Type, Value, QueryClaim, authority, json, key, now, poll_result, text,
 };
 use sha2::{Digest, Sha256};
 
@@ -192,20 +192,31 @@ where
         proof: &str,
         config: &QueryTaskConfig,
     ) -> Result<Option<Value>> {
+        let mut tx = self.begin().await?;
+        let response = self.cached_query_poll_in(&mut tx, keys, body, proof, config).await?;
+        tx.commit().await?;
+        Ok(response)
+    }
+
+    async fn cached_query_poll_in(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        keys: &PollKeys,
+        body: &Value,
+        proof: &str,
+        config: &QueryTaskConfig,
+    ) -> Result<Option<Value>> {
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
-        let mut tx = self.begin().await?;
-        let Some(result) = Self::poll_row(&mut tx, &keys.result).await? else {
-            tx.commit().await?;
+        let Some(result) = Self::poll_row(tx, &keys.result).await? else {
             return Ok(None);
         };
         let Some(task_id) = result["query_task_id"].as_str() else {
-            tx.commit().await?;
             let status = result["poll_status"].as_str().unwrap_or("empty");
             return Ok(Some(poll_result(None, status)));
         };
         let at = authority::now();
-        let task = Self::poll_row(&mut tx, &key(task_id)?).await?;
+        let task = Self::poll_row(tx, &key(task_id)?).await?;
         let deliverable = task.as_ref().filter(|task| {
             task["status"] == "leased"
                 && task["namespace"] == self.namespace.as_ref()
@@ -219,7 +230,7 @@ where
             Some(task) => poll_result(Some(Self::query_delivery(task)), "leased"),
             None => {
                 Self::put_poll_row(
-                    &mut tx,
+                    tx,
                     &keys.result,
                     &json!({"query_task_id": null, "poll_status": "empty"}),
                     empty_ttl(config),
@@ -228,7 +239,6 @@ where
                 poll_result(None, "empty")
             }
         };
-        tx.commit().await?;
         Ok(Some(response))
     }
 
@@ -250,6 +260,18 @@ where
         response: &Value,
         config: &QueryTaskConfig,
     ) -> Result<()> {
+        let mut tx = self.begin().await?;
+        Self::remember_query_answer(&mut tx, keys, response, config).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn remember_query_answer(
+        tx: &mut Transaction<'_, DB>,
+        keys: &PollKeys,
+        response: &Value,
+        config: &QueryTaskConfig,
+    ) -> Result<()> {
         let task_id = response["task"]["query_task_id"].as_str();
         let ttl = match authority::timestamp(&response["task"]["lease_expires_at"]) {
             Some(lease) if task_id.is_some() => {
@@ -257,9 +279,8 @@ where
             }
             _ => empty_ttl(config),
         };
-        let mut tx = self.begin().await?;
         Self::put_poll_row(
-            &mut tx,
+            tx,
             &keys.result,
             &json!({"query_task_id": task_id, "poll_status": response["poll_status"]}),
             ttl,
@@ -267,9 +288,8 @@ where
         .await?;
         Self::query(DB::QUERY_CACHE_DELETE)
             .bind(&keys.pending)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        tx.commit().await?;
         Ok(())
     }
 
@@ -283,6 +303,64 @@ where
         Ok(())
     }
 
+    /// A new nonwaiting poll owns the transition lock through its cache
+    /// lookup, claim and answer. A pending duplicate follows its live leader
+    /// without holding the lock while waiting for that leader to commit.
+    async fn immediate_query_poll(
+        &self,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+        fence: Option<&crate::runtime::worker_poll_fence::WorkerPollFence>,
+        keys: &PollKeys,
+    ) -> Result<Option<Value>> {
+        let owner = text(body, "worker_id")?;
+        let mut tx = self.begin().await?;
+        self.sweep_poll_rows(&mut tx).await?;
+        let pending = Self::poll_row(&mut tx, &keys.pending).await?.is_some();
+        if !pending && Self::poll_row(&mut tx, &keys.result).await?.is_none() {
+            Self::put_poll_row(&mut tx, &keys.current, &json!({"poll_request_id":keys.request_id}), pending_ttl(config)).await?;
+        }
+        let current = Self::query_worker_proof(&mut *tx, self.namespace.as_ref(), owner, config).await?;
+        let fenced = match fence {
+            Some(fence) => !self.worker_poll_fence_holds_in(&mut tx, fence, owner).await?,
+            None => false,
+        };
+        if current.as_deref() != Some(proof) || fenced {
+            tx.commit().await?;
+            return Ok(Some(poll_result(None, "stale_worker_registration")));
+        }
+        if let Some(cached) = self.cached_query_poll_in(&mut tx, keys, body, proof, config).await? {
+            tx.commit().await?;
+            return Ok(Some(cached));
+        }
+        if pending {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let saved = tx.poll_savepoint().await?;
+        let claim = match self.claim_query_in(&mut tx, body, config, proof, fence, Some(keys)).await {
+            Ok(claim) => {
+                tx.release_poll_claim().await?;
+                claim
+            }
+            Err(error) => {
+                tx.rollback_poll_claim(saved).await?;
+                tx.commit().await?;
+                return Err(error);
+            }
+        };
+        let response = match claim {
+            QueryClaim::Task(task) => poll_result(Some(task), "leased"),
+            QueryClaim::Blocked("workflow_task_pending") => poll_result(None, "workflow_task_pending"),
+            QueryClaim::Blocked(_) => poll_result(None, "workflow_task_leased"),
+            QueryClaim::Empty | QueryClaim::StaleWorker | QueryClaim::Superseded => poll_result(None, "empty"),
+        };
+        Self::remember_query_answer(&mut tx, keys, &response, config).await?;
+        tx.commit().await?;
+        Ok(Some(response))
+    }
+
     pub(super) async fn coordinated_query_poll(
         &self,
         body: &Value,
@@ -293,7 +371,13 @@ where
         deadline: tokio::time::Instant,
         keys: &PollKeys,
     ) -> Result<Value> {
-        self.mark_current_if_fresh(keys, config).await?;
+        if timeout == 0 {
+            if let Some(response) = self.immediate_query_poll(body, config, proof, fence, keys).await? {
+                return Ok(response);
+            }
+        } else {
+            self.mark_current_if_fresh(keys, config).await?;
+        }
         let owner = text(body, "worker_id")?;
         for _ in 0..3 {
             let current =

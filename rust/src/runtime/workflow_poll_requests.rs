@@ -38,6 +38,12 @@ pub(super) struct WorkflowPollRequest {
     pub(super) kinds: Vec<&'static str>,
 }
 
+impl WorkflowPollRequest {
+    pub(super) fn replayed_in<DB: crate::runtime::backend::Backend>(&self, tx: &Transaction<'_, DB>) -> bool {
+        tx.workflow_poll_replayed.as_deref() == Some(self.keys.binding.as_str())
+    }
+}
+
 /// The request ID with surrounding space removed, as Laravel's TrimStrings
 /// and the poller's `nonEmptyString` leave it. A blank ID asks for no
 /// idempotency.
@@ -133,17 +139,17 @@ store_methods! {
     /// At the start of a poll: bind the request ID to its kind set, then
     /// replay its answer if that answer is still deliverable. A stale lease
     /// is forgotten, and the caller polls afresh under the same ID.
-    pub(super) async fn replay_workflow_poll(
+    pub(super) async fn replay_workflow_poll_in(
         &self,
+        tx: &mut Transaction<'_, DB>,
         request: &WorkflowPollRequest,
         worker_id: &str,
         queue: &str,
     ) -> Result<Option<Value>> {
-        let mut tx = self.begin().await?;
-        self.sweep_workflow_poll_rows(&mut tx).await?;
-        Self::bind_workflow_poll(&mut tx, request).await?;
-        let replay = self.deliverable_workflow_poll(&mut tx, request, worker_id, queue).await?;
-        tx.commit().await?;
+        self.sweep_workflow_poll_rows(tx).await?;
+        Self::bind_workflow_poll(tx, request).await?;
+        let replay = self.deliverable_workflow_poll(tx, request, worker_id, queue).await?;
+        tx.workflow_poll_replayed = Some(request.keys.binding.clone());
         Ok(replay)
     }
 
