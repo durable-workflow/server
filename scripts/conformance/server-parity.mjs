@@ -15,7 +15,7 @@ import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './serve
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 import {captureProbe, probeNotes} from './server-parity/probe-capture.mjs';
 import {selectFixturePaths} from './server-parity/fixture-selection.mjs';
-import {writeRecord} from './server-parity/record-file.mjs';
+import {writeFixtureSummary, writeRecord} from './server-parity/record-file.mjs';
 import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
 import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
 import {checkActivityDeadlinePackages} from './server-parity/activity-deadline-contract.mjs';
@@ -32,6 +32,7 @@ const {values, positionals} = parseArgs({allowPositionals: true, options: {
   'database-resource-limits': {type: 'string'},
   'include-fixture': {type: 'string', multiple: true},
   'exclude-fixture': {type: 'string', multiple: true},
+  'fixture-shard': {type: 'string', default: process.env.DW_PARITY_CORPUS_SHARD},
 }});
 const [command, ...files] = positionals;
 if (values.help) {
@@ -57,13 +58,18 @@ use that same option when comparing the combined recordings. It cannot be
 combined with --fixture and does not change default fixture discovery.
 --exclude-fixture PATH removes one fixture of that set because a separate,
 explicitly selected record covers it. It must name a selected fixture, the
-comparison must use the same option, and it cannot be combined with --fixture.`);
+comparison must use the same option, and it cannot be combined with --fixture.
+--fixture-shard 1/2 or 2/2 (or DW_PARITY_CORPUS_SHARD) selects one deterministic
+half of that resolved set.
+Record and compare must use the same shard. Default discovery is unchanged;
+sharded successful records also retain a payload-free fixture inventory.`);
   process.exit(0);
 }
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 try {
   const directory = resolve(root, 'tests/Fixtures/ServerParity');
-  const paths = selectFixturePaths({root, directory, fixture: values.fixture, include: values['include-fixture'], exclude: values['exclude-fixture']});
+  const paths = selectFixturePaths({root, directory, fixture: values.fixture, include: values['include-fixture'],
+    exclude: values['exclude-fixture'], shard: values['fixture-shard']});
   if (paths.some(path => !path.endsWith('.json')) || new Set(paths.map(path => basename(path))).size !== paths.length) throw new Error('Selected fixtures require distinct JSON filenames');
   const byName = Object.fromEntries(paths.map(path => [basename(path), path]));
   const fixtures = Object.keys(byName).sort();
@@ -176,6 +182,7 @@ try {
       record.outcome = 'pass';
       record.finished_at = new Date().toISOString();
       writeRecord(values.output, record, originals);
+      if (values['fixture-shard'] !== undefined) writeFixtureSummary(values.output, record);
       console.log(JSON.stringify({outcome: record.outcome, target: record.target, cases: record.cases.map(c => c.fixture_id)}));
     } finally { rmSync(sourceDirectory, {recursive: true, force: true}); }
   } else {

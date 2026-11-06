@@ -1,8 +1,6 @@
-// Each Shared Server fixtures database job runs in six parts on separate
-// runners. Every step either prepares the part (and so runs in every part) or
-// belongs to exactly one part, so no check runs twice or not at all. Shared
-// node preparation belongs to corpus/restarts; debug artifact preparation
-// belongs to the five non-native-test parts.
+// Shared fixture jobs use separate runners for their declared parts. The
+// SQLite corpus has two disjoint selections; other checks retain one owner.
+// Preparation and artifact verification cover every part that needs them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
@@ -13,7 +11,6 @@ import {join} from 'node:path';
 const workflow = readFileSync('.github/workflows/server-parity.yml', 'utf8');
 const PARTS = ['native-tests', 'corpus', 'restarts', 'cohorts', 'sdk-directions', 'corrected-markers'];
 const SHARED_NODES = 'Start the published PHP and native nodes the corpus parts share';
-const NON_NATIVE_PARTS = PARTS.filter(part => part !== 'native-tests');
 const NATIVE_DEBUG_PREP = new Set(['Require a successful native debug producer',
   "Fetch this run's native debug server", "Verify and install this run's native debug server"]);
 const EVERY_PART = [/^actions\/checkout@/, /^Pull the pinned images, retrying registry errors$/, /^Fetch /,
@@ -38,49 +35,55 @@ function steps(block) {
 }
 
 // The parts a step runs in, read from its condition.
-function partsOf(step) {
+function partsOf(step, parts = PARTS) {
   if (NATIVE_DEBUG_PREP.has(step.name)) {
     assert.equal(step.condition, "${{ matrix.part != 'native-tests' && matrix.part != 'native-tests-b' }}", step.name);
-    return NON_NATIVE_PARTS;
+    return parts.filter(part => part !== 'native-tests');
   }
-  if (EVERY_PART.some(pattern => pattern.test(step.name))) return PARTS;
-  const either = /^\$\{\{ matrix\.part == '([a-z-]+)' \|\| matrix\.part == '([a-z-]+)' \}\}$/.exec(step.condition ?? '');
-  if (either) return [either[1], either[2]];
+  if (EVERY_PART.some(pattern => pattern.test(step.name))) return parts;
+  const either = /^\$\{\{ (?:matrix\.part == '[a-z-]+' \|\| )+matrix\.part == '[a-z-]+' \}\}$/.test(step.condition ?? '');
+  if (either) return [...step.condition.matchAll(/matrix\.part == '([a-z-]+)'/g)].map(match => match[1]);
   const only = /matrix\.part == '([a-z-]+)'/.exec(step.condition ?? '');
   if (only) return [only[1]];
   const except = /matrix\.part != '([a-z-]+)'/.exec(step.condition ?? '');
-  if (except) return PARTS.filter(part => part !== except[1]);
-  return PARTS;
+  if (except) return parts.filter(part => part !== except[1]);
+  return parts;
 }
 
 for (const [name, key] of [['mysql-execution', 'Compare three runtimes'], ['postgres-storage', 'Compare three runtimes'],
   ['execution-and-codec', 'Execute and compare Rust']]) {
-  test(`${name} runs every check in exactly one of six parts`, () => {
+  test(`${name} keeps every check in its declared parts`, () => {
     const block = job(name);
+    const matrixParts = name === 'execution-and-codec'
+      ? ['native-tests', 'corpus', 'corpus-b', ...PARTS.slice(2)] : PARTS;
     // A push to main the merge queue already qualified keeps only native-tests
     // in execution-and-codec, so it can save main's native dependency cache.
     const fullParts = name === 'execution-and-codec'
-      ? `        part: \${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '${JSON.stringify(PARTS)}') }}`
+      ? `        part: \${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '${JSON.stringify(matrixParts)}') }}`
       : `        part: [${PARTS.join(', ')}]`;
     assert.ok(block.split('\n').includes(fullParts), `${name}: ${fullParts}`);
     assert.match(block, /^ {6}DW_PARITY_PART: \$\{\{ matrix\.part \}\}$/m);
     assert.match(block, /^ {4}timeout-minutes: 60$/m);
     const all = steps(block);
     for (const step of all) {
-      const parts = partsOf(step);
-      if (parts.length === PARTS.length) {
+      const parts = partsOf(step, matrixParts);
+      if (parts.length === matrixParts.length) {
         assert.ok(EVERY_PART.some(pattern => pattern.test(step.name)), `${name}: "${step.name}" must belong to one part`);
       } else if (step.name === SHARED_NODES) {
-        assert.deepEqual(parts, ['corpus', 'restarts'], `${name}: the shared nodes start for exactly the corpus parts`);
+        assert.deepEqual(parts, name === 'execution-and-codec' ? ['corpus', 'corpus-b', 'restarts'] : ['corpus', 'restarts'],
+          `${name}: the shared nodes start for exactly the corpus parts`);
       } else if (NATIVE_DEBUG_PREP.has(step.name)) {
-        assert.deepEqual(parts, ['corpus', 'restarts', 'cohorts', 'sdk-directions', 'corrected-markers'],
-          `${name}: debug preparation runs in exactly the five non-native-test parts`);
+        assert.deepEqual(parts, matrixParts.filter(part => part !== 'native-tests'),
+          `${name}: debug preparation runs in exactly the non-native-test parts`);
+      } else if (name === 'execution-and-codec' && step.name.startsWith(key)) {
+        assert.deepEqual(parts, ['corpus', 'corpus-b']);
       } else {
         assert.equal(parts.length, 1, `${name}: "${step.name}"`);
       }
     }
-    const inPart = part => all.filter(step => partsOf(step).length === 1 && partsOf(step)[0] === part).map(step => step.name);
-    assert.ok(inPart('corpus').some(step => step.startsWith(key)), `${name}: the corpus comparison is in the corpus part`);
+    const inPart = part => all.filter(step => partsOf(step, matrixParts).length === 1 && partsOf(step, matrixParts)[0] === part).map(step => step.name);
+    assert.ok(partsOf(all.find(step => step.name.startsWith(key)), matrixParts).includes('corpus'),
+      `${name}: the corpus comparison is in the corpus part`);
     assert.equal(all.filter(step => step.name === SHARED_NODES).length, 1, `${name}: one shared node start`);
     assert.equal(all.find(step => step.name === SHARED_NODES).id, 'prepare_runtime_comparison', name);
     // Both parts need every node the original step started, including the

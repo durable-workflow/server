@@ -2083,15 +2083,14 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Six parts on separate runners: the native suites and codec, the
-      # shared corpus, its profiles and restart cases, the published-SDK
-      # direction profiles, the corrected marker cohort, and the other
-      # cohorts. Non-test parts use this run's verified debug server artifact;
+      # Seven parts use separate runners: native tests, two shared-corpus
+      # selections, profiles/restarts, published-SDK directions, corrected
+      # markers and other cohorts. Non-test parts use this run's verified debug server artifact;
       # native-tests still builds and tests from source. A push to main the
       # merge queue already qualified keeps only native-tests, which saves
       # main's native dependency cache.
       matrix:
-        part: ${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '["native-tests","corpus","restarts","cohorts","sdk-directions","corrected-markers"]') }}
+        part: ${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '["native-tests","corpus","corpus-b","restarts","cohorts","sdk-directions","corrected-markers"]') }}
     env:
       DW_PARITY_PART: ${{ matrix.part }}
     steps:
@@ -2230,7 +2229,7 @@ jobs:
             cargo run --locked --offline --example codec-fixtures -- \
             ../tests/Fixtures/ServerParity/Codec/v1.json /evidence/php-codec.json > parity-evidence/cross-decode.json
       - name: Start the published PHP and native nodes the corpus parts share
-        if: ${{ matrix.part == 'corpus' || matrix.part == 'restarts' }}
+        if: ${{ matrix.part == 'corpus' || matrix.part == 'corpus-b' || matrix.part == 'restarts' }}
         id: prepare_runtime_comparison
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
@@ -2392,9 +2391,10 @@ jobs:
             -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_AUTH_TOKEN=parity-test-token \
             "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done'
       - name: Execute and compare Rust, published PHP and embedded fixtures
-        if: ${{ matrix.part == 'corpus' }}
+        if: ${{ matrix.part == 'corpus' || matrix.part == 'corpus-b' }}
         env:
           RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          DW_PARITY_CORPUS_SHARD: ${{ matrix.part == 'corpus-b' && '2/2' || '1/2' }}
         run: |
           set -euo pipefail
           # Bounded container log tails make a failure in this step diagnosable from its own log.
@@ -2410,7 +2410,7 @@ jobs:
           export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR -e DW_PARITY_CORPUS_SHARD "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-server:8080 --target php --output /evidence/php.json \
             --exclude-fixture tests/Fixtures/ServerParity/service-calls.json \
             --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json \
@@ -2426,7 +2426,7 @@ jobs:
           docker run --rm --user=1000:1000 --entrypoint node \
             -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
             -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
-            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
+            -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CORPUS_SHARD "$image" scripts/conformance/server-parity.mjs record \
             --mode embedded --application-root /app --target embedded --output /evidence/embedded.json \
             --exclude-fixture tests/Fixtures/ServerParity/service-calls.json \
             --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json \
@@ -2442,7 +2442,7 @@ jobs:
           native_record_status=0
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
             -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
-            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR "$image" scripts/conformance/server-parity.mjs record \
+            -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION -e DW_PARITY_CLI_PHAR -e DW_PARITY_CORPUS_SHARD "$image" scripts/conformance/server-parity.mjs record \
             --mode http --url http://parity-rust:8080 --target rust --output /evidence/rust.json \
             --exclude-fixture tests/Fixtures/ServerParity/service-calls.json \
             --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json \
@@ -2457,7 +2457,7 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json || native_record_status=$?
           compare_status=0
           docker run --rm --user=1000:1000 --entrypoint node \
-            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
+            -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source -e DW_PARITY_CORPUS_SHARD "$image" \
             scripts/conformance/server-parity.mjs compare /evidence/php.json /evidence/rust.json /evidence/embedded.json \
             --exclude-fixture tests/Fixtures/ServerParity/service-calls.json \
             --exclude-fixture tests/Fixtures/ServerParity/schedule-catalog.json \
@@ -2470,31 +2470,35 @@ jobs:
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-type.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-waiting-history-message.json \
             --include-fixture tests/Fixtures/ServerParityPending/workflow-task-transient-retry.json > parity-evidence/comparison.json || compare_status=$?
-          # Server #796: service-calls records apart from the main corpus, with
-          # published PHP's maintenance loop stopped. Under full-corpus load the
-          # loop's SQLite writer contention can still exhaust 2.11.5's
-          # control-plane retries on a service-call insert.
-          service_calls_status=0
-          bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 service-calls || service_calls_status=$?
-          # Server #1021: backfill can lose an occurrence to the frozen PHP
-          # reference's SQLite maintenance writer even after five retries.
-          schedule_catalog_status=0
-          bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 schedule-catalog || schedule_catalog_status=$?
-          # Server #1018: post-commit payload deletion can remain pending
-          # under the frozen PHP reference's SQLite maintenance writer.
-          namespace_delete_payloads_status=0
-          bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 namespace-delete-payloads || namespace_delete_payloads_status=$?
-          # Post-prune payload cleanup has the same frozen PHP writer contention.
-          retention_payloads_status=0
-          bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 retention-external-payloads || retention_payloads_status=$?
+          if [ "$DW_PARITY_CORPUS_SHARD" = "1/2" ]; then
+            # Server #796: service-calls records apart from the main corpus, with
+            # published PHP's maintenance loop stopped. Under full-corpus load the
+            # loop's SQLite writer contention can still exhaust 2.11.5's
+            # control-plane retries on a service-call insert.
+            service_calls_status=0
+            bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 service-calls || service_calls_status=$?
+            # Server #1021: backfill can lose an occurrence to the frozen PHP
+            # reference's SQLite maintenance writer even after five retries.
+            schedule_catalog_status=0
+            bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 schedule-catalog || schedule_catalog_status=$?
+            # Server #1018: post-commit payload deletion can remain pending
+            # under the frozen PHP reference's SQLite maintenance writer.
+            namespace_delete_payloads_status=0
+            bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 namespace-delete-payloads || namespace_delete_payloads_status=$?
+            # Post-prune payload cleanup has the same frozen PHP writer contention.
+            retention_payloads_status=0
+            bash scripts/conformance/server-parity/update-validation-sqlite.sh http://parity-server:8080 http://parity-rust:8080 retention-external-payloads || retention_payloads_status=$?
+          fi
           # A native fixture difference fails the step only after the
           # comparison has run, so one difference cannot hide the rest.
           test "$native_record_status" -eq 0
           test "$compare_status" -eq 0
-          test "$service_calls_status" -eq 0
-          test "$schedule_catalog_status" -eq 0
-          test "$namespace_delete_payloads_status" -eq 0
-          test "$retention_payloads_status" -eq 0
+          if [ "$DW_PARITY_CORPUS_SHARD" = "1/2" ]; then
+            test "$service_calls_status" -eq 0
+            test "$schedule_catalog_status" -eq 0
+            test "$namespace_delete_payloads_status" -eq 0
+            test "$retention_payloads_status" -eq 0
+          fi
       - name: Compare published patch, legacy-marker and range-repair profiles
         if: ${{ matrix.part == 'restarts' }}
         env:

@@ -61,6 +61,22 @@ test('execution inventories retain exact bytes with explicit truncation and omit
   assert.equal(truncated.tail_only, true);
 });
 
+test('fixture inventories retain all three targets without retaining raw records', t => {
+  const {source, output} = fixture(t);
+  const content = '{"outcome":"pass","fixture_hashes":{"one.json":"hash"},"cases":[{"fixture_id":"one","outcome":"pass"}]}\n';
+  for (const target of ['php', 'embedded', 'rust']) {
+    writeFileSync(join(source, `${target}-fixtures.json`), content);
+    writeFileSync(join(source, `${target}.json`), 'raw payload data');
+  }
+  const summary = summarizeEvidence(source, output, {outcome: 'success'});
+  assert.equal(summary.retained.length, 3);
+  for (const target of ['php', 'embedded', 'rust']) {
+    assert.equal(readFileSync(join(output, `${target}-fixtures.json`), 'utf8'), content);
+    assert.equal(summary.retained.find(file => file.path === `${target}-fixtures.json`).tail_only, false);
+    assert.equal(existsSync(join(output, `${target}.json`)), false);
+  }
+});
+
 test('failed summaries keep bounded diagnostic tails without truncating JSON into a false report', t => {
   const {source, output} = fixture(t);
   const diagnostic = `${'x'.repeat(128 * 1024)}\nHTTP 500 while installing pinned dependency\n`;
