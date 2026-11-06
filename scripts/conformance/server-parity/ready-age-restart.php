@@ -32,6 +32,9 @@ function readyAgeClaim(array $response): array
         throw new RuntimeException('Ready-age claim lost its original task/run identity.');
     }
 
+    // JSONB may reorder object keys. Field names and literal values are exact.
+    ksort($projection);
+
     return $projection;
 }
 
@@ -74,8 +77,11 @@ if (microtime(true) - $receipt['prepared_at'] < 1) {
 }
 foreach ($receipt['claims'] as $kind => $saved) {
     $response = readyAgeRequest($url, '/api/worker/'.$kind.'-tasks/poll', $saved['request']);
-    if (readyAgeClaim($response) !== $saved['claim']) {
-        throw new RuntimeException('Cold poll replay changed the original '.$kind.' claim or measurement.');
+    $actual = readyAgeClaim($response);
+    if ($actual !== $saved['claim']) {
+        $changed = array_values(array_filter(array_unique([...array_keys($actual), ...array_keys($saved['claim'])]),
+            static fn (string $key): bool => ! array_key_exists($key, $actual) || ! array_key_exists($key, $saved['claim']) || $actual[$key] !== $saved['claim'][$key]));
+        throw new RuntimeException('Cold poll replay changed original '.$kind.' fields: '.implode(',', $changed));
     }
 }
 echo json_encode(['outcome' => 'pass', 'claims' => ['workflow', 'activity'], 'source_only' => true], JSON_THROW_ON_ERROR)."\n";
