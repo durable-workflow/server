@@ -82,7 +82,10 @@ store_methods! {
                 }
             }).await;
             let error = result.unwrap_err();
-            assert!(matches!(error, super::RuntimeError::Refused { reason:"history_budget_unavailable", .. }), "{error:?}");
+            assert!(matches!(error, super::RuntimeError::Refused {
+                status: axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                reason: "history_event_exceeds_page_budget",
+            }), "{error:?}");
             assert_eq!(statements.count_prefix("UPDATE workflow_tasks SET ready_origin_at="), 1, "the refused claim actually reached the lease write");
             assert_eq!(self.count_get(), 1);
             let row = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1")
