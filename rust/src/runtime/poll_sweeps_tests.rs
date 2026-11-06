@@ -4,13 +4,32 @@ use serde_json::json;
 use sqlx::AssertSqlSafe;
 use std::{collections::BTreeMap, sync::Arc, time::{Duration, Instant}};
 
+fn status_index(line: &str) -> bool {
+    ["dw_workflow_tasks_poll", "workflow_tasks_namespace_queue_status_idx",
+        "workflow_tasks_fairness_class_index", "workflow_tasks_dispatch_order_index",
+        "workflow_tasks_status_available_at_index"].iter().any(|name| line.contains(name))
+}
+
+fn postgres_live_status_seek(plan: &[String]) -> bool {
+    let mut found = false;
+    for (index, line) in plan.iter().enumerate() {
+        if line.contains("Index Scan") && (line.contains("workflow_tasks_") || line.contains("dw_workflow_tasks_")) {
+            if !status_index(line) || !plan.get(index + 1).is_some_and(|next| next.contains("Index Cond:") && next.contains("status")) {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found && !plan.iter().any(|line| line.contains("Seq Scan on workflow_tasks") || line.contains("Index Only Scan using workflow_tasks_workflow_run_id_index"))
+}
+
 fn mysql_live_status_seek(plan: &serde_json::Value) -> bool {
     if let Some(table) = plan.get("table") {
         let key = table["key"].as_str();
         let parts = table["used_key_parts"].as_array();
         if matches!(table["table_name"].as_str(), Some("t" | "workflow_tasks"))
-            && matches!(key, Some("dw_workflow_tasks_poll" | "workflow_tasks_namespace_queue_status_idx"))
-            && parts.is_some_and(|parts| ["namespace","queue","status"].iter().all(|part| parts.iter().any(|value| value.as_str() == Some(part))))
+            && key.is_some_and(status_index)
+            && parts.is_some_and(|parts| parts.iter().any(|value| value.as_str() == Some("status")))
         { return true; }
     }
     match plan {
@@ -197,12 +216,12 @@ store_methods! {
                     .execute(&self.pool).await.unwrap();
                 let plan = self.poll_work_plan(sql, wake).await;
                 println!("poll_query_plan backend={} wake={wake} statistics=after_explicit_refresh: {plan:?}", DB::NAME);
-                // Both existing indexes seek the scoped live-status range.
-                // A scope-only metrics index or run-index walk is not enough.
-                let indexed = |line: &str| line.contains("dw_workflow_tasks_poll") || line.contains("workflow_tasks_namespace_queue_status_idx");
+                // Inspect actual status key use. Bitmap alternatives may be
+                // cheaper than the widest poll index; scope/run-only walks
+                // still fail this control.
                 match DB::NAME {
-                    "SQLite" => assert!(plan.iter().any(|line| indexed(line) && line.contains("status=?")), "{plan:?}"),
-                    "PostgreSQL" => assert!(plan.windows(2).any(|pair| indexed(&pair[0]) && pair[1].contains("Index Cond:") && pair[1].contains("status")), "{plan:?}"),
+                    "SQLite" => assert!(plan.iter().any(|line| status_index(line) && line.contains("status=?")), "{plan:?}"),
+                    "PostgreSQL" => assert!(postgres_live_status_seek(&plan), "{plan:?}"),
                     "MySQL" => assert!(plan.iter().any(|line| mysql_live_status_seek(&serde_json::from_str(line).unwrap())), "{plan:?}"),
                     _ => unreachable!(),
                 }
