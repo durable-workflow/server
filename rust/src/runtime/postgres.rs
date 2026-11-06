@@ -414,7 +414,7 @@ impl PostgresStorage {
         connection.close().await?;
         result?;
 
-        let pool = PgPoolOptions::new()
+        let pool = super::backend::test_idle_connections(PgPoolOptions::new())
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(connect_options)
@@ -455,7 +455,7 @@ impl PostgresStorage {
     /// and the exact schema, or the database is refused as it is. A command
     /// that only reads checks in a read-only transaction, without the lock.
     pub(super) async fn open_existing(connect_options: PgConnectOptions, writable: bool) -> Result<PgPool> {
-        let pool = PgPoolOptions::new()
+        let pool = super::backend::test_idle_connections(PgPoolOptions::new())
             .max_connections(1)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options(connect_options))
@@ -589,6 +589,85 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires disposable PostgreSQL; run the qualification_ tests explicitly"]
+    async fn qualification_dead_recent_pool_connection_exposes_error_and_idle_death_reconnects() {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let db = Database::new().await;
+            let mut observer = db.connection().await;
+            sqlx::query("CREATE TABLE pool_write_probe(id BIGINT PRIMARY KEY)")
+                .execute(&mut observer)
+                .await
+                .unwrap();
+            for idle in [Duration::ZERO, Duration::from_millis(1100)] {
+                let pool = super::super::backend::test_idle_connections(PgPoolOptions::new())
+                    .max_connections(1)
+                    .acquire_timeout(Duration::from_secs(5))
+                    .connect_with(db.options.clone())
+                    .await
+                    .unwrap();
+                let mut connection = pool.acquire().await.unwrap();
+                let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                    .fetch_one(&mut *connection)
+                    .await
+                    .unwrap();
+                connection.return_to_pool().await;
+                let returned = std::time::Instant::now();
+                tokio::time::sleep(idle).await;
+                let terminated: bool = sqlx::query_scalar("SELECT pg_terminate_backend($1)")
+                    .bind(pid)
+                    .fetch_one(&mut observer)
+                    .await
+                    .unwrap();
+                assert!(terminated);
+                tokio::time::timeout(Duration::from_millis(500), async {
+                    loop {
+                        let alive: bool = sqlx::query_scalar(
+                            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1)",
+                        )
+                        .bind(pid)
+                        .fetch_one(&mut observer)
+                        .await
+                        .unwrap();
+                        if !alive {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .expect("the terminated backend must actually exit");
+                if idle.is_zero() {
+                    assert!(returned.elapsed() < Duration::from_secs(1));
+                    let mut dead = pool.acquire().await.unwrap();
+                    let failed_write = sqlx::query("INSERT INTO pool_write_probe VALUES (1)")
+                        .execute(&mut *dead)
+                        .await;
+                    assert!(failed_write.is_err(), "recent disconnects must remain visible");
+                    dead.return_to_pool().await;
+                    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_write_probe")
+                        .fetch_one(&mut observer)
+                        .await
+                        .unwrap();
+                    assert_eq!(count, 0, "a failed write must not be retried");
+                }
+                let mut replacement = pool.acquire().await.unwrap();
+                let next: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                    .fetch_one(&mut *replacement)
+                    .await
+                    .unwrap();
+                assert_ne!(next, pid);
+                assert_eq!(pool.size(), 1);
+                drop(replacement);
+                pool.close().await;
+            }
+            observer.close().await.unwrap();
+            db.remove().await;
+        })
+        .await
+        .expect("bounded PostgreSQL pool disconnect/recovery qualification");
+    }
+
+    #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_poll_cache_single_statement_writes() {
         let db = Database::new().await;
@@ -661,7 +740,7 @@ mod tests {
     #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
     async fn qualification_a_begin_cancelled_in_flight_leaves_no_transaction_behind() {
         let db = Database::new().await;
-        let pool = PgPoolOptions::new()
+        let pool = super::super::backend::test_idle_connections(PgPoolOptions::new())
             .max_connections(1)
             .min_connections(0)
             .connect_with(db.options.clone())

@@ -42,7 +42,7 @@ pub(super) async fn open_existing(database: &str, writable: bool) -> Result<Sqli
     if !path.exists() {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
     }
-    let pool = SqlitePoolOptions::new()
+    let pool = super::backend::test_idle_connections(SqlitePoolOptions::new())
         .max_connections(1)
         .acquire_timeout(Duration::from_secs(5))
         .connect_with(
@@ -101,7 +101,7 @@ async fn open_once(database: &str) -> Result<SqlitePool> {
     // error return must not abandon the preflight connection until exit.
     preflight.close().await?;
     let initialized = preflight_result?;
-    let pool = SqlitePoolOptions::new()
+    let pool = super::backend::test_idle_connections(SqlitePoolOptions::new())
         .max_connections(4)
         .acquire_timeout(Duration::from_secs(5))
         .connect_with(
@@ -154,4 +154,76 @@ async fn inspect(connection: &mut SqliteConnection) -> Result<bool> {
         ));
     }
     Ok(initialized)
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn idle_pool_preserves_durability_cancellation_rollback_and_capacity() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let directory = tempfile::tempdir().unwrap();
+            let database = directory.path().join("pool.sqlite");
+            let pool = open(database.to_str().unwrap()).await.unwrap();
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                held.push(pool.acquire().await.unwrap());
+            }
+            let cancelled = tokio::time::timeout(Duration::from_millis(20), pool.acquire()).await;
+            assert!(cancelled.is_err(), "a fifth borrow must stay within the four-slot limit");
+            assert_eq!(pool.size(), 4);
+            for mut connection in held {
+                connection.return_to_pool().await;
+            }
+            let mut connection = pool.acquire().await.unwrap();
+            let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+            let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+            let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+            assert_eq!((journal.as_str(), synchronous, foreign_keys), ("wal", 2, 1));
+            sqlx::query("CREATE TABLE pool_write_probe(id INTEGER PRIMARY KEY)")
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            let mut transaction = connection.begin().await.unwrap();
+            sqlx::query("INSERT INTO pool_write_probe VALUES (1)")
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+            drop(transaction);
+            // The mandatory return ping must flush the queued rollback.
+            connection.return_to_pool().await;
+            let mut connection = pool.acquire().await.unwrap();
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_write_probe")
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+            assert_eq!(count, 0);
+            sqlx::query("INSERT INTO pool_write_probe VALUES (2)")
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            connection.return_to_pool().await;
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_write_probe")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1);
+            assert!(pool.size() <= 4);
+            pool.close().await;
+            assert!(matches!(pool.acquire().await, Err(sqlx::Error::PoolClosed)));
+        })
+        .await
+        .expect("bounded SQLite pool qualification");
+    }
 }
