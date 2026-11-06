@@ -310,7 +310,6 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             if indexed == 0 {
                 connection.execute("ALTER TABLE workflow_tasks ADD KEY dw_workflow_tasks_poll (namespace(64),queue(64),task_type(16),status(16),available_at)").await?;
             }
-            mysql::ensure_ready_origin(connection, run.flavor).await?;
         }
         3 => {
             // Rows, unlike DDL, commit with the step that records them.
@@ -454,6 +453,9 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
 
 /// The ledger row and native's final marker commit together.
 async fn finish(connection: &mut MySqlConnection, run: &Run<'_>) -> Result<()> {
+    // Conversion has now removed PHP's supported tail columns. Match that
+    // exact v8 task table before the idempotent native-only column step.
+    mysql::ensure_ready_origin(connection, run.flavor).await?;
     connection.execute(LEDGER_SQL).await?;
     let migration = run.flavor.migration();
     let mut tx = connection.begin().await?;

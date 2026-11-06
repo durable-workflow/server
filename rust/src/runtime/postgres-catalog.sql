@@ -11,7 +11,11 @@ SELECT kind, name, definition FROM (
     LEFT JOIN pg_am am ON am.oid=c.relam
     WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')
     UNION ALL
-    SELECT 'column', c.relname || '.' || a.attnum::text,
+    -- Historical PHP takeovers can leave dropped tail-column slots. The new
+    -- native readiness column has a stable name key; all old ordinal keys stay exact.
+    SELECT 'column', c.relname || '.' || CASE
+        WHEN c.relname='workflow_tasks' AND a.attname='ready_origin_at' THEN a.attname
+        ELSE a.attnum::text END,
         jsonb_build_object('name', a.attname, 'type', format_type(a.atttypid,a.atttypmod),
             'not_null', a.attnotnull, 'default', pg_get_expr(d.adbin,d.adrelid,false),
             'identity', a.attidentity, 'generated', a.attgenerated,

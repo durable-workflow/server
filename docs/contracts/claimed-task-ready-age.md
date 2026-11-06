@@ -39,7 +39,7 @@ UTC timestamp representation, in the next native additive schema revision.
 Existing rows start null. There is no creation-time or availability backfill for
 an unknown earlier ready transition. Historical migrations and catalogs retain
 their exact bytes. A source migration/catalog candidate is qualified by the
-existing fresh-schema, upgrade and backend checks before integration.
+existing fresh-schema, upgrade and backend checks before integration. PostgreSQL gives this new column a name-based catalog identity because supported PHP takeovers can retain dropped tail-column positions. Existing catalog keys remain unchanged.
 
 For a ready row with a known origin, effective eligibility is the later of that
 origin and a valid later `available_at`. Authored delay and retry backoff are

@@ -1,8 +1,7 @@
 //! Shared producer controls selected by every existing backend source suite.
-use super::backend::Backend;
 use super::store::{Store, now};
 use chrono::{DateTime, TimeDelta, Utc};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Semaphore;
 

@@ -48,7 +48,7 @@ function projectMysqlReadyOrigin(array $rows): array
 
 function projectPostgresReadyOrigin(array $rows): array
 {
-    $column = ['column', 'workflow_tasks.32', ['name' => 'ready_origin_at',
+    $column = ['column', 'workflow_tasks.ready_origin_at', ['name' => 'ready_origin_at',
         'type' => 'timestamp(6) without time zone', 'default' => null, 'identity' => '',
         'not_null' => false, 'collation' => null, 'generated' => '']];
     $found = 0;

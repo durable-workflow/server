@@ -810,8 +810,8 @@ where
         Self::append(tx, &retry_run, "WorkflowStarted", child_started, None, None).await?;
         let task = Self::create_task(tx, &retry_run, &queue, "workflow", json!({})).await?;
         if backoff > 0 {
-            Self::query("UPDATE workflow_tasks SET available_at=$1,ready_origin_at=$1 WHERE id=$2")
-                .bind(DB::bind_time(available_at)).bind(&task).execute(&mut **tx).await?;
+            Self::query("UPDATE workflow_tasks SET available_at=$1,ready_origin_at=$2 WHERE id=$3")
+                .bind(DB::bind_time(available_at)).bind(DB::bind_time(available_at)).bind(&task).execute(&mut **tx).await?;
         }
         // `markChildCallRetryStarted`.
         let mut metadata = DB::optional_document_row(call, "metadata")?.filter(Value::is_object).unwrap_or_else(|| json!({}));

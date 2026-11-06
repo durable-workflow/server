@@ -44,7 +44,7 @@ class NativeReadyOriginSchemaTest extends TestCase
         foreach (['type' => 'timestamp without time zone', 'default' => 'now()', 'not_null' => true] as $key => $value) {
             $changed = $new;
             foreach ($changed as &$row) {
-                if ($row[0] === 'column' && $row[1] === 'workflow_tasks.32') {
+                if ($row[0] === 'column' && $row[1] === 'workflow_tasks.ready_origin_at') {
                     $row[2][$key] = $value;
                 }
             }

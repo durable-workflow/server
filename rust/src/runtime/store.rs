@@ -2424,9 +2424,9 @@ where
                     "updated_at":DB::instant(&worker,"updated_at")?,"last_heartbeat_at":DB::instant(&worker,"last_heartbeat_at")?,
                     "task_id":task_id,"run_id":run_id,"lease_owner":worker_id,"attempt":attempt});
             }
-            Self::query("UPDATE workflow_tasks SET ready_origin_at=CASE WHEN status='leased' AND task_type='workflow' THEN $6 ELSE ready_origin_at END,status='leased',lease_owner=$1,lease_expires_at=$2,attempt_count=$3,leased_at=$4,payload=$5 WHERE id=$7")
-                .bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
-                .bind(DB::document(&task_payload)).bind(DB::optional_time(ready_origin)).bind(&task_id).execute(&mut **tx).await?;
+            Self::query("UPDATE workflow_tasks SET ready_origin_at=CASE WHEN status='leased' AND task_type='workflow' THEN $1 ELSE ready_origin_at END,status='leased',lease_owner=$2,lease_expires_at=$3,attempt_count=$4,leased_at=$5,payload=$6 WHERE id=$7")
+                .bind(DB::optional_time(ready_origin)).bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
+                .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut **tx).await?;
             // A lease is worker authority, not an authored lifecycle commit.
             if kind == "workflow" {
                 Self::query("UPDATE workflow_run_waits SET task_status='leased',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3 AND ((kind='child' AND status IN ('resolved','cancelled')) OR (kind='update' AND status='open'))")
@@ -2812,9 +2812,9 @@ where
                 // Copy routing in SQL so JSON/null representations remain
                 // native to each backend. A new lease increments this carried
                 // attempt count rather than restarting it at one.
-                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,attempt_count,available_at,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,payload,connection,queue,compatibility,priority,fairness_key,fairness_weight,ready_origin_at) SELECT $1,r.id,r.namespace,'workflow','ready',t.attempt_count,$2,$3,$4,$5,$6,$7,COALESCE(t.connection,r.connection),COALESCE(t.queue,r.queue),COALESCE(t.compatibility,r.compatibility),COALESCE(t.priority,r.priority,5),COALESCE(t.fairness_key,r.fairness_key),COALESCE(t.fairness_weight,r.fairness_weight,1),$9 FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$8")
+                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,attempt_count,available_at,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,payload,connection,queue,compatibility,priority,fairness_key,fairness_weight,ready_origin_at) SELECT $1,r.id,r.namespace,'workflow','ready',t.attempt_count,$2,$3,$4,$5,$6,$7,COALESCE(t.connection,r.connection),COALESCE(t.queue,r.queue),COALESCE(t.compatibility,r.compatibility),COALESCE(t.priority,r.priority,5),COALESCE(t.fairness_key,r.fairness_key),COALESCE(t.fairness_weight,r.fairness_weight,1),$8 FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$9")
                     .bind(&next).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::bind_time(created))
-                    .bind(DB::document(&payload)).bind(task_id).bind(DB::bind_time(created)).execute(&mut *tx).await?;
+                    .bind(DB::document(&payload)).bind(DB::bind_time(created)).bind(task_id).execute(&mut *tx).await?;
                 next_task_id = Some(next);
             }
             tx.commit().await?;
