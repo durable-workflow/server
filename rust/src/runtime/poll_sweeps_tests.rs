@@ -4,6 +4,22 @@ use serde_json::json;
 use sqlx::AssertSqlSafe;
 use std::{collections::BTreeMap, sync::Arc, time::{Duration, Instant}};
 
+fn mysql_live_status_seek(plan: &serde_json::Value) -> bool {
+    if let Some(table) = plan.get("table") {
+        let key = table["key"].as_str();
+        let parts = table["used_key_parts"].as_array();
+        if matches!(table["table_name"].as_str(), Some("t" | "workflow_tasks"))
+            && matches!(key, Some("dw_workflow_tasks_poll" | "workflow_tasks_namespace_queue_status_idx"))
+            && parts.is_some_and(|parts| ["namespace","queue","status"].iter().all(|part| parts.iter().any(|value| value.as_str() == Some(part))))
+        { return true; }
+    }
+    match plan {
+        serde_json::Value::Object(fields) => fields.values().any(mysql_live_status_seek),
+        serde_json::Value::Array(values) => values.iter().any(mysql_live_status_seek),
+        _ => false,
+    }
+}
+
 store_methods! {
     async fn poll_work_count(&self, table: &'static str) -> i64 {
         Self::scalar(table).fetch_one(&self.pool).await.unwrap()
@@ -119,7 +135,11 @@ store_methods! {
     }
 
     async fn poll_work_plan(&self, sql: &'static str, wake: bool) -> Vec<String> {
-        let explain = if DB::NAME == "SQLite" { "EXPLAIN QUERY PLAN " } else { "EXPLAIN " };
+        let explain = match DB::NAME {
+            "SQLite" => "EXPLAIN QUERY PLAN ",
+            "MySQL" => "EXPLAIN FORMAT=JSON ",
+            _ => "EXPLAIN ",
+        };
         let query = sqlx::query::<DB>(AssertSqlSafe(format!("{explain}{}", DB::statement(sql))))
             .bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
             .bind(DB::bind_time(now())).bind(DB::bind_time(now()));
@@ -130,7 +150,7 @@ store_methods! {
             let line = match DB::NAME {
                 "SQLite" => DB::string(&row, "detail").unwrap(),
                 "PostgreSQL" => DB::string(&row, "QUERY PLAN").unwrap(),
-                "MySQL" => format!("table={:?} type={:?} key={:?}", DB::optional_string(&row,"table").unwrap(), DB::optional_string(&row,"type").unwrap(), DB::optional_string(&row,"key").unwrap()),
+                "MySQL" => DB::string(&row, "EXPLAIN").unwrap(),
                 _ => unreachable!(),
             };
             plan.push(line);
@@ -183,7 +203,7 @@ store_methods! {
                 match DB::NAME {
                     "SQLite" => assert!(plan.iter().any(|line| indexed(line) && line.contains("status=?")), "{plan:?}"),
                     "PostgreSQL" => assert!(plan.windows(2).any(|pair| indexed(&pair[0]) && pair[1].contains("Index Cond:") && pair[1].contains("status")), "{plan:?}"),
-                    "MySQL" => assert!(plan.iter().any(|line| indexed(line) && (line.contains("type=Some(\"range\")") || line.contains("type=Some(\"ref\")"))), "{plan:?}"),
+                    "MySQL" => assert!(plan.iter().any(|line| mysql_live_status_seek(&serde_json::from_str(line).unwrap())), "{plan:?}"),
                     _ => unreachable!(),
                 }
                 assert!(!plan.iter().any(|line| line.contains("Seq Scan on workflow_tasks") || line == "SCAN t"), "{plan:?}");
