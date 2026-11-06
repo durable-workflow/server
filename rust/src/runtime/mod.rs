@@ -103,6 +103,7 @@ mod php_value;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub mod poll_pauses;
+mod poll_sweeps;
 mod plain_input;
 mod poll_readiness;
 pub mod postgres;
@@ -143,6 +144,8 @@ mod schedules;
 mod ready_age;
 #[cfg(test)]
 mod ready_age_tests;
+#[cfg(test)]
+mod poll_sweeps_tests;
 mod schema;
 pub mod schema_upgrade;
 mod search_attribute_upserts;

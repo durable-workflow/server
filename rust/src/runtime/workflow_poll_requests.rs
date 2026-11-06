@@ -140,7 +140,7 @@ store_methods! {
         queue: &str,
     ) -> Result<Option<Value>> {
         let mut tx = self.begin().await?;
-        Self::sweep_workflow_poll_rows(&mut tx).await?;
+        self.sweep_workflow_poll_rows(&mut tx).await?;
         Self::bind_workflow_poll(&mut tx, request).await?;
         let replay = self.deliverable_workflow_poll(&mut tx, request, worker_id, queue).await?;
         tx.commit().await?;
@@ -303,7 +303,7 @@ store_methods! {
         Ok(lease)
     }
 
-    async fn workflow_poll_row(tx: &mut Transaction<'_, DB>, key: &str) -> Result<Option<Value>> {
+    pub(super) async fn workflow_poll_row(tx: &mut Transaction<'_, DB>, key: &str) -> Result<Option<Value>> {
         let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&mut **tx).await? else {
             return Ok(None);
         };
@@ -326,9 +326,10 @@ store_methods! {
     }
 
     // Workers send a fresh request ID with most polls, so retire a bounded
-    // batch of expired rows whenever a request arrives.
-    async fn sweep_workflow_poll_rows(tx: &mut Transaction<'_, DB>) -> Result<()> {
-        for row in Self::query(DB::WORKFLOW_POLL_EXPIRED).bind(epoch()).fetch_all(&mut **tx).await? {
+    // batch of expired rows once per configured interval.
+    pub(super) async fn sweep_workflow_poll_rows(&self, tx: &mut Transaction<'_, DB>) -> Result<()> {
+        if !self.poll_sweeps.due(super::poll_sweeps::Kind::Workflow, self.poll_sweep_config.interval) { return Ok(()); }
+        for row in Self::query(DB::WORKFLOW_POLL_EXPIRED).bind(epoch()).bind(self.poll_sweep_config.batch).fetch_all(&mut **tx).await? {
             Self::query(DB::QUERY_CACHE_DELETE).bind(DB::string(&row, "key")?).execute(&mut **tx).await?;
         }
         Ok(())

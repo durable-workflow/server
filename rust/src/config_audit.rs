@@ -551,11 +551,11 @@ const UNLISTED: &[Setting] = &[
     Setting { name: "DW_V2_LEGACY_SCHEDULE_STORAGE_TIMEZONE", legacy: Some("WORKFLOW_V2_LEGACY_SCHEDULE_STORAGE_TIMEZONE"), disposition: Refused(Empty, LEGACY_SCHEDULE_TIMEZONE) },
 ];
 
-/// Settings native honors that PHP's contract does not list yet: the
-/// Workflow package reads them (Workflow #930), and PHP's contract gains them
-/// when the PHP Server takes that release. They are not unknown names, and
-/// their legacy names warn as the contract's do.
+/// Native-only settings and settings implemented ahead of PHP's contract.
+/// These are known names; legacy aliases warn as the contract's do.
 pub const NATIVE_HONORED: &[Setting] = &[
+    Setting { name: "DW_NATIVE_POLL_SWEEP_INTERVAL_MS", legacy: None, disposition: Honored },
+    Setting { name: "DW_NATIVE_POLL_SWEEP_BATCH_SIZE", legacy: None, disposition: Honored },
     Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS"), disposition: Honored },
 ];
 
