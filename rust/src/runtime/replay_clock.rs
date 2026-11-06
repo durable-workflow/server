@@ -116,7 +116,8 @@ store_methods! {
             return Ok(None);
         }
         if let Some(command) = &command
-            && (!row_string::<DB>(command, "workflow_instance_id", &workflow_id)
+            && (DB::string(command, "id").ok().as_deref() != command_id.as_deref()
+                || !row_string::<DB>(command, "workflow_instance_id", &workflow_id)
                 || !row_string::<DB>(command, "workflow_run_id", &run_id)
                 || !row_string::<DB>(command, "resolved_workflow_run_id", &run_id)
                 || !row_string::<DB>(command, "status", "accepted"))
@@ -214,7 +215,7 @@ store_methods! {
 
 #[cfg(test)]
 store_methods! {
-    pub(super) async fn qualify_replay_clock_start_uniqueness(&mut self) {
+    pub(super) async fn qualify_replay_clock_start_authority(&mut self) {
         use std::collections::BTreeMap;
         self.register(json!({"worker_id":"clock-worker","task_queue":"clock",
             "runtime":"php","supported_workflow_types":["clock"],"supported_activity_types":[]}),
@@ -227,8 +228,29 @@ store_methods! {
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(run_id).fetch_one(&mut *tx).await.unwrap();
         let task = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow'").bind(run_id).fetch_one(&mut *tx).await.unwrap();
         assert!(self.worker_replay_clock(&mut tx,&task,&run).await.unwrap().is_some());
-        let event = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted'").bind(run_id).fetch_one(&mut *tx).await.unwrap();
+        let event = Self::query("SELECT id,workflow_command_id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted'").bind(run_id).fetch_one(&mut *tx).await.unwrap();
         let payload = DB::document_row(&event,"payload").unwrap();
+        let event_id = DB::string(&event,"id").unwrap();
+        let command_id = DB::string(&event,"workflow_command_id").unwrap();
+        // A fixed retained command identity isolates SQL collation from the
+        // random identifier generator. All other command authority is real.
+        let canonical_id = "01AAAAAAAAAAAAAAAAAAAAAAAA";
+        Self::query("UPDATE workflow_commands SET id=$1 WHERE id=$2")
+            .bind(canonical_id).bind(&command_id).execute(&mut *tx).await.unwrap();
+        let mut canonical_payload = payload.clone();
+        canonical_payload["workflow_command_id"] = json!(canonical_id);
+        Self::query("UPDATE workflow_history_events SET workflow_command_id=$1,payload=$2 WHERE id=$3")
+            .bind(canonical_id).bind(DB::document(&canonical_payload)).bind(&event_id).execute(&mut *tx).await.unwrap();
+        assert!(self.worker_replay_clock(&mut tx,&task,&run).await.unwrap().is_some());
+        let alias = canonical_id.to_ascii_lowercase();
+        let mut aliased_payload = canonical_payload.clone();
+        aliased_payload["workflow_command_id"] = json!(alias);
+        Self::query("UPDATE workflow_history_events SET workflow_command_id=$1,payload=$2 WHERE id=$3")
+            .bind(&alias).bind(DB::document(&aliased_payload)).bind(&event_id).execute(&mut *tx).await.unwrap();
+        assert!(self.worker_replay_clock(&mut tx,&task,&run).await.unwrap().is_none());
+        Self::query("UPDATE workflow_history_events SET workflow_command_id=$1,payload=$2 WHERE id=$3")
+            .bind(canonical_id).bind(DB::document(&canonical_payload)).bind(&event_id).execute(&mut *tx).await.unwrap();
+        assert!(self.worker_replay_clock(&mut tx,&task,&run).await.unwrap().is_some());
         Self::append(&mut tx,run_id,"WorkflowStarted",payload,None,None).await.unwrap();
         assert!(self.worker_replay_clock(&mut tx,&task,&run).await.unwrap().is_none());
         tx.rollback().await.unwrap();
@@ -274,12 +296,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlite_duplicate_start_authority_is_unavailable() {
+    async fn sqlite_start_authority_requires_exact_command_and_unique_start() {
         let directory = tempfile::tempdir().unwrap();
         let mut store = super::super::store::Store::<sqlx::Sqlite>::new(
             super::super::sqlite::open(directory.path().join("clock.sqlite").to_str().unwrap()).await.unwrap(),
         );
-        store.qualify_replay_clock_start_uniqueness().await;
+        store.qualify_replay_clock_start_authority().await;
         use sqlx::Row;
         let rows = sqlx::query("EXPLAIN QUERY PLAN SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 2")
             .bind("absent").fetch_all(&store.pool).await.unwrap();

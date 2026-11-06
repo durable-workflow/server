@@ -1129,10 +1129,10 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable mysql source suite"]
-    async fn qualification_worker_replay_clock_rejects_duplicate_starts() {
+    async fn qualification_worker_replay_clock_requires_exact_start_authority() {
         let db = Database::new().await;
         let mut store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
-        store.qualify_replay_clock_start_uniqueness().await;
+        store.qualify_replay_clock_start_authority().await;
         store.close().await;
         db.remove().await;
     }

@@ -595,10 +595,10 @@ mod tests {
     /// 25001, and every later statement on that connection with 25P02.
     #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
-    async fn qualification_worker_replay_clock_rejects_duplicate_starts() {
+    async fn qualification_worker_replay_clock_requires_exact_start_authority() {
         let db = Database::new().await;
         let mut store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
-        store.qualify_replay_clock_start_uniqueness().await;
+        store.qualify_replay_clock_start_authority().await;
         store.close().await;
         db.remove().await;
     }
