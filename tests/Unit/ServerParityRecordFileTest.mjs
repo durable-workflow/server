@@ -4,7 +4,24 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {writeRecord} from '../../scripts/conformance/server-parity/record-file.mjs';
+import {writeFixtureSummary, writeRecord} from '../../scripts/conformance/server-parity/record-file.mjs';
+
+test('fixture summaries retain original identity and outcomes without raw case data', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'dw-parity-fixtures-'));
+  t.after(() => rmSync(directory, {recursive: true}));
+  const record = {outcome: 'pass', target: 'php', mode: 'http', runner_revision: 'a'.repeat(40),
+    fixture_hashes: {'one.json': 'b'.repeat(64)},
+    artifacts: {private_sentinel: 'not retained'}, cases: [{fixture_id: 'one', outcome: 'pass',
+      fixture: {raw: 'not retained'}, observation: {payload: 'not retained'}, error: 'not retained'}]};
+  const before = structuredClone(record);
+  writeFixtureSummary(join(directory, 'php.json'), record);
+  assert.deepEqual(JSON.parse(readFileSync(join(directory, 'php-fixtures.json'))), {
+    schema: 'durable-workflow.server-parity-fixture-summary.v1',
+    outcome: 'pass', target: 'php', mode: 'http', runner_revision: 'a'.repeat(40),
+    fixture_hashes: {'one.json': 'b'.repeat(64)}, cases: [{fixture_id: 'one', outcome: 'pass'}],
+  });
+  assert.deepEqual(record, before);
+});
 
 test('full wire recordings serialize within a bounded heap without dropping case bytes', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dw-parity-record-'));

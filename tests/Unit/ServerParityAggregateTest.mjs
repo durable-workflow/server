@@ -169,7 +169,7 @@ test('the fixture jobs run only through the classifier and the result waits for 
   // The cache-refresh push keeps native-tests, the part that saves main's
   // native dependency cache, and every part otherwise.
   assert.ok(blocks['execution-and-codec'].split('\n').includes(
-    `        part: \${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '["native-tests","corpus","restarts","cohorts","sdk-directions","corrected-markers"]') }}`));
+    `        part: \${{ fromJSON(needs.changes.outputs.full == 'false' && '["native-tests"]' || '["native-tests","corpus","corpus-b","restarts","cohorts","sdk-directions","corrected-markers"]') }}`));
   assert.match(blocks['execution-and-codec'], /matrix\.part == 'native-tests' && steps\.native_cargo\.outputs\.cache-hit != 'true'/);
   assert.match(blocks['published-sdk-adapters'], /github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' && steps\.adapter_cargo\.outputs\.cache-hit != 'true'/);
   // Only the classifier reads workflow runs, and only a push hands it a token.

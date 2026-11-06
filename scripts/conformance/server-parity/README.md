@@ -8,6 +8,21 @@ readable outcome remain the delivery record.
 Temporary adapter and native-binary artifacts used between jobs also expire
 after one day rather than remaining as long-term build archives.
 
+SQLite's shared corpus runs in two isolated jobs. `--fixture-shard 1/2` and
+`--fixture-shard 2/2` (also passed through `DW_PARITY_CORPUS_SHARD`) select
+alternating filenames from the same sorted, resolved fixture set. Each job records PHP, embedded and native with the same
+selection, then compares all three. The first job also runs the four separate
+contention-sensitive profiles. Default command-line discovery remains the full
+corpus when neither the shard option nor its environment value is set.
+
+Successful sharded recordings retain `php-fixtures.json`,
+`embedded-fixtures.json` and `rust-fixtures.json`. These contain the original
+runner revision, target/mode, fixture hashes and case IDs/outcomes; raw
+observations, payloads and errors remain excluded. Both jobs must demonstrate
+the complete disjoint union before accepting a new split. The normal artifact
+limits below still apply, and a missing or partial inventory cannot prove that
+coverage.
+
 The `artifact-summary.mjs RAW_DIRECTORY SUMMARY_DIRECTORY` utility reads the raw
 directory without changing it and requires a fresh, separate output directory.
 Its index states which files were retained or omitted and whether a text file
