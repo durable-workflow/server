@@ -43,7 +43,7 @@ Backend decode failures retain the existing storage-unavailable response.
 | --- | --- | --- | --- |
 | Byte size including NUL | `length(CAST(column AS BLOB))` | `OCTET_LENGTH(column)` | `OCTET_LENGTH(column)` |
 | Scalar projection | `CASE WHEN bytes<=bound THEN column ELSE NULL END` | Same | Same |
-| Invalid flag | Non-null and empty or over-bound, separately from SQL null | Same | Same |
+| Invalid flag | Non-null and over-bound, plus field-specific empty checks; an empty last-skip reason is valid | Same | Same |
 | Namespace / join identity | Exact text comparison | Exact text comparison | Candidate `left=right` plus `BINARY left=BINARY right` |
 
 The page selects explicit existing list columns and bounded scalar expressions.
