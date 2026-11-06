@@ -582,7 +582,7 @@ async fn last_skip_pair_tracks_repeated_skips_and_survives_a_later_fire() {
     let item = &never.1["schedules"][0];
     assert_eq!(item.get("last_skip_reason"),Some(&Value::Null));
     assert_eq!(item.get("last_skipped_at"),Some(&Value::Null));
-    let paused = request(&app,"PATCH","/api/schedules/last-skip",json!({"paused":true})).await;
+    let paused = request(&app,"POST","/api/schedules/last-skip/pause",json!({})).await;
     assert_eq!(paused.0,StatusCode::OK,"{}",paused.1);
     let mut retained = Value::Null;
     for count in 1..=2 {
@@ -605,7 +605,7 @@ async fn last_skip_pair_tracks_repeated_skips_and_survives_a_later_fire() {
         assert_eq!(item["last_skipped_at"],detail.1["info"]["last_skipped_at"]);
         retained = json!({"reason":item["last_skip_reason"],"at":item["last_skipped_at"]});
     }
-    let resumed = request(&app,"PATCH","/api/schedules/last-skip",json!({"paused":false})).await;
+    let resumed = request(&app,"POST","/api/schedules/last-skip/resume",json!({})).await;
     assert_eq!(resumed.0,StatusCode::OK,"{}",resumed.1);
     let fired = request(&app,"POST","/api/schedules/last-skip/trigger",json!({})).await;
     assert_eq!(fired.0,StatusCode::OK,"{}",fired.1);
