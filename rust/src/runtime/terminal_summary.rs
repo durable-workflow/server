@@ -238,8 +238,9 @@ where
         assert_eq!(one.unwrap().unwrap().count, 1);
         assert_eq!(counts.count(DB::SUMMARY_HISTORY_SQL), 1);
         tx.rollback_poll_claim(saved).await.unwrap();
-        let mut last = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+        let original = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(run_id).fetch_one(&mut *tx).await.unwrap();
+        let mut last = DB::number(&original,"last_history_sequence").unwrap();
         assert_eq!(last, 2, "the native acceptance/start prefix is retained");
         for (total, pages) in [(15,1),(16,2),(17,2),(32,3)] {
             while last < total {

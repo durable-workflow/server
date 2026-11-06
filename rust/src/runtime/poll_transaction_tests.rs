@@ -67,8 +67,9 @@ store_methods! {
         for multiplexed in [false,true] {
             let name = format!("counted-partial-claim-{multiplexed}");
             let started = self.count_start(&name).await;
-            let original = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            let original_row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
                 .bind(started["run_id"].as_str().unwrap()).fetch_one(&self.pool).await.unwrap();
+            let original = DB::number(&original_row,"last_history_sequence").unwrap();
             Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
                 .bind(original + 1).bind(started["run_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
             let body = json!({"worker_id":"count-worker","task_queue":"counted","poll_request_id":name,"timeout_seconds":0});
