@@ -106,6 +106,39 @@
         "timeout_seconds": 61
       },
       "expected_result": "omitted"
+    },
+    {
+      "id": "raw-custom-trim-0",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \ufeffraw-original\ufeff ",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "raw-custom-trim-1",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \u200braw-original\u200b ",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "raw-custom-trim-2",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \u200eraw-original\u200e ",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
     }
   ],
   "recovery": {

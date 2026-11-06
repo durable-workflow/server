@@ -83,6 +83,16 @@ async fn carried_activity_vectors_and_lost_completion_ack_preserve_the_original_
                 let replay = request(&app, "POST", "/api/worker/activity-tasks/poll", carried.clone()).await;
                 assert_eq!(replay.0, StatusCode::OK, "{}", replay.1);
                 assert_poll_replay(&first.1, &replay.1, "the raw original ID recovers every immutable lease field");
+                if id.starts_with("raw-custom-trim-") {
+                    let mut distinct = carried.clone();
+                    distinct["poll_request_id"] = json!("raw-original");
+                    let empty = request(&app, "POST", "/api/worker/activity-tasks/poll", distinct).await;
+                    assert_eq!(empty.0, StatusCode::OK, "{}", empty.1);
+                    assert!(empty.1["task"].is_null(), "activity identities remain opaque, unlike workflow IDs");
+                    let recovered = request(&app, "POST", "/api/worker/activity-tasks/poll", carried.clone()).await;
+                    assert_eq!(recovered.0, StatusCode::OK, "{}", recovered.1);
+                    assert_poll_replay(&first.1, &recovered.1, "the unchanged raw activity ID still recovers its original receipt");
+                }
                 if id == "leased" {
                     database.execute("UPDATE workflow_tasks SET lease_expires_at='2000-01-01 00:00:00.000000' WHERE task_type='activity' AND queue='carrier-leased'").await;
                     let expired = request(&app, "POST", "/api/worker/activity-tasks/poll", carried.clone()).await;
@@ -99,7 +109,7 @@ async fn carried_activity_vectors_and_lost_completion_ack_preserve_the_original_
             unexpected => panic!("unknown vector result: {unexpected}"),
         }
     }
-    assert_eq!(seen.len(), 10);
+    assert_eq!(seen.len(), 13);
     runtime.close().await;
     drop(app);
     database.remove().await;
