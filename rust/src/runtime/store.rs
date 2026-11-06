@@ -1964,6 +1964,12 @@ where
             super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
             super::worker_poll_fence::PollAdmission::Unregistered => None,
         };
+        if kind == "activity" && body["poll_request_id"].is_string()
+            && let Some(fence) = fence.as_ref()
+            && let Some(task) = self.replay_activity_poll_read_only(&body, fence).await?
+        {
+            return Ok(activity_server_time(kind, json!({"task":task,"poll_status":"leased","server_capabilities":capabilities()})));
+        }
         // A workflow poll's request ID replays its last deliverable answer,
         // after the registration checks that come first in PHP.
         let poll_request = match (kind, super::workflow_poll_requests::request_id(&body)) {
@@ -2957,6 +2963,12 @@ where
         signal: Option<&super::signal_payloads::ResolvedSignal>,
     ) -> Result<Value> {
         let transition_codec_for_streams = transition_codec.clone();
+        let mut body = body;
+        // Transport poll identities do not change the authored completion
+        // receipt. Repeating a completion never dispatches another task.
+        let activity_poll = if checkpoint.is_none() {
+            body.as_object_mut().and_then(|fields| fields.remove("activity_poll"))
+        } else { None };
         // `commands` is required and non-empty, with no count limit of its
         // own: each command meets the run's structural limits instead.
         let commands = body["commands"]
@@ -3109,6 +3121,10 @@ where
                 }
             }
         }
+        let activity_poll = match activity_poll {
+            Some(poll) => self.admit_activity_carrier(Some(poll), text(&body, "lease_owner")?, protocol).await?,
+            None => None,
+        };
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
@@ -3424,11 +3440,15 @@ where
                 .await?;
         }
         tx.summary_changed(&run_id);
+        let carried = match activity_poll.as_ref() {
+            Some(poll) => self.claim_carried_activity(&mut tx, poll, &DB::string(&task, "lease_owner")?).await?,
+            None => super::carried_polls::Outcome::Declined,
+        };
         tx.commit().await?;
         self.wake.notify_waiters();
-        Ok(
-            json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created}),
-        )
+        let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created});
+        if let Some(poll) = carried.response() { response["activity_poll"] = poll; }
+        Ok(response)
     }
 
     /// One non-terminal command of a workflow task completion or of a

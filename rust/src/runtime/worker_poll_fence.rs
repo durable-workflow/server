@@ -215,6 +215,20 @@ store_methods! {
         Ok(PollAdmission::Fenced(WorkerPollFence::snapshot::<DB>(&row)?))
     }
 
+    /// Eager dispatch distinguishes an ordinary admission decline from an
+    /// unexpected stored-row decoder failure. The latter must remain visible.
+    pub(super) async fn admit_carried_worker_poll(&self, worker_id: &str, queue: &str) -> Result<PollAdmission> {
+        let row = Self::query(FENCE_ROW).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&self.pool).await?;
+        let Some(row) = row else { return Ok(PollAdmission::Unregistered); };
+        if DB::optional_string(&row, "task_queue")?.as_deref() != Some(queue) {
+            return Ok(PollAdmission::Unregistered);
+        }
+        if !WorkerPollFence::fresh::<DB>(&row, self.worker_stale_after_seconds)? {
+            return Ok(PollAdmission::Stale);
+        }
+        Ok(PollAdmission::Fenced(WorkerPollFence::snapshot::<DB>(&row)?))
+    }
+
     /// `isCurrent` before a probe.
     pub(super) async fn worker_poll_fence_holds(&self, fence: &WorkerPollFence, worker_id: &str) -> Result<bool> {
         let row = Self::query(FENCE_ROW).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&self.pool).await?;

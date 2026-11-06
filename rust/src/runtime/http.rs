@@ -2285,7 +2285,7 @@ const WORKFLOW_POLL_RULES: &super::laravel_rules::Rules = &[
 ];
 
 /// `ActivityTaskController::poll`'s request rules.
-const ACTIVITY_POLL_RULES: &super::laravel_rules::Rules = &[
+pub(super) const ACTIVITY_POLL_RULES: &super::laravel_rules::Rules = &[
     ("worker_id", &[Rule::Required, Rule::String]),
     ("task_queue", &[Rule::Required, Rule::String]),
     ("build_id", &[Rule::Nullable, Rule::String]),
@@ -2394,9 +2394,13 @@ async fn complete_workflow(
     request: CommandRequest,
     Path(task_id): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Result<Json<Value>> {
-    let body = completion_checks(&task_id, &headers, body)?;
+    // A carried request uses the standalone poll's normalization. Do not
+    // recursively normalize its identity as part of the authored completion.
+    let activity_poll = body.as_object_mut().and_then(|fields| fields.remove("activity_poll"));
+    let mut body = completion_checks(&task_id, &headers, body)?;
+    if let Some(poll) = activity_poll { body["activity_poll"] = poll; }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
         .complete_workflow(&task_id, body, Some(request.principal().clone()), headers.get("x-durable-workflow-protocol-version").and_then(|value| value.to_str().ok()))
