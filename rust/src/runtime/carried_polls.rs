@@ -201,7 +201,7 @@ store_methods! {
         let PollAdmission::Fenced(fence) = self.admit_carried_worker_poll(owner, queue).await? else { return Ok(None); };
         let request = self.workflow_poll_request(owner, queue,
             super::workflow_poll_requests::request_id(&poll).expect("validated poll request identity"),
-            config.default_wait, &["workflow"]).await?;
+            poll.get("poll_request_id").and_then(Value::as_str), config.default_wait, &["workflow"]).await?;
         let encoding = super::history_pages::requested(&poll)?;
         let page = config.pages.poll(super::history_pages::requested_size(&poll)?, encoding);
         Ok(Some(WorkflowPoll { body: poll, fence, protocol: protocol.to_owned(), page, encoding, request }))

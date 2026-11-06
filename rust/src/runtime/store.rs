@@ -1982,7 +1982,7 @@ where
                 if DB::string(&registration, "task_queue")? != queue {
                     return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
                 }
-                Some(self.workflow_poll_request(worker_id, queue, id, default_wait, &["workflow"]).await?)
+                Some(self.workflow_poll_request(worker_id, queue, id, body.get("poll_request_id").and_then(Value::as_str), default_wait, &["workflow"]).await?)
             }
             _ => None,
         };

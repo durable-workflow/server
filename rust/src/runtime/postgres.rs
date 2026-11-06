@@ -609,6 +609,7 @@ mod tests {
         store.qualify_carried_activity_polls().await;
         store.qualify_carried_workflow_polls().await;
         store.qualify_workflow_completion_carriers().await;
+        store.qualify_retained_workflow_poll_keys().await;
         store.close().await;
         db.remove().await;
     }

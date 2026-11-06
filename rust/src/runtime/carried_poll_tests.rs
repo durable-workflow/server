@@ -435,6 +435,68 @@ store_methods! {
             }
         }
     }
+
+    pub(super) async fn qualify_retained_workflow_poll_keys(&self) {
+        for expired_binding in [false, true] {
+            for carrier in [false, true] {
+                let name = format!("retained-workflow-key-{expired_binding}-{carrier}");
+                let store = self.in_namespace(&name);
+                store.carrier_workers().await;
+                let parent = store.carrier_task(&format!("{name}-parent")).await;
+                let next = store.start(json!({"workflow_id":format!("{name}-next"),"workflow_type":"carried","task_queue":"carried","input":input()}),
+                    BTreeMap::new(), None, None).await.unwrap();
+                let raw_id = " \u{feff}\u{200b}original-legacy-id\u{200e} ";
+                let mut body = workflow_poll();
+                body["poll_request_id"] = json!(raw_id);
+                // Use the actual former key recipe and normal claim/receipt
+                // writers, rather than fabricating a cached lease document.
+                let legacy = store.workflow_poll_request("owner", "carried", raw_id.trim().to_owned(), None, 30, &["workflow"]).await.unwrap();
+                let mut tx = store.begin().await.unwrap();
+                let leased = store.claim_in(&mut tx, &body, "workflow", "1.20", Some(1), Some(&legacy)).await.unwrap().unwrap();
+                assert_eq!(leased["run_id"], next["run_id"]);
+                tx.commit().await.unwrap();
+                if expired_binding { store.expire_workflow_poll_binding_for_test(&legacy).await; }
+                let before = Self::scalar("SELECT COUNT(*) FROM dw_query_cache").fetch_one(&store.pool).await.unwrap();
+                store.test_transitions.store(0, Ordering::Relaxed);
+                let replay = if carrier {
+                    let done = store.carrier_finish_workflow(&parent, None, Some(body.clone()), false).await.unwrap();
+                    assert_eq!(done["recorded"], true);
+                    assert_granted(&done["workflow_poll"]).clone()
+                } else {
+                    store.poll(body.clone(), "workflow", "1.20").await.unwrap()
+                };
+                let mut expected = leased.clone();
+                if carrier { expected["task_kind"] = json!("workflow"); }
+                assert_eq!(replay["task"], expected, "the exact supplied legacy identity retains its committed lease and page");
+                assert_eq!(store.test_transitions.load(Ordering::Relaxed), usize::from(carrier || expired_binding));
+                assert_eq!(Self::scalar("SELECT COUNT(*) FROM dw_query_cache").fetch_one(&store.pool).await.unwrap(), before,
+                    "do not create a new alias, binding or answer for a retained legacy receipt");
+                let row = Self::query("SELECT attempt_count FROM workflow_tasks WHERE id=$1").bind(leased["task_id"].as_str().unwrap())
+                    .fetch_one(&store.pool).await.unwrap();
+                assert_eq!(DB::number(&row, "attempt_count").unwrap(), 1);
+                let again = store.poll(body, "workflow", "1.20").await.unwrap();
+                assert_eq!(again["task"], leased);
+            }
+        }
+
+        for (index, malformed) in [json!(false), json!({"task":null,"poll_status":"leased"}), json!({"task":[],"poll_status":"empty"})].into_iter().enumerate() {
+            let name = format!("malformed-workflow-receipt-{index}");
+            let store = self.in_namespace(&name);
+            store.carrier_workers().await;
+            let activity = store.carrier_activity(&name).await;
+            let poll = workflow_poll();
+            let request = store.workflow_poll_request("owner", "carried", super::workflow_poll_requests::request_id(&poll).unwrap(),
+                poll.get("poll_request_id").and_then(Value::as_str), 30, &["workflow"]).await.unwrap();
+            let mut tx = store.begin().await.unwrap();
+            Self::remember_workflow_poll(&mut tx, &request, &malformed).await.unwrap();
+            tx.commit().await.unwrap();
+            let error = store.carrier_finish_activity(&activity, Some(poll)).await.unwrap_err();
+            assert!(matches!(error, super::RuntimeError::Refused { status: axum::http::StatusCode::INTERNAL_SERVER_ERROR, reason: "invalid_poll_receipt" }), "{error:?}");
+            let row = Self::query("SELECT status FROM workflow_tasks WHERE id=$1").bind(activity["task_id"].as_str().unwrap())
+                .fetch_one(&store.pool).await.unwrap();
+            assert_eq!(DB::string(&row, "status").unwrap(), "leased", "malformed stored replies cannot become an empty eager result or commit the parent");
+        }
+    }
 }
 
 #[tokio::test]
@@ -444,5 +506,6 @@ async fn sqlite_carried_activity_polls_preserve_owner_capacity_and_faults() {
     store.qualify_carried_activity_polls().await;
     store.qualify_carried_workflow_polls().await;
     store.qualify_workflow_completion_carriers().await;
+    store.qualify_retained_workflow_poll_keys().await;
     store.close().await;
 }
