@@ -89,6 +89,8 @@ async fn repair_pass_recovers_tasks_and_runs_like_php() {
         1
     );
 
+    assert_eq!(count(&database, format!("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id IN ('{leased}','{stalled}') AND task_type='workflow' AND status='ready' AND ready_origin_at IS NOT NULL")).await, 2,
+        "Recovered and reconstructed workflow tasks retain their own known origins.");
     // Nothing is left to repair.
     let (status, quiet) = request(&app, "POST", PASS, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{quiet}");

@@ -35,10 +35,122 @@ store_methods! {
         DB::optional_instant(&self.ready_age_row(task).await, "ready_origin_at").unwrap()
     }
 
-    pub(super) async fn qualify_ready_age(&mut self) {
+    async fn ready_age_registration(&self) {
         self.register(json!({"worker_id":"ready-age-worker","task_queue":"ready-age","runtime":"php",
             "supported_workflow_types":["ready-age-workflow"],"supported_activity_types":["ready-age-activity"]}),
             &super::QueryTaskConfig::default(), None).await.unwrap();
+    }
+
+    async fn ready_age_retire(&self, task: &str) {
+        Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+            .bind(task).execute(&self.pool).await.unwrap();
+    }
+
+    async fn qualify_ready_age_transitions(&mut self) {
+        let legacy=DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z").unwrap().with_timezone(&Utc);
+        // Replacing a registration releases both task families in the same
+        // production transaction, without reusing their old readiness episode.
+        for kind in ["workflow","activity"] {
+            let task=self.ready_age_task(kind).await;
+            Self::query("UPDATE workflow_tasks SET ready_origin_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(legacy)).bind(&task).execute(&self.pool).await.unwrap();
+            self.poll(json!({"worker_id":"ready-age-worker","task_queue":"ready-age","timeout_seconds":0}),kind,"1.20").await.unwrap();
+            let before=now();
+            self.ready_age_registration().await;
+            let after=now();
+            let origin=self.ready_age_origin(&task).await.unwrap();
+            assert!(origin>=before && origin<=after,"{kind} replacement origin {origin}");
+            assert_eq!(DB::string(&self.ready_age_row(&task).await,"status").unwrap(),"ready");
+            self.ready_age_retire(&task).await;
+        }
+        // The ordinary workflow-task failure writer creates a fresh row,
+        // carrying attempt count but not the failed row's readiness clock.
+        let old=self.ready_age_task("workflow").await;
+        let leased=self.poll(json!({"worker_id":"ready-age-worker","task_queue":"ready-age","timeout_seconds":0}),"workflow","1.20").await.unwrap();
+        Self::query("UPDATE workflow_tasks SET ready_origin_at=$1 WHERE id=$2")
+            .bind(DB::bind_time(legacy)).bind(&old).execute(&self.pool).await.unwrap();
+        let failed=self.fail_workflow_task(&old,json!({"lease_owner":"ready-age-worker",
+            "workflow_task_attempt":leased["task"]["workflow_task_attempt"],
+            "failure":{"message":"retry source control","type":"RuntimeException"}}),
+            Arc::new(Semaphore::new(1)),None).await.unwrap();
+        let next=failed["next_task_id"].as_str().unwrap();
+        let row=self.ready_age_row(next).await;
+        assert_eq!(self.ready_age_origin(&old).await,Some(legacy));
+        assert_eq!(DB::optional_instant(&row,"ready_origin_at").unwrap(),Some(DB::instant(&row,"created_at").unwrap()));
+        self.ready_age_retire(next).await;
+
+        // Repair's already-ready branch preserves its episode. Leased and
+        // replay-blocked branches commit a new origin with the repair sample.
+        for state in ["ready","leased","failed"] {
+            let task=self.ready_age_task("workflow").await;
+            if state!="ready" {
+                let leased=self.poll(json!({"worker_id":"ready-age-worker","task_queue":"ready-age","timeout_seconds":0}),"workflow","1.20").await.unwrap();
+                if state=="failed" {
+                    self.fail_workflow_task(&task,json!({"lease_owner":"ready-age-worker",
+                        "workflow_task_attempt":leased["task"]["workflow_task_attempt"],
+                        "failure":{"message":"Recorded version 1 is outside supported range 2..2.",
+                            "type":"DurableWorkflow\\Exception\\NonDeterministicWorkflow",
+                            "reason":"version_marker_incompatible_range","sequence":1}}),
+                        Arc::new(Semaphore::new(1)),None).await.unwrap();
+                }
+            }
+            Self::query("UPDATE workflow_tasks SET ready_origin_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(legacy)).bind(&task).execute(&self.pool).await.unwrap();
+            let row=self.ready_age_row(&task).await;
+            let run_id=DB::string(&row,"workflow_run_id").unwrap();
+            let run=Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&self.pool).await.unwrap();
+            let at=now();
+            let mut tx=self.begin().await.unwrap();
+            Self::recover_task_row(&mut tx,&run,&row,at).await.unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(self.ready_age_origin(&task).await,Some(if state=="ready" {legacy} else {at}));
+            self.ready_age_retire(&task).await;
+        }
+
+        // A reported failure's retry availability is its eligibility origin.
+        let task=self.ready_age_task("activity").await;
+        let leased=self.poll(json!({"worker_id":"ready-age-worker","task_queue":"ready-age","timeout_seconds":0}),"activity","1.20").await.unwrap();
+        let body=json!({"lease_owner":"ready-age-worker","activity_attempt_id":leased["task"]["activity_attempt_id"],
+            "failure":{"message":"retry source control","type":"RuntimeException"}});
+        let (failure,blob)=super::activity_failures::prepare_failure(&body,Arc::new(Semaphore::new(1))).await.unwrap();
+        let failed=self.fail_activity(&task,body,failure,blob,None).await.unwrap();
+        let retry=failed["next_task_id"].as_str().unwrap();
+        let row=self.ready_age_row(retry).await;
+        assert_eq!(DB::optional_instant(&row,"ready_origin_at").unwrap(),Some(DB::instant(&row,"available_at").unwrap()));
+        self.ready_age_retire(retry).await;
+
+        // Lease-loss timeout owns a new retry row and its exact availability.
+        let task=self.ready_age_task("activity").await;
+        self.poll(json!({"worker_id":"ready-age-worker","task_queue":"ready-age","timeout_seconds":0}),"activity","1.20").await.unwrap();
+        Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
+            .bind(DB::bind_time(legacy)).bind(&task).execute(&self.pool).await.unwrap();
+        assert!(matches!(self.enforce_lease_expiry(&task).await.unwrap(),super::activity_deadlines::Enforcement::Enforced { .. }));
+        let run_id=DB::string(&self.ready_age_row(&task).await,"workflow_run_id").unwrap();
+        let row=Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='activity' AND status='ready'")
+            .bind(&run_id).fetch_one(&self.pool).await.unwrap();
+        assert_eq!(DB::optional_instant(&row,"ready_origin_at").unwrap(),Some(DB::instant(&row,"available_at").unwrap()));
+        self.ready_age_retire(&DB::string(&row,"id").unwrap()).await;
+
+        // The fenced abandoned-work owner writes a repair episode and origin
+        // together, independently of the old task's admission timestamp.
+        let task=self.ready_age_task("workflow").await;
+        self.poll(json!({"worker_id":"ready-age-worker","task_queue":"ready-age","timeout_seconds":0}),"workflow","1.20").await.unwrap();
+        Self::query("UPDATE workflow_tasks SET ready_origin_at=$1 WHERE id=$2")
+            .bind(DB::bind_time(legacy)).bind(&task).execute(&self.pool).await.unwrap();
+        let row=self.ready_age_row(&task).await;
+        let before=now();
+        let mut tx=self.begin().await.unwrap();
+        self.repair_abandoned_task(&mut tx,&row,Arc::new(Semaphore::new(1))).await.unwrap();
+        tx.commit().await.unwrap();
+        let after=now();
+        let origin=self.ready_age_origin(&task).await.unwrap();
+        assert!(origin>=before && origin<=after);
+        self.ready_age_retire(&task).await;
+    }
+
+    pub(super) async fn qualify_ready_age(&mut self) {
+        self.ready_age_registration().await;
+        self.qualify_ready_age_transitions().await;
         assert_eq!(super::store::capabilities()["claimed_task_ready_age"], true);
         for kind in ["workflow", "activity"] {
             for (origin_delta, available_delta, expected) in [
