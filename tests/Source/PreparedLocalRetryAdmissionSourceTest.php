@@ -32,6 +32,8 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
 {
     use RefreshDatabase;
 
+    private WorkflowTaskBridge $baseBridge;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -41,6 +43,8 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
             'workflows.v2.types.workflows' => ['tests.external-greeting-workflow' => ExternalGreetingWorkflow::class]]);
         $this->travelTo(\Illuminate\Support\Carbon::parse('2026-11-06T00:00:00Z'));
         WorkflowNamespace::query()->create(['name' => 'default', 'description' => 'Test', 'retention_days' => 30, 'status' => 'active']);
+        $this->baseBridge = app(WorkflowTaskBridge::class);
+        $this->assertNotInstanceOf(\Mockery\MockInterface::class, $this->baseBridge);
         $this->bindRetryRole();
         $this->assertTrue(PreparedLocalRetryAdmission::backendSupported());
     }
@@ -53,7 +57,7 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
 
     private function bindRetryRole(array $overrides = []): void
     {
-        $base = app(WorkflowTaskBridge::class);
+        $base = $this->baseBridge;
         $interfaces = array_values(array_unique([...class_implements($base), PreparedLocalActivityRetryTaskBridge::class]));
         $role = \Mockery::mock(implode(', ', $interfaces));
         $versioned = [
