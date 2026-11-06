@@ -9,7 +9,7 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 8;
+pub const VERSION: i64 = 9;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -52,7 +52,9 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0007_service_calls.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql")
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -68,16 +70,18 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mariadb/0007_service_calls.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql")
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 VERSION,
-                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions".into(),
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins".into(),
                 MigrationType::Simple,
-                sql.into_sql_str(),
+                AssertSqlSafe(bootstrap_sql(sql)).into_sql_str(),
                 false,
             )]);
             // A bounded named lock on this dedicated initialization connection
@@ -88,8 +92,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0008_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0008_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0009_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0009_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -167,16 +171,18 @@ impl Flavor {
     fn earlier(self, version: i64) -> Option<(&'static Migration, &'static str)> {
         static MYSQL_7: OnceLock<Migration> = OnceLock::new();
         static MARIA_7: OnceLock<Migration> = OnceLock::new();
+        static MYSQL_8: OnceLock<Migration> = OnceLock::new();
+        static MARIA_8: OnceLock<Migration> = OnceLock::new();
         let description = "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters";
-        let earlier = |slot: &'static OnceLock<Migration>, sql: &'static str| {
+        let earlier = |slot: &'static OnceLock<Migration>, version, description: &'static str, sql: &'static str| {
             slot.get_or_init(|| {
-                Migration::new(7, description.into(), MigrationType::Simple, sql.into_sql_str(), false)
+                Migration::new(version, description.into(), MigrationType::Simple, sql.into_sql_str(), false)
             })
         };
         match (self, version) {
             (Self::MySql, 7) => Some((
                 earlier(
-                    &MYSQL_7,
+                    &MYSQL_7, 7, description,
                     concat!(
                         include_str!("../../migrations/mysql/0003_full_schema.sql"),
                         "\n",
@@ -193,7 +199,7 @@ impl Flavor {
             )),
             (Self::MariaDb, 7) => Some((
                 earlier(
-                    &MARIA_7,
+                    &MARIA_7, 7, description,
                     concat!(
                         include_str!("../../migrations/mariadb/0003_full_schema.sql"),
                         "\n",
@@ -208,6 +214,44 @@ impl Flavor {
                 ),
                 include_str!("../../migrations/mariadb/0007_catalog.json"),
             )),
+            (Self::MySql, 8) => Some((
+                earlier(
+                    &MYSQL_8, 8, "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions",
+                    concat!(
+                        include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                        "\n",
+                        include_str!("../../migrations/mysql/0008_external_payload_deletions.sql")
+                    ),
+                ),
+                include_str!("../../migrations/mysql/0008_catalog.json"),
+            )),
+            (Self::MariaDb, 8) => Some((
+                earlier(
+                    &MARIA_8, 8, "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions",
+                    concat!(
+                        include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                        "\n",
+                        include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql")
+                    ),
+                ),
+                include_str!("../../migrations/mariadb/0008_catalog.json"),
+            )),
             _ => None,
         }
     }
@@ -216,11 +260,49 @@ impl Flavor {
         match (self, version) {
             (Self::MySql, 7) => Some(include_str!("../../migrations/mysql/0008_external_payload_deletions.sql")),
             (Self::MariaDb, 7) => Some(include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql")),
+            (Self::MySql, 8) => Some(include_str!("../../migrations/mysql/0009_task_ready_origin.sql")),
+            (Self::MariaDb, 8) => Some(include_str!("../../migrations/mariadb/0009_task_ready_origin.sql")),
             _ => None,
         }
     }
     pub(super) fn checksum(self) -> &'static [u8] {
         self.migrator().iter().next().unwrap().checksum.as_ref()
+    }
+}
+
+/// Only compiled migration text enters this transformation. Fresh and resumed
+/// initialization create the final task definition without replaying an ALTER.
+fn bootstrap_sql(sql: &str) -> String {
+    let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_tasks` (")
+        .expect("compiled workflow task definition");
+    let key = start + sql[start..].find("  PRIMARY KEY (`id`),")
+        .expect("compiled workflow task primary key");
+    let mut sql = sql.to_owned();
+    sql.insert_str(key, "  `ready_origin_at` datetime(6) DEFAULT NULL,\n");
+    sql = sql.replace("ALTER TABLE workflow_tasks ADD COLUMN ready_origin_at DATETIME(6) NULL;", "");
+    sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+        .replace("IF NOT EXISTS IF NOT EXISTS", "IF NOT EXISTS")
+}
+
+/// An implicit-commit step may already have committed before interruption.
+/// Accept only the exact old or exact new task table, never a column-name probe.
+pub(super) async fn ensure_ready_origin(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let (_, old) = flavor.earlier(8).expect("released v8 schema");
+    let old: Catalog = serde_json::from_str(&canonical(old))?;
+    let current = flavor.expected()?;
+    let actual = catalog(connection).await?;
+    let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
+    let expected = task(current);
+    match task(actual) {
+        found if found == expected => Ok(()),
+        found if found == task(old) => {
+            connection.execute(flavor.step(8).expect("compiled ready-origin step")).await?;
+            if task(catalog(connection).await?) != expected {
+                return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+            }
+            Ok(())
+        }
+        _ => Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")),
     }
 }
 
@@ -385,7 +467,8 @@ async fn source_layout(
     mut actual: Catalog,
 ) -> Result<(Catalog, &'static str)> {
     let flavor = Flavor::detect(connection).await?;
-    let expected: Catalog = flavor.expected()?.into_iter()
+    let (_, frozen) = flavor.earlier(8).expect("released v8 schema");
+    let expected: Catalog = serde_json::from_str::<Catalog>(&canonical(frozen))?.into_iter()
         .filter(|(table, _)| !super::upgrade::native_relation(table))
         .map(|(table, ddl)| (table, ddl.replace(
             ",\n  KEY `dw_workflow_tasks_poll` (`namespace`(64),`queue`(64),`task_type`(16),`status`(16),`available_at`)", "")))
@@ -674,6 +757,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         // Each step's own marker update names the development engine, so it
         // changes nothing while the marker fences the upgrade.
         for version in from..VERSION {
+            if version == 8 {
+                ensure_ready_origin(&mut connection, flavor).await?;
+                continue;
+            }
             let sql = flavor
                 .step(version)
                 .ok_or(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"))?;
@@ -949,6 +1036,16 @@ mod tests {
         ] {
             assert_eq!(canonical(kept), kept);
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_ready_age_origins_and_committed_poll_answers() {
+        let db=Database::new().await;
+        let mut store=super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_ready_age().await;
+        store.close().await;
+        db.remove().await;
     }
 
     #[tokio::test]
@@ -2001,6 +2098,20 @@ mod tests {
     }
 
     #[test]
+    fn version_8_checksums_and_resumable_current_bootstrap_are_distinct() {
+        for (flavor, pinned) in [
+            (Flavor::MySql, include_str!("../../migrations/mysql/0008_checksum.txt")),
+            (Flavor::MariaDb, include_str!("../../migrations/mariadb/0008_checksum.txt")),
+        ] {
+            assert_eq!(checksum_hex(flavor.earlier(8).unwrap().0), pinned.trim());
+            let sql=flavor.migration().sql.as_ref();
+            assert_eq!(sql.matches("`ready_origin_at` datetime(6) DEFAULT NULL").count(),1);
+            assert!(!sql.contains("ALTER TABLE workflow_tasks ADD COLUMN ready_origin_at"));
+            assert!(!sql.contains("CREATE TABLE dw_"));
+        }
+    }
+
+    #[test]
     fn released_step_files_keep_the_checksum_their_release_recorded() {
         // Release candidates 1 and 2 recorded these checksums for version 7.
         // Editing 0003-0007 would make their databases unrecognisable.
@@ -2043,11 +2154,65 @@ mod tests {
         flavor
     }
 
+    async fn version_8_database(db: &Database) -> Flavor {
+        let mut connection = db.connection().await;
+        configure(&mut connection).await.unwrap();
+        let flavor = Flavor::detect(&mut connection).await.unwrap();
+        let (earlier, earlier_catalog) = flavor.earlier(8).unwrap();
+        connection.execute(MARKER_SQL).await.unwrap();
+        sqlx::query("INSERT INTO dw_server_schema VALUES ('rust-initializing',8,?)")
+            .bind(earlier.checksum.as_ref())
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.execute(LEDGER_SQL).await.unwrap();
+        let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
+        migrator.set_locking(false);
+        migrator.run(&mut connection).await.unwrap();
+        let expected: Catalog = serde_json::from_str(&canonical(earlier_catalog)).unwrap();
+        assert_eq!(catalog(&mut connection).await.unwrap(), expected);
+        sqlx::query("UPDATE dw_server_schema SET engine='rust-development' WHERE engine='rust-initializing'")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 8')")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+        flavor
+    }
+
     fn upgrade_refused(result: Result<(&'static str, i64)>, expected: &str) {
         match result {
             Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
             Err(error) => panic!("unexpected upgrade error: {error}"),
             Ok(found) => panic!("upgrade accepted {found:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_version_8_ready_origin_upgrade_resumes_without_backfill() {
+        for already_added in [false,true] {
+            let db=Database::new().await;
+            let flavor=version_8_database(&db).await;
+            let mut connection=db.connection().await;
+            connection.execute("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace) VALUES ('legacy-instance','Legacy','legacy','default');
+INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ('legacy-run','legacy-instance',1,'Legacy','legacy','default','pending');
+INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,namespace,available_at,created_at) VALUES ('legacy-task','legacy-run','workflow','ready','default','2026-01-01 00:00:00','2026-01-01 00:00:00');").await.unwrap();
+            if already_added {
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                connection.execute(flavor.step(8).unwrap()).await.unwrap();
+            }
+            connection.close().await.unwrap();
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(),(flavor.name(),8));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection=db.connection().await;
+            let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM workflow_tasks WHERE id='legacy-task' AND status='ready' AND ready_origin_at IS NULL").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(count,1);
+            connection.close().await.unwrap();
+            db.remove().await;
         }
     }
 
@@ -2113,7 +2278,7 @@ mod tests {
             ("ALTER TABLE workflow_namespaces ADD COLUMN unexpected TEXT NULL", "native_schema_catalog_mismatch"),
             ("UPDATE _sqlx_migrations SET checksum=X'00'", "native_migration_history_mismatch"),
             ("UPDATE dw_server_schema SET bootstrap_checksum=X'00'", "unsupported_rust_schema"),
-            ("UPDATE dw_server_schema SET version=9", "native_schema_newer_than_binary"),
+            ("UPDATE dw_server_schema SET version=99", "native_schema_newer_than_binary"),
             ("UPDATE dw_server_schema SET version=5", "unsupported_rust_schema"),
         ] {
             let db = Database::new().await;

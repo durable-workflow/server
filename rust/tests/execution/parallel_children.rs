@@ -440,6 +440,8 @@ async fn retried_and_continued_members_keep_the_original_call_path_and_barrier()
             json!([{"type":"continue_as_new"}])
         };
         assert_eq!(finish_task(&app, &member, next).await.0, StatusCode::OK);
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_tasks WHERE task_type='workflow' AND status='ready' AND ready_origin_at=available_at").await, 1,
+            "The replacement child admission keeps its exact eligibility origin.");
         assert!(poll(&app, "parent-worker", "workflow").await.is_null());
         check_paths(
             &run_history(&app, &run["workflow_id"], &run["run_id"]).await,
