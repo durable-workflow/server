@@ -157,3 +157,40 @@ canonical original mode/snapshot to the retained claim under the existing outer
 transaction. The current bound bridge does not expose that role. Native
 implementation, schema, installed/backend qualification and release remain
 separate work.
+
+## Guarded Server adapter
+
+The source adapter targets Core's optional interface and pure helpers at
+`ce24207ef86856e64f97b939c9aeef9d1fb387c8`. The locked package and default
+bridge remain unchanged. No retry capability is advertised by this adapter.
+Policy-member or override presence selects only untrusted intent. A real bound
+`PreparedLocalActivityRetryTaskBridge`, the original issued capability and
+canonical contract/snapshot authority are required independently.
+
+A successful version-2 preparation receives a distinct private
+`durable-workflow.server.prepared-local-authority/v2` receipt. Its exact keys
+are `schema`, `claim`, `activity_execution_id`, `activity_attempt_id`,
+`worker_attempt_id`, `local_activity_contract_version`, `retry_policy_snapshot`,
+`preparation_history_event_id` and `descriptor_fingerprint`. The contract value
+comes from canonical Core preparation. The complete normalized snapshot and
+unique correlated Started event must agree on every read. A legacy receipt is
+never rewritten or promoted. The hosting task's later current claim cannot
+replace the original callback's issued claim.
+
+Recovery independently reads the original callback's retained authority before
+entering Core. A duplicate binds the old attempt named by its exact recovery
+identity even after a following attempt exists. Fresh recovery still needs the
+recovering claim and existing registration fence. Post-write readback checks the
+original graph within the same outer transaction, so a changed graph rolls the
+operation back. Physical callback stop remains a separate authority.
+
+Completed external payload uploads retain their existing completion-lease,
+namespace, storage and reference checks. The original receipt and supervisor
+control dispatch use the same proven mode as the outcome route. This adds no
+fetch-free completed replay guarantee. Failed and timed-out pure report checks
+perform no payload resolution.
+
+Normal locked-package tests cover unavailable-role precedence and unchanged
+legacy authority. The exact candidate writer/transaction/transport comparison
+and all semantic cases remain required qualification work. PHP syntax or pure
+intent controls alone do not qualify a prepared writer or enable a runtime role.

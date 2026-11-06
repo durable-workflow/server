@@ -12,6 +12,7 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\PayloadCodecContract;
 use App\Support\PreparedLocalActivityAdmissionRefused;
 use App\Support\PreparedLocalActivityPolicy;
+use App\Support\PreparedLocalRetryAdmission;
 use App\Support\ServiceModeTimerDispatcher;
 use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
@@ -24,6 +25,7 @@ use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\CancellationScopeAdmission;
 use Workflow\V2\Contracts\PreparedCancellationScopeTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityRetryTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
@@ -66,6 +68,13 @@ final class PreparedLocalActivityController
         $request->validate([
             'descriptor.cancellation_scope_id' => ['sometimes', 'required', 'string', 'max:255'],
         ]);
+        $retry = PreparedLocalRetryAdmission::descriptorIntent($validated['descriptor']);
+        if ($retry) {
+            if (! PreparedLocalRetryAdmission::backendSupported()) {
+                return self::refused($validated['lease_owner'], ['installed_runtime_prepared_local_retry'], PreparedLocalRetryAdmission::CAPABILITY);
+            }
+            PreparedLocalRetryAdmission::validatePolicy($validated['descriptor']);
+        }
         $namespace = (string) $request->attributes->get('namespace');
         $task = NamespaceWorkflowScope::task($namespace, $taskId);
         if ($task === null) {
@@ -79,12 +88,15 @@ final class PreparedLocalActivityController
         if ($claim === null) {
             return self::refused($validated['lease_owner'], ['worker_claim_capability']);
         }
+        if ($retry && ! PreparedLocalRetryAdmission::claimSupports($claim)) {
+            return self::refused($validated['lease_owner'], ['worker_claim_retry_capability'], PreparedLocalRetryAdmission::CAPABILITY);
+        }
         try {
             if ($response = $this->cancellationScopeRefusal($request, $task, $validated['descriptor'], (int) $validated['sequence'])) {
                 return $response;
             }
             $validated['descriptor'] = $this->resolvePayload($validated['descriptor'], 'arguments', 'descriptor', $namespace);
-            $reply = $this->mutations->run(fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated, $claim, $recover): array|JsonResponse {
+            $reply = $this->mutations->run(fn (): array|JsonResponse => DB::transaction(function () use ($request, $namespace, $taskId, $validated, $claim, $recover, $retry): array|JsonResponse {
                 $quotaSnapshot = $this->quota->snapshotForMutation($namespace, self::quotaResources());
                 // Registration precedes Native's attempt/execution/run/task
                 // locks. Do not lock the hosting task before entering Native.
@@ -97,15 +109,44 @@ final class PreparedLocalActivityController
                 }
                 /** @var PreparedLocalActivityTaskBridge $bridge */
                 $bridge = app(WorkflowTaskBridge::class);
-                $reply = $recover
-                    ? $bridge->recoverLocalActivity($taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'], (int) $validated['sequence'], $validated['descriptor'], WorkerProtocol::requestVersion($request))
-                    : $bridge->prepareLocalActivity($taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'], (int) $validated['sequence'], $validated['worker_attempt_id'], $validated['descriptor'], WorkerProtocol::requestVersion($request));
+                $recoveryAuthority = null;
+                if ($retry) {
+                    $currentTask = NamespaceWorkflowScope::task($namespace, $taskId);
+                    if (! PreparedLocalRetryAdmission::backendSupported() || ! $bridge instanceof PreparedLocalActivityRetryTaskBridge
+                        || ! $currentTask instanceof WorkflowTask || PreparedLocalActivityPolicy::currentClaim($currentTask) !== $claim
+                        || ! PreparedLocalRetryAdmission::claimSupports($claim)) {
+                        return self::refused($validated['lease_owner'], ['worker_claim_retry_capability'], PreparedLocalRetryAdmission::CAPABILITY);
+                    }
+                    if ($recover) {
+                        $recoveryAuthority = PreparedLocalRetryAdmission::recoveryAuthority($currentTask, (int) $validated['sequence'], $validated['lease_owner'], (int) $validated['workflow_task_attempt']);
+                        if ($recoveryAuthority === null) {
+                            return self::refused($validated['lease_owner'], ['original_prepared_local_retry_claim'], PreparedLocalRetryAdmission::CAPABILITY);
+                        }
+                    }
+                    $reply = $recover
+                        ? $bridge->recoverLocalActivityWithRetryPolicy($taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'], (int) $validated['sequence'], $validated['descriptor'], WorkerProtocol::requestVersion($request))
+                        : $bridge->prepareLocalActivityWithRetryPolicy($taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'], (int) $validated['sequence'], $validated['worker_attempt_id'], $validated['descriptor'], WorkerProtocol::requestVersion($request));
+                } else {
+                    $reply = $recover
+                        ? $bridge->recoverLocalActivity($taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'], (int) $validated['sequence'], $validated['descriptor'], WorkerProtocol::requestVersion($request))
+                        : $bridge->prepareLocalActivity($taskId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'], (int) $validated['sequence'], $validated['worker_attempt_id'], $validated['descriptor'], WorkerProtocol::requestVersion($request));
+                }
+                if ($retry && $recover && ($reply['recovered'] ?? false)) {
+                    $originalTask = $recoveryAuthority['task']->refresh();
+                    $originalAttempt = $recoveryAuthority['attempt']->refresh();
+                    $originalClaim = $recoveryAuthority['claim'];
+                    if (($reply['activity_attempt_id'] ?? null) !== $originalAttempt->id
+                        || PreparedLocalRetryAdmission::originalClaim($originalTask, $originalAttempt, $originalClaim['lease_owner'], $originalClaim['attempt']) !== $originalClaim) {
+                        throw new PreparedLocalActivityAdmissionRefused;
+                    }
+                }
                 if (! $recover && ($reply['prepared'] ?? false)) {
                     $task = NamespaceWorkflowScope::taskQuery($namespace)->lockForUpdate()->find($taskId);
                     $attemptId = $reply['activity_attempt_id'] ?? null;
                     $attempt = is_string($attemptId) ? ActivityAttempt::query()->find($attemptId) : null;
                     if (! $task instanceof WorkflowTask || ! $attempt instanceof ActivityAttempt
-                        || ! PreparedLocalActivityPolicy::remember($task, $attempt, $claim)) {
+                        || ! ($retry ? PreparedLocalRetryAdmission::remember($task, $attempt, $claim)
+                            : PreparedLocalActivityPolicy::remember($task, $attempt, $claim))) {
                         throw new PreparedLocalActivityAdmissionRefused;
                     }
                 }
@@ -196,15 +237,35 @@ final class PreparedLocalActivityController
             'request_id' => [$operation === 'acknowledge' ? 'required' : 'nullable', 'string', 'max:255'],
             'progress' => ['nullable', 'array'],
         ]);
+        $retryIntent = $operation === 'outcome' && PreparedLocalRetryAdmission::reportIntent($validated['report']);
+        if ($retryIntent) {
+            if (! PreparedLocalRetryAdmission::backendSupported()) {
+                return self::refused($validated['lease_owner'], ['installed_runtime_prepared_local_retry'], PreparedLocalRetryAdmission::CAPABILITY);
+            }
+            if ($response = $this->retryReportRefusal($attemptId, $validated['report'])) {
+                return $response;
+            }
+        }
         $namespace = (string) $request->attributes->get('namespace');
         $task = NamespaceWorkflowScope::task($namespace, $taskId);
         $attempt = ActivityAttempt::query()->where('workflow_task_id', $taskId)->find($attemptId);
         if ($task === null || $attempt === null || $attempt->workflow_run_id !== $task->workflow_run_id) {
             return WorkerProtocol::json(['reason' => 'activity_attempt_not_found'], 404);
         }
-        $claim = PreparedLocalActivityPolicy::originalClaim($task, $attempt, $validated['lease_owner'], (int) $validated['workflow_task_attempt']);
+        $retry = PreparedLocalRetryAdmission::retainedIntent($task, $attempt);
+        if ($retryIntent && ! $retry) {
+            return self::refused($validated['lease_owner'], ['original_prepared_local_retry_claim'], PreparedLocalRetryAdmission::CAPABILITY);
+        }
+        $claim = $retry
+            ? PreparedLocalRetryAdmission::originalClaim($task, $attempt, $validated['lease_owner'], (int) $validated['workflow_task_attempt'])
+            : PreparedLocalActivityPolicy::originalClaim($task, $attempt, $validated['lease_owner'], (int) $validated['workflow_task_attempt']);
         if ($claim === null) {
-            return self::refused($validated['lease_owner'], ['original_prepared_local_claim']);
+            return self::refused($validated['lease_owner'], [$retry ? 'original_prepared_local_retry_claim' : 'original_prepared_local_claim'],
+                $retry ? PreparedLocalRetryAdmission::CAPABILITY : PreparedLocalActivityPolicy::CAPABILITY);
+        }
+        if ($retry && $operation === 'outcome'
+            && ($response = $this->retryReportRefusal($attemptId, $validated['report']))) {
+            return $response;
         }
         try {
             $bridge = app(WorkflowTaskBridge::class);
@@ -218,10 +279,9 @@ final class PreparedLocalActivityController
                     // This stop-only observation grants no renewal, heartbeat
                     // or publication authority. Keep those mutations behind
                     // the registration and quota locks below.
-                    $control = $this->mutations->run(fn (): array => $bridge->controlLocalActivity(
-                        $attemptId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'],
-                        false, WorkerProtocol::requestVersion($request)
-                    ));
+                    $control = $this->mutations->run(fn (): array => $retry
+                        ? $bridge->controlLocalActivityWithRetryPolicy($attemptId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'], false, WorkerProtocol::requestVersion($request))
+                        : $bridge->controlLocalActivity($attemptId, $validated['lease_owner'], (int) $validated['workflow_task_attempt'], false, WorkerProtocol::requestVersion($request)));
                     if ($operation !== 'outcome' && isset($control['cancellation_scope'])) {
                         return $this->reply($request, $control);
                     }
@@ -230,13 +290,25 @@ final class PreparedLocalActivityController
             if ($operation === 'outcome' && ($validated['report']['outcome'] ?? null) === 'completed') {
                 $validated['report'] = $this->resolvePayload($validated['report'], 'result', 'report', $namespace);
             }
-            $reply = $this->mutations->run(fn (): array => DB::transaction(function () use ($request, $validated, $claim, $attemptId, $operation): array {
+            $reply = $this->mutations->run(fn (): array|JsonResponse => DB::transaction(function () use ($request, $validated, $claim, $taskId, $attemptId, $operation, $retry): array|JsonResponse {
                 $quotaSnapshot = $this->quota->snapshotForMutation($claim['namespace'], self::quotaResources());
                 /** @var PreparedLocalActivityTaskBridge $bridge */
                 $bridge = app(WorkflowTaskBridge::class);
                 $version = WorkerProtocol::requestVersion($request);
                 $epoch = (int) $validated['workflow_task_attempt'];
                 $owner = $validated['lease_owner'];
+                if ($retry) {
+                    $task = NamespaceWorkflowScope::task($claim['namespace'], $taskId);
+                    $attempt = ActivityAttempt::query()->where('workflow_task_id', $taskId)->find($attemptId);
+                    if (! $bridge instanceof PreparedLocalActivityRetryTaskBridge || ! $task instanceof WorkflowTask || ! $attempt instanceof ActivityAttempt
+                        || PreparedLocalRetryAdmission::originalClaim($task, $attempt, $owner, $epoch) !== $claim) {
+                        return self::refused($owner, ['original_prepared_local_retry_claim'], PreparedLocalRetryAdmission::CAPABILITY);
+                    }
+                    if ($operation === 'outcome'
+                        && ($response = $this->retryReportRefusal($attemptId, $validated['report']))) {
+                        return $response;
+                    }
+                }
                 if ($operation === 'acknowledge') {
                     // A dead, drained or replaced registration may still have
                     // a surviving supervisor reporting its actual joined stop.
@@ -258,19 +330,29 @@ final class PreparedLocalActivityController
                         // A stale registration can observe and fence its old
                         // cancelled callback. It cannot publish shielded
                         // cleanup merely because cancellation was accepted.
-                        $control = $bridge->controlLocalActivity($attemptId, $owner, $epoch, false, $version);
+                        $control = $retry
+                            ? $bridge->controlLocalActivityWithRetryPolicy($attemptId, $owner, $epoch, false, $version)
+                            : $bridge->controlLocalActivity($attemptId, $owner, $epoch, false, $version);
                         if (! in_array($control['reason'] ?? null, ['cancellation_requested', 'cancellation_deadline_expired'], true)) {
                             return ['recorded' => false, 'reason' => 'stale_worker_registration'];
                         }
                     }
-                    $reply = $bridge->recordLocalActivityOutcome($attemptId, $owner, $epoch, $validated['report'], $version);
+                    $reply = $retry
+                        ? $bridge->recordLocalActivityRetryOutcome($attemptId, $owner, $epoch, $validated['report'], $version)
+                        : $bridge->recordLocalActivityOutcome($attemptId, $owner, $epoch, $validated['report'], $version);
                     $this->quota->assertNoIncreasePastLimit($quotaSnapshot);
 
                     return $reply;
                 }
-                $reply = $operation === 'heartbeat' && $current
-                    ? $bridge->heartbeatLocalActivity($attemptId, $owner, $epoch, $validated['progress'] ?? [], $version)
-                    : $bridge->controlLocalActivity($attemptId, $owner, $epoch, $current && ($validated['renew_lease'] ?? false), $version);
+                if ($retry) {
+                    $reply = $operation === 'heartbeat' && $current
+                        ? $bridge->heartbeatLocalActivityWithRetryPolicy($attemptId, $owner, $epoch, $validated['progress'] ?? [], $version)
+                        : $bridge->controlLocalActivityWithRetryPolicy($attemptId, $owner, $epoch, $current && ($validated['renew_lease'] ?? false), $version);
+                } else {
+                    $reply = $operation === 'heartbeat' && $current
+                        ? $bridge->heartbeatLocalActivity($attemptId, $owner, $epoch, $validated['progress'] ?? [], $version)
+                        : $bridge->controlLocalActivity($attemptId, $owner, $epoch, $current && ($validated['renew_lease'] ?? false), $version);
+                }
                 if (! $current && ($reply['active'] ?? false)) {
                     $reply = [...$reply, 'active' => false, 'renewed' => false, 'heartbeat_recorded' => false,
                         'stop_required' => true, 'reason' => 'stale_worker_registration'];
@@ -291,6 +373,22 @@ final class PreparedLocalActivityController
         }
 
         return $this->reply($request, $reply);
+    }
+
+    private function retryReportRefusal(string $attemptId, array $report): ?JsonResponse
+    {
+        $reason = PreparedLocalRetryAdmission::reportRefusal($report);
+        if ($reason === null) {
+            return null;
+        }
+        if ($reason === 'invalid_activity_retry_delay') {
+            return WorkerProtocol::json(['reason' => $reason, 'message' => $reason], 422);
+        }
+
+        return WorkerProtocol::json(['recorded' => false, 'duplicate' => false,
+            'reason' => 'invalid_local_activity_outcome', 'activity_attempt_id' => $attemptId,
+            'claim_released' => false, 'created_task_ids' => [],
+            'history_refresh_page_token' => WorkflowHistoryPageToken::encode(0)], 409);
     }
 
     /** @return array<string, list<string>> */

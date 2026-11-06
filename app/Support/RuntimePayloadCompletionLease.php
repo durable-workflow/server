@@ -7,6 +7,7 @@ use Carbon\CarbonImmutable;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\CancellationScopeTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityRetryTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
@@ -139,14 +140,21 @@ final class RuntimePayloadCompletionLease
             }
             if ($context->operation === 'local_activity_outcome') {
                 $attempt = ActivityAttempt::query()->where('workflow_task_id', $task->id)->find($context->activityAttemptId);
-                if (! $attempt instanceof ActivityAttempt
-                    || PreparedLocalActivityPolicy::originalClaim($task, $attempt, $context->leaseOwner, $context->attempt) !== $claim) {
+                $retry = $attempt instanceof ActivityAttempt && PreparedLocalRetryAdmission::retainedIntent($task, $attempt);
+                $originalClaim = $attempt instanceof ActivityAttempt
+                    ? ($retry ? PreparedLocalRetryAdmission::originalClaim($task, $attempt, $context->leaseOwner, $context->attempt)
+                        : PreparedLocalActivityPolicy::originalClaim($task, $attempt, $context->leaseOwner, $context->attempt))
+                    : null;
+                if (! $attempt instanceof ActivityAttempt || $originalClaim !== $claim) {
                     throw self::rejected();
                 }
-                /** @var PreparedLocalActivityTaskBridge $bridge */
+                /** @var PreparedLocalActivityTaskBridge|PreparedLocalActivityRetryTaskBridge $bridge */
                 $bridge = app(WorkflowTaskBridge::class);
-                $control = $bridge->controlLocalActivity($attempt->id, $context->leaseOwner, $context->attempt, false,
-                    PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION);
+                $control = $retry
+                    ? $bridge->controlLocalActivityWithRetryPolicy($attempt->id, $context->leaseOwner, $context->attempt, false,
+                        PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION)
+                    : $bridge->controlLocalActivity($attempt->id, $context->leaseOwner, $context->attempt, false,
+                        PreparedLocalActivityPolicy::MINIMUM_PROTOCOL_VERSION);
                 if (($control['active'] ?? null) !== true
                     || ($control['activity_attempt_id'] ?? null) !== $attempt->id
                     || ($control['workflow_task_id'] ?? null) !== $task->id
