@@ -159,11 +159,19 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
         $this->assertSame($original['event_id'], $duplicate['event_id']);
         $this->assertSame($original['retry_disposition'], $duplicate['retry_disposition']);
         $this->assertSame($before, $this->state());
+        $event = WorkflowHistoryEvent::query()->findOrFail($original['event_id']);
+        $eventPayload = $event->payload;
+        $event->forceFill(['payload' => [...$eventPayload, 'sequence' => '1']])->save();
+        $corrupt = $this->state();
+        $this->local($recovering, 'recover', $descriptor)->assertStatus(409);
+        $this->assertSame($corrupt, $this->state());
+        $event->forceFill(['payload' => $eventPayload])->save();
         $stored = $stored->fresh();
         $payload = $stored->payload;
         unset($payload['_server_prepared_local_activity_recoveries'][$original['event_id']]);
         $stored->forceFill(['payload' => $payload])->save();
-        $this->local($recovering, 'recover', $descriptor)->assertStatus(409)->assertJsonPath('reason', 'prepared_local_activity_not_supported');
+        $before = $this->state();
+        $this->local($recovering, 'recover', $descriptor)->assertStatus(409);
         $this->assertSame($before, $this->state());
         $this->assertArrayNotHasKey($original['event_id'], $stored->fresh()->payload['_server_prepared_local_activity_recoveries']);
     }

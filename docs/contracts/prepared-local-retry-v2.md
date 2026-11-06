@@ -182,7 +182,8 @@ A fresh recovery also retains a separate closed private
 recovering task. Its keys are `schema`, `claim`, `activity_execution_id`,
 `activity_attempt_id`, `local_activity_contract_version`, `retry_policy_snapshot`,
 `preparation_history_event_id`, `descriptor_fingerprint` and `engine_event`.
-The copied engine projection contains the event ID/type/sequence/insertion time,
+The copied engine projection contains the event ID/type/history sequence,
+strict integer activity sequence and insertion time,
 retry-task identity, original recovery envelope and scalar retry decision.
 The decision's retained failure sample and history insertion time are distinct
 clocks. Their values are preserved independently rather than equated.

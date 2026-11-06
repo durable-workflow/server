@@ -179,7 +179,7 @@ final class PreparedLocalRetryAdmission
         }
         $execution = ActivityExecution::query()->where('workflow_run_id', $task->workflow_run_id)
             ->where('sequence', $sequence)->first();
-        if (! $execution instanceof ActivityExecution || ! is_string($execution->current_attempt_id)) {
+        if (! $execution instanceof ActivityExecution || $execution->sequence !== $sequence || ! is_string($execution->current_attempt_id)) {
             return null;
         }
         // A following attempt may already exist. A duplicate recovery still
@@ -191,7 +191,8 @@ final class PreparedLocalRetryAdmission
             ->where('payload->local_recovery->workflow_task_id', $task->id)
             ->where('payload->local_recovery->workflow_task_attempt', $epoch)
             ->where('payload->local_recovery->lease_owner', $owner)->limit(2)->get();
-        if ($receipts->count() > 1) {
+        if ($receipts->count() > 1 || (! $receipts->isEmpty()
+            && ($receipts->first()->payload['sequence'] ?? null) !== $sequence)) {
             return null;
         }
         $attemptId = $receipts->isEmpty() ? $execution->current_attempt_id : ($receipts->first()->payload['activity_attempt_id'] ?? null);
@@ -319,6 +320,7 @@ final class PreparedLocalRetryAdmission
         $decision = self::flatObject($payload['retry_disposition'] ?? null);
         $retryTask = $payload['retry_task_id'] ?? null;
         if ($recovery === null || $decision === null || $event->recorded_at === null
+            || ! is_int($payload['sequence'] ?? null) || $payload['sequence'] < 1
             || ($decision['contract_version'] ?? null) !== 2 || ($decision['snapshot_version'] ?? null) !== 2
             || ($event->event_type === HistoryEventType::ActivityRetryScheduled && (! is_string($retryTask) || $retryTask === ''))
             || ($event->event_type !== HistoryEventType::ActivityRetryScheduled && $retryTask !== null)
@@ -337,7 +339,7 @@ final class PreparedLocalRetryAdmission
         }
 
         return ['event_id' => $event->id, 'event_type' => $event->event_type->value,
-            'event_sequence' => $event->sequence, 'recorded_at' => $event->recorded_at->toISOString(),
+            'event_sequence' => $event->sequence, 'activity_sequence' => $payload['sequence'], 'recorded_at' => $event->recorded_at->toISOString(),
             'retry_task_id' => $retryTask, 'local_recovery' => $recovery, 'retry_disposition' => $decision];
     }
 
@@ -346,7 +348,7 @@ final class PreparedLocalRetryAdmission
         if (! is_array($recorded) || ! self::exactKeys($recorded, array_keys($current))) {
             return false;
         }
-        foreach (['event_id', 'event_type', 'event_sequence', 'recorded_at', 'retry_task_id'] as $field) {
+        foreach (['event_id', 'event_type', 'event_sequence', 'activity_sequence', 'recorded_at', 'retry_task_id'] as $field) {
             if ($recorded[$field] !== $current[$field]) {
                 return false;
             }
