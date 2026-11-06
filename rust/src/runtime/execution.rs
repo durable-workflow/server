@@ -1232,6 +1232,9 @@ impl Runtime {
         let mark = |mut answer: Value| {
             if let Some(task) = answer["task"].as_object_mut() {
                 task.insert("task_kind".into(), json!("workflow"));
+                // Observe this response after claim/replay. The cached lease
+                // and history remain the original authority.
+                answer["server_time"] = json!(super::activity_lease_renewal::micros(super::store::now()));
             }
             answer
         };

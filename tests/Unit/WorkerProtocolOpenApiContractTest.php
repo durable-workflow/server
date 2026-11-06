@@ -26,6 +26,18 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->spec = $spec;
     }
 
+    public function test_workflow_claims_publish_an_additive_observation_clock(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $schema->assertReferenceMatches('#/components/schemas/WorkerServerTime', '2026-11-06T17:00:00.123000Z');
+        foreach (['WorkflowTaskClaim', 'MultiplexedWorkflowTaskClaim'] as $name) {
+            $claim = $this->spec['components']['schemas'][$name]['allOf'][1];
+            $this->assertSame('#/components/schemas/WorkerServerTime', $claim['properties']['server_time']['$ref']);
+            $this->assertNotContains('server_time', $claim['required']);
+        }
+        $this->assertSame('1.20', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
+    }
+
     public function test_ready_age_is_an_optional_bounded_actual_integer(): void
     {
         $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');

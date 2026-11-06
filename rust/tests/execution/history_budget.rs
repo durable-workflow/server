@@ -197,17 +197,16 @@ async fn history_budget_profile_child() {
             task["history_budget_pressure_dimensions"],
             initial_dimensions
         );
-        assert_eq!(
-            namespaces::scoped(
-                &app,
-                namespace,
-                "POST",
-                "/api/worker/workflow-tasks/poll",
-                body
-            )
-            .await,
-            claim
-        );
+        let replayed = namespaces::scoped(
+            &app,
+            namespace,
+            "POST",
+            "/api/worker/workflow-tasks/poll",
+            body,
+        )
+        .await;
+        assert_eq!(replayed.0, claim.0);
+        assert_poll_replay(&claim.1, &replayed.1, "a repeated poll keeps its original history budget");
         let next_page = namespaces::scoped(&app,namespace,"POST",&format!("/api/worker/workflow-tasks/{}/history",task["task_id"].as_str().unwrap()),json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],"next_history_page_token":task["next_history_page_token"]})).await;
         assert_eq!(next_page.0, StatusCode::OK, "{}", next_page.1);
         assert_eq!(

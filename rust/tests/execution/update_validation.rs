@@ -10,7 +10,7 @@ fn int_contract(name: &str) -> Value {
         "default_available":false,"allows_null":false}]})
 }
 
-async fn validating_worker(app: &Router, worker: &str, queue: &str, validators: Option<Value>, capable: bool) {
+pub(super) async fn validating_worker(app: &Router, worker: &str, queue: &str, validators: Option<Value>, capable: bool) {
     let updates = ["approve_me", "plain", "reject_me"];
     let mut contract = json!({"signals":["finish"],"signal_contracts":[int_contract("finish")],"queries":[],
         "updates":updates,"update_contracts":updates.iter().map(|name| int_contract(name)).collect::<Vec<_>>()});
