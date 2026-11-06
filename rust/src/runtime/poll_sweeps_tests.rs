@@ -219,10 +219,11 @@ store_methods! {
             if size > 1 {
                 let mut tx = self.begin().await.unwrap();
                 for index in 1..size {
-                    Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at) SELECT $1,workflow_run_id,namespace,$2,$3,$4,priority,available_at FROM workflow_tasks WHERE id=$5")
+                    Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at,lease_expires_at) SELECT $1,workflow_run_id,namespace,$2,$3,$4,priority,available_at,$5 FROM workflow_tasks WHERE id=$6")
                         .bind(id()).bind(if (100..350).contains(&index) {"other"} else {"bounds"})
                         .bind(if (350..600).contains(&index) {"activity"} else {"workflow"})
-                        .bind(if index < 600 {"ready"} else {"completed"}).bind(&task).execute(&mut *tx).await.unwrap();
+                        .bind(if index < 600 {"ready"} else if index < 700 {"leased"} else {"completed"})
+                        .bind(DB::bind_time(now() - chrono::Duration::seconds(60))).bind(&task).execute(&mut *tx).await.unwrap();
                 }
                 tx.commit().await.unwrap();
             }
