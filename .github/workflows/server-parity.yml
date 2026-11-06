@@ -1284,21 +1284,30 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Each database runs in six parts on separate runners: the native
-      # database suites and TLS checks, the shared corpus, its profiles and
-      # restart cases, the published-SDK direction profiles, the corrected
-      # marker cohort, and the other cohorts. Every part bootstraps the same
-      # database and native build; no part depends on another.
+      # Keep the six logical parts. Native execution has a second disjoint
+      # selection; database qualification and TLS still run in native-tests.
+      # Every part bootstraps the same database and native build independently.
       matrix:
         label: [existing-php-matrix, postgres-17]
         part: [native-tests, corpus, restarts, cohorts, sdk-directions, corrected-markers]
         include:
           - label: existing-php-matrix
             image: mirror.gcr.io/library/postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+            execution_shards: 2
+          - label: existing-php-matrix
+            part: native-tests-b
+            image: mirror.gcr.io/library/postgres@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+            execution_shards: 2
           - label: postgres-17
             image: mirror.gcr.io/library/postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+            execution_shards: 2
+          - label: postgres-17
+            part: native-tests-b
+            image: mirror.gcr.io/library/postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+            execution_shards: 2
     env:
       DW_PARITY_PART: ${{ matrix.part }}
+      DW_EXECUTION_SHARDS: ${{ matrix.execution_shards || 1 }}
       RESOURCE_SCOPE: dw-pg-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
       POSTGRES_IMAGE: ${{ matrix.image }}
     steps:
@@ -1449,13 +1458,13 @@ jobs:
             "$layout" artisan server:bootstrap --force > parity-evidence/published-bootstrap.txt
           # Compiling the test targets with two jobs peaked at 6.8 GB cold (cgroup memory.peak, October 27); a 6 GB limit OOM-killed rustc (signal 9, PR #801).
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" --cpus=2 --memory=8g --memory-swap=8g \
-            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 -e DW_PARITY_PART -e DW_EXECUTION_SHARDS \
             -e DW_TEST_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
             -e DW_EXECUTION_POSTGRES_URL=postgres://parity:parity-disposable-password@parity-pg:5432/php_ref \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
             "${NATIVE_RUST_IMAGE}" -c \
-            'if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt && cargo test --locked --offline --test execution -- --nocapture > /evidence/postgres-execution-tests.txt; fi && if [ "$DW_PARITY_PART" = native-tests ]; then cargo build --locked --offline; else test -x /target/debug/durable-workflow-server; fi'
+            'case "$DW_PARITY_PART" in native-tests) shard=1 suffix= ;; native-tests-b) shard=2 suffix=-b ;; *) shard= ;; esac; set -o pipefail; if [ "$DW_PARITY_PART" = native-tests ]; then cargo test --locked --offline --lib runtime::postgres::tests::qualification_ -- --ignored --nocapture > /evidence/postgres-tests.txt || exit 1; fi; if [ -n "$shard" ]; then cargo test --locked --offline --test execution -- --list --format terse | sed -n "s/: test\$//p" | LC_ALL=C sort | tee /evidence/execution-listed-tests.txt | awk -v count="$DW_EXECUTION_SHARDS" -v shard="$shard" "(NR - 1) % count == shard - 1" > /evidence/execution-shard$suffix.txt && test -s /evidence/execution-shard$suffix.txt && cargo test --locked --offline --test execution -- --exact --nocapture --test-threads=2 $(cat /evidence/execution-shard$suffix.txt) > /evidence/postgres-execution-tests$suffix.txt || exit 1; fi; case "$DW_PARITY_PART" in native-tests|native-tests-b) cargo build --locked --offline ;; *) test -x /target/debug/durable-workflow-server ;; esac'
           docker run --rm --user="$(id -u):$(id -g)" --network "$RESOURCE_SCOPE" \
             -e DW_RUST_EXPERIMENTAL=1 -e DB_CONNECTION=pgsql -e DB_HOST=parity-pg -e DB_DATABASE=native_ref \
             -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password \
