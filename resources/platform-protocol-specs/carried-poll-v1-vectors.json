@@ -1,0 +1,119 @@
+{
+  "schema": "durable-workflow.carried-poll-v1",
+  "capability": "workflow_task_completion_activity_poll",
+  "cases": [
+    {
+      "id": "leased",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "raw-padded-request-id",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-request \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "empty-immediate-probe",
+      "schedule_activity": false,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 60
+      },
+      "expected_result": "empty"
+    },
+    {
+      "id": "omitted",
+      "schedule_activity": true,
+      "activity_poll": null,
+      "expected_result": "omitted"
+    },
+    {
+      "id": "wrong-worker",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "other",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "wrong-queue",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "different",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "missing-request-id",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "blank-request-id",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "unknown-field",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 0,
+        "unknown": true
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "invalid-timeout",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 61
+      },
+      "expected_result": "omitted"
+    }
+  ],
+  "recovery": {
+    "completion_retry": "same_authored_completion_and_original_poll_request_id",
+    "duplicate_result": "activity_poll_omitted",
+    "ordinary_poll": "replay_original_live_lease",
+    "only_mutable_reply_field": "server_time",
+    "expiry": "poll_cached_task_expired",
+    "replacement": "original_lease_not_renewed"
+  }
+}

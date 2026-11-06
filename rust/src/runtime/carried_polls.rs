@@ -38,11 +38,13 @@ fn soft_refusal(error: &RuntimeError) -> bool {
 }
 
 fn activity_shape(poll: &Value, owner: &str) -> bool {
-    poll.is_object()
+    let normalized = super::laravel_rules::normalize(poll);
+    poll.as_object().is_some_and(|fields| fields.keys().all(|key|
+        matches!(key.as_str(), "worker_id" | "task_queue" | "build_id" | "poll_request_id" | "timeout_seconds")))
         && poll["worker_id"].as_str() == Some(owner)
-        && poll["poll_request_id"].as_str().is_some_and(|id| !id.trim().is_empty())
-        && super::laravel_rules::errors(&super::laravel_rules::normalize(poll), super::http::ACTIVITY_POLL_RULES).is_empty()
-        && super::history_pages::requested_size(poll).is_ok()
+        && poll["poll_request_id"].as_str().is_some_and(|id| id.chars().count() <= 255)
+        && normalized["poll_request_id"].as_str().is_some_and(|id| !id.is_empty())
+        && super::laravel_rules::errors(&normalized, super::http::ACTIVITY_POLL_RULES).is_empty()
 }
 
 store_methods! {
@@ -134,6 +136,14 @@ mod tests {
         let poll = json!({"worker_id":"owner","task_queue":"queue","poll_request_id":"request","timeout_seconds":0});
         assert!(activity_shape(&poll, "owner"));
         assert!(!activity_shape(&poll, "another-worker"));
+        let mut extra = poll.clone();
+        extra["unknown"] = json!(true);
+        assert!(!activity_shape(&extra, "owner"));
+        extra = poll.clone();
+        extra["poll_request_id"] = json!("\u{200b}\u{feff}");
+        assert!(!activity_shape(&extra, "owner"));
+        assert!(!soft_refusal(&sqlx::Error::PoolTimedOut.into()));
+        assert!(!soft_refusal(&serde_json::from_str::<Value>("{").unwrap_err().into()));
         for reason in ["invalid_request", "task_attempt_exhausted", "history_event_exceeds_page_budget", "unsupported_stored_timestamp"] {
             assert!(!soft_refusal(&super::super::refuse(StatusCode::CONFLICT, reason)));
         }

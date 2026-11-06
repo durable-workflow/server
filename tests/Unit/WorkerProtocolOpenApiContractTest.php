@@ -38,6 +38,44 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->assertSame('1.20', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
     }
 
+    public function test_carried_activity_poll_has_a_closed_shape_and_optional_result(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', [
+            'worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => 'original-request', 'timeout_seconds' => 0,
+        ]);
+        foreach ([false, true] as $leased) {
+            $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollResult', ['leased' => $leased]);
+        }
+        $request = $this->spec['components']['schemas']['WorkflowTaskCompleteRequest'];
+        $this->assertSame('#/components/schemas/CarriedActivityPollRequest', $request['properties']['activity_poll']['$ref']);
+        $this->assertNotContains('activity_poll', $request['required']);
+        $result = $this->spec['components']['schemas']['WorkflowTaskCompletionResult']['allOf'][1];
+        $this->assertSame('#/components/schemas/CarriedActivityPollResult', $result['properties']['activity_poll']['$ref']);
+        $this->assertNotContains('activity_poll', $result['required']);
+        $caps = $this->spec['components']['schemas']['WorkerServerCapabilities'];
+        $this->assertSame('boolean', $caps['properties']['workflow_task_completion_activity_poll']['type']);
+        $this->assertNotContains('workflow_task_completion_activity_poll', $caps['required']);
+    }
+
+    public static function invalidCarriedActivityPoll(): iterable
+    {
+        $valid = ['worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => 'original-request'];
+        foreach ([null, true, '', str_repeat('a', 256)] as $index => $id) {
+            yield 'request identity '.$index => [array_replace($valid, ['poll_request_id' => $id])];
+        }
+        yield 'missing request identity' => [['worker_id' => 'owner', 'task_queue' => 'queue']];
+        yield 'unknown field' => [$valid + ['unknown' => true]];
+    }
+
+    #[DataProvider('invalidCarriedActivityPoll')]
+    public function test_ineligible_carried_activity_shape_is_not_the_documented_request(mixed $value): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml')
+            ->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', $value);
+    }
+
     public function test_ready_age_is_an_optional_bounded_actual_integer(): void
     {
         $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');

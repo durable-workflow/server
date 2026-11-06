@@ -5346,7 +5346,8 @@ pub(crate) fn capabilities() -> Value {
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
-        "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true});
+        "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true,
+        "workflow_task_completion_activity_poll": true});
     value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
     value["supported_workflow_task_commands"]
         .as_array_mut()

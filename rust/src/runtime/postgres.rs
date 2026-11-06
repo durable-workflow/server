@@ -603,6 +603,16 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_carried_activity_polls() {
+        let db = Database::new().await;
+        let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_carried_activity_polls().await;
+        store.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_poll_transaction_counts() {
         let db = Database::new().await;
         let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());

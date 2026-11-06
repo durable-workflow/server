@@ -56,6 +56,8 @@ mod control_plane;
 mod cooperative;
 mod cross_kind_poll;
 mod carried_polls;
+#[cfg(test)]
+mod carried_poll_tests;
 mod execution;
 mod external_config;
 mod external_registry;
