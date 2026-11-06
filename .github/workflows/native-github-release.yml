@@ -27,6 +27,15 @@ on:
         required: true
         type: string
 
+      release_run_attempt:
+        description: 'Exact current attempt of the publication run'
+        required: true
+        type: string
+      promotion_evidence:
+        description: 'Final releases require the exact qualification manifest used for alias promotion; candidates leave empty'
+        required: false
+        type: string
+
 permissions:
   contents: read
 
@@ -71,4 +80,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+          PROMOTION_EVIDENCE: ${{ inputs.promotion_evidence }}
         run: bash scripts/ci/native-release-github-release.sh

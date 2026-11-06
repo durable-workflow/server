@@ -1,0 +1,355 @@
+{
+  "schema": "durable-workflow.task-delivery-scenarios.v1",
+  "status": "draft contract data; no executor or qualification result",
+  "source_issue": "https://github.com/durable-workflow/server/issues/931",
+  "reference_sources": {
+    "retired_server_php_commit": "ed302326f0f73c383df88a918c8378755e0a56fe",
+    "held_sdk_php_commit": "034c0f4dc2fbbc1671fe9b1cdfd0fa36c2576c2e"
+  },
+  "contract": {
+    "schema": "durable-workflow.task-delivery.v1",
+    "version": "offer-accept.v1",
+    "minimum_protocol_version": "1.20",
+    "worker_capability": "task_delivery_offers",
+    "header": "X-Durable-Workflow-Task-Delivery",
+    "endpoint_suffix": "/offers",
+    "acceptance_timeout_seconds": {
+      "default": 2,
+      "minimum": 1,
+      "maximum": 10,
+      "actual_integer_required": true
+    },
+    "offer_token_maximum_bytes": 8192,
+    "unaccepted_offer_reserves_task": false,
+    "endpoints": {
+      "workflow": ["workflow", "update_validation"],
+      "activity": ["activity"],
+      "query": ["query"],
+      "update-validation": ["update_validation"]
+    }
+  },
+  "executor_requirements": {
+    "inputs": "synthetic authorized registration, tasks, clocks and faults; no real credentials",
+    "packets": "seal synthetic authoritative contexts with the reviewed implementation; do not use placeholder tokens",
+    "database": "exercise actual claim/receipt transactions, not a scenario-only model",
+    "comparison": "compare task authority and attempts, start history and receipt before and after every phase",
+    "scope": "run on each source backend required by the owning PR; installed proxy/restart/capacity acceptance is separate",
+    "no_result_inference": "parsing or enumerating this data is not a passing execution"
+  },
+  "security_source_direction": {
+    "review": "https://github.com/durable-workflow/server/issues/931#issuecomment-6646286980",
+    "status": "design direction accepted; implementation acceptance held",
+    "algorithm": "full-round-XChaCha20Poly1305",
+    "key_bytes": 32,
+    "nonce_bytes": 24,
+    "tag_bytes": 16,
+    "maximum_plaintext_bytes": 6000,
+    "decoded_frame_bytes": {"minimum": 40, "maximum": 6040},
+    "maximum_frame_bytes_with_32_byte_key_id": 8092,
+    "requirements": ["exact-reviewed-locked-graph", "supported-zeroization-feature", "fallible-os-rng", "closed-canonical-parsers", "persisted-key-id-references", "enforceable-rotation-and-startup-preflight"],
+    "key_ring_proposal": {
+      "setting": "DW_TASK_DELIVERY_SEAL_KEYS",
+      "maximum_raw_utf8_bytes": 4096,
+      "absent": "unsupported",
+      "supplied_empty": "configuration-refusal",
+      "container_fields": ["schema", "keys"],
+      "schema": "durable-workflow.task-delivery-seal-keys.v1",
+      "minimum_entries": 1,
+      "maximum_entries": 4,
+      "entry_fields": ["id", "key_base64"],
+      "key_id_ascii_pattern": "[A-Za-z0-9_-]{1,32}",
+      "key_text_encoding": "RFC4648-standard-padded-canonical",
+      "key_text_ascii_bytes": 44,
+      "key_text_trailing_padding_bytes": 1,
+      "canonical_reencode_required": true,
+      "validate_all_original_key_text_before_any_decode_or_selection": true,
+      "validate_container_formatting_as_credential_text": false
+    }
+  },
+  "cases": [
+    {
+      "id": "offer-lost",
+      "kinds": ["workflow", "activity", "query", "update_validation"],
+      "actions": ["observe-ready-task", "drop-offer-response", "peer-claim"],
+      "expected": {"offer_started_attempts": 0, "offer_start_events": 0, "peer_claims_same_task": true}
+    },
+    {
+      "id": "offer-peer-wins",
+      "actions": ["observe-ready-task", "peer-claims-task", "accept-original-offer"],
+      "expected": {"new_claims_from_accept": 0, "peer_authority_unchanged": true}
+    },
+    {
+      "id": "offer-expired-unaccepted",
+      "actions": ["observe-ready-task", "advance-past-offer-expiry", "accept-original-offer", "start-new-logical-poll"],
+      "expected": {"refusal_status": 409, "reason": "task_offer_expired", "task": null, "old_accept_started_attempts": 0, "new_poll_eligible": true}
+    },
+    {
+      "id": "accept-lost",
+      "actions": ["observe-ready-task", "accept-and-commit", "drop-accept-response", "retry-identical-packet"],
+      "expected": {"total_new_claims": 1, "same_task_owner_attempt": true, "new_start_events_on_retry": 0}
+    },
+    {
+      "id": "accept-after-offer-expiry",
+      "actions": ["observe-ready-task", "accept-and-commit", "advance-past-offer-expiry-with-live-lease", "retry-identical-packet"],
+      "expected": {"replay_accepted_claim": true, "total_new_claims": 1, "new_start_events_on_retry": 0}
+    },
+    {
+      "id": "accept-concurrent-same",
+      "actions": ["observe-ready-task", "accept-same-packet-concurrently-through-independent-connections"],
+      "expected": {"total_new_claims": 1, "all_delivered_claims_same_task_owner_attempt": true}
+    },
+    {
+      "id": "accept-alternative-offers",
+      "actions": ["observe-two-eligible-tasks-under-same-logical-poll", "accept-alternative-packets-concurrently"],
+      "expected": {"maximum_committed_claims": 1, "unselected_task_claimable_by_peer": true, "no_other_task_substituted_for_selected_packet": true}
+    },
+    {
+      "id": "accept-after-lease-renewal",
+      "actions": ["accept-and-commit", "renew-same-claim", "advance-past-original-lease-expiry-before-renewed-expiry", "retry-identical-packet"],
+      "expected": {"replay_current_live_claim": true, "same_task_owner_attempt": true, "new_start_events_on_retry": 0}
+    },
+    {
+      "id": "accept-after-task-replacement",
+      "actions": ["accept-and-commit", "end-claim-and-replace-attempt", "retry-original-packet"],
+      "expected": {"old_claim_delivered": false, "new_claims_from_retry": 0, "replacement_authority_unchanged": true}
+    },
+    {
+      "id": "registration-replaced",
+      "actions": ["observe-ready-task", "register-replacement-worker", "accept-old-packet"],
+      "expected": {"refusal_status": 409, "reason": "worker_registration_lost_authority", "task": null, "new_claims_from_accept": 0}
+    },
+    {
+      "id": "same-second-replaced",
+      "actions": ["observe-ready-task", "register-same-worker-id-and-process-metadata-within-same-stored-second", "accept-old-packet"],
+      "expected": {"refusal_status": 409, "reason": "worker_registration_lost_authority", "task": null, "new_claims_from_accept": 0}
+    },
+    {
+      "id": "routing-changed",
+      "actions": ["observe-ready-task", "change-registration-routing-fence", "accept-old-packet"],
+      "expected": {"new_claims_from_accept": 0, "old_packet_has_authority": false}
+    },
+    {
+      "id": "cross-namespace",
+      "actions": ["observe-ready-task", "submit-packet-in-another-authorized-namespace"],
+      "expected": {"new_claims_from_accept": 0, "neither_namespace_task_authority_changed": true}
+    },
+    {
+      "id": "changed-packet",
+      "actions": ["observe-ready-task", "change-one-sealed-byte", "accept-mutated-packet"],
+      "expected": {"new_claims_from_accept": 0, "seal_rejected_before_claim": true}
+    },
+    {
+      "id": "kind-workflow",
+      "endpoint": "workflow",
+      "requested_kinds": ["workflow"],
+      "offered_kind": "workflow",
+      "expected": {"selected_kind_allowed": true, "accepted_kind_must_equal": "workflow"}
+    },
+    {
+      "id": "kind-validator",
+      "endpoint": "workflow",
+      "requested_kinds": ["update_validation"],
+      "offered_kind": "update_validation",
+      "expected": {"selected_kind_allowed": true, "accepted_kind_must_equal": "update_validation"}
+    },
+    {
+      "id": "kind-mixed-order",
+      "endpoint": "workflow",
+      "request_kind_orders": [["workflow", "update_validation"], ["update_validation", "workflow"]],
+      "offered_kind": "update_validation",
+      "expected": {"same_normalized_kind_set": true, "selected_kind_allowed": true, "accepted_kind_must_equal": "update_validation"}
+    },
+    {
+      "id": "kind-unrequested",
+      "endpoint": "workflow",
+      "requested_kinds": ["workflow"],
+      "offered_kind": "update_validation",
+      "expected": {"selected_kind_allowed": false, "accept_requests_sent": 0}
+    },
+    {
+      "id": "kind-accepted-substitution",
+      "endpoint": "workflow",
+      "requested_kinds": ["workflow", "update_validation"],
+      "selected_kind": "update_validation",
+      "accepted_kind": "workflow",
+      "expected": {"execution_authorized": false, "discard_uncertain_selected_packet": false}
+    },
+    {
+      "id": "accept-db-precommit-fault",
+      "actions": ["observe-ready-task", "fault-after-claim-writes-before-commit", "inspect-authoritative-storage"],
+      "expected": {"new_claims_committed": 0, "new_attempts_committed": 0, "new_start_events_committed": 0, "accepted_receipts_committed": 0}
+    },
+    {
+      "id": "accept-db-uncertain-commit",
+      "actions": ["observe-ready-task", "commit-acceptance", "lose-database-commit-response", "retry-identical-packet-through-new-connection"],
+      "expected": {"total_new_claims": 1, "same_task_owner_attempt": true, "legacy_poll_requests": 0}
+    },
+    {
+      "id": "mixed-old-node",
+      "actions": ["accept-and-commit", "drop-accept-response", "route-identical-retry-to-old-node-404-or-405", "retry-identical-packet-on-capable-node"],
+      "expected": {"retain_selected_packet_after_old_node": true, "legacy_poll_requests": 0, "total_new_claims": 1}
+    },
+    {
+      "id": "proxy-short-wait",
+      "scope": "separately admitted installed acceptance",
+      "actions": ["cut-offer-poll-before-configured-wait", "start-task-in-abandoned-poll-window", "observe-live-worker-delivery-and-warning-diagnostics"],
+      "expected": {"abandoned_task_leases": 0, "wait_capacity_starvation": false, "observed_cutoff_and_configured_wait_reported": true}
+    },
+    {
+      "id": "restart-wait-capacity",
+      "scope": "separately admitted installed acceptance",
+      "actions": ["hold-wait-capacity", "abruptly-restart-server-process", "resume-api-with-same-durable-state", "admit-live-waiter"],
+      "expected": {"dead_process_owns_wait_slots": false, "task_authority_derived_from_capacity_hint": false}
+    },
+    {
+      "id": "worker-replacement-capacity",
+      "scope": "separately admitted installed acceptance",
+      "actions": ["hold-old-worker-poll", "replace-worker-registration", "release-old-owner-wait-capacity", "poll-as-replacement"],
+      "expected": {"old_worker_can_claim": false, "replacement_eligible": true, "global_and_namespace_limits_preserved": true}
+    },
+    {
+      "id": "other-replica-live-waiter",
+      "scope": "separately admitted installed acceptance",
+      "actions": ["hold-live-waiter-on-peer-replica", "clean-up-dead-local-owner"],
+      "expected": {"peer_live_waiter_preserved": true, "foreign_owner_slot_released": false, "global_and_namespace_limits_preserved": true}
+    },
+    {
+      "id": "nonce-rng-failure",
+      "scope": "required source controls; not executed",
+      "actions": ["inject-fallible-os-rng-error", "request-offer"],
+      "expected": {"packets_emitted": 0, "typed_refusal": true}
+    },
+    {
+      "id": "nonce-reuse-injection",
+      "scope": "required source controls; not executed",
+      "actions": ["inject-repeated-test-nonce", "exercise-seal-wrapper-countercontrol"],
+      "expected": {"reuse_exposes_refusal_or_failing_countercontrol": true, "production_caller_nonce_accepted": false}
+    },
+    {
+      "id": "frame-canonical-encoding",
+      "scope": "required source controls; not executed",
+      "actions": ["mutate-prefix-case-segments-padding-whitespace-or-base64-alphabet"],
+      "expected": {"mutated_frames_accepted": 0, "new_claims": 0}
+    },
+    {
+      "id": "frame-size-boundaries",
+      "scope": "required source controls; not executed",
+      "actions": ["exercise-outer-8192-decoded-40-and-6040-and-plaintext-6000-boundaries"],
+      "expected": {"over_limit_allocation_or_decryption": false, "maximum_32_byte_key_id_frame_bytes": 8092}
+    },
+    {
+      "id": "aad-domain-ambiguity",
+      "scope": "required source controls; not executed",
+      "actions": ["change-prefix-schema-version-or-key-id-in-structured-aad"],
+      "expected": {"packets_authenticated": 0, "alternate_plaintext_parser_used": false}
+    },
+    {
+      "id": "plaintext-closed-schema",
+      "scope": "required source controls; not executed",
+      "actions": ["authenticate-test-plaintext-with-duplicate-unknown-missing-or-wrong-type-field"],
+      "expected": {"new_claims": 0, "alternate_parser_used": false}
+    },
+    {
+      "id": "keyring-closed-schema",
+      "scope": "required source controls; not executed",
+      "actions": ["supply-oversized-container-or-duplicate-unknown-entry-field"],
+      "expected": {"issuance_supported": false, "content_in_diagnostic": false}
+    },
+    {
+      "id": "keyring-canonical-key-encoding",
+      "scope": "required source controls; not executed",
+      "actions": ["supply-alternate-padding-alphabet-or-noncanonical-key-base64"],
+      "expected": {"configured_keys_accepted": 0, "decoded_entropy_text_scanned": false}
+    },
+    {
+      "id": "keyring-duplicate-ids-and-limit",
+      "scope": "required source controls; not executed",
+      "actions": ["supply-duplicate-id-or-fifth-entry"],
+      "expected": {"configuration_accepted": false, "existing_key_evicted": false}
+    },
+    {
+      "id": "keyring-readonly-key-original-text",
+      "scope": "required source controls; not executed",
+      "actions": ["supply-malformed-original-text-in-nonissuing-key"],
+      "expected": {"configuration_accepted": false, "role_selection_before_validation": false}
+    },
+    {
+      "id": "keyring-zeroization-lockgraph",
+      "scope": "required source controls; not executed",
+      "actions": ["inspect-exact-locked-graph-feature-and-key-buffer-lifecycle-controls"],
+      "expected": {"reduced_round_feature_enabled": false, "supported_zeroization_enabled": true, "revealing_debug_or_serialization": false}
+    },
+    {
+      "id": "read-key-missing-live-startup",
+      "scope": "required source controls; not executed",
+      "actions": ["accept-and-commit", "restart-with-required-read-key-missing"],
+      "expected": {"issuance_supported": false, "legacy_fallback": false, "claim_silently_stranded": false}
+    },
+    {
+      "id": "read-key-missing-live-reload",
+      "scope": "required source controls; not executed",
+      "actions": ["accept-and-commit", "reload-with-required-read-key-missing"],
+      "expected": {"issuance_supported": false, "key_automatically_evicted": false}
+    },
+    {
+      "id": "rotation-renewal-replay",
+      "scope": "required source controls; not executed",
+      "actions": ["accept-with-old-key", "stop-issuing-old-key", "renew-claim", "attempt-old-read-key-removal", "replay-original-packet"],
+      "expected": {"required_read_key_retained": true, "same_task_owner_attempt": true}
+    },
+    {
+      "id": "rotation-unaccepted-grace",
+      "scope": "required source controls; not executed",
+      "actions": ["stop-issuing-retiring-key", "attempt-removal-before-maximum-offer-lifetime-plus-admitted-skew"],
+      "expected": {"required_read_key_retained": true, "undocumented_clock_assumption": false}
+    },
+    {
+      "id": "keyslot-exhaustion",
+      "scope": "required source controls; not executed",
+      "actions": ["retain-four-required-read-keys", "request-fifth-issuing-key"],
+      "expected": {"configuration_accepted": false, "required_key_evicted": false}
+    },
+    {
+      "id": "no-support-before-qualification",
+      "scope": "required source controls; not executed",
+      "actions": ["check-support-before-complete-ring-durable-key-reference-migration-and-backend-qualification"],
+      "expected": {"supported_advertised": false}
+    },
+    {
+      "id": "content-free-refusal",
+      "scope": "required source controls; not executed",
+      "actions": ["exercise-authentication-decoding-key-lookup-load-and-rng-errors"],
+      "expected": {"token_key_plaintext_digest_or_authority_values_in_diagnostics": false}
+    },
+    {
+      "id": "keyring-presence-and-raw-size",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["omit-setting", "supply-empty-setting", "supply-invalid-utf8", "supply-valid-container-at-4096-bytes", "supply-container-at-4097-bytes"],
+      "expected": {"absence_supported": false, "empty_or_invalid_utf8_accepted": false, "raw_limit_checked_before_parse": true, "maximum_raw_utf8_bytes": 4096}
+    },
+    {
+      "id": "keyring-container-version-and-shape",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["supply-wrong-or-missing-schema", "supply-duplicate-or-unknown-container-field", "supply-unordered-object-instead-of-keys-array", "supply-empty-array-or-wrong-entry-type"],
+      "expected": {"configuration_accepted": false, "alternate_or_legacy_parser_used": false}
+    },
+    {
+      "id": "keyring-id-byte-boundaries",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["exercise-valid-ascii-id-at-1-and-32-bytes", "exercise-empty-33-byte-or-nonascii-id", "exercise-case-distinct-ids"],
+      "expected": {"valid_id_byte_range": [1, 32], "invalid_id_accepted": false, "id_case_folded": false}
+    },
+    {
+      "id": "keyring-key-text-unused-bits",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["supply-44-byte-standard-base64-with-nonzero-unused-bits", "supply-url-safe-substitution-or-wrong-padding", "supply-canonical-32-byte-synthetic-key"],
+      "expected": {"noncanonical_key_accepted": false, "canonical_key_bytes": 32, "canonical_text_bytes": 44, "canonical_padding_bytes": 1}
+    },
+    {
+      "id": "keyring-ordered-two-key-read",
+      "scope": "proposed canonical configuration controls; not executed",
+      "actions": ["configure-two-distinct-valid-synthetic-keys", "issue-packet", "read-test-packets-under-either-retained-id"],
+      "expected": {"issuing_key_index": 0, "both_read_keys_usable": true, "every_original_text_validated_before_selection": true, "decoded_entropy_text_scanned": false}
+    }
+  ]
+}

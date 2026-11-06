@@ -71,7 +71,7 @@ esac`,
 test('native image qualification records every selected fixture once across main and isolated records', () => {
   const result = run();
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(result.helpers, ['service-calls', 'schedule-catalog', 'namespace-delete-payloads']);
+  assert.deepEqual(result.helpers, ['service-calls', 'schedule-catalog', 'namespace-delete-payloads', 'retention-external-payloads']);
   const commands = result.calls.filter(args => args.includes('scripts/conformance/server-parity.mjs'));
   assert.equal(commands.length, 4, 'three main records and their comparison');
   let first;
@@ -88,7 +88,7 @@ test('native image qualification records every selected fixture once across main
     first = all;
   }
   assert.deepEqual(result.receipt.status, {reference_records: 0, native_record: 0, compare: 0,
-    service_calls: 0, schedule_catalog: 0, namespace_delete_payloads: 0});
+    service_calls: 0, schedule_catalog: 0, namespace_delete_payloads: 0, retention_payloads: 0});
   assert.equal(result.receipt.runner_revision, revision);
 });
 
@@ -96,10 +96,11 @@ for (const [stage, field] of [
   ['php', 'reference_records'], ['embedded', 'reference_records'], ['rust', 'native_record'],
   ['compare', 'compare'], ['service-calls', 'service_calls'], ['schedule-catalog', 'schedule_catalog'],
   ['namespace-delete-payloads', 'namespace_delete_payloads'],
+  ['retention-external-payloads', 'retention_payloads'],
 ]) test(`failure in ${stage} is retained in the receipt and fails image qualification`, () => {
   const result = run(stage);
   assert.notEqual(result.status, 0, result.stderr);
   assert.equal(result.receipt.status[field], 17);
-  assert.deepEqual(result.helpers, ['service-calls', 'schedule-catalog', 'namespace-delete-payloads'],
+  assert.deepEqual(result.helpers, ['service-calls', 'schedule-catalog', 'namespace-delete-payloads', 'retention-external-payloads'],
     'one failure does not hide the separate checks');
 });

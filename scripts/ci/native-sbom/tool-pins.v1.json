@@ -1,0 +1,57 @@
+{
+  "admission": {
+    "generation_mode": null,
+    "generator_binary_qualified": false,
+    "metadata_source_only": true,
+    "scan_or_publication_admitted": false,
+    "schema_validator_dependency_closure": {
+      "path": "scripts/ci/native-sbom/validator-pins.v1.json",
+      "sha256": "b6374004e922d0f4789e22ad214639c9562f6815fdf67e13528f86885fca3e4c",
+      "status": "candidate_metadata_not_executed"
+    }
+  },
+  "attestation_action": {
+    "commit": "1e69f48acb82d1966a394da916b4c1698aa569d6",
+    "predicate_type": "https://spdx.dev/Document/v2.3",
+    "repository": "actions/attest",
+    "upstream_tag": "v4.2.2"
+  },
+  "document_schema": {
+    "bytes": 47602,
+    "document_version": "SPDX-2.3",
+    "git_blob": "2dc11d1a34268227b63113d788b89efd75b5d2a8",
+    "json_schema_dialect": "https://json-schema.org/draft/2019-09/schema",
+    "license": "CC-BY-3.0",
+    "license_path": "scripts/ci/native-sbom/SPDX-SCHEMA-LICENSE",
+    "license_sha256": "017e38491cccbd2bdb6da0a32a33db9ec245b5dab30fdcd09f2c742c975e5b35",
+    "local_path": "scripts/ci/native-sbom/spdx-schema-2.3.json",
+    "repository": "spdx/spdx-spec",
+    "sha256": "4126dc29f15e92feec92e9622f4939131ad58b125d6f578aa93e980a6e6f3212",
+    "source_commit": "6f2cb47d13db19b12c23885573b22ef32ec1ada5",
+    "source_path": "schemas/spdx-schema.json",
+    "upstream_tag": "v2.3.1",
+    "upstream_tag_object": "cb1dada44bcc0abc4a0285f6448285c5c8fd4cb3"
+  },
+  "generator": {
+    "image": "docker.io/anchore/syft",
+    "index_digest": "sha256:4cc92b64ca74ffca4c94d4c8fcc01f217731375300be14d0b6eeb2e82eaa110a",
+    "name": "syft",
+    "platforms": {
+      "linux/amd64": {
+        "child_manifest_digest": "sha256:b83763ae05df444f7f768655ce2ea6d7c2f8280d58f9bee221a69d2971d98883",
+        "image_config_digest": "sha256:ff2c886c25877c11dc103dd782fd0bf8835c86fbdad7434df53a976491f410d0"
+      },
+      "linux/arm64": {
+        "child_manifest_digest": "sha256:a5726506034e89bbfca5e991e76f9acb49d758ab11f26885437a69eb9e79bdf0",
+        "image_config_digest": "sha256:28376c34fb003ad5445229905a6d243625414e3c52a1da0a29e296454bb04df2"
+      }
+    },
+    "upstream_repository": "anchore/syft",
+    "upstream_source_commit": "f15c3343e29dfb20cf6d82c820e7090b49808c96",
+    "upstream_tag": "v1.55.0",
+    "upstream_tag_object": "18517c0bc3dbe44b7b54ed6b117da9d3b9c5a1e0",
+    "upstream_tag_observed_signed": false,
+    "version": "1.55.0"
+  },
+  "schema": "durable-workflow.native-sbom-tools.v1"
+}

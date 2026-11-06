@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""Bounded SPDX schema/semantic observations; no scanner or publication authority.
+
+The future generator/verifier must additionally bind these bytes to the actual
+smoked child, pinned tool execution, provider artifact and signed predicate.
+This library neither fetches resources nor admits an operation.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import re
+from typing import Any
+from urllib.parse import urlsplit
+
+ROOT = Path(__file__).resolve().parent / "native-sbom"
+RAW_LIMIT = 16 * 1024 * 1024
+SCHEMA_SHA256 = "4126dc29f15e92feec92e9622f4939131ad58b125d6f578aa93e980a6e6f3212"
+TOOL_CREATOR = "Tool: syft-1.55.0"
+IDENTIFIER = re.compile(r"SPDXRef-[A-Za-z0-9.-]+\Z")
+COLLECTION_LIMIT = 100000
+SPDX_ASSETS = ("server-linux-amd64.spdx.json", "server-linux-arm64.spdx.json")
+MANIFEST_ASSET = "server-sbom-manifest.json"
+ASSET_LIMITS = {**dict.fromkeys(SPDX_ASSETS, RAW_LIMIT), MANIFEST_ASSET: 65536}
+REGISTRIES = ("ghcr.io/durable-workflow/server", "durableworkflow/server")
+REPOSITORY = "durable-workflow/server"
+REPOSITORY_ID = "1208272134"
+OWNER_ID = "100327932"
+PREDICATE_TYPE = "https://spdx.dev/Document/v2.3"
+PLATFORMS = ("linux/amd64", "linux/arm64")
+INDEX_MEDIA_TYPES = ("application/vnd.oci.image.index.v1+json",
+                     "application/vnd.docker.distribution.manifest.list.v2+json")
+MANIFEST_MEDIA_TYPES = ("application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json")
+CONFIG_MEDIA_TYPES = ("application/vnd.oci.image.config.v1+json",
+                      "application/vnd.docker.container.image.v1+json")
+VERIFIED_PAIR_PROJECTION = "map({certificate:.verificationResult.signature.certificate,statement:.verificationResult.statement})"
+VERIFIED_PAIR_LIMIT = 4
+
+
+class Refusal(ValueError):
+    """Static diagnostics only; never emit untrusted package/file content."""
+
+
+def require(condition: bool, reason: str) -> None:
+    if not condition:
+        raise Refusal(reason)
+
+
+def parse(raw: bytes, limit: int = RAW_LIMIT) -> Any:
+    require(type(raw) is bytes and 0 < len(raw) <= limit, "spdx_size")
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            require(key not in result, "spdx_duplicate_member")
+            result[key] = value
+        return result
+
+    def noninteger(_):
+        raise Refusal("spdx_noninteger_number")
+
+    try:
+        return json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=pairs,
+                          parse_float=noninteger, parse_constant=noninteger)
+    except (UnicodeError, ValueError, RecursionError) as error:
+        if isinstance(error, Refusal):
+            raise
+        raise Refusal("spdx_json") from None
+
+
+def canonical(value: Any) -> bytes:
+    try:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True,
+                          separators=(",", ":")).encode("utf-8")
+    except (UnicodeError, ValueError, RecursionError):
+        raise Refusal("spdx_canonical_json") from None
+
+
+def schema_check(document: Any) -> None:
+    # The source/schema checks here use an already-installed validator. A
+    # future executable must first enforce the separately pinned dependency
+    # closure. Candidate metadata exists, but no executable is wired/qualified.
+    from jsonschema import Draft201909Validator
+    from referencing import Registry
+    from referencing.exceptions import NoSuchResource
+
+    with (ROOT / "spdx-schema-2.3.json").open("rb") as stream:
+        raw = stream.read(131073)
+    require(hashlib.sha256(raw).hexdigest() == SCHEMA_SHA256, "spdx_schema_source")
+    schema = parse(raw, 131072)
+
+    def no_remote(uri):
+        raise NoSuchResource(ref=uri)
+
+    validator = Draft201909Validator(schema, registry=Registry(retrieve=no_remote))
+    # A fixed validator/schema ignores any instance-supplied $schema URL.
+    require(next(validator.iter_errors(document), None) is None, "spdx_schema_shape")
+
+
+def collection(document: dict[str, Any], key: str, nonempty: bool = False) -> list[dict[str, Any]]:
+    value = document.get(key, [])
+    require(type(value) is list and len(value) <= COLLECTION_LIMIT
+            and (bool(value) or not nonempty) and all(type(item) is dict for item in value),
+            "spdx_collection_shape")
+    return value
+
+
+def document(raw: bytes) -> dict[str, Any]:
+    value = parse(raw)
+    require(type(value) is dict, "spdx_document_shape")
+    schema_check(value)
+    # Upstream 2.3.1's schema declares only type=string for spdxVersion.
+    require(value.get("spdxVersion") == "SPDX-2.3" and value.get("SPDXID") == "SPDXRef-DOCUMENT"
+            and value.get("dataLicense") == "CC0-1.0", "spdx_document_identity")
+    namespace = value.get("documentNamespace")
+    require(type(namespace) is str and len(namespace) <= 2048
+            and all(0x21 <= ord(char) <= 0x7e for char in namespace), "spdx_namespace_text")
+    try:
+        uri = urlsplit(namespace)
+        valid_uri = (uri.scheme == "https" and bool(uri.hostname) and not uri.username
+                     and not uri.password and not uri.fragment and bool(uri.path))
+    except ValueError:
+        valid_uri = False
+    require(valid_uri, "spdx_namespace_absolute")
+    creators = value.get("creationInfo", {}).get("creators")
+    require(type(creators) is list and creators.count(TOOL_CREATOR) == 1
+            and all(type(item) is str for item in creators)
+            and all(item == TOOL_CREATOR for item in creators if item.startswith("Tool:")),
+            "spdx_creator_version")
+    packages = collection(value, "packages", nonempty=True)
+    files = collection(value, "files")
+    snippets = collection(value, "snippets")
+    relationships = collection(value, "relationships", nonempty=True)
+    ids, package_ids, file_ids = {"SPDXRef-DOCUMENT"}, set(), set()
+    for kind, members in (("packages", packages), ("files", files), ("snippets", snippets)):
+        for member in members:
+            identity = member.get("SPDXID")
+            require(type(identity) is str and IDENTIFIER.fullmatch(identity) is not None
+                    and identity not in ids, "spdx_duplicate_or_invalid_id")
+            ids.add(identity)
+            if kind == "packages":
+                package_ids.add(identity)
+            elif kind == "files":
+                file_ids.add(identity)
+    edges = set()
+    described, linked_files, file_parents = set(), set(), set()
+    for edge in relationships:
+        source, relation, target = (edge.get(key) for key in
+                                    ("spdxElementId", "relationshipType", "relatedSpdxElement"))
+        require(type(source) is str and type(target) is str and type(relation) is str
+                and source in ids and target in ids, "spdx_relationship_target")
+        key = (source, relation, target)
+        require(key not in edges, "spdx_duplicate_relationship")
+        edges.add(key)
+        if source == "SPDXRef-DOCUMENT" and relation == "DESCRIBES" and target in package_ids:
+            described.add(target)
+        if source in package_ids and relation == "CONTAINS" and target in file_ids:
+            linked_files.add(target)
+            file_parents.add(source)
+    require(bool(described), "spdx_image_description_missing")
+    # No claim of complete file enumeration is invented when Syft explicitly
+    # marks a package filesAnalyzed=false. Declared files/true coverage must link.
+    require(linked_files == file_ids, "spdx_unlinked_file")
+    require(all(package.get("filesAnalyzed") is not True or package["SPDXID"] in file_parents
+                for package in packages), "spdx_analyzed_package_without_files")
+    return {"raw_bytes": len(raw), "raw_sha256": hashlib.sha256(raw).hexdigest(),
+            "canonical_sha256": hashlib.sha256(canonical(value)).hexdigest(),
+            "namespace": namespace, "package_count": len(packages), "file_count": len(files),
+            "relationship_count": len(relationships), "predicate": value}
+
+
+def predicate_matches(raw: bytes, signed_predicate: bytes) -> dict[str, Any]:
+    observed = document(raw)
+    signed = document(signed_predicate)
+    require(observed["canonical_sha256"] == signed["canonical_sha256"], "spdx_signed_predicate_mismatch")
+    return observed
+
+
+def distinct_platform_documents(amd64: bytes, arm64: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
+    pair = document(amd64), document(arm64)
+    require(pair[0]["namespace"] != pair[1]["namespace"], "spdx_namespace_reused")
+    return pair
+
+
+def is_digest(value: Any) -> bool:
+    return type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def descriptor_platform(member: Any) -> str:
+    require(type(member) is dict
+            and set(member) <= {"mediaType", "digest", "size", "platform", "annotations"}
+            and member.get("mediaType") in MANIFEST_MEDIA_TYPES and is_digest(member.get("digest"))
+            and type(member.get("size")) is int and 0 < member["size"] <= 1048576,
+            "sbom_child_descriptor")
+    platform = member.get("platform")
+    require(type(platform) is dict and set(platform) <= {"os", "architecture", "variant"}
+            and platform.get("os") == "linux" and platform.get("architecture") in ("amd64", "arm64"),
+            "sbom_child_platform")
+    require("variant" not in platform
+            or (platform["architecture"] == "arm64" and platform["variant"] == "v8"),
+            "sbom_child_variant")
+    return "linux/" + platform["architecture"]
+
+
+def index_children(raw: bytes, index_digest: str, expected: dict[str, str]) -> dict[str, str]:
+    """Bind one content-addressed index to the independently expected children.
+
+    This checks bytes and descriptors, not publication/signature authority or
+    the fetched children's actual config/platform/source. The caller must
+    independently obtain the expected release tuple and verify those next.
+    """
+    require(is_digest(index_digest) and type(expected) is dict and set(expected) == set(PLATFORMS)
+            and all(is_digest(value) and value != index_digest for value in expected.values())
+            and len(set(expected.values())) == 2, "sbom_expected_children")
+    require(type(raw) is bytes and 0 < len(raw) <= 1048576
+            and "sha256:" + hashlib.sha256(raw).hexdigest() == index_digest, "sbom_index_bytes")
+    value = parse(raw, 1048576)
+    require(type(value) is dict and set(value) <= {"schemaVersion", "mediaType", "manifests", "annotations"}
+            and type(value.get("schemaVersion")) is int and value["schemaVersion"] == 2
+            and value.get("mediaType") in INDEX_MEDIA_TYPES
+            and type(value.get("manifests")) is list and len(value["manifests"]) == 2,
+            "sbom_index_shape")
+    found = {}
+    for member in value["manifests"]:
+        platform = descriptor_platform(member)
+        require(platform not in found and member["digest"] == expected[platform], "sbom_index_child_binding")
+        found[platform] = member["digest"]
+    require(set(found) == set(PLATFORMS), "sbom_index_platform_set")
+    return found
+
+
+def child_identity(manifest_raw: bytes, child_digest: str, config_raw: bytes,
+                   config_digest: str, platform: str, source: str, tag: str) -> dict[str, str]:
+    """Bind content-addressed child/config bytes to the expected release tuple.
+
+    Expected digests must come from independently verified publication/index
+    and smoke evidence. This checks bytes/identity only, not their provider,
+    signatures, smoke success, layers, archive contents or scanner execution.
+    """
+    require(is_digest(child_digest) and is_digest(config_digest) and child_digest != config_digest
+            and platform in PLATFORMS, "sbom_child_expected_tuple")
+    require(type(source) is str and re.fullmatch(r"[0-9a-f]{40}", source) is not None
+            and type(tag) is str and re.fullmatch(
+                r"(?:native-)?(?:[3-9]|[1-9]\d+)\.\d+\.\d+(?:-rc\.\d+)?", tag, re.ASCII) is not None,
+            "sbom_child_release_identity")
+    for raw, digest in ((manifest_raw, child_digest), (config_raw, config_digest)):
+        require(type(raw) is bytes and 0 < len(raw) <= 1048576
+                and "sha256:" + hashlib.sha256(raw).hexdigest() == digest, "sbom_child_content_bytes")
+    manifest = parse(manifest_raw, 1048576)
+    require(type(manifest) is dict and type(manifest.get("schemaVersion")) is int
+            and manifest["schemaVersion"] == 2 and manifest.get("mediaType") in MANIFEST_MEDIA_TYPES
+            and type(manifest.get("config")) is dict and type(manifest.get("layers")) is list,
+            "sbom_child_manifest_shape")
+    descriptor = manifest["config"]
+    media_index = MANIFEST_MEDIA_TYPES.index(manifest["mediaType"])
+    require(descriptor.get("mediaType") == CONFIG_MEDIA_TYPES[media_index]
+            and descriptor.get("digest") == config_digest
+            and type(descriptor.get("size")) is int and descriptor["size"] == len(config_raw),
+            "sbom_child_config_descriptor")
+    config = parse(config_raw, 1048576)
+    architecture = platform.split("/")[1]
+    require(type(config) is dict and config.get("os") == "linux"
+            and config.get("architecture") == architecture
+            and ("variant" not in config or (architecture == "arm64" and config["variant"] == "v8"))
+            and type(config.get("config")) is dict, "sbom_child_config_platform")
+    labels = config["config"].get("Labels")
+    require(type(labels) is dict and labels.get("org.opencontainers.image.revision") == source
+            and labels.get("dev.durable-workflow.release.tag") == tag, "sbom_child_config_source")
+    return {"child_manifest_digest": child_digest, "image_config_digest": config_digest,
+            "platform": platform, "source_commit": source, "tag": tag}
+
+
+def exact_release_asset_bytes(expected: dict[str, bytes], observed: dict[str, bytes]) -> dict[str, Any]:
+    """Require retained raw bytes for an existing Release, with no replacement.
+
+    The caller must FIRST verify the source/index/child/tool/attestation tuple,
+    signed predicates, and checksum-map contents. This function proves byte
+    equality only; it cannot authenticate a caller-supplied expected map.
+    Transport must bound downloads before passing bytes to this function.
+    """
+    names = set(ASSET_LIMITS)
+    require(type(expected) is dict and type(observed) is dict
+            and set(expected) == set(observed) == names, "sbom_release_asset_names")
+    result = {}
+    for name, limit in ASSET_LIMITS.items():
+        original, retained = expected[name], observed[name]
+        require(type(original) is bytes and type(retained) is bytes
+                and 0 < len(original) <= limit and 0 < len(retained) <= limit,
+                "sbom_release_asset_size")
+        # Canonical JSON equality is deliberately insufficient for raw assets.
+        require(original == retained, "sbom_release_asset_bytes_changed")
+        result[name] = {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()}
+    return result
+
+
+def sbom_verification_command(registry: str, child: str, index: str, tag: str, source: str) -> list[str]:
+    """Construct, never execute, the fixed signature-verification request.
+
+    A future caller must independently prove index membership/platform and the
+    expected release tuple first. Successful command construction is not a
+    verified signature or proof that the digest is a platform child.
+    """
+    if registry not in REGISTRIES:
+        raise Refusal("sbom_registry")
+    for digest in (child, index):
+        if type(digest) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+            raise Refusal("sbom_subject_digest")
+    require(child != index, "sbom_index_is_not_child")
+    if type(tag) is not str or re.fullmatch(r"(?:native-)?(?:[3-9]|[1-9]\d+)\.\d+\.\d+(?:-rc\.\d+)?", tag, re.ASCII) is None:
+        raise Refusal("sbom_release_tag")
+    if type(source) is not str or re.fullmatch(r"[0-9a-f]{40}", source) is None:
+        raise Refusal("sbom_source_commit")
+    return ["gh", "attestation", "verify", "oci://" + registry + "@" + child,
+            "--repo", REPOSITORY, "--signer-workflow", "github.com/" + REPOSITORY + "/.github/workflows/native-release.yml",
+            "--source-ref", "refs/tags/" + tag, "--source-digest", source,
+            "--predicate-type", PREDICATE_TYPE, "--deny-self-hosted-runners", "--format", "json",
+            "--bundle-from-oci", "--limit", str(VERIFIED_PAIR_LIMIT), "--jq", VERIFIED_PAIR_PROJECTION]
+
+
+def require_release_invocation(uri: str, run_id: int, attempt: int) -> None:
+    """Bind a certificate's verified invocation URI to one exact run attempt.
+
+    The caller must extract this field from authenticated verifier output;
+    arbitrary strings passed here do not become authenticated observations.
+    """
+    require(type(run_id) is int and 0 < run_id <= 9007199254740991
+            and type(attempt) is int and 0 < attempt <= 9007199254740991,
+            "sbom_release_run")
+    expected = f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}"
+    require(type(uri) is str and uri == expected, "sbom_release_invocation")
+
+
+def require_certificate_identity(certificate: dict[str, Any], source: str, tag: str,
+                                 run_id: int, attempt: int) -> None:
+    """Check claims extracted from successful cryptographic verifier output.
+
+    Arbitrary dictionaries are not certificates or authenticated evidence.
+    Current repository/provider identity and the verified statement/predicate
+    must also be bound separately by the future executable.
+    """
+    require(type(certificate) is dict and type(source) is str
+            and re.fullmatch(r"[0-9a-f]{40}", source) is not None
+            and type(tag) is str and re.fullmatch(
+                r"(?:native-)?(?:[3-9]|[1-9]\d+)\.\d+\.\d+(?:-rc\.\d+)?", tag, re.ASCII) is not None,
+            "sbom_certificate_inputs")
+    repository_uri = "https://github.com/" + REPOSITORY
+    workflow_uri = repository_uri + "/.github/workflows/native-release.yml@refs/tags/" + tag
+    expected = {
+        "issuer": "https://token.actions.githubusercontent.com",
+        "sourceRepositoryURI": repository_uri,
+        "sourceRepositoryIdentifier": REPOSITORY_ID,
+        "sourceRepositoryOwnerURI": "https://github.com/durable-workflow",
+        "sourceRepositoryOwnerIdentifier": OWNER_ID,
+        "sourceRepositoryDigest": source,
+        "sourceRepositoryRef": "refs/tags/" + tag,
+        "buildSignerURI": workflow_uri,
+        "buildSignerDigest": source,
+        "runnerEnvironment": "github-hosted",
+        "buildTrigger": "workflow_dispatch",
+    }
+    require(all(type(certificate.get(key)) is str and certificate[key] == value
+                for key, value in expected.items()), "sbom_certificate_identity")
+    require_release_invocation(certificate.get("runInvocationURI"), run_id, attempt)
+
+
+def verified_statement_matches(raw_document: bytes, statement: dict[str, Any],
+                               certificate: dict[str, Any], registry: str, child: str,
+                               index: str, source: str, tag: str, run_id: int,
+                               attempt: int) -> dict[str, Any]:
+    """Compare one already-authenticated statement with the retained raw SPDX.
+
+    Only the future cryptographic-verifier transport may supply authenticated
+    statement/certificate pairs. This function does not verify a signature,
+    authenticate arbitrary dictionaries, select among bundles or fetch data.
+    """
+    # Reuse the closed subject/release request validation without executing it.
+    sbom_verification_command(registry, child, index, tag, source)
+    require_certificate_identity(certificate, source, tag, run_id, attempt)
+    require(type(statement) is dict and statement.get("_type") == "https://in-toto.io/Statement/v1"
+            and statement.get("predicateType") == PREDICATE_TYPE
+            and type(statement.get("subject")) is list and len(statement["subject"]) == 1,
+            "sbom_verified_statement_shape")
+    subject = statement["subject"][0]
+    require(type(subject) is dict and set(subject) == {"name", "digest"}
+            and subject["name"] == registry and type(subject["digest"]) is dict
+            and subject["digest"] == {"sha256": child.removeprefix("sha256:")},
+            "sbom_verified_statement_subject")
+    require(type(statement.get("predicate")) is dict, "sbom_verified_predicate_shape")
+    return predicate_matches(raw_document, canonical(statement["predicate"]))
+
+
+def release_asset_manifest(release: dict[str, Any], subjects: dict[str, dict[str, str]],
+                           raw_documents: dict[str, bytes]) -> bytes:
+    """Compile raw-asset identities from independently verified inputs.
+
+    This unsigned checksum map is not qualification/signature authority. Its
+    caller must first authenticate publication, both registry subject tuples,
+    generation custody and signed predicates. Existing Release bytes must
+    still pass exact_release_asset_bytes rather than being reconstructed.
+    """
+    require(type(release) is dict and set(release) == {
+        "tag", "source_commit", "index_digest", "run_id", "run_attempt"}, "sbom_manifest_release")
+    require(type(release["run_id"]) is int and 0 < release["run_id"] <= 9007199254740991
+            and type(release["run_attempt"]) is int and 0 < release["run_attempt"] <= 9007199254740991,
+            "sbom_manifest_release_run")
+    require_release_invocation(
+        f"https://github.com/{REPOSITORY}/actions/runs/{release['run_id']}/attempts/{release['run_attempt']}",
+        release["run_id"], release["run_attempt"])
+    require(type(subjects) is dict and set(subjects) == set(PLATFORMS)
+            and type(raw_documents) is dict and set(raw_documents) == set(PLATFORMS), "sbom_manifest_platform_set")
+    children, configs = set(), set()
+    for platform in PLATFORMS:
+        subject = subjects[platform]
+        require(type(subject) is dict and set(subject) == {"child_manifest_digest", "image_config_digest"}
+                and all(is_digest(value) for value in subject.values()), "sbom_manifest_subject")
+        child, config = subject["child_manifest_digest"], subject["image_config_digest"]
+        require(child != config and config != release["index_digest"], "sbom_manifest_config")
+        sbom_verification_command(REGISTRIES[0], child, release["index_digest"], release["tag"], release["source_commit"])
+        children.add(child)
+        configs.add(config)
+    require(len(children) == len(configs) == 2 and children.isdisjoint(configs), "sbom_manifest_distinct_subjects")
+    documents = distinct_platform_documents(*(raw_documents[platform] for platform in PLATFORMS))
+    members = []
+    for platform, asset, observation in zip(PLATFORMS, SPDX_ASSETS, documents):
+        members.append({"platform": platform, **subjects[platform], "asset": asset,
+                        "bytes": observation["raw_bytes"], "sha256": observation["raw_sha256"],
+                        "canonical_predicate_sha256": observation["canonical_sha256"],
+                        "document_namespace": observation["namespace"]})
+    result = canonical({"schema": "durable-workflow.native-sbom-manifest.v1",
+        "repository": {"name": REPOSITORY, "id": int(REPOSITORY_ID), "owner_id": int(OWNER_ID)},
+        "release": release, "registries": list(REGISTRIES), "documents": members}) + b"\n"
+    require(len(result) <= ASSET_LIMITS[MANIFEST_ASSET], "sbom_manifest_size")
+    return result
+
+
+def require_current_pairs(pairs: list[dict[str, Any]], release: dict[str, Any], registry: str,
+                          subject: dict[str, str], raw_document: bytes) -> None:
+    require(type(pairs) is list and 1 <= len(pairs) <= VERIFIED_PAIR_LIMIT, "sbom_verified_pair_count")
+    current = 0
+    for pair in pairs:
+        require(type(pair) is dict and set(pair) == {"certificate", "statement"}
+                and type(pair["certificate"]) is dict and type(pair["statement"]) is dict,
+                "sbom_verified_pair_shape")
+        certificate = pair["certificate"]
+        uri = certificate.get("runInvocationURI")
+        require(type(uri) is str, "sbom_verified_pair_invocation")
+        invocation = re.fullmatch(r"https://github\.com/" + re.escape(REPOSITORY)
+            + r"/actions/runs/([1-9][0-9]{0,15})/attempts/([1-9][0-9]{0,15})", uri)
+        require(invocation is not None, "sbom_verified_pair_invocation")
+        run_id, attempt = int(invocation[1]), int(invocation[2])
+        require_certificate_identity(certificate, release["source_commit"], release["tag"], run_id, attempt)
+        if (run_id, attempt) != (release["run_id"], release["run_attempt"]):
+            continue
+        verified_statement_matches(raw_document, pair["statement"], certificate,
+            registry, subject["child_manifest_digest"], release["index_digest"],
+            release["source_commit"], release["tag"], run_id, attempt)
+        current += 1
+    require(current > 0, "sbom_current_attestation_missing")
+
+
+def verified_release_assets(release: dict[str, Any], subjects: dict[str, dict[str, str]],
+                            raw_documents: dict[str, bytes],
+                            verified_pairs: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, bytes]:
+    """Require complete current-run predicates in both registries before return.
+
+    The future transport must obtain each pair from the successful fixed
+    cryptographic-verification command for that registry/child. These arguments
+    alone do not authenticate arbitrary dictionaries or their registry origin.
+    """
+    manifest = release_asset_manifest(release, subjects, raw_documents)
+    require(type(verified_pairs) is dict and set(verified_pairs) == set(REGISTRIES),
+            "sbom_verified_registry_set")
+    for registry in REGISTRIES:
+        by_platform = verified_pairs[registry]
+        require(type(by_platform) is dict and set(by_platform) == set(PLATFORMS), "sbom_verified_platform_set")
+        for platform in PLATFORMS:
+            require_current_pairs(by_platform[platform], release, registry, subjects[platform], raw_documents[platform])
+    return {**{asset: raw_documents[platform] for platform, asset in zip(PLATFORMS, SPDX_ASSETS)},
+            MANIFEST_ASSET: manifest}
+
+
+if __name__ == "__main__":
+    raise SystemExit("native_sbom_policy is a source library; executable/dependency closure is not wired")

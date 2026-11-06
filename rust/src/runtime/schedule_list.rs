@@ -59,15 +59,15 @@ impl Column {
     /// The SQL expression Laravel compiles for this column.
     fn sql(self, backend: &str) -> &'static str {
         match (self, backend) {
-            (Self::ScheduleId, _) => "schedule_id",
-            (Self::Status, _) => "status",
-            (Self::Note, _) => "note",
-            (Self::WorkflowType, "SQLite") => "json_extract(action,'$.\"workflow_type\"')",
-            (Self::TaskQueue, "SQLite") => "json_extract(action,'$.\"task_queue\"')",
-            (Self::WorkflowType, "PostgreSQL") => "(action->>'workflow_type')",
-            (Self::TaskQueue, "PostgreSQL") => "(action->>'task_queue')",
-            (Self::WorkflowType, _) => "JSON_UNQUOTE(JSON_EXTRACT(action,'$.\"workflow_type\"'))",
-            (Self::TaskQueue, _) => "JSON_UNQUOTE(JSON_EXTRACT(action,'$.\"task_queue\"'))",
+            (Self::ScheduleId, _) => "s.schedule_id",
+            (Self::Status, _) => "s.status",
+            (Self::Note, _) => "s.note",
+            (Self::WorkflowType, "SQLite") => "json_extract(s.action,'$.\"workflow_type\"')",
+            (Self::TaskQueue, "SQLite") => "json_extract(s.action,'$.\"task_queue\"')",
+            (Self::WorkflowType, "PostgreSQL") => "(s.action->>'workflow_type')",
+            (Self::TaskQueue, "PostgreSQL") => "(s.action->>'task_queue')",
+            (Self::WorkflowType, _) => "JSON_UNQUOTE(JSON_EXTRACT(s.action,'$.\"workflow_type\"'))",
+            (Self::TaskQueue, _) => "JSON_UNQUOTE(JSON_EXTRACT(s.action,'$.\"task_queue\"'))",
         }
     }
 }
@@ -271,6 +271,29 @@ fn without_quoted(value: &str) -> String {
 }
 
 /// `parseLiteral`.
+fn single_quoted_literal(literal: &str) -> std::result::Result<Value, QueryError> {
+    let invalid = || query_error(format!(
+        "Schedule visibility literal [{literal}] is not a valid quoted string."
+    ));
+    let mut characters = literal[1..].chars();
+    let mut value = String::new();
+    while let Some(character) = characters.next() {
+        match character {
+            '\'' => return if characters.next().is_none() { Ok(json!(value)) } else { Err(invalid()) },
+            '\\' => {
+                let Some(escaped) = characters.next() else { return Err(invalid()); };
+                // Unknown escapes are literal data in PHP's single-quoted grammar.
+                if !matches!(escaped, '\\' | '\'') {
+                    value.push('\\');
+                }
+                value.push(escaped);
+            }
+            other => value.push(other),
+        }
+    }
+    Err(invalid())
+}
+
 fn parse_literal(literal: &str) -> std::result::Result<Value, QueryError> {
     if literal.is_empty() {
         return Err(query_error("Schedule visibility predicate literal must not be empty."));
@@ -284,13 +307,7 @@ fn parse_literal(literal: &str) -> std::result::Result<Value, QueryError> {
         };
     }
     if literal.starts_with('\'') {
-        if literal.len() < 2 || !literal.ends_with('\'') {
-            return Err(query_error(format!(
-                "Schedule visibility literal [{literal}] is not a valid quoted string."
-            )));
-        }
-        let inner = &literal[1..literal.len() - 1];
-        return Ok(json!(inner.replace("\\'", "'").replace("\\\\", "\\")));
+        return single_quoted_literal(literal);
     }
     if literal.eq_ignore_ascii_case("true") {
         return Ok(json!(true));
@@ -305,14 +322,16 @@ fn parse_literal(literal: &str) -> std::result::Result<Value, QueryError> {
             && (text == "0" || !text.starts_with('0'))
     };
     if canonical(digits) {
-        // PHP's (int) saturates at the integer range.
-        return Ok(json!(literal.parse::<i64>().unwrap_or(if literal.starts_with('-') { i64::MIN } else { i64::MAX })));
+        return literal.parse::<i64>().map(|number| json!(number)).map_err(|_| query_error(format!(
+            "Schedule visibility integer literal [{literal}] is outside the signed 64-bit range."
+        )));
     }
     if let Some((whole, fraction)) = digits.split_once('.')
         && canonical(whole)
         && !fraction.is_empty()
         && fraction.bytes().all(|byte| byte.is_ascii_digit())
         && let Ok(number) = literal.parse::<f64>()
+        && number.is_finite()
     {
         return Ok(json!(number));
     }
@@ -529,6 +548,101 @@ pub(crate) struct Selection {
     predicates: Vec<Predicate>,
 }
 
+// Preserve existing list fields without transferring either stored action array.
+const LIST_COLUMNS: &[&str] = &[
+    "schedule_id",
+    "status",
+    "action",
+    "next_fire_at",
+    "last_fired_at",
+    "overlap_policy",
+    "note",
+    "namespace",
+    "spec",
+    "search_attributes",
+    "created_at",
+    "updated_at",
+    "fires_count",
+    "jitter_seconds",
+    "max_runs",
+    "remaining_actions",
+    "failures_count",
+    "skipped_trigger_count",
+];
+
+fn byte_length(backend: &str, column: &str) -> String {
+    if backend == "SQLite" {
+        format!("length(CAST({column} AS BLOB))")
+    } else {
+        format!("OCTET_LENGTH({column})")
+    }
+}
+
+fn exact_identity(backend: &str, left: &str, right: &str) -> String {
+    if backend == "MySQL" {
+        format!("({left}={right} AND BINARY {left}=BINARY {right})")
+    } else {
+        format!("{left}={right}")
+    }
+}
+
+fn list_selection(backend: &str, cursor_probe: bool) -> String {
+    if cursor_probe {
+        return "SELECT s.schedule_id,s.created_at FROM workflow_schedules s".into();
+    }
+    let mut columns = LIST_COLUMNS
+        .iter()
+        .map(|name| format!("s.{name}"))
+        .collect::<Vec<_>>();
+    let scalars = [
+        (
+            "s.latest_workflow_instance_id",
+            "latest_workflow_instance_id",
+            764,
+        ),
+        ("i.current_run_id", "summary_current_run_pointer", 104),
+        ("r.id", "summary_run_id", 104),
+        ("r.status", "summary_run_status", 32),
+    ];
+    let mut invalid = Vec::new();
+    for (column, alias, limit) in scalars {
+        let length = byte_length(backend, column);
+        columns.push(format!(
+            "CASE WHEN {length}<={limit} THEN {column} ELSE NULL END AS {alias}"
+        ));
+        invalid.push(format!(
+            "({column} IS NOT NULL AND ({length}=0 OR {length}>{limit}))"
+        ));
+    }
+    columns.push(format!(
+        "CASE WHEN {} THEN 1 ELSE 0 END AS summary_invalid",
+        invalid.join(" OR ")
+    ));
+    let instance = exact_identity(backend, "i.id", "s.latest_workflow_instance_id");
+    let instance_namespace = exact_identity(backend, "i.namespace", "s.namespace");
+    let run = exact_identity(backend, "r.id", "i.current_run_id");
+    let run_instance = exact_identity(backend, "r.workflow_instance_id", "i.id");
+    let run_namespace = exact_identity(backend, "r.namespace", "s.namespace");
+    format!(
+        "SELECT {} FROM workflow_schedules s LEFT JOIN workflow_instances i ON {instance} AND {instance_namespace} LEFT JOIN workflow_runs r ON {run} AND {run_instance} AND {run_namespace}",
+        columns.join(",")
+    )
+}
+
+fn invalid_summary() -> RuntimeError {
+    super::refuse(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable")
+}
+
+fn summary_identifier(value: Option<String>, max_characters: usize) -> Result<Option<String>> {
+    if value
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.chars().count() > max_characters)
+    {
+        return Err(invalid_summary());
+    }
+    Ok(value)
+}
+
 enum Bind {
     Text(String),
     Time(DateTime<Utc>),
@@ -565,12 +679,17 @@ where
         limit: i64,
     ) -> Result<Vec<DB::Row>> {
         // A native schedule never holds search attribute values.
-        if selection.predicates.iter().any(|predicate| predicate.column.is_none()) {
+        if selection
+            .predicates
+            .iter()
+            .any(|predicate| predicate.column.is_none())
+        {
             return Ok(Vec::new());
         }
         let mysql = DB::NAME == "MySQL";
         let mut binds = Vec::new();
-        let mut sql = String::from("SELECT * FROM workflow_schedules WHERE namespace=");
+        let mut sql = list_selection(DB::NAME, only.is_some());
+        sql.push_str(" WHERE s.namespace=");
         let mut placeholder = |sql: &mut String, bind: Bind| {
             binds.push(bind);
             if mysql {
@@ -580,7 +699,11 @@ where
             }
         };
         placeholder(&mut sql, Bind::Text(self.namespace.to_string()));
-        sql.push_str(" AND status!='deleted'");
+        if mysql {
+            sql.push_str(" AND BINARY s.namespace=BINARY ");
+            placeholder(&mut sql, Bind::Text(self.namespace.to_string()));
+        }
+        sql.push_str(" AND s.status!='deleted'");
         let mut equal = |sql: &mut String, column: Column, value: String| {
             sql.push_str(" AND ");
             sql.push_str(column.sql(DB::NAME));
@@ -595,7 +718,11 @@ where
         }
         for predicate in &selection.predicates {
             let (column, _) = predicate.column.expect("system field");
-            equal(&mut sql, column, predicate.literal.as_str().unwrap_or_default().to_owned());
+            equal(
+                &mut sql,
+                column,
+                predicate.literal.as_str().unwrap_or_default().to_owned(),
+            );
         }
         if let Some(schedule_id) = only {
             equal(&mut sql, Column::ScheduleId, schedule_id.to_owned());
@@ -604,15 +731,17 @@ where
             let time = NaiveDateTime::parse_from_str(created, "%Y-%m-%d %H:%M:%S%.6f")
                 .map(|time| time.and_utc())
                 .unwrap_or_default();
-            sql.push_str(" AND (created_at<");
+            sql.push_str(" AND (s.created_at<");
             placeholder(&mut sql, Bind::Time(time));
-            sql.push_str(" OR (created_at=");
+            sql.push_str(" OR (s.created_at=");
             placeholder(&mut sql, Bind::Time(time));
-            sql.push_str(" AND schedule_id>");
+            sql.push_str(" AND s.schedule_id>");
             placeholder(&mut sql, Bind::Text(schedule_id.to_owned()));
             sql.push_str("))");
         }
-        sql.push_str(&format!(" ORDER BY created_at DESC,schedule_id LIMIT {limit}"));
+        sql.push_str(&format!(
+            " ORDER BY s.created_at DESC,s.schedule_id LIMIT {limit}"
+        ));
         let mut query = sqlx::query::<DB>(AssertSqlSafe(sql));
         for bind in binds {
             query = match bind {
@@ -621,6 +750,142 @@ where
             };
         }
         Ok(query.fetch_all(&self.pool).await?)
+    }
+
+    fn list_summary(row: &DB::Row) -> Result<Value> {
+        if DB::number(row, "summary_invalid")? != 0 {
+            return Err(invalid_summary());
+        }
+        let latest = summary_identifier(
+            DB::optional_string(row, "latest_workflow_instance_id")?,
+            191,
+        )?;
+        // Validate the complete bounded pointer even when its target was pruned.
+        summary_identifier(DB::optional_string(row, "summary_current_run_pointer")?, 26)?;
+        let run = summary_identifier(DB::optional_string(row, "summary_run_id")?, 26)?;
+        let status = DB::optional_string(row, "summary_run_status")?;
+        let current = match (run, status) {
+            (None, None) => Value::Null,
+            (Some(run), Some(status)) => {
+                let bucket =
+                    super::visibility::status_bucket(&status).map_err(|_| invalid_summary())?;
+                json!({"run_id":run,"status":status,"status_bucket":bucket,"is_terminal":bucket!="running"})
+            }
+            _ => return Err(invalid_summary()),
+        };
+        let failures = DB::number(row, "failures_count").map_err(|_| invalid_summary())?;
+        let skipped = DB::number(row, "skipped_trigger_count").map_err(|_| invalid_summary())?;
+        if failures < 0 || skipped < 0 {
+            return Err(invalid_summary());
+        }
+        Ok(
+            json!({"failures_count":failures,"skipped_trigger_count":skipped,
+            "latest_workflow_instance_id":latest,"current_run":current}),
+        )
+    }
+
+    /// Shared source controls called by each existing disposable backend suite.
+    #[cfg(test)]
+    pub(super) async fn qualify_schedule_list_summary(&self) {
+        use axum::response::IntoResponse;
+        async fn refused(error: RuntimeError) {
+            let response = error.into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),
+                json!({"reason":"storage_unavailable","message":"storage_unavailable"}));
+        }
+        Self::query("INSERT INTO workflow_schedules(id,schedule_id,namespace,action,spec,recent_actions,buffered_actions,failures_count,skipped_trigger_count,latest_workflow_instance_id) VALUES ('summary','summary',$1,$2,$3,$4,$5,2,3,'instance')")
+            .bind(self.namespace.as_ref()).bind(DB::document(&json!({"workflow_type":"echo","task_queue":"test"})))
+            .bind(DB::document(&json!({}))).bind(DB::document(&json!({"malformed":"deferred"})))
+            .bind(DB::document(&json!({"malformed":"deferred"}))).execute(&self.pool).await.unwrap();
+        let rows=self.select_schedules(&Selection {status:None,workflow_type:None,predicates:vec![]},None,None,50).await.unwrap();
+        use sqlx::{Row,Column};
+        assert!(rows[0].columns().iter().all(|column| !["recent_actions","buffered_actions"].contains(&column.name())));
+        let page = self.list_schedules(None,"fixture-secret").await.unwrap();
+        assert_eq!(page["schedules"][0]["failures_count"],2);
+        assert_eq!(page["schedules"][0]["skipped_trigger_count"],3);
+        assert!(page["schedules"][0]["current_run"].is_null());
+        Self::query("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace,current_run_id) VALUES ('instance','Echo','echo',$1,'run')")
+            .bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        Self::query("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace) VALUES ('other','Echo','echo',$1)")
+            .bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ('run','instance',1,'Echo','echo',$1,'running')")
+            .bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        for (status,bucket,terminal) in [("pending","running",false),("running","running",false),("waiting","running",false),
+            ("completed","completed",true),("failed","failed",true),("cancelled","failed",true),("terminated","failed",true)] {
+            Self::query("UPDATE workflow_runs SET status=$1 WHERE id='run'").bind(status).execute(&self.pool).await.unwrap();
+            assert_eq!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"],
+                json!({"run_id":"run","status":status,"status_bucket":bucket,"is_terminal":terminal}));
+        }
+        for invalid in ["Instance","instance ","absent"] {
+            Self::query("UPDATE workflow_schedules SET latest_workflow_instance_id=$1").bind(invalid).execute(&self.pool).await.unwrap();
+            assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        }
+        Self::query("UPDATE workflow_schedules SET latest_workflow_instance_id='instance'").execute(&self.pool).await.unwrap();
+        for namespace in ["Default","default ","other"] {
+            Self::query("UPDATE workflow_instances SET namespace=$1 WHERE id='instance'").bind(namespace).execute(&self.pool).await.unwrap();
+            assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        }
+        Self::query("UPDATE workflow_instances SET namespace=$1 WHERE id='instance'").bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        Self::query("UPDATE workflow_runs SET namespace='other' WHERE id='run'").execute(&self.pool).await.unwrap();
+        assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        Self::query("UPDATE workflow_runs SET namespace=$1,workflow_instance_id='other' WHERE id='run'").bind(self.namespace.as_ref()).execute(&self.pool).await.unwrap();
+        assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        Self::query("UPDATE workflow_runs SET workflow_instance_id='instance' WHERE id='run'").execute(&self.pool).await.unwrap();
+        for bad in ["unknown-storage-status".to_owned(),"x".repeat(33),String::new()] {
+            Self::query("UPDATE workflow_runs SET status=$1 WHERE id='run'").bind(bad).execute(&self.pool).await.unwrap();
+            refused(self.list_schedules(None,"fixture-secret").await.unwrap_err()).await;
+        }
+        Self::query("UPDATE workflow_runs SET status='running' WHERE id='run'").execute(&self.pool).await.unwrap();
+        for bad in ["", "missing"] {
+            Self::query("UPDATE workflow_instances SET current_run_id=$1 WHERE id='instance'").bind(bad).execute(&self.pool).await.unwrap();
+            if bad.is_empty() {refused(self.list_schedules(None,"fixture-secret").await.unwrap_err()).await;}
+            else {assert!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());}
+        }
+        Self::query("UPDATE workflow_instances SET current_run_id='run' WHERE id='instance'").execute(&self.pool).await.unwrap();
+        // Complete values that fit every catalog. NUL has no PostgreSQL text cell.
+        let mut identities=vec!["🙂".repeat(191),"x".repeat(191)];
+        if DB::NAME!="PostgreSQL" {identities.push("ab\0cd🙂".into());}
+        for exact in identities {
+            Self::query("UPDATE workflow_schedules SET latest_workflow_instance_id=$1").bind(exact.as_str()).execute(&self.pool).await.unwrap();
+            assert_eq!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["latest_workflow_instance_id"],exact);
+        }
+        println!("schedule summary {}: NUL {}",DB::NAME,if DB::NAME=="PostgreSQL" {"storage-domain unsupported; no decoder pass"} else {"complete scalar decoded"});
+        Self::query("UPDATE workflow_schedules SET latest_workflow_instance_id='instance'").execute(&self.pool).await.unwrap();
+        let mut run_ids=vec!["🙂".repeat(26),"x".repeat(26)];
+        if DB::NAME!="PostgreSQL" {run_ids.push("ab\0cd🙂".into());}
+        for exact in run_ids {
+            Self::query("UPDATE workflow_runs SET id=$1 WHERE workflow_instance_id='instance'").bind(exact.as_str()).execute(&self.pool).await.unwrap();
+            Self::query("UPDATE workflow_instances SET current_run_id=$1 WHERE id='instance'").bind(exact.as_str()).execute(&self.pool).await.unwrap();
+            assert_eq!(self.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"]["run_id"],exact);
+        }
+        Self::query("UPDATE workflow_runs SET id='run' WHERE workflow_instance_id='instance'").execute(&self.pool).await.unwrap();
+        Self::query("UPDATE workflow_instances SET current_run_id='run' WHERE id='instance'").execute(&self.pool).await.unwrap();
+        if DB::NAME=="MySQL" {
+            for field in ["failures_count","skipped_trigger_count"] {
+                sqlx::query::<DB>(AssertSqlSafe(format!("UPDATE workflow_schedules SET {field}=18446744073709551615"))).execute(&self.pool).await.unwrap();
+                let row=Self::query("SELECT failures_count,skipped_trigger_count FROM workflow_schedules").fetch_one(&self.pool).await.unwrap();
+                assert!(matches!(DB::number(&row,field),Err(RuntimeError::Refused {status:StatusCode::CONFLICT,reason:"unsupported_stored_integer"})),"unchanged shared counter decoder exposes old 409 path");
+                refused(self.list_schedules(None,"fixture-secret").await.unwrap_err()).await;
+                sqlx::query::<DB>(AssertSqlSafe(format!("UPDATE workflow_schedules SET {field}=0"))).execute(&self.pool).await.unwrap();
+            }
+            // Make a full referenced-table scan materially different from a PK lookup.
+            for index in 0..256 {
+                let instance=format!("plan-instance-{index:03}");let run=format!("plan-run-{index:03}");
+                Self::query("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace) VALUES ($1,'Echo','echo','default')").bind(instance.as_str()).execute(&self.pool).await.unwrap();
+                Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ($1,$2,1,'Echo','echo','default','completed')").bind(run.as_str()).bind(instance.as_str()).execute(&self.pool).await.unwrap();
+            }
+            let plan=sqlx::query::<DB>(AssertSqlSafe(format!("EXPLAIN {} WHERE s.namespace=? AND BINARY s.namespace=BINARY ? AND s.status!='deleted' ORDER BY s.created_at DESC,s.schedule_id LIMIT 51",list_selection(DB::NAME,false))))
+                .bind(self.namespace.as_ref()).bind(self.namespace.as_ref()).fetch_all(&self.pool).await.unwrap();
+            for alias in ["i","r"] {
+                let row=plan.iter().find(|row| DB::optional_string(row,"table").unwrap().as_deref()==Some(alias)).expect("joined plan row");
+                let key=DB::optional_string(row,"key").unwrap();let access=DB::string(row,"type").unwrap();
+                println!("schedule summary {} EXPLAIN {alias}: key={key:?} access={access}",DB::NAME);
+                assert_eq!(key.as_deref(),Some("PRIMARY"));
+                assert!(matches!(access.as_str(),"eq_ref"|"ref"|"const"));
+            }
+        }
     }
 
     /// `ScheduleController::formatListItem`.
@@ -638,6 +903,10 @@ where
             "search_attributes":DB::optional_document_row(row,"search_attributes")?,
             "created_at":time("created_at")?,"updated_at":time("updated_at")?,
             "fires_count":DB::number(row,"fires_count")?});
+        let summary = Self::list_summary(row)?;
+        item.as_object_mut()
+            .expect("list item")
+            .extend(summary.as_object().expect("summary").clone());
         let jitter = DB::number(row, "jitter_seconds")?;
         if jitter > 0 {
             item["jitter_seconds"] = json!(jitter);
@@ -799,6 +1068,47 @@ mod tests {
     }
 
     #[test]
+    fn visibility_queries_consume_the_shared_system_field_vectors() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/Fixtures/ScheduleVisibilityQuery/system-fields.json"
+        )).unwrap();
+        let mut names = std::collections::HashSet::new();
+        for case in fixture["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            assert!(names.insert(name));
+            let query = super::super::laravel_validation::laravel_trim(case["query"].as_str().unwrap());
+            let parsed = parse_query(query, &[]);
+            if let Some(expected) = case.get("predicates") {
+                let actual: Vec<_> = parsed.unwrap().into_iter().map(|predicate| json!({
+                    "field":predicate.field,"column":predicate.column.map(|(_, column)| column),
+                    "type":predicate.kind,"literal":predicate.literal,
+                })).collect();
+                assert_eq!(json!(actual), *expected, "{name}");
+            } else {
+                assert_eq!(parsed.unwrap_err().reason, case["reason"].as_str().unwrap(), "{name}");
+            }
+        }
+        assert!(!names.is_empty());
+    }
+
+    #[test]
+    fn numeric_visibility_literals_preserve_boundaries_and_refuse_overflow() {
+        let definitions = [("Count".into(), "int".into()), ("Weight".into(), "double".into())];
+        for value in [i64::MIN, i64::MAX] {
+            let parsed = parse_query(&format!("Count = {value}"), &definitions).unwrap();
+            assert_eq!(parsed[0].literal, json!(value));
+        }
+        for literal in ["1.0", "-0.0"] {
+            let parsed = parse_query(&format!("Weight = {literal}"), &definitions).unwrap();
+            assert_eq!(parsed[0].literal.as_f64().unwrap().to_bits(), literal.parse::<f64>().unwrap().to_bits());
+        }
+        for query in ["Count = 9223372036854775808".to_owned(), "Count = -9223372036854775809".to_owned(),
+            format!("Weight = {}.0", "9".repeat(400))] {
+            assert_eq!(parse_query(&query, &definitions).unwrap_err().reason, "invalid_schedule_visibility_query");
+        }
+    }
+
+    #[test]
     fn continuation_tokens_round_trip_and_refuse_tampering() {
         let token = encode_token("default", &"a".repeat(64), "2026-10-21 05:00:00.123456", "nightly", "secret");
         let decoded = decode_token(&token, "secret").unwrap();
@@ -813,5 +1123,194 @@ mod tests {
     fn query_strings_read_as_php_reads_them() {
         assert_eq!(query_input(Some("status=a&status=b&x[]=1&x[]=2&y[k]=v")), vec![
             ("status".into(), json!("b")), ("x".into(), json!(["1", "2"])), ("y".into(), json!({"k":"v"}))]);
+    }
+    async fn add_schedule(store: &Store<sqlx::Sqlite>, schedule: &str) {
+        sqlx::query("INSERT INTO workflow_schedules(id,schedule_id,namespace,action,spec,created_at,updated_at) VALUES (?,?,?,'{\"workflow_type\":\"echo\",\"task_queue\":\"test\"}','{}','2026-10-21 05:00:00.000000','2026-10-21 05:00:00.000000')")
+            .bind(schedule).bind(schedule).bind("default").execute(&store.pool).await.unwrap();
+    }
+
+    async fn summary_store() -> (tempfile::TempDir, Store<sqlx::Sqlite>) {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("schedule-summary.sqlite");
+        let pool = super::super::sqlite::open(file.to_str().unwrap())
+            .await
+            .unwrap();
+        (directory, Store::new(pool))
+    }
+
+    #[tokio::test]
+    async fn list_summary_has_complete_scalars_and_separate_namespace_bound_current_run() {
+        let (_directory, store) = summary_store().await;
+        add_schedule(&store, "summary").await;
+        sqlx::query("UPDATE workflow_schedules SET failures_count=2,skipped_trigger_count=3,latest_workflow_instance_id='instance',recent_actions='not JSON',buffered_actions='not JSON',last_skip_reason=? WHERE schedule_id='summary'")
+            .bind("unread deferred reason".repeat(10000)).execute(&store.pool).await.unwrap();
+        let missing = store.list_schedules(None, "fixture-secret").await.unwrap();
+        let item = &missing["schedules"][0];
+        assert_eq!(item["failures_count"], 2);
+        assert_eq!(item["skipped_trigger_count"], 3);
+        assert_eq!(item["latest_workflow_instance_id"], "instance");
+        assert!(
+            item["current_run"].is_null(),
+            "missing is unknown, never completed or healthy"
+        );
+        for field in [
+            "recent_actions",
+            "buffered_actions",
+            "last_action",
+            "last_skip_reason",
+            "last_skipped_at",
+        ] {
+            assert!(item.get(field).is_none(), "{field} is deferred");
+        }
+        let rows = store
+            .select_schedules(
+                &Selection {
+                    status: None,
+                    workflow_type: None,
+                    predicates: vec![],
+                },
+                None,
+                None,
+                50,
+            )
+            .await
+            .unwrap();
+        use sqlx::Row;
+        assert!(rows[0].try_column("recent_actions").is_err());
+        assert!(rows[0].try_column("buffered_actions").is_err());
+        sqlx::query("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace,current_run_id) VALUES ('instance','Echo','echo','other','run')")
+            .execute(&store.pool).await.unwrap();
+        sqlx::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ('run','instance',1,'Echo','echo','other','running')")
+            .execute(&store.pool).await.unwrap();
+        assert!(store.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        sqlx::query("UPDATE workflow_instances SET namespace='default'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        sqlx::query("UPDATE workflow_runs SET namespace='default'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        for (status, bucket, terminal) in [
+            ("pending", "running", false),
+            ("running", "running", false),
+            ("waiting", "running", false),
+            ("completed", "completed", true),
+            ("failed", "failed", true),
+            ("cancelled", "failed", true),
+            ("terminated", "failed", true),
+        ] {
+            sqlx::query("UPDATE workflow_runs SET status=?")
+                .bind(status)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                store.list_schedules(None, "fixture-secret").await.unwrap()["schedules"][0]["current_run"],
+                json!({"run_id":"run","status":status,"status_bucket":bucket,"is_terminal":terminal})
+            );
+        }
+        sqlx::query("UPDATE workflow_runs SET status='unknown-storage-status'").execute(&store.pool).await.unwrap();
+        assert!(store.list_schedules(None,"fixture-secret").await.is_err());
+        sqlx::query("UPDATE workflow_runs SET status='running'").execute(&store.pool).await.unwrap();
+        sqlx::query("DELETE FROM workflow_runs")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(store.list_schedules(None,"fixture-secret").await.unwrap()["schedules"][0]["current_run"].is_null());
+        store.close().await;
+    }
+
+    #[tokio::test]
+    async fn list_summary_refuses_complete_malformed_or_oversized_scalars_without_lossy_prefixes() {
+        let (_directory, store) = summary_store().await;
+        add_schedule(&store, "scalar").await;
+        let exact = "ab\0cd🙂";
+        sqlx::query("UPDATE workflow_schedules SET latest_workflow_instance_id=?")
+            .bind(exact)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_schedules(None, "fixture-secret").await.unwrap()["schedules"][0]["latest_workflow_instance_id"],
+            exact
+        );
+        for invalid in [String::new(), "x".repeat(192), "🙂".repeat(192)] {
+            sqlx::query("UPDATE workflow_schedules SET latest_workflow_instance_id=?")
+                .bind(invalid)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            assert!(matches!(
+                store.list_schedules(None, "fixture-secret").await,
+                Err(RuntimeError::Refused {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    reason: "storage_unavailable"
+                })
+            ));
+        }
+        sqlx::query("UPDATE workflow_schedules SET latest_workflow_instance_id=CAST(X'FF' AS TEXT)").execute(&store.pool).await.unwrap();
+        assert!(store.list_schedules(None,"fixture-secret").await.is_err());
+        sqlx::query(
+            "UPDATE workflow_schedules SET latest_workflow_instance_id=NULL,failures_count=-1",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(store.list_schedules(None, "fixture-secret").await.is_err());
+        store.close().await;
+    }
+
+    #[tokio::test]
+    async fn list_summary_query_cost_is_constant_per_page_with_existing_cursor_and_filter_guards() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let (directory, store) = summary_store().await;
+        for index in 0..51 {
+            add_schedule(&store, &format!("page-{index:03}")).await;
+        }
+        store.close().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let measured = Arc::clone(&calls);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .before_acquire(move |_, _| {
+                measured.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(true) })
+            })
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(directory.path().join("schedule-summary.sqlite")),
+            )
+            .await
+            .unwrap();
+        let store = Store::<sqlx::Sqlite>::new(pool);
+        for (query, expected) in [
+            ("page_size=50", 1),
+            ("page_size=50&query=Status%20%3D%20%27active%27", 2),
+        ] {
+            calls.store(0, Ordering::SeqCst);
+            let first = store
+                .list_schedules(Some(query), "fixture-secret")
+                .await
+                .unwrap();
+            assert_eq!(first["schedule_count"], 50);
+            assert_eq!(calls.load(Ordering::SeqCst), expected);
+            let token = first["next_page_token"].as_str().unwrap();
+            calls.store(0, Ordering::SeqCst);
+            let second = store
+                .list_schedules(
+                    Some(&format!("{query}&next_page_token={token}")),
+                    "fixture-secret",
+                )
+                .await
+                .unwrap();
+            assert_eq!(second["schedule_count"], 1);
+            assert_eq!(calls.load(Ordering::SeqCst), expected + 1);
+        }
+        store.close().await;
     }
 }

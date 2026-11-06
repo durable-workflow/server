@@ -1,0 +1,32 @@
+name: Native promotion contracts
+on:
+  pull_request:
+    paths:
+      - scripts/ci/native_alias_*.py
+      - scripts/ci/native_qualification.py
+      - scripts/ci/native-registry-absence.sh
+      - scripts/ci/native-release-*.sh
+      - scripts/ci/check-native-release-tags.sh
+      - scripts/ci/select-published-compose-image.sh
+      - scripts/smoke-published-compose.sh
+      - scripts/conformance/server-parity/native-image-corpus.sh
+      - tests/Unit/Support/native_alias_*test.py
+      - tests/Unit/Support/native_qualification_test.py
+      - .github/workflows/native-*.yml
+      - .github/workflows/published-compose.yml
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+      - name: Countercheck provider receipts, cleanup and fail-before writes
+        run: |
+          python3 -m unittest discover -s tests/Unit/Support -p 'native_qualification_test.py' -v
+          python3 -m unittest discover -s tests/Unit/Support -p 'native_alias_*test.py' -v
+      - name: Preserve release, candidate and monotonic alias contracts
+        run: bash scripts/ci/check-native-release-tags.sh

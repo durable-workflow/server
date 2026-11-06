@@ -12,6 +12,72 @@ POLICY = ROOT / "scripts" / "ci" / "check-docker-workflow-isolation.py"
 
 
 class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
+    def qualification_cleanup_sources(self) -> dict[str, str]:
+        return {relative: (ROOT / relative).read_text() for relative in (
+            "scripts/ci/native_qualification.py", "scripts/ci/native_alias_evidence.py",
+            "scripts/ci/native_alias_transport.py")}
+
+    def qualification_workflow(self, invocation: str, always: bool = True) -> str:
+        condition = "if: always()" if always else "if: success()"
+        return """
+            jobs:
+              corpus:
+                env:
+                  RESOURCE_SCOPE: dw-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+                steps:
+                  - run: docker network create "$RESOURCE_SCOPE"
+                  - run: docker run -d --name "$RESOURCE_SCOPE-rust" image
+                  - CONDITION
+                    run: INVOCATION
+        """.replace("CONDITION", condition).replace("INVOCATION", invocation)
+
+    def test_accepts_exact_reviewed_strict_qualification_cleanup(self) -> None:
+        invocation = ('python3 scripts/ci/native_qualification.py cleanup --kind corpus '
+                      '--scope "$RESOURCE_SCOPE" --output qualification-state/cleanup.json')
+        result = self.run_policy(self.qualification_workflow(invocation), self.qualification_cleanup_sources())
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_strict_qualification_cleanup_refuses_helper_and_import_byte_changes(self) -> None:
+        invocation = ('python3 scripts/ci/native_qualification.py cleanup --kind corpus '
+                      '--scope "$RESOURCE_SCOPE" --output qualification-state/cleanup.json')
+        for changed in self.qualification_cleanup_sources():
+            sources = self.qualification_cleanup_sources()
+            sources[changed] += "\n# changed source is not the reviewed closure\n"
+            result = self.run_policy(self.qualification_workflow(invocation), sources)
+            self.assertNotEqual(0, result.returncode, changed)
+            self.assertIn("strict qualification cleanup requires reviewed bytes", result.stderr)
+
+    def test_strict_qualification_cleanup_refuses_open_argv_scope_or_non_always(self) -> None:
+        invocation = ('python3 scripts/ci/native_qualification.py cleanup --kind corpus '
+                      '--scope "$RESOURCE_SCOPE" --output qualification-state/cleanup.json')
+        for invalid in (invocation + " --extra value", invocation.replace("corpus", "unknown"),
+                        invocation.replace('"$RESOURCE_SCOPE"', "shared-name"),
+                        invocation.replace("qualification-state/cleanup.json", "another.json"),
+                        invocation.replace("cleanup --kind", "observe-image --kind")):
+            result = self.run_policy(self.qualification_workflow(invalid), self.qualification_cleanup_sources())
+            self.assertNotEqual(0, result.returncode, invalid)
+        result = self.run_policy(self.qualification_workflow(invocation, always=False), self.qualification_cleanup_sources())
+        self.assertNotEqual(0, result.returncode)
+        conditional = self.qualification_workflow(invocation).replace("if: always()", "if: always() && false")
+        result = self.run_policy(conditional, self.qualification_cleanup_sources())
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unconditional always()", result.stderr)
+
+    def test_accepts_closed_strict_compose_cleanup_with_job_scoped_project(self) -> None:
+        workflow = """
+            jobs:
+              smoke:
+                env:
+                  PROJECT: compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+                  SERVER_PORT: "0"
+                steps:
+                  - run: docker compose -p "$PROJECT" up -d
+                  - if: always()
+                    run: python3 scripts/ci/native_qualification.py cleanup --kind compose --scope "$PROJECT" --output qualification-state/cleanup.json
+        """
+        result = self.run_policy(workflow, self.qualification_cleanup_sources())
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def run_policy(
         self, workflow: str, scripts: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
@@ -466,6 +532,137 @@ class DockerWorkflowIsolationPolicyTest(unittest.TestCase):
                     "helper invocation must use a literal repository-relative path",
                     result.stderr,
                 )
+
+    def test_accepts_closed_isolated_source_execution_and_diagnostics(self) -> None:
+        result = self.run_policy(
+            """
+            jobs:
+              source:
+                steps:
+                  - run: |
+                      /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/python3 -I -S -B tests/check.py
+                      /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /bin/sh -n docker/check.sh
+                      /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/shellcheck docker/check.sh
+            """,
+            {
+                "tests/check.py": "print('source check')",
+                "docker/check.sh": "docker run -d --name shared-helper image",
+            },
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_isolated_python_still_inspects_transitive_docker_helpers(self) -> None:
+        result = self.run_policy(
+            """
+            jobs:
+              source:
+                steps:
+                  - run: /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/python3 -I -S -B scripts/check.py
+            """,
+            {
+                "scripts/check.py": "import subprocess\nsubprocess.run(['bash', 'scripts/unsafe.sh'])",
+                "scripts/unsafe.sh": "docker run -d --name shared-helper image",
+            },
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("scripts/unsafe.sh", result.stderr)
+        self.assertIn("docker run --name must use a scoped variable", result.stderr)
+        self.assertNotIn("unclassified command /usr/bin/env", result.stderr)
+
+    def test_diagnostic_occurrence_does_not_exempt_executed_shell_file(self) -> None:
+        for execution in (
+            "sh docker/check.sh",
+            "/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /bin/sh docker/check.sh",
+        ):
+            with self.subTest(execution=execution):
+                result = self.run_policy(
+                    f"""
+                    jobs:
+                      source:
+                        steps:
+                          - run: /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /bin/sh -n docker/check.sh
+                          - run: /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/shellcheck docker/check.sh
+                          - run: {execution}
+                    """,
+                    {"docker/check.sh": "docker run -d --name shared-helper image"},
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_isolated_source_model_refuses_changed_environment_flags_or_operands(self) -> None:
+        command = "/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/python3 -I -S -B scripts/check.py"
+        mutations = [
+            command.replace(flag + " ", "", 1) for flag in ("-i", "-I", "-S", "-B")
+        ] + [
+            command.replace("/usr/bin/env", "/unreviewed/env", 1),
+            command.replace("PATH=/usr/bin:/bin", "PATH=/unreviewed", 1),
+            command.replace("LC_ALL=C", "LC_ALL=C PYTHONPATH=/unreviewed", 1),
+            command.replace("/usr/bin/python3", "/usr/local/bin/python3", 1),
+            command.replace("-I -S -B", "-B -S -I", 1),
+            command + " extra.py",
+            command.replace("scripts/check.py", '"$HELPER"', 1),
+            command.replace("scripts/check.py", "./scripts/check.py", 1),
+            command.replace("scripts/check.py", "scripts/./check.py", 1),
+            command.replace("scripts/check.py", "scripts/../scripts/check.py", 1),
+            command.replace("/usr/bin/python3 -I -S -B", "/bin/sh -n", 1),
+            command.replace("/usr/bin/python3 -I -S -B", "/usr/bin/shellcheck", 1),
+            command.replace("/usr/bin/python3 -I -S -B", "/bin/sh -c", 1),
+        ]
+        for changed in mutations:
+            with self.subTest(command=changed):
+                result = self.run_policy(
+                    f"""
+                    jobs:
+                      source:
+                        steps:
+                          - run: |
+                              HELPER=scripts/check.py
+                              {changed}
+                    """,
+                    {"scripts/check.py": "print('source check')", "extra.py": "pass"},
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_isolated_source_model_refuses_symlink_target_outside_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            base = Path(temporary_directory)
+            root = base / "repo"
+            workflow = root / ".github/workflows/check.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "jobs:\n  source:\n    steps:\n"
+                "      - run: /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C "
+                "/usr/bin/python3 -I -S -B scripts/check.py\n"
+            )
+            outside = base / "outside.py"
+            outside.write_text("print('outside')")
+            (root / "scripts").mkdir()
+            (root / "scripts/check.py").symlink_to(outside)
+            result = subprocess.run(
+                ["python3", str(POLICY), "--root", str(root)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("unclassified command /usr/bin/env", result.stderr)
+
+    def test_isolated_diagnostics_refuse_extra_execution_and_substitution(self) -> None:
+        for command in (
+            "/bin/sh -n docker/check.sh extra.sh",
+            "/usr/bin/shellcheck docker/check.sh extra.sh",
+            '/bin/sh -n "$(docker run -d --name shared image)"',
+            '/usr/bin/shellcheck "$(docker run -d --name shared image)"',
+            "/bin/sh -c 'sh docker/check.sh'",
+        ):
+            with self.subTest(command=command):
+                result = self.run_policy(
+                    f"""
+                    jobs:
+                      source:
+                        steps:
+                          - run: /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C {command}
+                    """,
+                    {"docker/check.sh": "true", "extra.sh": "true"},
+                )
+                self.assertNotEqual(0, result.returncode)
 
     def test_rejects_literal_helper_behind_unclassified_launcher(self) -> None:
         result = self.run_policy(

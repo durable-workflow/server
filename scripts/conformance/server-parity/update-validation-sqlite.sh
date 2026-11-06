@@ -7,6 +7,7 @@
 # service-calls (#796) or schedule-catalog, whose backfill can lose an
 # occurrence to PHP's concurrent SQLite maintenance writer (#1021).
 # namespace-delete-payloads can leave a post-commit deletion pending (#1018).
+# retention-external-payloads has the same contention after a prune commits.
 # These fixtures keep their exact assertions in the same PHP-only window.
 #
 # The published PHP record runs with PHP's maintenance loop stopped. On SQLite
@@ -45,7 +46,7 @@ image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "
 prefix=parity-v1
 http_record() {
   local url="$1" target="$2"
-  docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
+  docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
     -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source \
     -e DW_PARITY_TOKEN=parity-test-token -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
     --mode http --url "$url" --target "$target" --output "/evidence/$name-$target.json" --fixture "$fixture" \
@@ -83,14 +84,14 @@ if ((php_status != 0)); then
   run_without_maintenance "parity-evidence/$name-maintenance-schedule-retry.txt" -- php_record
   ((php_status == 0)) || exit "$php_status"
 fi
-docker run --rm --user=1000:1000 --entrypoint node \
+docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" --rm --user=1000:1000 --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-state:/state" -v "$PWD/parity-evidence:/evidence" -w /source \
   -e DB_CONNECTION=sqlite -e DB_DATABASE=/state/embedded.sqlite -e DW_MODE=embedded \
   -e CACHE_STORE=file -e QUEUE_CONNECTION=database -e DW_PARITY_RUNNER_REVISION "$image" scripts/conformance/server-parity.mjs record \
   --mode embedded --application-root /app --target embedded --output "/evidence/$name-embedded.json" --fixture "$fixture" \
   --prefix "$prefix"
 http_record "$native_url" rust
-docker run --rm --user=1000:1000 --entrypoint node \
+docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" --rm --user=1000:1000 --entrypoint node \
   -v "$PWD:/source:ro" -v "$PWD/parity-evidence:/evidence" -w /source "$image" \
   scripts/conformance/server-parity.mjs compare \
   "/evidence/$name-php.json" "/evidence/$name-rust.json" "/evidence/$name-embedded.json" \
