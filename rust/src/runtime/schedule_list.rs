@@ -799,7 +799,10 @@ where
 
     /// Shared source controls called by each existing disposable backend suite.
     #[cfg(test)]
-    pub(super) async fn qualify_schedule_list_summary(&self) {
+    pub(super) async fn qualify_schedule_list_summary(&self)
+    where
+        for<'q> Option<i64>: Encode<'q, DB>,
+    {
         use axum::response::IntoResponse;
         async fn refused(error: RuntimeError) {
             let response = error.into_response();
@@ -903,7 +906,10 @@ where
     }
 
     #[cfg(test)]
-    async fn qualify_schedule_last_skip(&self) {
+    async fn qualify_schedule_last_skip(&self)
+    where
+        for<'q> Option<i64>: Encode<'q, DB>,
+    {
         let schedule = "skip-projection";
         Self::query("INSERT INTO workflow_schedules(id,schedule_id,namespace,action,spec) VALUES ($1,$2,$3,$4,$5)")
             .bind(schedule).bind(schedule).bind(self.namespace.as_ref())
