@@ -224,6 +224,153 @@ async fn qualification_cancelled_pool_boundaries_preserve_fresh_reads_and_commit
 
 const COM_STMT_CLOSE: u8 = 0x19;
 
+fn pings(writes: &std::sync::Mutex<Vec<Vec<u8>>>) -> usize {
+    recorded_commands(&writes.lock().unwrap())
+        .iter()
+        .filter(|(command, _)| *command == 0x0e)
+        .count()
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_pool_pings_on_return_and_after_idle_not_on_recent_checkout() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let direct = MySqlConnectOptions::from_str(&std::env::var("DW_TEST_MYSQL_URL").unwrap())
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let proxy = tokio::spawn(record_client_chunks(
+            listener,
+            format!("{}:{}", direct.get_host(), direct.get_port()),
+            writes.clone(),
+        ));
+        let pool = runtime_pool_options()
+            .max_connections(1)
+            .connect_with(direct.host("127.0.0.1").port(port).ssl_mode(
+                sqlx::mysql::MySqlSslMode::Disabled,
+            ))
+            .await
+            .unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        let id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        // Eagerly await SQLx's actual return path, including the production
+        // ROLLBACK hook and ping, before counting the next borrow's traffic.
+        connection.return_to_pool().await;
+        for _ in 0..4 {
+            let before = pings(&writes);
+            let mut connection = pool.acquire().await.unwrap();
+            assert_eq!(pings(&writes), before, "recent checkout added a COM_PING");
+            let reused: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+            assert_eq!(reused, id);
+            connection.return_to_pool().await;
+            assert_eq!(pings(&writes), before + 1, "return still requires its ping");
+        }
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let before = pings(&writes);
+        let mut connection = pool.acquire().await.unwrap();
+        assert_eq!(pings(&writes), before + 1, "idle checkout must ping first");
+        let reused: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        assert_eq!(reused, id);
+        drop(connection);
+        pool.close().await;
+        proxy.abort();
+        assert!(proxy.await.unwrap_err().is_cancelled());
+    })
+    .await
+    .expect("bounded real wire ping-count qualification");
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_dead_recent_connection_surfaces_write_error_and_idle_death_reconnects() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let database = format!("dw_pool_{}", ulid::Ulid::new().to_string().to_lowercase());
+        let direct = MySqlConnectOptions::from_str(&std::env::var("DW_TEST_MYSQL_URL").unwrap())
+            .unwrap()
+            .database(&database);
+        let database_url = direct.to_url_lossy().to_string();
+        MySql::create_database(&database_url).await.unwrap();
+        let mut observer = MySqlConnection::connect_with(&direct).await.unwrap();
+        observer
+            .execute("CREATE TABLE pool_write_probe(id BIGINT PRIMARY KEY) ENGINE=InnoDB")
+            .await
+            .unwrap();
+        for idle in [Duration::ZERO, Duration::from_millis(1100)] {
+            let pool = runtime_pool_options()
+                .max_connections(1)
+                .connect_with(direct.clone())
+                .await
+                .unwrap();
+            let mut connection = pool.acquire().await.unwrap();
+            let id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+            connection.return_to_pool().await;
+            let returned = std::time::Instant::now();
+            tokio::time::sleep(idle).await;
+            observer
+                .execute(AssertSqlSafe(format!("KILL CONNECTION {id}")))
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    let alive: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID=?",
+                    )
+                    .bind(id)
+                    .fetch_one(&mut observer)
+                    .await
+                    .unwrap();
+                    if alive == 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the killed server session must actually exit");
+            if idle.is_zero() {
+                assert!(returned.elapsed() < Duration::from_secs(1));
+                let mut dead = pool.acquire().await.unwrap();
+                let failed_write = sqlx::query("INSERT INTO pool_write_probe VALUES (1)")
+                    .execute(&mut *dead)
+                    .await;
+                assert!(failed_write.is_err(), "a recent dead connection must expose the error");
+                dead.return_to_pool().await;
+                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_write_probe")
+                    .fetch_one(&mut observer)
+                    .await
+                    .unwrap();
+                assert_eq!(count, 0, "the failed write must not be retried");
+            }
+            let mut replacement = pool.acquire().await.unwrap();
+            let next: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                .fetch_one(&mut *replacement)
+                .await
+                .unwrap();
+            assert_ne!(next, id, "a dead session must be discarded without leaking its slot");
+            assert_eq!(pool.size(), 1);
+            drop(replacement);
+            pool.close().await;
+        }
+        observer.close().await.unwrap();
+        MySql::drop_database(&database_url).await.unwrap();
+    })
+    .await
+    .expect("bounded real disconnect/recovery qualification");
+}
+
 /// Forward clients to `upstream`, recording each TCP read chunk received from
 /// a client. TCP is a byte stream: a chunk boundary shows bytes that arrived
 /// separately, not a write call.
