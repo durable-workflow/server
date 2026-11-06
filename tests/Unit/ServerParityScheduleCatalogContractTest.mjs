@@ -91,6 +91,7 @@ for (const [label, mutate] of [
   ['last-skip precision lost', o => { o.schedule_catalog.steps[71].response.schedules[1].last_skipped_at = '2026-11-05T12:00:01Z'; }],
   ['last-skip timestamp invented', o => { o.schedule_catalog.steps[71].response.schedules[1].last_skipped_at = '2026-11-05T12:00:02.123456Z'; }],
   ['invalid last-skip calendar', o => { o.schedule_catalog.steps[71].response.schedules[1].last_skipped_at = '2026-02-30T12:00:01.123456Z'; }],
+  ['unsupported last-skip year', o => { o.schedule_catalog.steps[71].response.schedules.find(item => item.schedule_id === 'beta').last_skipped_at = '0000-01-01T12:00:01.123456Z'; }],
   ['invented initial skip', o => { o.schedule_catalog.steps[4].response.schedules[0].last_skip_reason = 'status_not_triggerable'; }],
   ['wrong latest workflow', o => { o.schedule_catalog.steps[71].response.schedules[0].latest_workflow_instance_id = '9'.repeat(26); }],
   ['missing current run', o => { o.schedule_catalog.steps[71].response.schedules[0].current_run = null; }],

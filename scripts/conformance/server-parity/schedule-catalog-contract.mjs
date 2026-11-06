@@ -40,6 +40,7 @@ function checkedLastSkip(item, skipped, raw) {
   assert.equal(item.last_skip_reason, reasons[item.schedule_id], 'last skip retains its complete cause');
   assert.match(item.last_skipped_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/,
     'last skip has six fractional digits and UTC Z');
+  assert.notEqual(item.last_skipped_at.slice(0, 4), '0000', 'last skip has a supported stored year');
   const instant = new Date(item.last_skipped_at);
   assert.ok(Number.isFinite(instant.getTime()), 'last skip is an actual instant');
   assert.equal(instant.toISOString().slice(0, 19), item.last_skipped_at.slice(0, 19),
