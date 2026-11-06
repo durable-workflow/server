@@ -1,0 +1,3392 @@
+{
+  "schema": "durable-workflow.prepared-local-retry-companion.v1",
+  "status": "reviewed 133-row baseline with proposed engine-interruption extension; no validator, writer or executing result",
+  "runtime_enabled": false,
+  "authority": {
+    "scope": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6668566058",
+    "core_clock": "https://github.com/durable-workflow/workflow/pull/1038#issuecomment-6669120859",
+    "native_role_inventory": "https://github.com/durable-workflow/server/pull/1034#issuecomment-6668962888",
+    "native_reference": "d8eb3bc1a5368752be823784521a9a09ec44de71",
+    "canonical": {
+      "commit": "8db66b9f0ec683386c4b4cf698c5e38e46d44536",
+      "path": "resources/protocol/activity-retry-policy-v2-vectors.json",
+      "sha256": "8d576f1d50bcbfb123cb09682a4fbac53cb018a3cd369021c38d69866849781c",
+      "case_count": 54,
+      "original_reviewed_commit": "0aa1536e6198a6667ddedf62b48215b6e9e8a6f8",
+      "blob": "4e1d6d9c4fc619b9d0ba0430d5aa06f250c4f61e",
+      "identity_scope": "exact accepted-main source bytes only; no v2 producer/runtime or full-main-QA claim"
+    },
+    "remote_companion": {
+      "commit": "9bc440bf222f9cfc9e4401a3ce3b67246bf558de",
+      "path": "tests/Fixtures/contracts/activity-retry-policy/native-adapters.v1.json",
+      "sha256": "c37fb132129e4557c7ffbd90404763924640262bb5ed10e764f090f69ae12bf5",
+      "case_count": 37
+    },
+    "prior_rows_mutated": false,
+    "prepared_timeout_projection": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6669526988",
+    "core_snapshot_range_proposal": "https://github.com/durable-workflow/workflow/pull/1038#issuecomment-6669717376",
+    "engine_interruption": {
+      "selection": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6674785967",
+      "core_proposal": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6673550956",
+      "existing_carrier_source": {
+        "commit": "4b2cdc5507120d9c213b0b02a85738bec96c574a",
+        "executor": {
+          "path": "src/V2/Support/LocalActivityExecutor.php",
+          "blob": "4398d6e705c8e1bdece33d2734ef0d868cb5bebb"
+        },
+        "preparation": {
+          "path": "src/V2/Support/PortableLocalActivityPreparation.php",
+          "blob": "07d3f302159293c1785a99ba50aeb2512e86c6b5"
+        },
+        "runtime": {
+          "path": "src/V2/Support/LocalActivityRuntime.php",
+          "blob": "49e7e3d7574fafd9d7246c97932d49f9cbb8fba9"
+        }
+      },
+      "scope": "existing v1 recovery/receipt source facts only; not a contract-2 writer or installed-role qualification",
+      "prior_133_cases_mutated": false,
+      "extension_frozen": false,
+      "core_shape_review": "https://github.com/durable-workflow/server/pull/1034#issuecomment-6675154532"
+    }
+  },
+  "adoption_gates": [
+    "Core/Server reconcile this engine-interruption extension over the reviewed closed 133-row baseline before its writer/consumer adoption",
+    "Core/Server reconcile the proposed HTTP families, pure preflight placement and separate completed payload scope before final source freeze",
+    "Native implements the prepared role and validator/transaction writer before advertisement",
+    "Actual native/database/SDK/installed qualification and release remain separate"
+  ],
+  "mode_gate": {
+    "conjunction": {
+      "installed_prepared_local_role": true,
+      "capability_activity_retry_delay_override_v1": true,
+      "local_contract_version": 2,
+      "retained_snapshot_version": 2,
+      "original_claim_supports_selected_local_v2_mode": true
+    },
+    "literal_types": true,
+    "remote_capability_alone_suffices": false,
+    "unanchored_record_local_activity_batch": "version 1 only; never reinterpreted as an anchored version-2 result"
+  },
+  "prepared_report": {
+    "boundary": "report object passed to the existing per-attempt recordLocalActivityOutcome flow; not the 11-field record_local_activity batch",
+    "unknown_members": "refuse before publication or a further callback",
+    "completed": {
+      "required": [
+        "outcome",
+        "result"
+      ],
+      "optional": [
+        "payload_codec"
+      ],
+      "outcome": "completed",
+      "result": "existing validated encoded Avro result; codec must resolve to avro"
+    },
+    "failed": {
+      "required": [
+        "outcome",
+        "message"
+      ],
+      "optional": [
+        "exception_type",
+        "non_retryable",
+        "next_retry_delay_seconds"
+      ],
+      "outcome": "failed",
+      "message": "existing string",
+      "exception_type": "existing nonblank UTF-8 string, at most 255 bytes; existing RuntimeException default if absent",
+      "non_retryable": "Boolean only; existing false default if absent",
+      "next_retry_delay_seconds": "optional actual JSON integer in [0,9007199254740991]; null/Boolean/string/floating lexeme/refused"
+    },
+    "timed_out": {
+      "required": [
+        "outcome"
+      ],
+      "optional": [],
+      "outcome": "timed_out",
+      "classification": "engine-owned and actually due; no worker override, timeout kind, delay or failure timestamp"
+    },
+    "worker_forbidden": [
+      "retry_disposition",
+      "backoff_seconds",
+      "retry_backoff_seconds",
+      "retry_available_at",
+      "failure_time",
+      "original_schedule_to_close_deadline_at",
+      "snapshot_version",
+      "failure_source",
+      "requested_delay_seconds",
+      "timeout_kind",
+      "local_recovery",
+      "callback_stop_state"
+    ]
+  },
+  "clock": {
+    "sample": "one engine UTC sample after strict request validation and canonical authority locks; the same sample drives fresh temporal fences and the retry decision",
+    "publication": "retained only with the first transaction that commits; rollback publishes neither a sample nor decision",
+    "duplicate": "for matching committed failed/timed_out retry decisions, return the original sample/decision without fresh selection; completed payload replay retains its existing separate resolution contract",
+    "original_deadline": "stored prepared execution schedule_to_close_deadline_at, checked against correlated original preparation/start authority",
+    "not_anchors": [
+      "duplicate prepare response server_time",
+      "batch commit time",
+      "worker absolute time",
+      "backdated version-1 batch timestamps"
+    ],
+    "serialization": "UTC RFC3339 with exactly six fractional digits and Z; nullable original schedule-to-close deadline",
+    "prepared_timeout_projection": "preserve actual engine timeout precedence; start_to_close/heartbeat with remaining total time and attempt budget may retry under policy; actually due schedule_to_close terminates before application override selection",
+    "precedence": [
+      "strict report validation",
+      "matching retained outcome receipt",
+      "fresh original claim and temporal fences using one sample",
+      "actually due engine timeout",
+      "application failure retry selection"
+    ],
+    "recovery_sample": "for a fresh proven contract-2 recovery, the first locked engine observation that commits; never a claimed callback failure time or original lease-expiry timestamp",
+    "recovery_duplicate": "after scoped immutable identity/mode, strict retained-snapshot and original Started-authority validation, return the matching committed recovery receipt and decision before fresh clock/fence/policy calculation. Later new-authoring configuration may differ; mutation of the canonical retained graph refuses and is never repaired from the receipt"
+  },
+  "retry_disposition_proposal": {
+    "boundary": "engine-owned object shared exactly by the stored outcome metadata and its prepared receipt; never accepted in a worker report",
+    "common_required": {
+      "contract_version": 2,
+      "snapshot_version": 2,
+      "decision": "scheduled or terminal",
+      "failure_time": "the stored first accepted engine sample",
+      "original_schedule_to_close_deadline_at": "stored UTC timestamp or null",
+      "failure_source": "application or engine_timeout or engine_interruption"
+    },
+    "common_optional": {
+      "requested_delay_seconds": "present iff the valid failed report supplied next_retry_delay_seconds; exact requested integer, including zero; diagnostic input does not prove application"
+    },
+    "scheduled_required": {
+      "candidate_delay_seconds": "selected nonnegative portable integer",
+      "maximum_interval_seconds": "finite cap from retained snapshot 2",
+      "retry_available_at": "checked failure_time plus selected seconds, strictly before original deadline if set",
+      "delay_source": "policy or failure_override; engine timeouts and engine interruptions always policy"
+    },
+    "scheduled_forbidden": [
+      "terminal_classification"
+    ],
+    "terminal_required": {
+      "terminal_classification": [
+        "non_retryable",
+        "attempts_exhausted",
+        "retry_delay_exceeds_policy_cap",
+        "retry_delay_exceeds_schedule_to_close",
+        "engine_timeout"
+      ]
+    },
+    "terminal_delay_classifications": [
+      "retry_delay_exceeds_policy_cap",
+      "retry_delay_exceeds_schedule_to_close"
+    ],
+    "terminal_delay_required": [
+      "candidate_delay_seconds",
+      "maximum_interval_seconds",
+      "delay_source"
+    ],
+    "terminal_without_selection": [
+      "non_retryable",
+      "attempts_exhausted",
+      "engine_timeout"
+    ],
+    "terminal_without_selection_forbidden": [
+      "candidate_delay_seconds",
+      "maximum_interval_seconds",
+      "delay_source"
+    ],
+    "terminal_forbidden": [
+      "retry_available_at"
+    ],
+    "unknown_members": "refused by a future consumer; never silently ignored",
+    "conditional_common": {
+      "timeout_kind": "required iff failure_source is engine_timeout; one of start_to_close, schedule_to_close, heartbeat; forbidden otherwise",
+      "engine_interruption": "only a fenced engine recovery branch; requested_delay_seconds and timeout_kind forbidden; any selected delay_source must be policy",
+      "engine_interruption_cap": "a validated snapshot-2 policy delay cannot exceed its normalized cap; retry_delay_exceeds_policy_cap is not a valid engine_interruption decision. A corrupt retained cap/delay relationship refuses before any decision, event, task, attempt or status mutation"
+    },
+    "delay_source_rule": "failure_override only for a still-admitted application failure with a supplied valid override; otherwise policy. A preempted application override stays requested diagnostic input only.",
+    "engine_timeout_terminal_classification": "reserved for overall schedule_to_close expiry; start_to_close/heartbeat before the total deadline may schedule the policy retry or terminate under their actual budget/cap/deadline branch"
+  },
+  "engine_receipt_proposal": {
+    "existing_required": [
+      "recorded",
+      "duplicate",
+      "reason",
+      "event_id",
+      "event_type",
+      "workflow_run_id",
+      "workflow_task_id",
+      "workflow_task_attempt",
+      "activity_execution_id",
+      "activity_attempt_id",
+      "worker_attempt_id",
+      "recorded_at",
+      "claim_released",
+      "created_task_ids"
+    ],
+    "recorded": true,
+    "reason": null,
+    "new_optional": [
+      "retry_disposition"
+    ],
+    "retry_disposition_present": "for a version-2 failed/timeout engine outcome; absent for a genuinely completed outcome",
+    "scheduled": {
+      "event_type": "ActivityRetryScheduled",
+      "claim_released": true,
+      "created_task_ids": "exactly one retained retry workflow task ID",
+      "retry_disposition": "scheduled"
+    },
+    "terminal_failed": {
+      "event_type": "ActivityFailed",
+      "claim_released": false,
+      "created_task_ids": [],
+      "retry_disposition": "terminal"
+    },
+    "terminal_timeout": {
+      "event_type": "ActivityTimedOut",
+      "claim_released": false,
+      "created_task_ids": [],
+      "retry_disposition": "terminal, with engine-owned timeout provenance"
+    },
+    "completed": {
+      "event_type": "ActivityCompleted",
+      "claim_released": false,
+      "created_task_ids": [],
+      "retry_disposition": "absent"
+    },
+    "http_boundary": "the proposed full reply envelopes and distinct refusal families are declared in http_proposal; they still require actual future handler/adapter implementation and qualification",
+    "boundary": "existing_required and outcome variants describe outcome receipts only; recovery retains its distinct existing recovered carrier declared in recovery_proposal"
+  },
+  "history": {
+    "identity": "same run/execution/real attempt/worker attempt/original task epoch as the prepared outcome receipt",
+    "scheduled": "one ActivityRetryScheduled for the real failed attempt, with matching stored retry_disposition, retry_available_at and actual selected retry_backoff_seconds; no following attempt exists until independently prepared",
+    "terminal": "one existing ActivityFailed or ActivityTimedOut outcome for the real attempt; matching retry_disposition; no retry task, following attempt/start or ActivityRetryScheduled",
+    "failure_preservation": "cap/deadline retry termination preserves the admitted application failure/type; already-due engine timeout preserves engine timeout provenance instead",
+    "cold_replay": "consume stored failed/timeout retry disposition and availability; never evaluate current policy/clock for that decision; no fetch-free completed replay claim",
+    "timeout_scheduled": "an actual pre-total-deadline start_to_close/heartbeat timeout may record ActivityRetryScheduled with retry_reason timeout, actual timeout_kind and policy-selected delay; no worker override is applied",
+    "interruption": "retain local_recovery and the engine RuntimeException provenance; scheduled uses the existing cold-replay retry reason; terminal uses ActivityFailed, except that an actually due timeout retains engine_timeout precedence",
+    "recovery_replay": "validate the exact original retained snapshot and Started authority, then consume the stored recovery decision and unknown stop state without recalculation from later new-authoring configuration, a fresh clock or physical-state substitution; do not repair a changed original graph and do not invoke a callback",
+    "interruption_retry_reason": "cold_replay"
+  },
+  "ranges": {
+    "portable_integer_minimum": 0,
+    "portable_integer_maximum": 9007199254740991,
+    "legacy_batch_backoff_ceiling_seconds": 86400,
+    "legacy_batch_attempt_count_ceiling": 100,
+    "v2_inherits_these_batch_ceilings": false,
+    "checked_selection": "a selected retry must also fit the backend duration arithmetic and resulting bindable UTC timestamp before writes; no wrap, clamp, float coercion or immediate fallback",
+    "terminal_candidate": "a portable diagnostic integer is not an executed duration or retry availability",
+    "remaining_snapshot_binding": "Core proposed the exact ten-key snapshot, new-route bounds and closed policy above; final joint source reconciliation remains before freeze"
+  },
+  "cases": [
+    {
+      "id": "local_v2_override_absent",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false
+        }
+      },
+      "expected": {
+        "report_shape": "accepted",
+        "requested_delay_present": false
+      },
+      "canonical_ids": [
+        "missing_override_uses_policy"
+      ]
+    },
+    {
+      "id": "local_v2_override_zero",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 0
+        }
+      },
+      "expected": {
+        "report_shape": "accepted",
+        "requested_delay_present": true
+      },
+      "canonical_ids": [
+        "zero_override_is_present"
+      ]
+    },
+    {
+      "id": "local_v2_override_positive",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        }
+      },
+      "expected": {
+        "report_shape": "accepted",
+        "requested_delay_present": true
+      },
+      "canonical_ids": [
+        "override_replaces_policy"
+      ]
+    },
+    {
+      "id": "local_v2_override_null",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": null
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_override_true",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": true
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_override_false",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": false
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_override_string",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": "5"
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_override_fraction",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 1.5
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_override_negative",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": -1
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_override_portable_overflow",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 9007199254740992
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_override_integral_float_lexeme",
+      "carrier": {
+        "raw_report_member": "\"next_retry_delay_seconds\":5.0"
+      },
+      "expected": {
+        "report_shape": "refused",
+        "must_preserve_numeric_lexeme_class": true,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_completed_override_forbidden",
+      "carrier": {
+        "outcome": "completed",
+        "extra_member": {
+          "next_retry_delay_seconds": 0
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_timed_out_override_forbidden",
+      "carrier": {
+        "outcome": "timed_out",
+        "extra_member": {
+          "next_retry_delay_seconds": 0
+        }
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_worker_retry_disposition_forbidden",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "extra_member": "retry_disposition"
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_worker_backoff_seconds_forbidden",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "extra_member": "backoff_seconds"
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_worker_retry_backoff_seconds_forbidden",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "extra_member": "retry_backoff_seconds"
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_worker_retry_available_at_forbidden",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "extra_member": "retry_available_at"
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_worker_failure_time_forbidden",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "extra_member": "failure_time"
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_worker_original_schedule_to_close_deadline_at_forbidden",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "extra_member": "original_schedule_to_close_deadline_at"
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_worker_snapshot_version_forbidden",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "extra_member": "snapshot_version"
+      },
+      "expected": {
+        "report_shape": "refused",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_gate_installed_prepared_local_role",
+      "carrier": {
+        "otherwise_valid": true,
+        "one_missing_or_mismatching_gate": "installed_prepared_local_role"
+      },
+      "expected": {
+        "local_v2": "unsupported",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_gate_capability_activity_retry_delay_override_v1",
+      "carrier": {
+        "otherwise_valid": true,
+        "one_missing_or_mismatching_gate": "capability_activity_retry_delay_override_v1"
+      },
+      "expected": {
+        "local_v2": "unsupported",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_gate_local_contract_version",
+      "carrier": {
+        "otherwise_valid": true,
+        "one_missing_or_mismatching_gate": "local_contract_version"
+      },
+      "expected": {
+        "local_v2": "unsupported",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_gate_retained_snapshot_version",
+      "carrier": {
+        "otherwise_valid": true,
+        "one_missing_or_mismatching_gate": "retained_snapshot_version"
+      },
+      "expected": {
+        "local_v2": "unsupported",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_gate_original_claim_supports_selected_local_v2_mode",
+      "carrier": {
+        "otherwise_valid": true,
+        "one_missing_or_mismatching_gate": "original_claim_supports_selected_local_v2_mode"
+      },
+      "expected": {
+        "local_v2": "unsupported",
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_run",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "run"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_execution",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "execution"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_activity_attempt",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "activity_attempt"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_worker_attempt",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "worker_attempt"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_workflow_task",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "workflow_task"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_task_epoch",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "task_epoch"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_owner",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "owner"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_descriptor_fingerprint",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "descriptor_fingerprint"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_original_start",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "original_start"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_authority_original_deadline",
+      "carrier": {
+        "otherwise_valid": true,
+        "isolated_authoritative_mismatch": "original_deadline"
+      },
+      "expected": {
+        "recorded": false,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_availability_before_deadline",
+      "carrier": {
+        "failure_time_seconds": 100,
+        "original_deadline_seconds": 105,
+        "override": 4,
+        "maximum_interval_seconds": 20,
+        "original_claim_live": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "terminal_classification": null,
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "new_attempt_count": 0,
+        "original_application_failure_preserved": true
+      },
+      "canonical_ids": [
+        "override_before_deadline"
+      ]
+    },
+    {
+      "id": "local_v2_availability_equal_deadline",
+      "carrier": {
+        "failure_time_seconds": 99,
+        "original_deadline_seconds": 100,
+        "override": 1,
+        "maximum_interval_seconds": 20,
+        "original_claim_live": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "original_application_failure_preserved": true
+      },
+      "canonical_ids": [
+        "override_reaches_deadline"
+      ]
+    },
+    {
+      "id": "local_v2_availability_after_deadline",
+      "carrier": {
+        "failure_time_seconds": 100,
+        "original_deadline_seconds": 105,
+        "override": 6,
+        "maximum_interval_seconds": 20,
+        "original_claim_live": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "original_application_failure_preserved": true
+      },
+      "canonical_ids": [
+        "override_passes_deadline"
+      ]
+    },
+    {
+      "id": "local_v2_at_deadline_engine_timeout",
+      "carrier": {
+        "engine_sample_seconds": 100,
+        "original_deadline_seconds": 100,
+        "submitted_report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 0
+        },
+        "lease_and_run_deadlines": "later than sample"
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "engine_timeout",
+        "override_applied": false,
+        "original_application_failure_preserved": false,
+        "engine_timeout_provenance_preserved": true,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "canonical_zero_at_deadline_is_prepared_http_pass": false
+      }
+    },
+    {
+      "id": "local_v2_cap_exceeded",
+      "carrier": {
+        "original_claim_live": true,
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic local failure",
+          "exception_type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 21
+        },
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "retry_delay_exceeds_policy_cap",
+        "candidate_delay_seconds": 21,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "original_application_failure_preserved": true
+      },
+      "canonical_ids": [
+        "override_exceeds_cap"
+      ]
+    },
+    {
+      "id": "local_v2_precedence_non_retryable",
+      "carrier": {
+        "original_claim_live": true,
+        "one_terminal_axis": "non_retryable",
+        "valid_override": 21,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "non_retryable",
+        "candidate_delay_member": "absent",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_precedence_attempts_exhausted",
+      "carrier": {
+        "original_claim_live": true,
+        "one_terminal_axis": "attempts_exhausted",
+        "valid_override": 21,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "attempts_exhausted",
+        "candidate_delay_member": "absent",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_rollback",
+      "carrier": {
+        "first_transaction": "rollback"
+      },
+      "expected": {
+        "published_sample_count": 0,
+        "published_decision_count": 0
+      }
+    },
+    {
+      "id": "local_v2_lost_outcome_reply",
+      "carrier": {
+        "first_outcome": "committed",
+        "reply": "lost",
+        "identical_retry_at": "later clock"
+      },
+      "expected": {
+        "duplicate": true,
+        "stored_sample_and_decision_unchanged": true,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_changed_duplicate",
+      "carrier": {
+        "first_outcome": "committed",
+        "retry_override": "changed"
+      },
+      "expected": {
+        "recorded": false,
+        "reason": "local_activity_outcome_mismatch",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_duplicate_after_expiry",
+      "carrier": {
+        "first_outcome": "committed",
+        "identical_retry": "after original lease expiry"
+      },
+      "expected": {
+        "duplicate": true,
+        "stored_receipt_first": true,
+        "new_retry_calculation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_missing_anchor",
+      "carrier": {
+        "execution": "v1 unprepared batch with otherwise plausible duration reports"
+      },
+      "expected": {
+        "local_v2": "unsupported",
+        "anchor_reconstruction_count": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_duplicate_prepare_time",
+      "carrier": {
+        "original_prepare": "retained",
+        "duplicate_server_time": "later"
+      },
+      "expected": {
+        "original_deadline_unchanged": true,
+        "new_failure_clock_authority": false
+      }
+    },
+    {
+      "id": "local_v2_cold_replay",
+      "carrier": {
+        "outcome": "retained",
+        "current_policy_and_clock": "changed"
+      },
+      "expected": {
+        "stored_disposition_and_availability_unchanged": true,
+        "new_retry_calculation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_timestamp_overflow",
+      "carrier": {
+        "sample": "maximum bindable backend instant minus 500000 microseconds",
+        "lease_expiry": "maximum bindable backend instant",
+        "override": 1,
+        "maximum_interval_seconds": 1,
+        "original_deadline": null
+      },
+      "expected": {
+        "recorded": false,
+        "reason": "invalid_activity_retry_delay",
+        "durable_mutation_count": 0,
+        "wrap_or_clamp": false
+      }
+    },
+    {
+      "id": "local_v2_portable_not_duration_bound",
+      "carrier": {
+        "override": 9007199254740991,
+        "maximum_interval_seconds": 9007199254740991,
+        "original_deadline": null,
+        "condition": "selected duration or resulting backend timestamp not representable"
+      },
+      "expected": {
+        "recorded": false,
+        "reason": "invalid_activity_retry_delay",
+        "durable_mutation_count": 0,
+        "wrap_or_clamp": false
+      }
+    },
+    {
+      "id": "local_v2_legacy_zero_tail",
+      "carrier": {
+        "mode": "unprepared local contract 1",
+        "snapshot_version": 1,
+        "short_or_missing_backoff": "existing value"
+      },
+      "expected": {
+        "legacy_interpretation_unchanged": true,
+        "local_v2_result": false
+      }
+    },
+    {
+      "id": "local_v2_concurrent_identical_outcomes",
+      "carrier": {
+        "two_valid_fenced_outcomes": "same original attempt and normalized report",
+        "execution": "one canonical transaction serializes first"
+      },
+      "expected": {
+        "committed_decision_count": 1,
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "winner_duplicate": false,
+        "loser_duplicate": true,
+        "loser_reuses_winner_sample_and_decision": true,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_concurrent_changed_override",
+      "carrier": {
+        "two_valid_fenced_outcomes": "same original attempt, distinct valid override integers",
+        "execution": "one canonical transaction serializes first"
+      },
+      "expected": {
+        "committed_decision_count": 1,
+        "new_retry_task_count_at_most": 1,
+        "new_retry_event_count_at_most": 1,
+        "loser_recorded": false,
+        "loser_reason": "local_activity_outcome_mismatch",
+        "loser_mutation_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_late_duplicate_retains_pre_deadline_terminal",
+      "carrier": {
+        "first_valid_outcome": {
+          "failure_time_seconds": 99,
+          "original_deadline_seconds": 100,
+          "override": 1,
+          "committed": true
+        },
+        "reply": "lost",
+        "identical_retry_sample_seconds": 100
+      },
+      "expected": {
+        "duplicate": true,
+        "retained_failure_time_seconds": 99,
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "original_application_failure_preserved": true,
+        "fresh_engine_timeout_calculation_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_completed_at_deadline_engine_timeout",
+      "carrier": {
+        "engine_sample_seconds": 100,
+        "original_deadline_seconds": 100,
+        "submitted_outcome": "completed",
+        "result": "otherwise valid independently encoded Avro result",
+        "lease_and_run_deadlines": "later than sample"
+      },
+      "expected": {
+        "event_type": "ActivityTimedOut",
+        "terminal_classification": "engine_timeout",
+        "submitted_completion_published": false,
+        "engine_timeout_provenance_preserved": true,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_start_to_close_timeout_policy_retry",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "start_to_close",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20,
+        "submitted_failed_override": 1
+      },
+      "expected": {
+        "decision": "scheduled",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "start_to_close",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 5,
+        "retry_available_at_seconds": 95,
+        "submitted_override_applied": false,
+        "event_type": "ActivityRetryScheduled",
+        "retry_reason": "timeout",
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_start_to_close_timeout_exhausted",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "start_to_close",
+        "attempt_number": 3,
+        "max_attempts": 3
+      },
+      "expected": {
+        "decision": "terminal",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "start_to_close",
+        "terminal_classification": "attempts_exhausted",
+        "candidate_delay_member": "absent",
+        "event_type": "ActivityTimedOut",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_start_to_close_timeout_policy_reaches_deadline",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "start_to_close",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 10,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "start_to_close",
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 10,
+        "event_type": "ActivityTimedOut",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_heartbeat_timeout_policy_retry",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "heartbeat",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20,
+        "submitted_failed_override": 1
+      },
+      "expected": {
+        "decision": "scheduled",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "heartbeat",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 5,
+        "retry_available_at_seconds": 95,
+        "submitted_override_applied": false,
+        "event_type": "ActivityRetryScheduled",
+        "retry_reason": "timeout",
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_heartbeat_timeout_exhausted",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "heartbeat",
+        "attempt_number": 3,
+        "max_attempts": 3
+      },
+      "expected": {
+        "decision": "terminal",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "heartbeat",
+        "terminal_classification": "attempts_exhausted",
+        "candidate_delay_member": "absent",
+        "event_type": "ActivityTimedOut",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_heartbeat_timeout_policy_reaches_deadline",
+      "carrier": {
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actual_timeout_kind": "heartbeat",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 10,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "failure_source": "engine_timeout",
+        "timeout_kind": "heartbeat",
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 10,
+        "event_type": "ActivityTimedOut",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_timed_out_report_not_actually_due",
+      "carrier": {
+        "report": {
+          "outcome": "timed_out"
+        },
+        "all_actual_timeout_deadlines": "later than engine sample"
+      },
+      "expected": {
+        "recorded": false,
+        "reason": "local_activity_timeout_not_due",
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_range_max_attempts_0",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "max_attempts",
+        "value": 0,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_max_attempts_1",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "max_attempts",
+        "value": 1,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_max_attempts_1024",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "max_attempts",
+        "value": 1024,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_max_attempts_1025",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "max_attempts",
+        "value": 1025,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_backoff_list_length_1024",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "backoff_list_length",
+        "value": 1024,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_backoff_list_length_1025",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "backoff_list_length",
+        "value": 1025,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_error_type_count_128",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "error_type_count",
+        "value": 128,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_error_type_count_129",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "error_type_count",
+        "value": 129,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_error_type_utf8_bytes_255",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "error_type_utf8_bytes",
+        "value": 255,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_error_type_utf8_bytes_256",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "error_type_utf8_bytes",
+        "value": 256,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_timeout_seconds_0",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "timeout_seconds",
+        "value": 0,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_timeout_seconds_1",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "timeout_seconds",
+        "value": 1,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_timeout_seconds_2147483647",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "timeout_seconds",
+        "value": 2147483647,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_timeout_seconds_2147483648",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "timeout_seconds",
+        "value": 2147483648,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_delay_seconds_9007199254740991",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "delay_seconds",
+        "value": 9007199254740991,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": true,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_range_delay_seconds_9007199254740992",
+      "carrier": {
+        "isolated_policy_or_snapshot_boundary": "delay_seconds",
+        "value": 9007199254740992,
+        "other_shapes": "valid",
+        "representable_deadline": "independent subsequent guard if applicable"
+      },
+      "expected": {
+        "shape_range_accepted": false,
+        "durable_mutation_count_if_refused": 0,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_snapshot_missing_required_key",
+      "carrier": {
+        "isolated_closed_shape_mutation": "missing_required_key"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_unknown_key",
+      "carrier": {
+        "isolated_closed_shape_mutation": "unknown_key"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_Boolean_numeric",
+      "carrier": {
+        "isolated_closed_shape_mutation": "Boolean_numeric"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_null_attempt_budget",
+      "carrier": {
+        "isolated_closed_shape_mutation": "null_attempt_budget"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_non_null_schedule_to_start_timeout",
+      "carrier": {
+        "isolated_closed_shape_mutation": "non_null_schedule_to_start_timeout"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_wire_generator_descriptor",
+      "carrier": {
+        "isolated_closed_shape_mutation": "wire_generator_descriptor"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_worker_snapshot_version",
+      "carrier": {
+        "isolated_closed_shape_mutation": "worker_snapshot_version"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_snapshot_oversized_generated_budget_before_expansion",
+      "carrier": {
+        "isolated_closed_shape_mutation": "oversized_generated_budget_before_expansion"
+      },
+      "expected": {
+        "snapshot_or_policy": "refused",
+        "allocation_after_refusal": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_terminal_huge_candidate_is_not_duration",
+      "carrier": {
+        "original_claim_live": true,
+        "failure_source": "application",
+        "requested_delay_seconds": 9007199254740991,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "retry_delay_exceeds_policy_cap",
+        "candidate_delay_seconds": 9007199254740991,
+        "retry_available_at_member": "absent",
+        "duration_conversion_for_terminal_candidate": false,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0
+      }
+    },
+    {
+      "id": "local_v2_flattened_generated_wire_tail_preserved",
+      "carrier": {
+        "wire_policy_mode": "generated",
+        "max_attempts": 1024,
+        "backoff_list_length": 1024,
+        "all_entries": "valid and no larger than supplied finite cap"
+      },
+      "expected": {
+        "wire_shape": "accepted",
+        "stored_list_length": 1024,
+        "unused_supplied_tail_preserved": true,
+        "invented_exact_length_rule": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_authoring_generated_expansion_positions",
+      "carrier": {
+        "boundary": "authoring expansion before flattened worker wire",
+        "max_attempts": 1024
+      },
+      "expected": {
+        "maximum_generated_retry_positions": 1023,
+        "first_attempt_included_in_budget": true,
+        "before_work_bound_checked": true,
+        "flattened_wire_exact_length_inferred": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_terminal_without_selection_delay_source_forbidden",
+      "carrier": {
+        "otherwise_valid_disposition": {
+          "decision": "terminal",
+          "terminal_classification": "attempts_exhausted"
+        },
+        "extra_member": {
+          "delay_source": "policy"
+        }
+      },
+      "expected": {
+        "disposition_shape": "refused",
+        "selected_delay_claim": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_http_unsupported_server_literal_capability",
+      "carrier": {
+        "fresh_v2_mode_gate": "server_literal_capability",
+        "other_gates": "valid installed prepared v2 baseline",
+        "report": "otherwise valid failed report"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "prepared_capability_refusal",
+        "required_capability": "activity_retry_delay_override_v1",
+        "unavailable": [
+          "activity_retry_delay_override_v1"
+        ],
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_http_unsupported_original_local_contract_version",
+      "carrier": {
+        "fresh_v2_mode_gate": "original_local_contract_version",
+        "other_gates": "valid installed prepared v2 baseline",
+        "report": "otherwise valid failed report"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "prepared_capability_refusal",
+        "required_capability": "activity_retry_delay_override_v1",
+        "unavailable": [
+          "local_activity_contract_version"
+        ],
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_http_unsupported_retained_snapshot_version",
+      "carrier": {
+        "fresh_v2_mode_gate": "retained_snapshot_version",
+        "other_gates": "valid installed prepared v2 baseline",
+        "report": "otherwise valid failed report"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "prepared_capability_refusal",
+        "required_capability": "activity_retry_delay_override_v1",
+        "unavailable": [
+          "activity_retry_snapshot_version"
+        ],
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_http_unsupported_original_claim_capability",
+      "carrier": {
+        "fresh_v2_mode_gate": "original_claim_capability",
+        "other_gates": "valid installed prepared v2 baseline",
+        "report": "otherwise valid failed report"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "prepared_capability_refusal",
+        "required_capability": "activity_retry_delay_override_v1",
+        "unavailable": [
+          "original_claim_activity_retry_delay_override_v1"
+        ],
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_http_current_native_role_absent",
+      "carrier": {
+        "source": "current native reference",
+        "protocol": "1.20",
+        "report": "otherwise valid"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "prepared_capability_refusal",
+        "required_capability": "prepared_local_activities",
+        "unavailable": [
+          "installed_runtime_prepared_local_activity"
+        ],
+        "local_v2_path_qualified": false
+      }
+    },
+    {
+      "id": "local_v2_http_malformed_override_owned_live",
+      "carrier": {
+        "namespace_auth": "valid",
+        "isolated_authority_state": "owned_live",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic",
+          "next_retry_delay_seconds": null
+        },
+        "preflight_phase": "new_member_present"
+      },
+      "expected": {
+        "http_status": 422,
+        "response_family": "strict_override_refusal",
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "durable_mutation_count": 0,
+        "retained_receipt_bypasses_strict_shape": false
+      }
+    },
+    {
+      "id": "local_v2_http_malformed_override_owned_stale",
+      "carrier": {
+        "namespace_auth": "valid",
+        "isolated_authority_state": "owned_stale",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic",
+          "next_retry_delay_seconds": null
+        },
+        "preflight_phase": "new_member_present"
+      },
+      "expected": {
+        "http_status": 422,
+        "response_family": "strict_override_refusal",
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "durable_mutation_count": 0,
+        "retained_receipt_bypasses_strict_shape": false
+      }
+    },
+    {
+      "id": "local_v2_http_malformed_override_foreign_missing",
+      "carrier": {
+        "namespace_auth": "valid",
+        "isolated_authority_state": "foreign_missing",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic",
+          "next_retry_delay_seconds": null
+        },
+        "preflight_phase": "new_member_present"
+      },
+      "expected": {
+        "http_status": 422,
+        "response_family": "strict_override_refusal",
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "durable_mutation_count": 0,
+        "retained_receipt_bypasses_strict_shape": false
+      }
+    },
+    {
+      "id": "local_v2_http_malformed_override_matching_old_receipt",
+      "carrier": {
+        "namespace_auth": "valid",
+        "isolated_authority_state": "matching_old_receipt",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic",
+          "next_retry_delay_seconds": null
+        },
+        "preflight_phase": "new_member_present"
+      },
+      "expected": {
+        "http_status": 422,
+        "response_family": "strict_override_refusal",
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "durable_mutation_count": 0,
+        "retained_receipt_bypasses_strict_shape": false
+      }
+    },
+    {
+      "id": "local_v2_http_controller_missing",
+      "carrier": {
+        "otherwise_valid": true,
+        "actual_stage_and_condition": "controller_missing"
+      },
+      "expected": {
+        "http_status": 404,
+        "response_family": "controller_attempt_missing",
+        "reason": "activity_attempt_not_found",
+        "durable_mutation_count": 0,
+        "generic_recorded_false_shape_accepted": false
+      }
+    },
+    {
+      "id": "local_v2_http_controller_stale",
+      "carrier": {
+        "otherwise_valid": true,
+        "actual_stage_and_condition": "controller_stale"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "controller_registration_stale",
+        "reason": "stale_worker_registration",
+        "durable_mutation_count": 0,
+        "generic_recorded_false_shape_accepted": false
+      }
+    },
+    {
+      "id": "local_v2_http_engine_stale_attempt",
+      "carrier": {
+        "otherwise_valid": true,
+        "actual_stage_and_condition": "engine_stale_attempt"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "engine_refusal",
+        "reason": "stale_activity_attempt",
+        "durable_mutation_count": 0,
+        "generic_recorded_false_shape_accepted": false
+      }
+    },
+    {
+      "id": "local_v2_http_changed_retained_reply",
+      "carrier": {
+        "otherwise_valid": true,
+        "actual_stage_and_condition": "changed_retained_reply"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "engine_refusal",
+        "reason": "local_activity_outcome_mismatch",
+        "durable_mutation_count": 0,
+        "generic_recorded_false_shape_accepted": false
+      }
+    },
+    {
+      "id": "local_v2_http_first_scheduled",
+      "carrier": {
+        "actual_case_decision": "first_scheduled",
+        "otherwise_valid": true
+      },
+      "expected": {
+        "http_status": 200,
+        "response_family": "recorded_retry_decision",
+        "event_type": "ActivityRetryScheduled",
+        "duplicate": false,
+        "outer_reason": null,
+        "exact_stored_disposition_required": true,
+        "closed_identity_binding_required": true
+      }
+    },
+    {
+      "id": "local_v2_http_first_terminal",
+      "carrier": {
+        "actual_case_decision": "first_terminal",
+        "otherwise_valid": true
+      },
+      "expected": {
+        "http_status": 200,
+        "response_family": "recorded_retry_decision",
+        "event_type": "ActivityFailed",
+        "duplicate": false,
+        "outer_reason": null,
+        "exact_stored_disposition_required": true,
+        "closed_identity_binding_required": true
+      }
+    },
+    {
+      "id": "local_v2_http_engine_timeout_terminal",
+      "carrier": {
+        "actual_case_decision": "engine_timeout_terminal",
+        "otherwise_valid": true
+      },
+      "expected": {
+        "http_status": 200,
+        "response_family": "recorded_retry_decision",
+        "event_type": "ActivityTimedOut",
+        "duplicate": false,
+        "outer_reason": null,
+        "exact_stored_disposition_required": true,
+        "closed_identity_binding_required": true
+      }
+    },
+    {
+      "id": "local_v2_http_retained_late_terminal",
+      "carrier": {
+        "actual_case_decision": "retained_late_terminal",
+        "otherwise_valid": true
+      },
+      "expected": {
+        "http_status": 200,
+        "response_family": "recorded_retry_decision",
+        "event_type": "ActivityFailed",
+        "duplicate": true,
+        "outer_reason": null,
+        "exact_stored_disposition_required": true,
+        "closed_identity_binding_required": true
+      }
+    },
+    {
+      "id": "local_v2_http_response_extra_key",
+      "carrier": {
+        "otherwise_exact_positive_response": true,
+        "isolated_mutation": "extra top-level member"
+      },
+      "expected": {
+        "response_binding": "refused before authoritative decision acceptance",
+        "new_callback_permission": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_http_response_wrong_reason_type",
+      "carrier": {
+        "otherwise_exact_positive_response": true,
+        "isolated_mutation": "reason false instead of null"
+      },
+      "expected": {
+        "response_binding": "refused before authoritative decision acceptance",
+        "new_callback_permission": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_http_response_missing_protocol",
+      "carrier": {
+        "otherwise_exact_positive_response": true,
+        "isolated_mutation": "missing protocol_version"
+      },
+      "expected": {
+        "response_binding": "refused before authoritative decision acceptance",
+        "new_callback_permission": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_http_response_mixed_stale_engine",
+      "carrier": {
+        "otherwise_exact_positive_response": true,
+        "isolated_mutation": "controller stale body mixed with engine refusal fields"
+      },
+      "expected": {
+        "response_binding": "refused before authoritative decision acceptance",
+        "new_callback_permission": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_http_response_duplicate_identical",
+      "carrier": {
+        "otherwise_exact_positive_response": true,
+        "isolated_mutation": "identical duplicate raw JSON member"
+      },
+      "expected": {
+        "response_binding": "refused before authoritative decision acceptance",
+        "new_callback_permission": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_http_response_duplicate_conflicting",
+      "carrier": {
+        "otherwise_exact_positive_response": true,
+        "isolated_mutation": "conflicting duplicate raw JSON member"
+      },
+      "expected": {
+        "response_binding": "refused before authoritative decision acceptance",
+        "new_callback_permission": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_http_response_invalid_utf8",
+      "carrier": {
+        "otherwise_exact_positive_response": true,
+        "isolated_mutation": "invalid original UTF-8 bytes"
+      },
+      "expected": {
+        "response_binding": "refused before authoritative decision acceptance",
+        "new_callback_permission": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_http_response_trailing_payload",
+      "carrier": {
+        "otherwise_exact_positive_response": true,
+        "isolated_mutation": "exact positive JSON followed by nonwhitespace or another JSON value"
+      },
+      "expected": {
+        "response_binding": "refused before authoritative decision acceptance",
+        "new_callback_permission": false,
+        "runtime_result": null
+      }
+    },
+    {
+      "id": "local_v2_shape_preflight_completed_reference_no_fetch",
+      "carrier": {
+        "report": "completed with structurally valid external envelope",
+        "scoped_claim_authority": "actually read and proves the conjunctive v2 mode",
+        "preflight_phase": "new_member_absent_proven_v2"
+      },
+      "expected": {
+        "shape_phase_only": true,
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "callback_count": 0,
+        "failure_clock_sample_count": 0,
+        "payload_authority_or_bytes_qualified": false,
+        "counter_scope": "pure validator invocation only; earlier scoped authority reads are outside these counters",
+        "request_zero_lookup_claim": false
+      }
+    },
+    {
+      "id": "local_v2_completed_reference_replay_not_fetch_free",
+      "carrier": {
+        "completed_report": "external reference",
+        "initial_receipt": "may exist",
+        "fresh_resolution": "unavailable"
+      },
+      "expected": {
+        "retry_decision_recovery_guarantee_applies": false,
+        "completed_payload_contract": "existing separate gate",
+        "repeat_callback_permission": false
+      }
+    },
+    {
+      "id": "local_v2_http_backend_failure_not_semantic_pass",
+      "carrier": {
+        "otherwise_valid": true,
+        "response": "generic backend/transport failure"
+      },
+      "expected": {
+        "semantic_negative_pass": false,
+        "decision": "unknown",
+        "repeat_callback_permission": false
+      }
+    },
+    {
+      "id": "local_v2_http_raw_nan",
+      "carrier": {
+        "otherwise_valid_request": true,
+        "override_json_lexeme": "NaN"
+      },
+      "expected": {
+        "http_status": 400,
+        "response_family": "native_malformed_json",
+        "typed_override_verdict": false,
+        "durable_mutation_count": 0,
+        "json_error": "Syntax error"
+      }
+    },
+    {
+      "id": "local_v2_http_raw_infinity",
+      "carrier": {
+        "otherwise_valid_request": true,
+        "override_json_lexeme": "Infinity"
+      },
+      "expected": {
+        "http_status": 400,
+        "response_family": "native_malformed_json",
+        "typed_override_verdict": false,
+        "durable_mutation_count": 0,
+        "json_error": "Syntax error"
+      }
+    },
+    {
+      "id": "local_v2_http_raw_overflowing_exponent",
+      "carrier": {
+        "otherwise_valid_request": true,
+        "override_json_lexeme": "1e999"
+      },
+      "expected": {
+        "http_status": 400,
+        "response_family": "native_malformed_json",
+        "typed_override_verdict": false,
+        "durable_mutation_count": 0,
+        "json_error": "Syntax error"
+      }
+    },
+    {
+      "id": "local_v2_http_raw_invalid_utf8",
+      "carrier": {
+        "raw_request_hex": "7b227265706f7274223a22ff227d"
+      },
+      "expected": {
+        "http_status": 400,
+        "response_family": "native_malformed_json",
+        "typed_override_verdict": false,
+        "durable_mutation_count": 0,
+        "json_error": "Malformed UTF-8 characters, possibly incorrectly encoded"
+      }
+    },
+    {
+      "id": "local_v2_http_attempt_removed_before_transaction",
+      "carrier": {
+        "earlier_controller_lookup": "original rows valid",
+        "serialized_legal_cleanup": "original attempt absent at canonical engine lookup, with real backend constraints respected"
+      },
+      "expected": {
+        "http_status": 404,
+        "response_family": "engine_attempt_missing_after_controller_lookup",
+        "reason": "activity_attempt_not_found",
+        "controller_missing_shape_accepted": false,
+        "setup_or_backend_error_counts_as_pass": false
+      }
+    },
+    {
+      "id": "local_v2_dispatch_no_member_legacy_missing_precedes_malformed",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17
+        },
+        "next_retry_delay_seconds_member": "absent",
+        "scoped_task_attempt": "missing",
+        "original_mode": "not read"
+      },
+      "expected": {
+        "http_status": 404,
+        "response_family": "controller_attempt_missing",
+        "reason": "activity_attempt_not_found",
+        "early_v2_preflight_count": 0,
+        "legacy_precedence_preserved": true,
+        "v2_support_inferred": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_dispatch_no_member_legacy_stale_precedes_malformed",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17
+        },
+        "next_retry_delay_seconds_member": "absent",
+        "scoped_original_claim": "valid legacy mode",
+        "fresh_registration": "stale with no retained outcome and no cancellation exception"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "controller_registration_stale",
+        "reason": "stale_worker_registration",
+        "early_v2_preflight_count": 0,
+        "legacy_precedence_preserved": true,
+        "v2_support_inferred": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_dispatch_no_member_v2_after_real_mode",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic"
+        },
+        "next_retry_delay_seconds_member": "absent",
+        "scoped_original_claim": "actually read and proves every conjunctive v2 gate"
+      },
+      "expected": {
+        "phase": "new_member_absent_proven_v2",
+        "pure_validation": "accept shape only after actual mode lookup",
+        "fresh_registration_or_fence_before_pure_validation": false,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "request_zero_lookup_claim": false,
+        "mode_from_request_presence": false
+      }
+    },
+    {
+      "id": "local_v2_dispatch_no_member_v2_malformed_after_real_mode",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17
+        },
+        "next_retry_delay_seconds_member": "absent",
+        "scoped_original_claim": "actually read and proves every conjunctive v2 gate"
+      },
+      "expected": {
+        "phase": "new_member_absent_proven_v2",
+        "pure_validation": "refuse before fresh registration/fence/clock/payload work",
+        "request_zero_lookup_claim": false,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "new_http_reason_alias_selected": false,
+        "http_status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome"
+      }
+    },
+    {
+      "id": "local_v2_dispatch_supplied_valid_override_cannot_grant_mode",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic",
+          "next_retry_delay_seconds": 0
+        },
+        "phase_a": "pure validation accepts",
+        "scoped_original_claim": "actual local contract version 1; other required gates valid"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "prepared_capability_refusal",
+        "required_capability": "activity_retry_delay_override_v1",
+        "unavailable": [
+          "local_activity_contract_version"
+        ],
+        "v2_support_inferred": false,
+        "policy_or_clock_selection_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0
+      }
+    },
+    {
+      "id": "local_v2_http_valid_override_invalid_message",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17,
+          "next_retry_delay_seconds": 0
+        },
+        "preflight_phase": "new_member_present",
+        "scoped_original_mode": "unread and unknown"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "v2_support_inferred": false
+      }
+    },
+    {
+      "id": "local_v2_http_valid_override_unknown_report_member",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic",
+          "next_retry_delay_seconds": 0,
+          "unknown_report_member": true
+        },
+        "preflight_phase": "new_member_present",
+        "scoped_original_mode": "unread and unknown"
+      },
+      "expected": {
+        "http_status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "v2_support_inferred": false
+      }
+    },
+    {
+      "id": "local_v2_http_invalid_override_and_invalid_message",
+      "carrier": {
+        "report": {
+          "outcome": "failed",
+          "message": 17,
+          "next_retry_delay_seconds": null
+        },
+        "preflight_phase": "new_member_present",
+        "scoped_original_mode": "unread and unknown"
+      },
+      "expected": {
+        "http_status": 422,
+        "response_family": "strict_override_refusal",
+        "reason": "invalid_activity_retry_delay",
+        "generic_report_error_preempts_override": false,
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "v2_support_inferred": false
+      }
+    },
+    {
+      "id": "local_v2_http_forbidden_override_and_invalid_completed_result",
+      "carrier": {
+        "report": {
+          "outcome": "completed",
+          "result": 17,
+          "next_retry_delay_seconds": 0
+        },
+        "preflight_phase": "new_member_present",
+        "scoped_original_mode": "unread and unknown"
+      },
+      "expected": {
+        "http_status": 422,
+        "response_family": "strict_override_refusal",
+        "reason": "invalid_activity_retry_delay",
+        "generic_report_error_preempts_override": false,
+        "storage_lookup_count": 0,
+        "payload_fetch_count": 0,
+        "failure_clock_sample_count": 0,
+        "durable_mutation_count": 0,
+        "next_callback_count": 0,
+        "v2_support_inferred": false
+      }
+    },
+    {
+      "id": "local_v2_recovery_policy_retry",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "scheduled",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 5,
+        "retry_available_at_seconds": 95,
+        "event_type": "ActivityRetryScheduled",
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "recovered": true,
+        "status": 200,
+        "response_family": "recovered_retry_decision",
+        "retry_reason": "cold_replay",
+        "maximum_interval_seconds": 20
+      }
+    },
+    {
+      "id": "local_v2_recovery_zero_policy_retry",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 0,
+        "maximum_interval_seconds": 0
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "scheduled",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 0,
+        "retry_available_at_seconds": 90,
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "retry_reason": "cold_replay",
+        "maximum_interval_seconds": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_policy_non_retryable",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20,
+        "snapshot_non_retryable_error_types": [
+          "RuntimeException"
+        ]
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "terminal",
+        "terminal_classification": "non_retryable",
+        "candidate_delay_member": "absent",
+        "delay_source_member": "absent",
+        "event_type": "ActivityFailed",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "maximum_interval_member": "absent"
+      }
+    },
+    {
+      "id": "local_v2_recovery_attempts_exhausted",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 3,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "terminal",
+        "terminal_classification": "attempts_exhausted",
+        "candidate_delay_member": "absent",
+        "delay_source_member": "absent",
+        "event_type": "ActivityFailed",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "maximum_interval_member": "absent"
+      }
+    },
+    {
+      "id": "local_v2_recovery_corrupt_snapshot_cap_refusal",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "original contract 2 and retained claim otherwise valid; the stored execution snapshot is deliberately corrupted",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 21,
+        "maximum_interval_seconds": 20,
+        "original_started_authority": "retains the original valid delay 5/cap 20 snapshot unchanged",
+        "retained_snapshot_mutation": "execution snapshot policy delay changed to 21 while cap remains 20"
+      },
+      "expected": {
+        "verdict": "corrupt_retained_snapshot_refusal",
+        "retry_disposition_member": "absent",
+        "published_sample_count": 0,
+        "published_decision_count": 0,
+        "new_event_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "attempt_status_mutation_count": 0,
+        "durable_mutation_count": 0,
+        "callback_invocation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_terminal_deadline",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 10,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "terminal",
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 10,
+        "retry_available_at_member": "absent",
+        "event_type": "ActivityFailed",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "maximum_interval_seconds": 20
+      }
+    },
+    {
+      "id": "local_v2_recovery_due_overall_timeout",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 100,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": "schedule_to_close",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_timeout",
+        "timeout_kind": "schedule_to_close",
+        "decision": "terminal",
+        "terminal_classification": "engine_timeout",
+        "requested_delay_member": "absent",
+        "event_type": "ActivityTimedOut",
+        "callback_stop_state": "unknown",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "interruption_selection_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_due_start_timeout_policy_retry",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": "start_to_close",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_timeout",
+        "timeout_kind": "start_to_close",
+        "decision": "scheduled",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 5,
+        "retry_available_at_seconds": 95,
+        "requested_delay_member": "absent",
+        "callback_stop_state": "unknown",
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "new_attempt_count": 0,
+        "interruption_selection_count": 0,
+        "retry_reason": "timeout"
+      }
+    },
+    {
+      "id": "local_v2_recovery_duplicate_after_deadline",
+      "carrier": {
+        "first_recovery": {
+          "operation": "prepared_recovery",
+          "original_mode": "proven contract 2 and retained snapshot 2",
+          "previous_claim_loss": "independently proven under canonical locks",
+          "current_recovery_claim": "independently scoped and valid",
+          "engine_sample_seconds": 90,
+          "original_deadline_seconds": 100,
+          "actually_due_timeout_kind": null,
+          "attempt_number": 1,
+          "max_attempts": 3,
+          "policy_delay_seconds": 5,
+          "maximum_interval_seconds": 20
+        },
+        "first_transaction": "committed",
+        "original_reply": "lost",
+        "identical_duplicate_sample_seconds": 110,
+        "separate_stop_acknowledgement": "arrived after the committed recovery",
+        "later_configuration_for_new_authoring": "changed independently of this original execution",
+        "duplicate_request_descriptor": "the identical original normalized descriptor",
+        "original_retained_snapshot_and_started_authority": "exact and unchanged"
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "duplicate": true,
+        "retained_failure_time_seconds": 90,
+        "retained_retry_available_at_seconds": 95,
+        "retained_decision_unchanged": true,
+        "fresh_clock_sample_count": 0,
+        "fresh_fence_calculation_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "original_retained_graph_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_rollback",
+      "carrier": {
+        "fresh_recovery": {
+          "operation": "prepared_recovery",
+          "original_mode": "proven contract 2 and retained snapshot 2",
+          "previous_claim_loss": "independently proven under canonical locks",
+          "current_recovery_claim": "independently scoped and valid",
+          "engine_sample_seconds": 90,
+          "original_deadline_seconds": 100,
+          "actually_due_timeout_kind": null,
+          "attempt_number": 1,
+          "max_attempts": 3,
+          "policy_delay_seconds": 5,
+          "maximum_interval_seconds": 20
+        },
+        "transaction": "rollback"
+      },
+      "expected": {
+        "published_sample_count": 0,
+        "published_decision_count": 0,
+        "published_receipt_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "durable_attempt_status_change_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_original_claim_still_live",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "original different hosting task remains live",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "reason": "local_activity_original_claim_live",
+        "engine_interruption_decision_count": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_foreign_retained_receipt",
+      "carrier": {
+        "recovery_identity": "otherwise valid scoped original graph",
+        "retained_receipt": "descriptor fingerprint alone differs; every run/attempt/task identity remains matched"
+      },
+      "expected": {
+        "reason": "local_activity_recovery_mismatch",
+        "retained_receipt_returned": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_failure_source",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "failure_source": "engine_interruption"
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_outcome",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "engine_interruption"
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_requested_delay",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "requested_delay_seconds": 1
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_timeout_kind",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "timeout_kind": "heartbeat"
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_stop_state",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "callback_stop_state": "unknown"
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_output_requested_delay",
+      "carrier": {
+        "otherwise_valid_engine_interruption_output": true,
+        "isolated_extra_member": {
+          "requested_delay_seconds": 1
+        }
+      },
+      "expected": {
+        "consumer_verdict": "refuse",
+        "qualified_engine_decision": false
+      }
+    },
+    {
+      "id": "local_v2_recovery_output_timeout_kind",
+      "carrier": {
+        "otherwise_valid_engine_interruption_output": true,
+        "isolated_extra_member": {
+          "timeout_kind": "heartbeat"
+        }
+      },
+      "expected": {
+        "consumer_verdict": "refuse",
+        "qualified_engine_decision": false
+      }
+    },
+    {
+      "id": "local_v2_recovery_output_stop_state_rewritten",
+      "carrier": {
+        "original_committed_recovery_receipt": "unknown",
+        "after_separate_real_stop_acknowledgement": true,
+        "duplicate_receipt_callback_stop_state": "stopped"
+      },
+      "expected": {
+        "consumer_verdict": "refuse",
+        "retained_recovery_receipt_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_ordinary_failed_override_remains_application",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "next_retry_delay_seconds": 1
+        },
+        "original_claim_live": true
+      },
+      "expected": {
+        "failure_source": "application",
+        "delay_source": "failure_override",
+        "engine_interruption_authority_granted": false
+      }
+    },
+    {
+      "id": "local_v2_recovery_v1_remains_v1",
+      "carrier": {
+        "original_local_contract_version": 1,
+        "recovery_identity_envelope_version": 1,
+        "otherwise_plausible_policy": true
+      },
+      "expected": {
+        "local_v2_authority": "unsupported",
+        "legacy_recovery_and_history_bytes": "unchanged",
+        "v2_relabelling_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_first_locked_observation_not_lease_expiry",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20,
+        "original_lease_expiry_seconds": 20,
+        "claimed_worker_failure_seconds": 30
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "failure_time_seconds": 90,
+        "decision": "scheduled",
+        "retry_available_at_seconds": 95,
+        "selected_sample_count": 1
+      }
+    },
+    {
+      "id": "local_v2_recovery_concurrent_identical_recovery",
+      "carrier": {
+        "fresh_recovery": {
+          "operation": "prepared_recovery",
+          "original_mode": "proven contract 2 and retained snapshot 2",
+          "previous_claim_loss": "independently proven under canonical locks",
+          "current_recovery_claim": "independently scoped and valid",
+          "engine_sample_seconds": 90,
+          "original_deadline_seconds": 100,
+          "actually_due_timeout_kind": null,
+          "attempt_number": 1,
+          "max_attempts": 3,
+          "policy_delay_seconds": 5,
+          "maximum_interval_seconds": 20
+        },
+        "requests": "two identical scoped recovery operations under canonical serialization"
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "committed_decision_count": 1,
+        "committed_receipt_count": 1,
+        "first_duplicate": false,
+        "second_duplicate": true,
+        "published_sample_count": 1,
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1
+      }
+    },
+    {
+      "id": "local_v2_recovery_duplicate_canonical_snapshot_mutation",
+      "carrier": {
+        "first_recovery": "valid scoped contract-2 recovery committed with an exact retained snapshot and Started binding",
+        "matching_receipt": "the existing original committed receipt remains present",
+        "isolated_mutation": "canonical retained execution snapshot changed after commit; original Started authority and receipt remain unchanged",
+        "later_new_authoring_configuration": "irrelevant"
+      },
+      "expected": {
+        "verdict": "original_preparation_authority_mismatch_refusal",
+        "retained_receipt_returned": false,
+        "new_retry_calculation_count": 0,
+        "new_published_sample_count": 0,
+        "new_published_decision_count": 0,
+        "new_event_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "attempt_status_mutation_count": 0,
+        "durable_mutation_count": 0,
+        "receipt_or_original_graph_repair_count": 0
+      }
+    }
+  ],
+  "prepared_policy_proposal": {
+    "required": {
+      "contract_version": 2,
+      "mode": [
+        "explicit",
+        "generated"
+      ],
+      "backoff_seconds": "ordered list of 0..1024 actual integers in 0..9007199254740991"
+    },
+    "optional": {
+      "max_attempts": "actual integer 1..1024, default 1",
+      "maximum_interval_seconds": "actual integer 0..9007199254740991; canonical mode-specific default",
+      "non_retryable_error_types": "0..128 valid UTF-8 nonblank strings, each <=255 bytes before existing trim/first-occurrence deduplication; default []"
+    },
+    "unknown_members": "refuse, including snapshot_version and generator descriptors",
+    "generator_boundary": "bounded authoring expansion precedes the wire; do not infer or reconstruct a generator from a flattened worker list",
+    "generated_schedule_positions_maximum": 1023,
+    "flattened_generated_wire_tail": "the shared <=1024 list bound is intentional; retain every admitted supplied entry, including unused tails; no inferred max_attempts-1 exact-length wire restriction"
+  },
+  "stored_snapshot_proposal": {
+    "required": {
+      "snapshot_version": 2,
+      "mode": [
+        "explicit",
+        "generated"
+      ],
+      "max_attempts": "actual integer 1..1024",
+      "backoff_seconds": "ordered list of 0..1024 actual integers in 0..9007199254740991",
+      "maximum_interval_seconds": "actual integer 0..9007199254740991",
+      "start_to_close_timeout": "null or actual integer 1..2147483647",
+      "schedule_to_start_timeout": null,
+      "schedule_to_close_timeout": "null or actual integer 1..2147483647",
+      "heartbeat_timeout": "null or actual integer 1..2147483647",
+      "non_retryable_error_types": "ordered list of 0..128 normalized error types, each valid UTF-8 nonblank <=255 original bytes"
+    },
+    "optional": [],
+    "unknown_members": "refuse",
+    "unlimited_null_or_sentinel_attempt_budget": "not part of version 2; preserve existing legacy path",
+    "preparation_deadlines": "checked backend timestamp arithmetic before the original execution/start authority is published"
+  },
+  "http_proposal": {
+    "status": "closed source templates proposed for the future v2 prepared outcome path; not implemented HTTP behavior",
+    "source": {
+      "server_commit": "cf069f6396f29e8f90563a6d75108779e30c3a2a",
+      "controller": {
+        "path": "app/Http/Controllers/Api/PreparedLocalActivityController.php",
+        "blob": "e6ef5eae06a6734e4c016ed8ad096315dc5b1f61"
+      },
+      "protocol": {
+        "path": "app/Support/WorkerProtocol.php",
+        "blob": "1c40943935662888340149b1d7432aa5a0da169f"
+      },
+      "native_missing_role": {
+        "path": "rust/src/runtime/prepared_local.rs",
+        "blob": "5b4f04eecc9f2beef202936c3c331a0f6a96f780"
+      },
+      "native_json": {
+        "path": "rust/src/runtime/json_body.rs",
+        "blob": "50664ec66ce1cee1c8ecaf1d5a2d52a2f21a772c"
+      },
+      "native_payload_limits": {
+        "path": "rust/src/runtime/payload_limits.rs",
+        "blob": "d0bfeef89cd9a280c9e478ee62125fbaa01ef78d"
+      }
+    },
+    "baseline": "valid independent auth/namespace/protocol and original prepared graph; all unrelated gates must be live before an isolated semantic control can qualify",
+    "request_scope": "existing controller outer claim/report validation and normalization remain separate; this proposal closes the nested v2 report and response families, not a new global protocol",
+    "pure_preflight": {
+      "checks": [
+        "closed report keys",
+        "actual field types",
+        "failed-only strict optional override",
+        "inline or reference envelope structural form only"
+      ],
+      "forbidden": [
+        "storage read or write",
+        "payload or reference resolution",
+        "external fetch",
+        "callback",
+        "failure-clock sample"
+      ],
+      "not_reusable_as_is": "Core normalizePortableReport resolves completed payload envelopes before returning; only its pure shape/type interpretation may be shared",
+      "dispatch": {
+        "new_member_present": {
+          "selector": "report is an object and has its own next_retry_delay_seconds member, including null; untrusted intent only, never mode authority",
+          "placement": "after existing auth/protocol/runtime-role and outer claim/report validation, before task/attempt/original-claim/registration reads",
+          "action": "purely validate the supplied override and closed failed-report shape; reject malformed input without durable lookup",
+          "success": "continue scoped original identity/mode lookup; no v2 support is inferred from presence or validation success"
+        },
+        "new_member_absent": {
+          "placement": "preserve the existing scoped task/attempt/original-claim lookup order",
+          "legacy": "retain existing legacy report validation and refusal precedence; do not move its malformed-report check ahead of lookup or registration",
+          "proven_v2": "only after actual scoped original-claim/mode/snapshot lookup establishes the conjunction, run the same pure closed-report validator before fresh registration/fence/clock/write or payload work"
+        },
+        "authority": "all required capability, contract and snapshot fields must be read and verified from the original scoped authority; unread fields are unknown",
+        "new_marker_capability_or_protocol": false
+      },
+      "zero_task_lookup_guarantee": "refusals in the new-member-present phase, including strict override and remaining report-shape failures; absent-member reports keep mode-dependent lookup/validation precedence",
+      "function_purity": "both invocations perform zero storage/fetch/callback/failure-clock effects themselves; a post-mode invocation does not erase earlier scoped authority reads",
+      "error_precedence": [
+        {
+          "check": "a supplied next_retry_delay_seconds has an actual integer in the portable range and outcome is failed",
+          "failure": {
+            "status": 422,
+            "response_family": "strict_override_refusal",
+            "reason": "invalid_activity_retry_delay"
+          }
+        },
+        {
+          "check": "remaining closed report keys, required members/types and inline/reference envelope structural form",
+          "failure": {
+            "status": 409,
+            "response_family": "engine_refusal",
+            "reason": "invalid_local_activity_outcome"
+          }
+        }
+      ]
+    },
+    "transaction": "recheck admitted shape, immutable original mode/identity, matching retained failed/timeout decision and fresh fences under the existing canonical locks; no controller-only validation grants writer authority",
+    "bindings": {
+      "$protocol_version": "independently pinned source-under-test server worker protocol; reference is 1.20, never copied from the response",
+      "$server_capabilities": "complete independently pinned source-under-test manifest with exact types, never learned from the response",
+      "$path_attempt_id": "submitted path attempt ID, not a foreign looked-up identity",
+      "$worker_id": "validated submitted lease_owner string",
+      "$reason": "only the selected template/case fixed reason below",
+      "$event_id": "the unique matching canonical after-snapshot event, independently read with exact run/attempt/sequence binding",
+      "$event_type": "the event kind required by the case, not the response",
+      "$workflow_run_id": "original prepared run",
+      "$workflow_task_id": "original issued task",
+      "$workflow_task_attempt": "original issued task epoch",
+      "$activity_execution_id": "original prepared execution",
+      "$activity_attempt_id": "original prepared attempt",
+      "$worker_attempt_id": "original supplied worker attempt identity",
+      "$recorded_at": "the matching stored event timestamp",
+      "$created_task_ids": "exact independently observed new retry-task ID list, one for scheduled and empty for terminal/completed",
+      "$retry_disposition": "the complete engine object declared above, deep-equal to independently observed retained metadata",
+      "$required_capability": "prepared_local_activities for existing role/original-prepared-claim refusal; activity_retry_delay_override_v1 only for proposed fresh v2 mode-gate refusal",
+      "$unavailable": "the exact ordered array explicitly chosen by the case; no wildcard members",
+      "$duplicate_boolean": "actual Boolean required by the case, false for first commit and true for identical retained reply",
+      "$case_claim_released_boolean": "actual Boolean, true only for ActivityRetryScheduled, false for terminal/completed",
+      "$case_json_error": "only the fixed case.expected.json_error literal, independently derived from pinned payload_limits::json_error; never copied from a response or generalized to another malformed input",
+      "$recovery_workflow_task_id": "the independently authorized recovering task ID from the matching recovery event, distinct from the original prepared hosting task"
+    },
+    "matching": "resolve declared bindings only; compare full exact JSON keys/types/values and the protocol response header; response decoding must consume strict UTF-8 original bytes fully and refuse duplicate member names before schema matching",
+    "envelope": {
+      "protocol_version": "$protocol_version",
+      "server_capabilities": "$server_capabilities"
+    },
+    "cursor": "MA==",
+    "current_native": "prepared role remains false and returns the existing missing-role refusal; it cannot qualify future positive decisions or paired semantic negatives",
+    "completed_payload_scope": "preserve the existing completed/external-payload normalization and authority contract as a separate gate; no fetch-free completed replay guarantee is introduced",
+    "failed_timeout_recovery": "pure normalized failed/timed_out fingerprints allow matching committed retry decisions before fresh effects; do not extend that guarantee to completed external references",
+    "families": {
+      "recorded_retry_decision": {
+        "status": 200,
+        "body": {
+          "recorded": true,
+          "duplicate": "$duplicate_boolean",
+          "reason": null,
+          "event_id": "$event_id",
+          "event_type": "$event_type",
+          "workflow_run_id": "$workflow_run_id",
+          "workflow_task_id": "$workflow_task_id",
+          "workflow_task_attempt": "$workflow_task_attempt",
+          "activity_execution_id": "$activity_execution_id",
+          "activity_attempt_id": "$activity_attempt_id",
+          "worker_attempt_id": "$worker_attempt_id",
+          "recorded_at": "$recorded_at",
+          "claim_released": "$case_claim_released_boolean",
+          "created_task_ids": "$created_task_ids",
+          "history_refresh_page_token": "MA==",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities",
+          "retry_disposition": "$retry_disposition"
+        }
+      },
+      "recorded_completed_existing_contract": {
+        "status": 200,
+        "body": {
+          "recorded": true,
+          "duplicate": "$duplicate_boolean",
+          "reason": null,
+          "event_id": "$event_id",
+          "event_type": "$event_type",
+          "workflow_run_id": "$workflow_run_id",
+          "workflow_task_id": "$workflow_task_id",
+          "workflow_task_attempt": "$workflow_task_attempt",
+          "activity_execution_id": "$activity_execution_id",
+          "activity_attempt_id": "$activity_attempt_id",
+          "worker_attempt_id": "$worker_attempt_id",
+          "recorded_at": "$recorded_at",
+          "claim_released": "$case_claim_released_boolean",
+          "created_task_ids": "$created_task_ids",
+          "history_refresh_page_token": "MA==",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities"
+        },
+        "retry_disposition_member": "absent; no newly selected failure/timeout decision"
+      },
+      "engine_refusal": {
+        "status": 409,
+        "body": {
+          "recorded": false,
+          "duplicate": false,
+          "reason": "$reason",
+          "activity_attempt_id": "$path_attempt_id",
+          "claim_released": false,
+          "created_task_ids": [],
+          "history_refresh_page_token": "MA==",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities"
+        },
+        "reasons": [
+          "invalid_local_activity_outcome",
+          "local_activity_outcome_requires_protocol_1_20",
+          "workflow_claim_not_found",
+          "local_activity_preparation_mismatch",
+          "local_activity_outcome_mismatch",
+          "stale_activity_attempt",
+          "run_closed",
+          "run_deadline_expired",
+          "workflow_claim_expired",
+          "workflow_claim_mismatch",
+          "local_activity_timeout_not_due",
+          "local_activity_cleanup_authority_expired"
+        ]
+      },
+      "engine_attempt_missing_after_controller_lookup": {
+        "status": 404,
+        "body": {
+          "recorded": false,
+          "duplicate": false,
+          "reason": "activity_attempt_not_found",
+          "activity_attempt_id": "$path_attempt_id",
+          "claim_released": false,
+          "created_task_ids": [],
+          "history_refresh_page_token": "MA==",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities"
+        }
+      },
+      "controller_attempt_missing": {
+        "status": 404,
+        "body": {
+          "reason": "activity_attempt_not_found",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities"
+        }
+      },
+      "controller_registration_stale": {
+        "status": 409,
+        "body": {
+          "recorded": false,
+          "reason": "stale_worker_registration",
+          "history_refresh_page_token": "MA==",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities"
+        }
+      },
+      "prepared_capability_refusal": {
+        "status": 409,
+        "body": {
+          "reason": "prepared_local_activity_not_supported",
+          "required_capability": "$required_capability",
+          "minimum_protocol_version": "1.20",
+          "worker_id": "$worker_id",
+          "unavailable": "$unavailable",
+          "remediation": "Use a prepared-local backend and a claim issued to a capable protocol 1.20 worker.",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities"
+        },
+        "recorded_and_cursor_members": "absent, not false or null"
+      },
+      "strict_override_refusal": {
+        "status": 422,
+        "body": {
+          "reason": "invalid_activity_retry_delay",
+          "message": "invalid_activity_retry_delay",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities"
+        },
+        "recorded_next_task_cursor_members": "absent"
+      },
+      "native_malformed_json": {
+        "status": 400,
+        "body": {
+          "message": "Request bodies must contain valid JSON.",
+          "reason": "malformed_json",
+          "json_error": "$case_json_error",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities"
+        },
+        "typed_override_verdict": false,
+        "closed_case_json_error_values": [
+          "Syntax error",
+          "Malformed UTF-8 characters, possibly incorrectly encoded"
+        ]
+      },
+      "recovered_retry_decision": {
+        "status": 200,
+        "body": {
+          "recovered": true,
+          "duplicate": "$duplicate_boolean",
+          "reason": null,
+          "event_id": "$event_id",
+          "event_type": "$event_type",
+          "activity_execution_id": "$activity_execution_id",
+          "activity_attempt_id": "$activity_attempt_id",
+          "workflow_task_id": "$recovery_workflow_task_id",
+          "recorded_at": "$recorded_at",
+          "callback_stop_state": "unknown",
+          "claim_released": "$case_claim_released_boolean",
+          "created_task_ids": "$created_task_ids",
+          "history_refresh_page_token": "MA==",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities",
+          "retry_disposition": "$retry_disposition"
+        },
+        "recorded_member": "absent, never a recorded/recovered alias",
+        "binding_scope": "existing canonical recovery receipt validation, with v2 event metadata/disposition equality; no new worker-report authority"
+      }
+    },
+    "mode_gate_unavailable_proposal": {
+      "server_literal_capability": "activity_retry_delay_override_v1",
+      "original_local_contract_version": "local_activity_contract_version",
+      "retained_snapshot_version": "activity_retry_snapshot_version",
+      "original_claim_capability": "original_claim_activity_retry_delay_override_v1"
+    },
+    "unknown_or_transport_result": "missing, partial, malformed, contradictory, generic backend failure or unknown family is unqualified/uncertain; never permission to repeat a callback",
+    "response_headers": {
+      "X-Durable-Workflow-Protocol-Version": "$protocol_version",
+      "Content-Type": "application/json media type; unrelated standard headers are not an equality contract"
+    },
+    "counter_scope": "after existing independently scoped auth/protocol/runtime-role and outer claim/report validation; malformed supplied overrides count all subsequent task/attempt/claim/registration reads as zero; post-mode pure-validator counters cover only the function invocation and do not claim zero earlier request lookups",
+    "recovery_scope": "the existing recover route keeps its recovered carrier; this v2 extension adds a retained retry_disposition only after actual original mode/claim authority. Outcome report refusals and the nine original families are unchanged"
+  },
+  "canonical_projection": {
+    "override": "prepared failed report.next_retry_delay_seconds maps to canonical application failure.next_retry_delay_seconds only",
+    "failure_type": "the normalized admitted application exception_type; engine timeouts retain their own source/type",
+    "time": "canonical whole-second examples map into the single stored authoritative UTC microsecond sample and immutable deadline; do not truncate subsecond comparisons",
+    "preempted_row": "zero_at_original_deadline_is_terminal remains an abstract selector row, preempted by actual overall engine timeout in the prepared HTTP path"
+  },
+  "recovery_proposal": {
+    "boundary": "existing prepared recover operation and canonical engine primitive, not a new worker-report outcome or global interface",
+    "authority": "existing scoped current recovery claim, canonical original Started/preparation, actual loss/fencing of the previous claim, stored contract 2 plus snapshot 2 and retained original claim capability; request flags and unread fields grant nothing",
+    "precedence": [
+      "independently scoped auth/protocol/role and strict input/mode/identity validation",
+      "matching immutable committed v2 recovery receipt",
+      "fresh canonical current-recovery and previous-claim-loss fences using one engine sample",
+      "actually due activity timeout under the existing timeout-kind precedence",
+      "engine-observed interruption selected only when no activity timeout is due"
+    ],
+    "interruption_exception": "the existing engine-generated RuntimeException and message from recordInterruptedAttempt; never a worker-supplied exception, failure timestamp or timeout kind",
+    "policy": "strictly validate the original retained snapshot 2 and Started binding before any decision; use that snapshot only, including non-retryable type, attempt budget, finite cap, checked availability and original deadline. Supplied policy delays already fit the cap; corrupt retained delay/cap relationships refuse without mutation, never a fabricated terminal-cap decision. No cap clamp, v1 fallback or batch-clock substitution",
+    "worker_input": "no new worker-report member; engine_interruption is forbidden as report.outcome or report.failure_source, and engine output/requested-delay/timeout/stop metadata remains forbidden. A valid ordinary failed override remains an application report, never recovery provenance",
+    "local_recovery": {
+      "placement": "unchanged event payload.local_recovery, sibling of retry_disposition; never accepted from a worker",
+      "required": {
+        "version": 1,
+        "descriptor_fingerprint": "original normalized descriptor fingerprint",
+        "workflow_task_id": "current independently authorized recovery task ID",
+        "workflow_task_attempt": "current recovery task epoch integer",
+        "lease_owner": "current recovery lease owner",
+        "original_workflow_task_id": "original prepared task ID",
+        "original_workflow_task_attempt": "original prepared task epoch integer",
+        "original_lease_owner": "original attempt lease owner",
+        "original_lease_expires_at": "original retained attempt lease expiry",
+        "callback_stop_state": "unknown"
+      },
+      "optional": [],
+      "unknown_members": "refuse in a future v2 validator",
+      "version_scope": "the existing recovery identity-envelope version is not local_activity_contract_version; it supplies no contract-2 authority and v1 events remain byte-unchanged"
+    },
+    "receipt": {
+      "existing_required": [
+        "recovered",
+        "duplicate",
+        "reason",
+        "event_id",
+        "event_type",
+        "activity_execution_id",
+        "activity_attempt_id",
+        "workflow_task_id",
+        "recorded_at",
+        "callback_stop_state",
+        "claim_released",
+        "created_task_ids"
+      ],
+      "new_required_for_v2": [
+        "retry_disposition"
+      ],
+      "recovered": true,
+      "reason": null,
+      "callback_stop_state": "unknown",
+      "event_type": "ActivityRetryScheduled for scheduled; ActivityFailed for terminal interruption; existing ActivityRetryScheduled/ActivityTimedOut timeout branches when a timeout is due",
+      "claim_released": "true iff the retained event is ActivityRetryScheduled",
+      "created_task_ids": "exactly the retained single retry task ID for scheduled, empty for terminal",
+      "workflow_task_id": "the recovering task, not a substituted original task",
+      "forbidden": [
+        "recorded",
+        "workflow_run_id",
+        "workflow_task_attempt",
+        "worker_attempt_id"
+      ],
+      "unknown_members": "refuse in the complete future v2 recovery reply after its existing protocol/cursor envelope"
+    },
+    "identity": "receipt/event must bind the same original run, execution, real attempt, worker-attempt identity, original task epoch and descriptor, plus the distinct current recovery task/epoch/owner; absence of a top-level reply field is not permission to omit the canonical binding",
+    "physical_state": "lease fencing and an engine recovery event prove neither physical callback stop nor supervisor join; this immutable recovery metadata/receipt stays unknown even after a separate real stop acknowledgement changes other state",
+    "retry_preparation": "a scheduled recovery creates one retry task/event and zero following attempts; actual callback admission/preparation retains all existing independent physical/admission/claim guards, retained availability and the original total deadline",
+    "legacy": "all original v1 recovery, zero-tail/history and corpus bytes remain unchanged; a recovery envelope version of 1 cannot relabel a v1 preparation as contract 2",
+    "execution": "all appended cases are source requirements, not executing results; no role, capability, SDK adoption or operation is enabled"
+  }
+}

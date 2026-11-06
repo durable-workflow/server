@@ -1,0 +1,341 @@
+{
+  "schema": "durable-workflow.native-activity-retry-adapters.v1",
+  "status": "source proposal; no executor, producer or qualification result",
+  "runtime_enabled": false,
+  "canonical": {
+    "repository": "durable-workflow/workflow",
+    "commit": "0aa1536e6198a6667ddedf62b48215b6e9e8a6f8",
+    "path": "resources/protocol/activity-retry-policy-v2-vectors.json",
+    "sha256": "8d576f1d50bcbfb123cb09682a4fbac53cb018a3cd369021c38d69866849781c",
+    "case_count": 54,
+    "mutate_canonical_rows": false
+  },
+  "authority": {
+    "decision": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6643667500",
+    "native_bindings": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6647329559",
+    "native_reference_commit": "ea993064428fa9e0294520aa3efd498bef5b64dc",
+    "capability": "activity_retry_delay_override_v1",
+    "failure_override_field": "failure.next_retry_delay_seconds"
+  },
+  "executor_requirements": {
+    "context": "otherwise valid synthetic authorized activity failure; original task/run/execution/attempt identity and complete before/after durable snapshot",
+    "carrier": "the actual native HTTP handler and authoritative failure transaction; no scenario-only decision model",
+    "raw_lexemes": "splice only the declared synthetic lexeme into an otherwise valid request; these strings are test bytes, not JSON numeric fixture values",
+    "typed_cases": "also exercise every canonical invalid_override_* case as its original actual JSON type",
+    "time": "one fixed authoritative failure sample retaining subsecond precision; each supported backend's checked bindable timestamp range",
+    "snapshots": "task/attempt/activity/history/receipt state, original deadlines and retry-task/event counts; no raw payload, credential or provider error output",
+    "retention": "compare the committed engine disposition and original availability after uncertainty; never recompute at replay time",
+    "result_scope": "an absent executor, unavailable backend or unimplemented version-2 producer is unqualified, never pass"
+  },
+  "response_contracts": {
+    "bindings": {
+      "$reason": "the case expected.reason, or its explicitly named expected.loser.reason",
+      "$task_id": "the submitted HTTP path task ID; not a looked-up foreign identity",
+      "$activity_attempt_id": "the original submitted body.activity_attempt_id",
+      "$protocol_version": "exact version in the independently pinned source-under-test worker manifest; native reference is 1.20",
+      "$server_capabilities": "the entire independently pinned source-under-test capability manifest, deep exact equality; do not learn expected values from the failure response"
+    },
+    "matching": "Resolve only the declared binding strings; compare the complete JSON object with exact keys and actual JSON types. No extra/missing field or arbitrary failure status passes. The worker protocol response header must equal the independently pinned protocol version.",
+    "reason_message_refusal": {
+      "body": {
+        "reason": "$reason",
+        "message": "$reason",
+        "protocol_version": "$protocol_version",
+        "server_capabilities": "$server_capabilities"
+      },
+      "recorded_member": "absent, not false or null",
+      "next_task_id_member": "absent, not null"
+    },
+    "activity_task_not_found": {
+      "body": {
+        "task_id": "$task_id",
+        "activity_attempt_id": "$activity_attempt_id",
+        "error": "Activity task not found.",
+        "reason": "task_not_found",
+        "protocol_version": "$protocol_version",
+        "server_capabilities": "$server_capabilities"
+      },
+      "recorded_member": "absent, not false or null",
+      "next_task_id_member": "absent, not null"
+    },
+    "stale_activity_acknowledgement": {
+      "body": {
+        "task_id": "$task_id",
+        "activity_attempt_id": "$activity_attempt_id",
+        "outcome": "failed",
+        "recorded": false,
+        "reason": "stale_attempt",
+        "next_task_id": null,
+        "protocol_version": "$protocol_version",
+        "server_capabilities": "$server_capabilities"
+      }
+    }
+  },
+  "identity_isolation": {
+    "scope": "Future isolated source-test fixture seeding only; caller run/execution fields do not establish authority. Ignored request fields are not a mismatch control.",
+    "baseline": {
+      "namespace": "S",
+      "task": "T",
+      "run": "R",
+      "activity_execution": "E",
+      "activity_attempt": "A",
+      "lease_owner": "W",
+      "task_attempt_count": 1,
+      "activity_attempt_number": 1,
+      "activity_execution_attempt_count": 1,
+      "current_attempt_id": "A",
+      "max_attempts": 3,
+      "task_status": "leased",
+      "attempt_status": "running",
+      "activity_status": "running",
+      "run_status": "running",
+      "lease_and_original_deadlines": "strictly after the fixed failure sample"
+    },
+    "alternate_rows": "T2/A2/E2 form an independently valid current activity in the same R and S, also leased to W with count 1; R2 is another active run in S. W2 is another registered synthetic owner. All alternate rows exist and are readable.",
+    "rule": "Start each row from a fresh valid baseline. Apply only the named request or durable-edge mutation before the before-snapshot. Every unlisted axis, auth/protocol gate, valid override and complete failure remains at baseline. Compare all original and alternate rows after refusal.",
+    "positive_control": "The unmutated baseline must reach the actual version-2 failure path and record its selected retry. Setup/constraint failure, absent producer, backend/codec/internal error or a refusal on another axis is unqualified, never this negative passing.",
+    "response_source": {
+      "prepare_order": "rust/src/runtime/execution.rs::Runtime::fail_activity -> prepare_failure -> backend fail_activity",
+      "attempt_order": "rust/src/runtime/activity_failures.rs::Store::fail_activity",
+      "namespace_lookup": "rust/src/runtime/store.rs::task_row",
+      "replacement": "rust/src/runtime/worker_management.rs::release_replaced_activity_leases",
+      "http_envelope": "rust/src/runtime/http.rs::activity_not_found and worker_protocol_envelope; rust/src/runtime/mod.rs::RuntimeError::into_response"
+    },
+    "required_source_boundary": "These are required version-2 adoption controls, not an executing result or a claim that reference v1 implements each cross-graph guard. Return any missing task/run/execution consistency check in the future v2 source review; generic backend refusal never passes."
+  },
+  "refusal_precedence": {
+    "order": [
+      "existing authentication/namespace authorization and protocol admission",
+      "JSON extraction",
+      "strict supplied-override JSON type and portable integer range validation in failure preparation, before storage authority lookup",
+      "original namespace/task/attempt/lease/deadline authority",
+      "non-retryable then exhausted-attempt terminal classification, then cap/deadline retry selection"
+    ],
+    "scope": "This selects input-before-storage-authority for a malformed supplied override after successful auth/protocol admission. The new strict override validation is a required future source change, not behavior implemented by this data.",
+    "non_disclosure": "The same malformed valid-JSON override returns the same closed 422 body for an owned stale task and a foreign/missing task in another authorized namespace. Do not query or echo task existence, foreign run/execution identities or terminal state before that refusal."
+  },
+  "cases": [
+    {
+      "id": "native_transport_nan",
+      "canonical_ids": ["invalid_override_integral_float"],
+      "carrier": {"override_json_lexeme": "NaN", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_positive_infinity",
+      "canonical_ids": ["invalid_override_fractional_float"],
+      "carrier": {"override_json_lexeme": "Infinity", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_negative_infinity",
+      "canonical_ids": ["invalid_override_negative"],
+      "carrier": {"override_json_lexeme": "-Infinity", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_overflowing_exponent",
+      "canonical_ids": ["invalid_override_overflow"],
+      "carrier": {"override_json_lexeme": "1e9999", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_trailing_document_bytes",
+      "canonical_ids": ["zero_override_is_present"],
+      "carrier": {"override_json_lexeme": "0", "append_after_document_utf8": " trailing", "content_type": "application/json"},
+      "expected": {"http_status": 400, "classification": "existing-json-syntax-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_transport_missing_json_content_type",
+      "canonical_ids": ["zero_override_is_present"],
+      "carrier": {"override_json_lexeme": "0", "omit_content_type": true},
+      "expected": {"http_status": 415, "classification": "existing-json-content-type-refusal", "durable_write_count": 0, "typed_override_verdict": false}
+    },
+    {
+      "id": "native_typed_exponent_is_float",
+      "canonical_ids": ["invalid_override_integral_float"],
+      "carrier": {"override_json_lexeme": "1e0", "content_type": "application/json"},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "coercion": false, "response_contract": "reason_message_refusal"}
+    },
+    {
+      "id": "native_typed_nan_string",
+      "canonical_ids": ["invalid_override_string"],
+      "carrier": {"override_json_lexeme": "\"NaN\"", "content_type": "application/json"},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "transport_parse_failure": false, "response_contract": "reason_message_refusal"}
+    },
+    {
+      "id": "native_json_bound_is_not_timestamp_bound",
+      "canonical_ids": ["invalid_override_overflow"],
+      "carrier": {"override_json_lexeme": "9007199254740991", "failure_sample": "fixed-valid-native-timestamp", "precondition": "duration-or-resulting-timestamp-not-representable"},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "wrap_clamp_or_immediate_retry": false, "response_contract": "reason_message_refusal"}
+    },
+    {
+      "id": "native_backend_timestamp_addition_overflow",
+      "canonical_ids": ["invalid_override_overflow"],
+      "carrier": {"override_json_lexeme": "1", "failure_sample": "maximum-bindable-backend-timestamp-minus-500000-microseconds", "lease_expires_at": "maximum-bindable-backend-timestamp", "original_schedule_to_close_seconds": null, "backends": ["sqlite", "postgresql", "mysql", "mariadb"]},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "durable_write_count": 0, "backend_error_counted_as_validation_pass": false, "response_contract": "reason_message_refusal"}
+    },
+    {
+      "id": "native_subsecond_failure_sample_preserved",
+      "canonical_ids": ["override_replaces_policy", "override_before_deadline"],
+      "carrier": {"failure_sample_subsecond_microseconds": 123456, "override_json_lexeme": "5", "original_deadline": "strictly-after-resulting-availability"},
+      "expected": {"availability_adds_exact_whole_seconds": 5, "availability_subsecond_microseconds": 123456, "serialization_clock_resample": false, "original_deadline_unchanged": true}
+    },
+    {
+      "id": "native_exact_subsecond_deadline_boundary",
+      "canonical_ids": ["override_reaches_deadline", "override_passes_deadline", "zero_at_original_deadline_is_terminal"],
+      "carrier": {"failure_sample_subsecond_microseconds": 123456, "deadline_cases": ["availability-equals-original-deadline", "availability-after-original-deadline"]},
+      "expected": {"decision": "terminal", "reason": "retry_delay_exceeds_schedule_to_close", "retry_task_count": 0, "activity_retry_scheduled_count": 0, "round_to_seconds": false, "original_deadline_unchanged": true}
+    },
+    {
+      "id": "native_activity_attempt_belongs_to_original_task",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "submit-another-tasks-activity-attempt-id", "identity_isolation": "required", "single_mutation": {"location": "request.body.activity_attempt_id", "replace_with": "A2"}},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "durable_write_count": 0, "foreign_attempt_or_task_mutated": false, "response_contract": "reason_message_refusal"}
+    },
+    {
+      "id": "native_attempt_number_matches_task_fence",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "stored-attempt-number-differs-from-original-task-attempt-count", "identity_isolation": "required", "single_mutation": {"location": "activity_attempts[A].attempt_number", "replace_with": 2}},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "durable_write_count": 0, "response_contract": "stale_activity_acknowledgement", "next_task_id": null}
+    },
+    {
+      "id": "native_wrong_lease_owner",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "otherwise-current-failure-with-another-synthetic-owner", "identity_isolation": "required", "single_mutation": {"location": "request.body.lease_owner", "replace_with": "W2"}},
+      "expected": {"http_status": 409, "reason": "lease_owner_mismatch", "durable_write_count": 0, "response_contract": "reason_message_refusal"}
+    },
+    {
+      "id": "native_expired_original_lease",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "otherwise-current-failure-at-or-after-original-lease-expiry", "identity_isolation": "required", "single_mutation": {"location": "workflow_tasks[T].lease_expires_at", "replace_with": "fixed-authoritative-failure-sample"}},
+      "expected": {"http_status": 409, "reason": "lease_expired", "durable_write_count": 0, "deadline_extension": false, "response_contract": "reason_message_refusal"}
+    },
+    {
+      "id": "native_cross_namespace_cannot_reach_original_task",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"mutation": "submit-original-task-and-attempt-in-another-authorized-synthetic-namespace", "preconditions": "Valid override and failure, valid worker-plane auth/protocol for the other namespace, no same-ID task there; both namespace snapshots retained."},
+      "expected": {"durable_write_count": 0, "either_namespace_mutated": false, "http_status": 404, "reason": "task_not_found", "response_contract": "activity_task_not_found", "authority_metadata_disclosed": false}
+    },
+    {
+      "id": "native_registration_replacement_revokes_original_claim",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"actions": ["claim-original-attempt", "commit-worker-registration-replacement", "submit-old-original-attempt"], "preconditions": "Committed replacement expires A and returns T to ready through release_replaced_activity_leases; observe that state before the old report, with no re-poll, repair, cancellation or other maintenance."},
+      "expected": {"old_claim_accepted": false, "durable_write_count_from_old_report": 0, "replacement_authority_changed": false, "http_status": 409, "reason": "stale_attempt", "recorded": false, "next_task_id": null, "response_contract": "stale_activity_acknowledgement", "replacement_snapshot_unchanged_by_old_report": true}
+    },
+    {
+      "id": "native_two_connections_same_original_attempt",
+      "canonical_ids": ["duplicate_failure_adds_no_attempt"],
+      "carrier": {"actions": ["barrier-two-independent-connections", "report-same-current-attempt-with-different-valid-overrides"], "preconditions": "Both valid requests target the same current original attempt; barrier is before transaction acquisition, never inside a held serialization lock. The winner commits before the loser observes authoritative state; no maintenance/claim/cancellation interferes."},
+      "expected": {"maximum_committed_failure_outcomes": 1, "maximum_additional_retry_tasks": 1, "mixed_disposition_fields": false, "loser": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "next_task_id": null, "response_contract": "stale_activity_acknowledgement", "durable_write_count": 0, "winner_retained_snapshot_unchanged": true}, "committed_failure_outcome_count": 1, "additional_retry_task_count": 1}
+    },
+    {
+      "id": "native_duplicate_keeps_stale_acknowledgement",
+      "canonical_ids": ["duplicate_failure_adds_no_attempt"],
+      "carrier": {"actions": ["commit-original-failure", "repeat-identical-failure"]},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "next_task_id": null, "additional_retry_task_count": 0, "retained_disposition_unchanged": true, "response_contract": "stale_activity_acknowledgement"}
+    },
+    {
+      "id": "native_lost_ack_cold_replay_keeps_original_availability",
+      "canonical_ids": ["lost_acknowledgement_cold_retry", "version_2_cold_replay_uses_retained_outcome"],
+      "carrier": {"actions": ["commit-original-failure", "drop-http-acknowledgement", "replace-process-with-same-durable-state", "repeat-identical-failure-at-later-clock"]},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "additional_retry_task_count": 0, "retained_disposition_unchanged": true, "original_availability_unchanged": true, "recompute_policy_or_clock": false, "response_contract": "stale_activity_acknowledgement", "next_task_id": null}
+    },
+    {
+      "id": "native_conflicting_duplicate_cannot_rewrite_delay",
+      "canonical_ids": ["duplicate_failure_adds_no_attempt", "lost_acknowledgement_cold_retry"],
+      "carrier": {"actions": ["commit-original-failure", "retry-same-original-attempt-with-different-valid-delay"]},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "additional_retry_task_count": 0, "retained_disposition_unchanged": true, "original_availability_unchanged": true, "response_contract": "stale_activity_acknowledgement", "next_task_id": null}
+    },
+    {
+      "id": "native_scheduled_rows_and_event_agree",
+      "canonical_ids": ["zero_override_is_present", "override_replaces_policy", "override_at_cap", "empty_explicit_cap_accepts_override", "derived_cap_uses_largest_entry"],
+      "carrier": {"actions": ["submit-canonical-current-failure", "read-original-attempt-retry-task-event-and-engine-disposition"]},
+      "expected": {"retry_task_count": 1, "activity_retry_scheduled_count": 1, "selected_delay_and_original_attempt_identity_match_everywhere": true, "original_failure_preserved": true, "original_deadline_unchanged": true}
+    },
+    {
+      "id": "native_terminal_disposition_is_separate_from_application_failure",
+      "canonical_ids": ["override_exceeds_cap", "empty_default_cap_refuses_positive_override", "policy_reaches_deadline", "zero_at_original_deadline_is_terminal"],
+      "carrier": {"actions": ["submit-canonical-current-failure", "read-terminal-failure-and-workflow-resume-state"]},
+      "expected": {"retry_task_count": 0, "activity_retry_scheduled_count": 0, "engine_reason_replaces_application_exception": false, "original_failure_preserved": true, "original_deadline_unchanged": true, "ordinary_terminal_resume_path": true}
+    },
+    {
+      "id": "native_capability_and_snapshot_are_independent_gates",
+      "canonical_ids": ["missing_capability", "nonliteral_capability_false", "nonliteral_capability_string", "nonliteral_capability_integer", "legacy_snapshot_cannot_accept_override"],
+      "carrier": {"actions": ["submit-valid-present-override-with-each-canonical-gate-mutation"]},
+      "expected": {"literal_capability_and_snapshot_2_both_required": true, "durable_write_count": 0, "silent_ignore_or_implicit_upgrade": false}
+    },
+    {
+      "id": "native_legacy_and_recorded_availability_not_reinterpreted",
+      "canonical_ids": ["legacy_snapshot_cannot_accept_override", "core_snapshot_1_repeats_last", "core_snapshot_1_explicit_empty", "core_snapshot_1_no_generated_cap", "legacy_sdk_recorded_zero_tail"],
+      "carrier": {"actions": ["load-original-legacy-snapshot-and-recorded-outcomes", "cold-replay-at-later-clock"]},
+      "expected": {"version_2_defaults_applied": false, "recorded_zero_tail_preserved": true, "original_availability_unchanged": true, "implicit_snapshot_upgrade": false}
+    },
+    {
+      "id": "native_malformed_override_precedes_stale_and_non_retryable",
+      "canonical_ids": ["invalid_override_null", "stale_attempt_cannot_schedule", "invalid_input_precedes_non_retryable"],
+      "carrier": {"override_json_lexeme": "null", "content_type": "application/json", "failure_fields": {"non_retryable": true}, "preconditions": "Successful auth/protocol in S; otherwise valid failure; original attempt finished and original count at max. Retain the complete committed original outcome before submitting.", "paired_with_case_id": "native_malformed_override_precedes_foreign_and_exhausted"},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "response_contract": "reason_message_refusal", "durable_write_count": 0, "task_authority_lookup_performed": false, "terminal_disposition_written": false, "foreign_identity_or_terminal_metadata_disclosed": false}
+    },
+    {
+      "id": "native_malformed_override_precedes_foreign_and_exhausted",
+      "canonical_ids": ["invalid_override_null", "stale_attempt_cannot_schedule", "invalid_input_precedes_non_retryable", "exhausted_attempts_precede_cap"],
+      "carrier": {"override_json_lexeme": "null", "content_type": "application/json", "failure_fields": {"non_retryable": true}, "preconditions": "Use the paired case same original task/attempt IDs, identical malformed body and retained terminal context; only request namespace changes from S to authorized S2. Original task exists only in S and no same-ID task exists in S2.", "paired_with_case_id": "native_malformed_override_precedes_stale_and_non_retryable"},
+      "expected": {"http_status": 422, "reason": "invalid_activity_retry_delay", "response_contract": "reason_message_refusal", "durable_write_count": 0, "task_authority_lookup_performed": false, "terminal_disposition_written": false, "foreign_identity_or_terminal_metadata_disclosed": false}
+    },
+    {
+      "id": "native_valid_override_stale_precedes_terminal",
+      "canonical_ids": ["stale_attempt_cannot_schedule", "non_retryable_precedes_exhausted_attempts"],
+      "carrier": {"override_json_lexeme": "0", "failure_fields": {"non_retryable": true}, "preconditions": "Successful auth/protocol; original attempt finished, original count at max; retain that outcome before this stale report."},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "recorded": false, "next_task_id": null, "response_contract": "stale_activity_acknowledgement", "durable_write_count": 0, "terminal_disposition_written": false, "retained_outcome_unchanged": true}
+    },
+    {
+      "id": "native_isolated_workflow_task_path_mismatch",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"identity_isolation": "required", "single_mutation": {"location": "request.path.task_id", "replace_with": "T2", "body_activity_attempt_id": "A"}, "override_json_lexeme": "0"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "response_contract": "reason_message_refusal", "durable_write_count": 0, "original_and_alternate_authority_unchanged": true}
+    },
+    {
+      "id": "native_isolated_attempt_workflow_run_mismatch",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"identity_isolation": "required", "single_mutation": {"location": "activity_attempts[A].workflow_run_id", "replace_with": "R2"}, "override_json_lexeme": "0"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "response_contract": "reason_message_refusal", "durable_write_count": 0, "original_and_alternate_authority_unchanged": true}
+    },
+    {
+      "id": "native_isolated_attempt_activity_execution_mismatch",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"identity_isolation": "required", "single_mutation": {"location": "activity_attempts[A].activity_execution_id", "replace_with": "E2"}, "override_json_lexeme": "0"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "response_contract": "reason_message_refusal", "durable_write_count": 0, "original_and_alternate_authority_unchanged": true}
+    },
+    {
+      "id": "native_isolated_task_attempt_count_mismatch",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"identity_isolation": "required", "single_mutation": {"location": "workflow_tasks[T].attempt_count", "replace_with": 2}, "override_json_lexeme": "0"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "response_contract": "stale_activity_acknowledgement", "durable_write_count": 0, "original_and_alternate_authority_unchanged": true, "recorded": false, "next_task_id": null}
+    },
+    {
+      "id": "native_isolated_activity_current_attempt_mismatch",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"identity_isolation": "required", "single_mutation": {"location": "activity_executions[E].current_attempt_id", "replace_with": "A2"}, "override_json_lexeme": "0"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "response_contract": "reason_message_refusal", "durable_write_count": 0, "original_and_alternate_authority_unchanged": true}
+    },
+    {
+      "id": "native_isolated_activity_attempt_count_mismatch",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"identity_isolation": "required", "single_mutation": {"location": "activity_executions[E].attempt_count", "replace_with": 2}, "override_json_lexeme": "0"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "response_contract": "reason_message_refusal", "durable_write_count": 0, "original_and_alternate_authority_unchanged": true}
+    },
+    {
+      "id": "native_isolated_task_workflow_run_mismatch",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"identity_isolation": "required", "single_mutation": {"location": "workflow_tasks[T].workflow_run_id", "replace_with": "R2"}, "override_json_lexeme": "0"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "response_contract": "reason_message_refusal", "durable_write_count": 0, "original_and_alternate_authority_unchanged": true, "missing_reference_guard_requires_future_source_review": true}
+    },
+    {
+      "id": "native_isolated_task_activity_execution_mismatch",
+      "canonical_ids": ["stale_attempt_cannot_schedule"],
+      "carrier": {"identity_isolation": "required", "single_mutation": {"location": "workflow_tasks[T].payload.activity_execution_id", "replace_with": "E2"}, "override_json_lexeme": "0"},
+      "expected": {"http_status": 409, "reason": "stale_attempt", "response_contract": "reason_message_refusal", "durable_write_count": 0, "original_and_alternate_authority_unchanged": true, "missing_reference_guard_requires_future_source_review": true}
+    }
+  ]
+}
