@@ -44,7 +44,8 @@ test('execution inventories retain exact bytes with explicit truncation and omit
   const {source, output} = fixture(t);
   const inventories = {'execution-listed-tests.txt': 'case_a\ncase_b\n',
     'execution-shard.txt': 'case_a\n', 'execution-shard-b.txt': 'case_b\n',
-    'mysql-execution-tests-b.txt': 'test result: ok. 1 passed; 0 failed;\n'};
+    'mysql-execution-tests-b.txt': 'test result: ok. 1 passed; 0 failed;\n',
+    'postgres-execution-tests-b.txt': 'test result: ok. 1 passed; 0 failed;\n'};
   for (const [name, content] of Object.entries(inventories)) writeFileSync(join(source, name), content);
   writeFileSync(join(source, 'execution-unrelated.txt'), 'not a selected-test inventory');
   const summary = summarizeEvidence(source, output, {outcome: 'success'});
