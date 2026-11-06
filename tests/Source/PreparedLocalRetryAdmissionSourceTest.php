@@ -7,6 +7,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\CooperativeCancellationPolicy;
 use App\Support\PreparedLocalActivityPolicy;
 use App\Support\PreparedLocalRetryAdmission;
+use App\Support\WorkerPollFence;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -271,9 +272,15 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
         $before = ActivityAttempt::query()->count();
         $this->travel($seconds)->seconds();
         WorkerRegistration::query()->where('worker_id', 'retry-worker')->update(['last_heartbeat_at' => now()]);
-        $reply = $this->outcome($task, $prepared['activity_attempt_id'],
-            ['outcome' => 'failed', 'message' => 'caller failure', 'next_retry_delay_seconds' => 1])
-            ->assertOk()->assertJsonPath('recorded', true)->assertJsonPath('created_task_ids', [])->json();
+        $hosting = WorkflowTask::query()->findOrFail($task['task_id']);
+        $attempt = ActivityAttempt::query()->findOrFail($prepared['activity_attempt_id']);
+        $this->assertTrue(WorkerPollFence::isCurrent($hosting->payload['_server_workflow_claim']), 'The original registration must still be current.');
+        $this->assertTrue($hosting->lease_expires_at->gt(now()), 'The hosting task lease must outlive the activity deadline sample.');
+        $this->assertTrue($attempt->lease_expires_at->gt(now()), 'The callback lease must outlive the activity deadline sample.');
+        $response = $this->outcome($task, $prepared['activity_attempt_id'],
+            ['outcome' => 'failed', 'message' => 'caller failure', 'next_retry_delay_seconds' => 1]);
+        $this->assertSame(200, $response->status(), $response->getContent());
+        $reply = $response->assertJsonPath('recorded', true)->assertJsonPath('created_task_ids', [])->json();
         $this->assertSame('terminal', $reply['retry_disposition']['decision']);
         $this->assertSame($seconds === 99 ? 'application' : 'engine_timeout', $reply['retry_disposition']['failure_source']);
         if ($seconds === 99) {
