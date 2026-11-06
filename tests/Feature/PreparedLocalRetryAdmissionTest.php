@@ -115,10 +115,14 @@ final class PreparedLocalRetryAdmissionTest extends TestCase
                     'report' => ['outcome' => 'failed', 'message' => 'failed', 'next_retry_delay_seconds' => $delay],
                 ])->assertStatus(409)->assertJsonPath('reason', 'prepared_local_activity_not_supported');
         }
-        $lookups = array_filter(DB::getQueryLog(), static fn (array $row): bool =>
-            preg_match('/\b(workflow_tasks|activity_attempts|activity_executions|workflow_history_events)\b/i', $row['query']) === 1);
+        // Schema ownership checks precede controller role admission. Count
+        // actual durable-row access, rather than table names in catalog queries.
+        $isLookup = static fn (array $row): bool =>
+            preg_match('/\b(?:from|join|update|into)\s+(?:["`]?[A-Za-z0-9_]+["`]?\.)?["`]?(?:workflow_tasks|activity_attempts|activity_executions|workflow_history_events)\b/i', $row['query']) === 1;
+        $this->assertSame([], array_values(array_filter(DB::getQueryLog(), $isLookup)));
+        WorkflowTask::query()->whereKey('counter-only')->first();
+        $this->assertCount(1, array_filter(DB::getQueryLog(), $isLookup), 'The same counter must detect a real task-row read.');
         DB::disableQueryLog();
-        $this->assertSame([], array_values($lookups));
     }
 
     public function test_a_v1_receipt_is_preserved_and_cannot_supply_retry_authority(): void

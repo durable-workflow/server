@@ -25,7 +25,15 @@ final class PreparedLocalRetryAdmission
 
     public const SCHEMA = 'durable-workflow.server.prepared-local-authority/v2';
 
+    public const RECOVERY_SCHEMA = 'durable-workflow.server.prepared-local-recovery-authority/v2';
+
     private const CLAIMS_KEY = '_server_prepared_local_activity_claims';
+
+    private const RECOVERIES_KEY = '_server_prepared_local_activity_recoveries';
+
+    private const RECOVERY_KEYS = ['schema', 'claim', 'activity_execution_id', 'activity_attempt_id',
+        'local_activity_contract_version', 'retry_policy_snapshot', 'preparation_history_event_id',
+        'descriptor_fingerprint', 'engine_event'];
 
     private const RECEIPT_KEYS = ['schema', 'claim', 'activity_execution_id', 'activity_attempt_id',
         'worker_attempt_id', 'local_activity_contract_version', 'retry_policy_snapshot',
@@ -202,7 +210,166 @@ final class PreparedLocalRetryAdmission
         }
         $claim = self::originalClaim($originalTask, $attempt, $attempt->lease_owner, $originalEpoch);
 
-        return $claim === null ? null : ['task' => $originalTask, 'attempt' => $attempt, 'claim' => $claim];
+        return $claim === null ? null : ['task' => $originalTask, 'attempt' => $attempt, 'claim' => $claim,
+            'event' => $receipts->first()];
+    }
+
+    /** A retained recovery claim authorizes only Core's exact duplicate. */
+    public static function retainedRecovery(WorkflowTask $task, int $sequence, string $owner, int $epoch): ?array
+    {
+        $authority = self::recoveryAuthority($task, $sequence, $owner, $epoch);
+        $event = $authority['event'] ?? null;
+        if (! $event instanceof WorkflowHistoryEvent) {
+            return null;
+        }
+        $receipt = $task->payload[self::RECOVERIES_KEY][$event->id] ?? null;
+        $claim = is_array($receipt) ? ($receipt['claim'] ?? null) : null;
+        if (! is_array($receipt) || ! self::exactKeys($receipt, self::RECOVERY_KEYS)
+            || ($receipt['schema'] ?? null) !== self::RECOVERY_SCHEMA
+            || ($receipt['local_activity_contract_version'] ?? null) !== 2
+            || ! is_array($claim) || ! self::claimSupports($claim)
+            || ($claim['task_id'] ?? null) !== $task->id || ($claim['run_id'] ?? null) !== $task->workflow_run_id
+            || ($claim['namespace'] ?? null) !== $task->namespace
+            || ($claim['lease_owner'] ?? null) !== $owner || ($claim['worker_id'] ?? null) !== $owner
+            || ($claim['attempt'] ?? null) !== $epoch) {
+            return null;
+        }
+        $graph = self::graph($authority['task'], $authority['attempt'], $authority['claim']['lease_owner'], $authority['claim']['attempt']);
+        $engine = self::recoveryEvent($event, $task, $authority['attempt'], $claim);
+        if ($graph === null || $engine === null
+            || ($receipt['activity_execution_id'] ?? null) !== $authority['attempt']->activity_execution_id
+            || ($receipt['activity_attempt_id'] ?? null) !== $authority['attempt']->id
+            || ($receipt['preparation_history_event_id'] ?? null) !== $graph['preparation_history_event_id']
+            || ($receipt['descriptor_fingerprint'] ?? null) !== $graph['descriptor_fingerprint']
+            || ! self::sameRecoveryEvent($receipt['engine_event'], $engine)) {
+            return null;
+        }
+        try {
+            if (! is_array($receipt['retry_policy_snapshot'])
+                || PreparedLocalRetryPolicy::validateSnapshot($receipt['retry_policy_snapshot']) !== $graph['retry_policy_snapshot']) {
+                return null;
+            }
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+
+        return ['task' => $task, 'claim' => $claim, 'event_id' => $event->id, 'authority' => $authority];
+    }
+
+    /** No backfill: only the fresh engine recovery and its issued claim may create this receipt. */
+    public static function rememberRecovery(WorkflowTask $task, int $sequence, array $claim, array $reply): bool
+    {
+        if (DB::transactionLevel() < 1 || ! self::backendSupported() || ! self::claimSupports($claim)
+            || ($reply['recovered'] ?? null) !== true || ($reply['duplicate'] ?? null) !== false
+            || ($task->payload['_server_workflow_claim'] ?? null) !== $claim) {
+            return false;
+        }
+        $authority = self::recoveryAuthority($task, $sequence, $claim['lease_owner'], $claim['attempt']);
+        $event = $authority['event'] ?? null;
+        if (! $event instanceof WorkflowHistoryEvent || ($reply['event_id'] ?? null) !== $event->id) {
+            return false;
+        }
+        $graph = self::graph($authority['task'], $authority['attempt'], $authority['claim']['lease_owner'], $authority['claim']['attempt']);
+        $engine = self::recoveryEvent($event, $task, $authority['attempt'], $claim);
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $receipts = $payload[self::RECOVERIES_KEY] ?? [];
+        if ($graph === null || $engine === null || ! is_array($receipts) || array_key_exists($event->id, $receipts)) {
+            return false;
+        }
+        if (! self::matchesRecoveryReply(['task' => $task, 'claim' => $claim, 'event_id' => $event->id,
+            'authority' => $authority], $reply, false)) {
+            return false;
+        }
+        $receipts[$event->id] = ['schema' => self::RECOVERY_SCHEMA, 'claim' => $claim,
+            'activity_execution_id' => $authority['attempt']->activity_execution_id,
+            'activity_attempt_id' => $authority['attempt']->id, 'local_activity_contract_version' => 2,
+            ...$graph, 'engine_event' => $engine];
+        $payload[self::RECOVERIES_KEY] = $receipts;
+        $task->forceFill(['payload' => $payload])->save();
+
+        return true;
+    }
+
+    /** The bridge's carrier must match independently retained event authority. */
+    public static function matchesRecoveryReply(array $context, array $reply, bool $duplicate): bool
+    {
+        $event = $context['authority']['event'];
+        $attempt = $context['authority']['attempt'];
+        $engine = self::recoveryEvent($event, $context['task'], $attempt, $context['claim']);
+        if ($engine === null || ! self::exactKeys($reply, ['recovered', 'duplicate', 'reason', 'event_id', 'event_type',
+            'activity_execution_id', 'activity_attempt_id', 'workflow_task_id', 'recorded_at', 'callback_stop_state',
+            'claim_released', 'created_task_ids', 'retry_disposition'])) {
+            return false;
+        }
+
+        return $reply['recovered'] === true && $reply['duplicate'] === $duplicate && $reply['reason'] === null
+            && $reply['event_id'] === $engine['event_id'] && $reply['event_type'] === $engine['event_type']
+            && $reply['activity_execution_id'] === $attempt->activity_execution_id && $reply['activity_attempt_id'] === $attempt->id
+            && $reply['workflow_task_id'] === $context['task']->id && $reply['recorded_at'] === $engine['recorded_at']
+            && $reply['callback_stop_state'] === 'unknown'
+            && $reply['claim_released'] === ($engine['event_type'] === HistoryEventType::ActivityRetryScheduled->value)
+            && $reply['created_task_ids'] === ($engine['retry_task_id'] === null ? [] : [$engine['retry_task_id']])
+            && self::flatObject($reply['retry_disposition']) === $engine['retry_disposition'];
+    }
+
+    private static function recoveryEvent(WorkflowHistoryEvent $event, WorkflowTask $task, ActivityAttempt $attempt, array $claim): ?array
+    {
+        $payload = $event->payload;
+        $recovery = self::flatObject($payload['local_recovery'] ?? null);
+        $decision = self::flatObject($payload['retry_disposition'] ?? null);
+        $retryTask = $payload['retry_task_id'] ?? null;
+        if ($recovery === null || $decision === null || $event->recorded_at === null
+            || ($decision['contract_version'] ?? null) !== 2 || ($decision['snapshot_version'] ?? null) !== 2
+            || ($event->event_type === HistoryEventType::ActivityRetryScheduled && (! is_string($retryTask) || $retryTask === ''))
+            || ($event->event_type !== HistoryEventType::ActivityRetryScheduled && $retryTask !== null)
+            || $event->workflow_run_id !== $task->workflow_run_id || $event->workflow_task_id !== $task->id
+            || ($payload['activity_execution_id'] ?? null) !== $attempt->activity_execution_id
+            || ($payload['activity_attempt_id'] ?? null) !== $attempt->id
+            || ($payload['worker_attempt_id'] ?? null) !== $attempt->worker_attempt_id
+            || ($payload['task']['id'] ?? null) !== $task->id
+            || ($payload['task']['lease_owner'] ?? null) !== $claim['lease_owner']
+            || ($payload['task']['attempt_count'] ?? null) !== $claim['attempt']
+            || ($recovery['version'] ?? null) !== 1 || ($recovery['workflow_task_id'] ?? null) !== $task->id
+            || ($recovery['workflow_task_attempt'] ?? null) !== $claim['attempt']
+            || ($recovery['lease_owner'] ?? null) !== $claim['lease_owner']
+            || ($recovery['callback_stop_state'] ?? null) !== 'unknown') {
+            return null;
+        }
+
+        return ['event_id' => $event->id, 'event_type' => $event->event_type->value,
+            'event_sequence' => $event->sequence, 'recorded_at' => $event->recorded_at->toISOString(),
+            'retry_task_id' => $retryTask, 'local_recovery' => $recovery, 'retry_disposition' => $decision];
+    }
+
+    private static function sameRecoveryEvent(mixed $recorded, array $current): bool
+    {
+        if (! is_array($recorded) || ! self::exactKeys($recorded, array_keys($current))) {
+            return false;
+        }
+        foreach (['event_id', 'event_type', 'event_sequence', 'recorded_at', 'retry_task_id'] as $field) {
+            if ($recorded[$field] !== $current[$field]) {
+                return false;
+            }
+        }
+
+        return self::flatObject($recorded['local_recovery']) === $current['local_recovery']
+            && self::flatObject($recorded['retry_disposition']) === $current['retry_disposition'];
+    }
+
+    /** The closed engine decision and recovery identity contain only scalar fields. */
+    private static function flatObject(mixed $value): ?array
+    {
+        if (! is_array($value) || $value === [] || array_is_list($value)) {
+            return null;
+        }
+        foreach ($value as $key => $item) {
+            if (! is_string($key) || ($item !== null && ! is_string($item) && ! is_int($item) && ! is_bool($item))) {
+                return null;
+            }
+        }
+        ksort($value);
+
+        return $value;
     }
 
     /** Read canonical Core authority. The engine rechecks it under its locks. */

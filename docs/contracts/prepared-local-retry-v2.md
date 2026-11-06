@@ -177,12 +177,26 @@ unique correlated Started event must agree on every read. A legacy receipt is
 never rewritten or promoted. The hosting task's later current claim cannot
 replace the original callback's issued claim.
 
-Recovery independently reads the original callback's retained authority before
-entering Core. A duplicate binds the old attempt named by its exact recovery
-identity even after a following attempt exists. Fresh recovery still needs the
-recovering claim and existing registration fence. Post-write readback checks the
-original graph within the same outer transaction, so a changed graph rolls the
-operation back. Physical callback stop remains a separate authority.
+A fresh recovery also retains a separate closed private
+`durable-workflow.server.prepared-local-recovery-authority/v2` receipt on the
+recovering task. Its keys are `schema`, `claim`, `activity_execution_id`,
+`activity_attempt_id`, `local_activity_contract_version`, `retry_policy_snapshot`,
+`preparation_history_event_id`, `descriptor_fingerprint` and `engine_event`.
+The copied engine projection contains the event ID/type/sequence/insertion time,
+retry-task identity, original recovery envelope and scalar retry decision.
+The decision's retained failure sample and history insertion time are distinct
+clocks. Their values are preserved independently rather than equated.
+
+Recovery reads the original callback authority and the recovering claim
+independently. An exact duplicate binds the old attempt even after a following
+attempt exists. A complete unchanged private recovery receipt permits Core's
+matching committed duplicate before fresh registration, quota or clock work.
+It grants no fresh writer authority. Missing receipts are never backfilled from
+an existing engine event, and changed graph, event or output identities roll
+back the transaction. Fresh recovery still requires the current recovering
+claim and registration fence. Preparation and fresh recovery retain their
+Server authority atomically with the Core writer. Physical callback stop remains
+unknown.
 
 Completed external payload uploads retain their existing completion-lease,
 namespace, storage and reference checks. The original receipt and supervisor
