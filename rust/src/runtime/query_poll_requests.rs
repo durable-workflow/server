@@ -94,28 +94,29 @@ where
         value: &Value,
         ttl: i64,
     ) -> Result<()> {
-        let exists = Self::query(DB::QUERY_CACHE_GET)
-            .bind(key)
-            .fetch_optional(&mut **tx)
-            .await?
-            .is_some();
-        let expiration = now() + ttl;
-        if exists {
-            Self::query(DB::QUERY_CACHE_UPDATE)
-                .bind(value.to_string())
-                .bind(expiration)
-                .bind(key)
-                .execute(&mut **tx)
-                .await?;
-        } else {
-            Self::query(DB::QUERY_CACHE_INSERT)
-                .bind(key)
-                .bind(value.to_string())
-                .bind(expiration)
-                .execute(&mut **tx)
-                .await?;
-        }
+        Self::query(DB::QUERY_CACHE_PUT).bind(key).bind(value.to_string())
+            .bind(now() + ttl).execute(&mut **tx).await?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime) async fn qualify_query_poll_cache_writes(&self) {
+        let mut tx = self.begin().await.unwrap();
+        let key = "dw-native-query-poll:upsert-control";
+        for (index, value) in [json!({"first":true}), json!({"replacement":null}), json!({"expired":"replaced"})].into_iter().enumerate() {
+            let (result, count) = crate::runtime::sql_counts::measure(Self::put_poll_row(&mut tx, key, &value, 60)).await;
+            result.unwrap();
+            assert_eq!(count.total(), 1);
+            assert_eq!(count.count(DB::QUERY_CACHE_PUT), 1);
+            let row = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&mut *tx).await.unwrap();
+            assert_eq!(DB::string(&row,"value").unwrap(), value.to_string());
+            assert!(DB::number(&row,"expiration").unwrap() > now());
+            if index == 1 {
+                Self::query(DB::QUERY_CACHE_UPDATE).bind(value.to_string()).bind(1_i64).bind(key).execute(&mut *tx).await.unwrap();
+            }
+        }
+        tx.rollback().await.unwrap();
+        assert!(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&self.pool).await.unwrap().is_none());
     }
 
     // Workers send a fresh request ID with every poll, so retire a bounded

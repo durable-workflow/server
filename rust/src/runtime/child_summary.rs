@@ -179,11 +179,12 @@ where
     pub(super) async fn apply_child_summary(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
+        read_rows: bool,
         history: &ChildSummaryHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,c.status AS call_status,c.resolved_child_run_id,c.resolved_child_instance_id,c.child_workflow_type,c.metadata AS call_metadata,l.id AS link_id,l.child_workflow_run_id AS link_run,l.child_workflow_instance_id AS link_instance,l.parallel_group_path AS link_group_path FROM workflow_run_waits w LEFT JOIN workflow_child_calls c ON c.parent_workflow_run_id=w.workflow_run_id AND c.sequence=w.sequence LEFT JOIN workflow_links l ON l.parent_workflow_run_id=w.workflow_run_id AND l.sequence=w.sequence AND l.link_type='child_workflow' AND l.child_workflow_run_id=c.resolved_child_run_id WHERE w.workflow_run_id=$1 AND w.kind='child' ORDER BY w.sequence")
-            .bind(run_id).fetch_all(&mut **tx).await?;
+        let rows = if read_rows { Self::query("SELECT w.*,c.status AS call_status,c.resolved_child_run_id,c.resolved_child_instance_id,c.child_workflow_type,c.metadata AS call_metadata,l.id AS link_id,l.child_workflow_run_id AS link_run,l.child_workflow_instance_id AS link_instance,l.parallel_group_path AS link_group_path FROM workflow_run_waits w LEFT JOIN workflow_child_calls c ON c.parent_workflow_run_id=w.workflow_run_id AND c.sequence=w.sequence LEFT JOIN workflow_links l ON l.parent_workflow_run_id=w.workflow_run_id AND l.sequence=w.sequence AND l.link_type='child_workflow' AND l.child_workflow_run_id=c.resolved_child_run_id WHERE w.workflow_run_id=$1 AND w.kind='child' ORDER BY w.sequence")
+            .bind(run_id).fetch_all(&mut **tx).await? } else { Vec::new() };
         if rows.len() != history.calls.len() {
             return Ok(false);
         }

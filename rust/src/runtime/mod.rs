@@ -148,6 +148,10 @@ mod ready_age_tests;
 mod poll_sweeps_tests;
 #[cfg(test)]
 mod poll_transaction_tests;
+#[cfg(test)]
+mod sql_counts;
+#[cfg(test)]
+mod poll_write_tests;
 mod schema;
 pub mod schema_upgrade;
 mod search_attribute_upserts;

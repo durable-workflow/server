@@ -209,11 +209,12 @@ where
     pub(super) async fn apply_activity_summary(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
+        read_rows: bool,
         history: &ActivitySummaryHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,a.id AS activity_id,a.sequence AS activity_sequence,a.activity_type,a.status AS activity_status,a.attempt_count,a.current_attempt_id,a.parallel_group_path AS activity_group_path,q.id AS matched_task_id,q.task_type AS matched_task_type,q.payload AS matched_task_payload FROM workflow_run_waits w LEFT JOIN activity_executions a ON a.id=w.resume_source_id AND a.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='activity' AND w.status='open' ORDER BY w.sequence,w.opened_at,w.resume_source_id")
-            .bind(run_id).fetch_all(&mut **tx).await?;
+        let rows = if read_rows { Self::query("SELECT w.*,a.id AS activity_id,a.sequence AS activity_sequence,a.activity_type,a.status AS activity_status,a.attempt_count,a.current_attempt_id,a.parallel_group_path AS activity_group_path,q.id AS matched_task_id,q.task_type AS matched_task_type,q.payload AS matched_task_payload FROM workflow_run_waits w LEFT JOIN activity_executions a ON a.id=w.resume_source_id AND a.workflow_run_id=w.workflow_run_id LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND w.kind='activity' AND w.status='open' ORDER BY w.sequence,w.opened_at,w.resume_source_id")
+            .bind(run_id).fetch_all(&mut **tx).await? } else { Vec::new() };
         if rows.len() != history.open.len() || !history.local.is_empty() {
             return Ok(false);
         }

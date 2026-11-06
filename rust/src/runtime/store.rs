@@ -308,6 +308,8 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) fn query(sql: &'static str) -> sqlx::query::Query<'static, DB, DB::Arguments> {
+        #[cfg(test)]
+        super::sql_counts::record(sql);
         // Dialect conversion starts from a compiled static template. Runtime
         // values are always encoded by bind(), never interpolated into SQL.
         sqlx::query(sqlx::AssertSqlSafe(DB::statement(sql)))
@@ -315,6 +317,8 @@ where
     pub(super) fn scalar(
         sql: &'static str,
     ) -> sqlx::query::QueryScalar<'static, DB, i64, DB::Arguments> {
+        #[cfg(test)]
+        super::sql_counts::record(sql);
         sqlx::query_scalar(sqlx::AssertSqlSafe(DB::statement(sql)))
     }
     pub(super) fn new(pool: Pool<DB>) -> Self {

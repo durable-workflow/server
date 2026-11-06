@@ -220,11 +220,12 @@ where
     pub(super) async fn apply_external_wait_summary(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
+        read_rows: bool,
         history: &ExternalWaitHistory,
         summary: &mut ActiveSummary,
     ) -> Result<bool> {
-        let rows = Self::query("SELECT w.*,t.id AS signal_timer_id,t.status AS signal_timer_status,t.sequence AS signal_timer_sequence,t.delay_seconds AS signal_timer_delay,t.fire_at AS signal_timer_fire_at,q.id AS signal_task_id,q.task_type AS signal_task_type,q.payload AS signal_task_payload FROM workflow_run_waits w LEFT JOIN workflow_run_timers t ON t.id=w.resume_source_id AND t.workflow_run_id=w.workflow_run_id AND w.resume_source_kind='timer' LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND (w.status='open' OR (w.status='resolved' AND w.source_status='timed_out')) AND w.kind IN ('condition','signal') ORDER BY w.sequence,w.wait_id")
-            .bind(run_id).fetch_all(&mut **tx).await?;
+        let rows = if read_rows { Self::query("SELECT w.*,t.id AS signal_timer_id,t.status AS signal_timer_status,t.sequence AS signal_timer_sequence,t.delay_seconds AS signal_timer_delay,t.fire_at AS signal_timer_fire_at,q.id AS signal_task_id,q.task_type AS signal_task_type,q.payload AS signal_task_payload FROM workflow_run_waits w LEFT JOIN workflow_run_timers t ON t.id=w.resume_source_id AND t.workflow_run_id=w.workflow_run_id AND w.resume_source_kind='timer' LEFT JOIN workflow_tasks q ON q.id=w.task_id AND q.workflow_run_id=w.workflow_run_id WHERE w.workflow_run_id=$1 AND (w.status='open' OR (w.status='resolved' AND w.source_status='timed_out')) AND w.kind IN ('condition','signal') ORDER BY w.sequence,w.wait_id")
+            .bind(run_id).fetch_all(&mut **tx).await? } else { Vec::new() };
         if rows.len() != history.open.len() {
             return Ok(false);
         }
