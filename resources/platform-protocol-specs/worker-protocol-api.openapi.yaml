@@ -42,7 +42,8 @@ x-durable-workflow-carried-activity-poll:
   completion_authority: existing_parent_completion_guards_are_required_even_when_the_carrier_is_declined
   vectors: carried-poll-v1-vectors.json
   soft_declines: [invalid_carrier, worker_not_registered, task_queue_mismatch, worker_draining, stale_worker_registration, poll_cached_task_expired, occupied_workflow_slot]
-  internal_fault: fail_visibly_and_roll_back_the_completion_transaction
+  claim_fault_before_commit: fail_visibly_and_roll_back_the_completion_transaction
+  commit_outcome_unknown: preserve_existing_storage_unavailable_503_and_recover_with_original_completion_and_poll_ids
   duplicate_completion: never_dispatch_again_recover_with_the_original_poll_request_id
   replay_clock: fresh_response_observation_without_renewing_original_lease_or_deadline_authority
 x-durable-workflow-carried-workflow-poll:
@@ -57,7 +58,8 @@ x-durable-workflow-carried-workflow-poll:
   omitted_result: no_workflow_lease_delivered_reservation_may_be_freed_without_inference_of_queue_emptiness
   empty_probe: preserve_existing_cached_empty_but_do_not_cache_a_new_empty_answer
   duplicate_completion: preserve_stale_attempt_receipt_without_new_dispatch_recover_original_poll_request_id
-  internal_fault: fail_visibly_and_roll_back_the_completion_transaction
+  claim_fault_before_commit: fail_visibly_and_roll_back_the_completion_transaction
+  commit_outcome_unknown: preserve_existing_storage_unavailable_503_and_recover_with_original_completion_and_poll_ids
   history: configured_normal_poll_projection_page_maximum_and_budget
 x-durable-workflow-workflow-completion-poll-order:
   server_capability: workflow_task_completion_workflow_poll
@@ -78,6 +80,7 @@ x-durable-workflow-carried-poll-answer:
   presentation: actual_normal_history_projection_encoding_and_configured_page_limits
   transport_age: charge_original_completion_request_before_reuse_never_restamp_on_receipt_or_cache_read
   recovery: same_original_poll_request_id_if_completion_answer_or_embedded_answer_is_unavailable
+  retained_legacy_key: recover_exact_original_supplied_spelling_without_rewriting_or_renewing_its_lease
 x-durable-workflow-cross-kind-poll-wake:
   opt_in_worker_capability: cross_kind_poll_wake
   scope: [namespace, task_queue]
@@ -2074,7 +2077,9 @@ components:
         timeout_seconds: { type: [integer, "null"], minimum: 0, maximum: 60 }
     CarriedActivityPollResult:
       description: >
-        A true result may carry the complete ordinary poll answer. Consumers
+        On a valid completion reply, a true result may carry the complete ordinary
+        poll answer. A storage-unavailable reply leaves the commit outcome unknown;
+        it does not prove that no lease was delivered. Consumers
         accept older flag-only producers and fall back with the original poll
         request ID if answer is absent. A false result contains no answer. Omission
         delivers no lease and permits releasing the reservation without assuming
@@ -2135,7 +2140,9 @@ components:
           items: { type: string, const: workflow }
     CarriedWorkflowPollResult:
       description: >
-        A true result may carry the complete ordinary poll answer. Consumers
+        On a valid completion reply, a true result may carry the complete ordinary
+        poll answer. A storage-unavailable reply leaves the commit outcome unknown;
+        it does not prove that no lease was delivered. Consumers
         accept older flag-only producers and fall back with the original poll
         request ID if answer is absent. A false result contains no answer. Omission
         delivers no lease and permits releasing the reservation without assuming
