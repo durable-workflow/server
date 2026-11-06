@@ -39,6 +39,37 @@ fn mysql_live_status_seek(plan: &serde_json::Value) -> bool {
     }
 }
 
+fn direct_tables(plan: &serde_json::Value, tables: &mut Vec<String>) {
+    match plan {
+        serde_json::Value::Object(fields) => {
+            if let Some(name) = fields.get("table_name").and_then(serde_json::Value::as_str) {
+                tables.push(name.to_owned());
+            }
+            for (key, value) in fields {
+                // A derived table has already applied its branch limits.
+                if key != "materialized" && key != "materialized_from_subquery" { direct_tables(value, tables); }
+            }
+        }
+        serde_json::Value::Array(values) => { for value in values { direct_tables(value, tables); } }
+        _ => {}
+    }
+}
+
+fn mysql_sorts_only_bounded_union(plan: &serde_json::Value) -> bool {
+    match plan {
+        serde_json::Value::Object(fields) => fields.iter().all(|(key, value)| {
+            if key == "filesort" || (key == "ordering_operation" && value["using_filesort"] == true) {
+                let mut tables = Vec::new();
+                direct_tables(value, &mut tables);
+                if tables.is_empty() || tables.iter().any(|name| !name.starts_with("<derived")) { return false; }
+            }
+            mysql_sorts_only_bounded_union(value)
+        }),
+        serde_json::Value::Array(values) => values.iter().all(mysql_sorts_only_bounded_union),
+        _ => true,
+    }
+}
+
 store_methods! {
     async fn poll_work_count(&self, table: &'static str) -> i64 {
         Self::scalar(table).fetch_one(&self.pool).await.unwrap()
@@ -144,26 +175,31 @@ store_methods! {
         assert_eq!(self.poll_work_count("SELECT COUNT(*) FROM dw_poll_receipts").await, 13);
     }
 
-    async fn poll_work_candidates(&self, sql: &str, wake: bool) -> Vec<String> {
+    async fn poll_work_candidates(&self, sql: &str, wake: bool, branches: usize) -> Vec<String> {
         let at = now();
-        let query = sqlx::query::<DB>(AssertSqlSafe(sql)).bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
-            .bind(DB::bind_time(at)).bind(DB::bind_time(at));
-        let rows = if wake { query.fetch_all(&self.pool).await.unwrap() }
-            else { query.bind(None::<&str>).fetch_all(&self.pool).await.unwrap() };
-        rows.iter().map(|row| DB::string(row, "id").unwrap()).collect()
+        let mut query = sqlx::query::<DB>(AssertSqlSafe(sql));
+        for _ in 0..branches {
+            query = query.bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
+                .bind(DB::bind_time(at)).bind(DB::bind_time(at));
+            if !wake { query = query.bind(None::<&str>); }
+        }
+        query.fetch_all(&self.pool).await.unwrap().iter().map(|row| DB::string(row, "id").unwrap()).collect()
     }
 
-    async fn poll_work_plan(&self, sql: &'static str, wake: bool) -> Vec<String> {
+    async fn poll_work_plan(&self, sql: &'static str, wake: bool, branches: usize) -> Vec<String> {
         let explain = match DB::NAME {
             "SQLite" => "EXPLAIN QUERY PLAN ",
             "MySQL" => "EXPLAIN FORMAT=JSON ",
             _ => "EXPLAIN ",
         };
-        let query = sqlx::query::<DB>(AssertSqlSafe(format!("{explain}{}", DB::statement(sql))))
-            .bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
-            .bind(DB::bind_time(now())).bind(DB::bind_time(now()));
-        let rows = if wake { query.fetch_all(&self.pool).await.unwrap() }
-            else { query.bind(None::<&str>).fetch_all(&self.pool).await.unwrap() };
+        let mut query = sqlx::query::<DB>(AssertSqlSafe(format!("{explain}{}", DB::statement(sql))));
+        let at = now();
+        for _ in 0..branches {
+            query = query.bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
+                .bind(DB::bind_time(at)).bind(DB::bind_time(at));
+            if !wake { query = query.bind(None::<&str>); }
+        }
+        let rows = query.fetch_all(&self.pool).await.unwrap();
         let mut plan = Vec::new();
         for row in rows {
             let line = match DB::NAME {
@@ -192,33 +228,41 @@ store_methods! {
             }
             for (sql, wake) in [(DB::TASK_CANDIDATES_SQL, false),(DB::POLL_WAKE_TASKS_SQL,true)] {
                 let compiled = DB::statement(sql);
-                let baseline = if DB::NAME == "PostgreSQL" && !wake {
+                let predecessor = if !wake && DB::NAME == "PostgreSQL" {
                     DB::statement(super::store::TASK_CANDIDATES_SQL)
-                } else { compiled.clone() };
-                let predecessor = baseline.replace(" AND t.status IN ('ready','leased')", "")
-                    .replace(" FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN ", " JOIN ");
-                let expected = self.poll_work_candidates(&predecessor, wake).await;
-                let actual = self.poll_work_candidates(&compiled, wake).await;
+                } else if !wake && DB::NAME == "MySQL" {
+                    DB::statement(super::store::task_candidates_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r", 100))
+                } else {
+                    compiled.replace(" AND t.status IN ('ready','leased')", "")
+                        .replace(" FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN ", " JOIN ")
+                };
+                let branches = if wake {1} else {DB::TASK_CANDIDATE_BRANCHES};
+                let expected = self.poll_work_candidates(&predecessor, wake, 1).await;
+                let actual = self.poll_work_candidates(&compiled, wake, branches).await;
                 assert_eq!(actual, expected, "{size} tasks / wake={wake}");
                 assert_eq!(actual.len(), if size == 1 {1} else {100});
+                if !wake {
+                    let first = self.poll_work_candidates(&DB::statement(DB::TASK_CANDIDATE_BATCH_SQL), false, branches).await;
+                    assert_eq!(first, expected.iter().take(super::priority_fairness::FAIRNESS_BATCH).cloned().collect::<Vec<_>>());
+                }
                 let mut samples = Vec::new();
                 for _ in 0..5 {
                     let start = Instant::now();
-                    self.poll_work_candidates(&predecessor, wake).await;
+                    self.poll_work_candidates(&predecessor, wake, 1).await;
                     let old = start.elapsed().as_nanos();
                     let start = Instant::now();
-                    self.poll_work_candidates(&compiled, wake).await;
+                    self.poll_work_candidates(&compiled, wake, branches).await;
                     samples.push((old, start.elapsed().as_nanos()));
                 }
                 println!("poll_sql_source_samples backend={} tasks={size} wake={wake} old_new_ns={samples:?}", DB::NAME);
                 if size == 1 { continue; }
-                let raw = self.poll_work_plan(sql, wake).await;
+                let raw = self.poll_work_plan(sql, wake, branches).await;
                 println!("poll_query_plan backend={} wake={wake} statistics=before_explicit_refresh: {raw:?}", DB::NAME);
                 // The disposable fixture was bulk-loaded in one transaction.
                 // Refresh its statistics, never production planner settings.
                 Self::query(if DB::NAME == "MySQL" { "ANALYZE TABLE workflow_tasks" } else { "ANALYZE workflow_tasks" })
                     .execute(&self.pool).await.unwrap();
-                let plan = self.poll_work_plan(sql, wake).await;
+                let plan = self.poll_work_plan(sql, wake, branches).await;
                 println!("poll_query_plan backend={} wake={wake} statistics=after_explicit_refresh: {plan:?}", DB::NAME);
                 // Inspect actual status key use. Bitmap alternatives may be
                 // cheaper than the widest poll index; scope/run-only walks
@@ -226,7 +270,14 @@ store_methods! {
                 match DB::NAME {
                     "SQLite" => assert!(plan.iter().any(|line| status_index(line) && line.contains("status=?")), "{plan:?}"),
                     "PostgreSQL" => assert!(postgres_live_status_seek(&plan), "{plan:?}"),
-                    "MySQL" => assert!(plan.iter().any(|line| mysql_live_status_seek(&serde_json::from_str(line).unwrap())), "{plan:?}"),
+                    "MySQL" => {
+                        assert!(plan.iter().any(|line| mysql_live_status_seek(&serde_json::from_str(line).unwrap())), "{plan:?}");
+                        if !wake {
+                            assert!(plan.iter().all(|line| mysql_sorts_only_bounded_union(&serde_json::from_str(line).unwrap())), "{plan:?}");
+                            let old = self.poll_work_plan(super::store::task_candidates_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r", 100), false, 1).await;
+                            assert!(old.iter().any(|line| !mysql_sorts_only_bounded_union(&serde_json::from_str(line).unwrap())), "the predecessor must reproduce the task-row sort: {old:?}");
+                        }
+                    }
                     _ => unreachable!(),
                 }
                 assert!(!plan.iter().any(|line| line.contains("Seq Scan on workflow_tasks") || line == "SCAN t"), "{plan:?}");
