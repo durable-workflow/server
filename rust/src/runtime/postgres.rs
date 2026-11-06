@@ -13,7 +13,7 @@ use sqlx::{
 
 use super::{Result, refuse};
 
-pub const VERSION: i64 = 9;
+pub const VERSION: i64 = 10;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
@@ -22,7 +22,7 @@ fn migrator() -> &'static Migrator {
     MIGRATOR.get_or_init(|| {
         let mut migrations = Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins".into(),
+            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and replay clock history index".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/postgres/0003_full_schema.sql"),
@@ -37,7 +37,9 @@ fn migrator() -> &'static Migrator {
                 "\n",
                 include_str!("../../migrations/postgres/0008_external_payload_deletions.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0009_task_ready_origin.sql")
+                include_str!("../../migrations/postgres/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0010_replay_clock_history_index.sql")
             )
             .into_sql_str(),
             false,
@@ -60,7 +62,32 @@ pub(super) fn migration() -> &'static Migration {
 fn earlier_migration(version: i64) -> Option<(&'static Migration, &'static str)> {
     static V7: OnceLock<Migration> = OnceLock::new();
     static V8: OnceLock<Migration> = OnceLock::new();
+    static V9: OnceLock<Migration> = OnceLock::new();
     match version {
+        9 => Some((
+            V9.get_or_init(|| Migration::new(
+                9,
+                "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins".into(),
+                MigrationType::Simple,
+                concat!(
+                include_str!("../../migrations/postgres/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0009_task_ready_origin.sql")
+            ).into_sql_str(),
+                false,
+            )),
+            include_str!("../../migrations/postgres/0009_catalog.json"),
+        )),
         8 => Some((
             V8.get_or_init(|| Migration::new(
                 8,
@@ -116,6 +143,7 @@ fn step(version: i64) -> Option<&'static str> {
     match version {
         7 => Some(include_str!("../../migrations/postgres/0008_external_payload_deletions.sql")),
         8 => Some(include_str!("../../migrations/postgres/0009_task_ready_origin.sql")),
+        9 => Some(include_str!("../../migrations/postgres/0010_replay_clock_history_index.sql")),
         _ => None,
     }
 }
@@ -138,7 +166,9 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/postgres/0008_external_payload_deletions.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0009_task_ready_origin.sql")
+                include_str!("../../migrations/postgres/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0010_replay_clock_history_index.sql")
         ),
     )
 }
@@ -276,7 +306,7 @@ pub(super) async fn verify(connection: &mut PgConnection) -> Result<()> {
     // from SQL text. It retains types, precision, defaults, indexes, foreign
     // keys and sequence ownership while excluding live rows/sequence values.
     let expected: Catalog =
-        serde_json::from_str(include_str!("../../migrations/postgres/0009_catalog.json"))?;
+        serde_json::from_str(include_str!("../../migrations/postgres/0010_catalog.json"))?;
     let actual = catalog(connection).await?;
     if actual != expected {
         return Err(refuse(
@@ -565,6 +595,16 @@ mod tests {
     /// 25001, and every later statement on that connection with 25P02.
     #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_worker_replay_clock_rejects_duplicate_starts() {
+        let db = Database::new().await;
+        let mut store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_replay_clock_start_uniqueness().await;
+        store.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_ready_age_origins_and_committed_poll_answers() {
         let db=Database::new().await;
         let mut store=super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
@@ -627,7 +667,7 @@ mod tests {
     #[test]
     fn compiled_catalog_preserves_long_object_identities_and_int64_limits() {
         let rows: Catalog =
-            serde_json::from_str(include_str!("../../migrations/postgres/0009_catalog.json"))
+            serde_json::from_str(include_str!("../../migrations/postgres/0010_catalog.json"))
                 .unwrap();
         let identities: std::collections::BTreeSet<_> =
             rows.iter().map(|(kind, name, _)| (kind, name)).collect();
@@ -1567,6 +1607,23 @@ mod tests {
         tx.commit().await.unwrap();
         connection.close().await.unwrap();
     }
+    async fn version_9_database(db: &Database) {
+        let (earlier, earlier_catalog) = earlier_migration(9).unwrap();
+        let mut connection = db.connection().await;
+        let mut tx = connection.begin().await.unwrap();
+        let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
+        migrator.set_locking(false);
+        migrator.run(&mut *tx).await.unwrap();
+        let expected: Catalog = serde_json::from_str(earlier_catalog).unwrap();
+        assert_eq!(catalog(&mut tx).await.unwrap(), expected);
+        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 9')")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        connection.close().await.unwrap();
+    }
+
 
     fn upgrade_refused(result: Result<i64>, expected: &str) {
         match result {
@@ -1574,6 +1631,30 @@ mod tests {
             Err(error) => panic!("unexpected upgrade error: {error}"),
             Ok(found) => panic!("upgrade accepted version {found}"),
         }
+    }
+
+    #[test]
+    fn version_9_bootstrap_keeps_its_pinned_source_checksum() {
+        let hex: String = earlier_migration(9).unwrap().0.checksum.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(hex, include_str!("../../migrations/postgres/0009_checksum.txt").trim());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_version_9_replay_clock_index_upgrade_preserves_rows() {
+        let db = Database::new().await;
+        version_9_database(&db).await;
+        assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(),9);
+        PostgresStorage::check(db.options.clone()).await.unwrap();
+        let mut connection = db.connection().await;
+        let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+        assert_eq!(kept,"seeded at version 9");
+        let row = catalog(&mut connection).await.unwrap().into_iter().find(|(_, name, _)| name=="workflow_history_events_run_type_sequence_index").unwrap();
+        println!("replay_clock_actual_postgres_index={}",serde_json::to_string(&row).unwrap());
+        connection.execute("DROP INDEX workflow_history_events_run_type_sequence_index").await.unwrap();
+        connection.close().await.unwrap();
+        refused(PostgresStorage::open(db.options.clone()).await,"native_schema_catalog_mismatch");
+        db.remove().await;
     }
 
     #[tokio::test]

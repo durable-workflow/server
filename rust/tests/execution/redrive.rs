@@ -15,7 +15,7 @@ async fn complete_activity(app: &Router, task: &Value) {
 
 /// A run whose second activity failed and whose workflow then failed at
 /// that step, as the PHP SDK reports it.
-async fn failed_at_second_activity(app: &Router, workflow: &str) -> Value {
+pub(super) async fn failed_at_second_activity(app: &Router, workflow: &str) -> Value {
     let started = start(app, workflow).await;
     let task = poll(app, "worker", "workflow").await;
     finish_task(app, &task, json!([{"type":"schedule_activity","activity_type":"a","arguments":envelope(Payload::Array(vec![]))}])).await;

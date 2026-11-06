@@ -11,14 +11,14 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 9;
+pub(super) const VERSION: i64 = 10;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins".into(),
+            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and replay clock history index".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/sqlite/0003_full_schema.sql"),
@@ -33,7 +33,9 @@ fn migrator() -> &'static Migrator {
                 "\n",
                 include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0010_replay_clock_history_index.sql")
             )
             .into_sql_str(),
             false,
@@ -47,7 +49,31 @@ fn migrator() -> &'static Migrator {
 fn earlier_migration(version: i64) -> Option<&'static Migration> {
     static V7: OnceLock<Migration> = OnceLock::new();
     static V8: OnceLock<Migration> = OnceLock::new();
+    static V9: OnceLock<Migration> = OnceLock::new();
     match version {
+        9 => Some(
+            V9.get_or_init(|| Migration::new(
+                9,
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins".into(),
+                MigrationType::Simple,
+                concat!(
+                include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")
+            ).into_sql_str(),
+                false,
+            ))
+        ),
         8 => Some(
             V8.get_or_init(|| Migration::new(
                 8,
@@ -100,6 +126,7 @@ fn step(version: i64) -> Option<&'static str> {
     match version {
         7 => Some(include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")),
         8 => Some(include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")),
+        9 => Some(include_str!("../../migrations/sqlite/0010_replay_clock_history_index.sql")),
         _ => None,
     }
 }
@@ -202,7 +229,9 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0010_replay_clock_history_index.sql")
         ),
     )
 }
@@ -708,6 +737,34 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         assert_eq!(hex, include_str!("../../migrations/sqlite/0007_checksum.txt").trim());
+    }
+
+    #[test]
+    fn version_9_bootstrap_keeps_its_pinned_source_checksum() {
+        let hex: String = earlier_migration(9).unwrap().checksum.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(hex, include_str!("../../migrations/sqlite/0009_checksum.txt").trim());
+    }
+
+    #[tokio::test]
+    async fn version_9_index_upgrade_preserves_history_and_rejects_index_corruption() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clock-v9.sqlite");
+        let mut connection = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path).create_if_missing(true)).await.unwrap();
+        Migrator::with_migrations(vec![earlier_migration(9).unwrap().clone()]).run(&mut connection).await.unwrap();
+        sqlx::raw_sql(r#"INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace) VALUES ('clock-instance','Clock','clock','default');
+INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ('clock-run','clock-instance',1,'Clock','clock','default','pending');
+INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload) VALUES ('clock-start','clock-run',1,'WorkflowStarted','{"tag":"kept"}');"#).execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        let report = super::super::schema_upgrade::upgrade_sqlite(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["from_schema_version"],9);
+        let pool = super::super::sqlite::open(path.to_str().unwrap()).await.unwrap();
+        let payload: String = sqlx::query_scalar("SELECT payload FROM workflow_history_events WHERE id='clock-start'").fetch_one(&pool).await.unwrap();
+        assert_eq!(payload, r#"{"tag":"kept"}"#);
+        let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_index_info('workflow_history_events_run_type_sequence_index') ORDER BY seqno").fetch_all(&pool).await.unwrap();
+        assert_eq!(columns,["workflow_run_id","event_type","sequence"]);
+        sqlx::query("DROP INDEX workflow_history_events_run_type_sequence_index").execute(&pool).await.unwrap();
+        pool.close().await;
+        assert_eq!(reason(super::super::sqlite::open(path.to_str().unwrap()).await).await,"native_schema_catalog_mismatch");
     }
 
     #[tokio::test]

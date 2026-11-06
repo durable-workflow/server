@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "58"
+  version: "59"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -2065,11 +2065,35 @@ components:
         mapping:
           workflow: "#/components/schemas/WorkflowTask"
           update_validation: "#/components/schemas/UpdateValidationTask"
+    WorkerReplayClock:
+      type: object
+      additionalProperties: false
+      required: [schema, workflow_run_id, started_at, source]
+      description: >-
+        Effective replay entry instant bound to the issued workflow task's
+        canonical run and namespace. Ordinary, continued and child entries use
+        that run's start. A redrive requires the unique correlated successor
+        start and its retained command, source run, resume sequence and link.
+        Missing, malformed or ambiguous authority omits the whole object.
+        Cached poll replies retain their original object or absence.
+      properties:
+        schema: { type: string, const: durable-workflow.worker-replay-clock/v1 }
+        workflow_run_id: { type: string, minLength: 1 }
+        started_at:
+          type: string
+          format: date-time
+          pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+          description: Exact represented instant in UTC with six fractional digits. Historical whole-second anchors are zero-padded.
+        source:
+          type: string
+          enum: [run_started_at, redrive_replayed_started_at]
     WorkflowTask:
       type: object
       additionalProperties: true
       required: [task_kind, task_id, workflow_id, run_id, workflow_task_attempt, history_events, lease_owner, lease_expires_at]
       properties:
+        replay_clock:
+          $ref: "#/components/schemas/WorkerReplayClock"
         ready_age_ms:
           $ref: "#/components/schemas/ClaimedTaskReadyAgeMs"
         task_kind: { type: string, const: workflow }

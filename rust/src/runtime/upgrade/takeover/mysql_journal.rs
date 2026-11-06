@@ -456,6 +456,7 @@ async fn finish(connection: &mut MySqlConnection, run: &Run<'_>) -> Result<()> {
     // Conversion has now removed PHP's supported tail columns. Match that
     // exact v8 task table before the idempotent native-only column step.
     mysql::ensure_ready_origin(connection, run.flavor).await?;
+    mysql::ensure_replay_clock_index(connection, run.flavor).await?;
     connection.execute(LEDGER_SQL).await?;
     let migration = run.flavor.migration();
     let mut tx = connection.begin().await?;

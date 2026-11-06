@@ -141,6 +141,7 @@ mod schedule_list;
 mod schedule_storage;
 mod schedules;
 mod ready_age;
+mod replay_clock;
 #[cfg(test)]
 mod ready_age_tests;
 mod schema;
