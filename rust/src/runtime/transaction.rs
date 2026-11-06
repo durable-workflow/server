@@ -100,12 +100,14 @@ where
     /// a partial claim. Budget charges stay consumed and discarded reads
     /// cannot survive in the transaction's cancellation-history cache.
     pub(super) async fn poll_savepoint(&mut self) -> Result<PollSavepoint> {
-        Store::<DB>::query("SAVEPOINT dw_poll_claim").execute(&mut **self).await?;
+        // MySQL does not support savepoint commands in its prepared-statement
+        // protocol. Send these fixed transaction-control literals directly.
+        (&mut **self).execute("SAVEPOINT dw_poll_claim").await?;
         Ok(PollSavepoint { summaries: self.summaries.clone(), workflow_poll_replayed: self.workflow_poll_replayed.clone() })
     }
 
     pub(super) async fn rollback_poll_claim(&mut self, saved: PollSavepoint) -> Result<()> {
-        Store::<DB>::query("ROLLBACK TO SAVEPOINT dw_poll_claim").execute(&mut **self).await?;
+        (&mut **self).execute("ROLLBACK TO SAVEPOINT dw_poll_claim").await?;
         self.summaries = saved.summaries;
         self.workflow_poll_replayed = saved.workflow_poll_replayed;
         self.scope_history = None;
@@ -113,7 +115,7 @@ where
     }
 
     pub(super) async fn release_poll_claim(&mut self) -> Result<()> {
-        Store::<DB>::query("RELEASE SAVEPOINT dw_poll_claim").execute(&mut **self).await?;
+        (&mut **self).execute("RELEASE SAVEPOINT dw_poll_claim").await?;
         Ok(())
     }
 

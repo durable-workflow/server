@@ -230,8 +230,18 @@ where
             "task_queue":"projection","input":{"codec":"avro","blob":input}}), std::collections::BTreeMap::new(), None, None).await.unwrap();
         let run_id = run["run_id"].as_str().unwrap();
         let mut tx = self.begin().await.unwrap();
-        let mut last = 1;
-        for (total, pages) in [(1,1),(15,1),(16,2),(17,2),(32,3)] {
+        // A normal native start writes StartAccepted and WorkflowStarted.
+        // Isolate a one-event paging fixture, then restore the real prefix.
+        let saved = tx.poll_savepoint().await.unwrap();
+        Self::query("DELETE FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>1").bind(run_id).execute(&mut *tx).await.unwrap();
+        let (one, counts) = super::sql_counts::measure(Self::summary_history(&mut tx, run_id, true, 1)).await;
+        assert_eq!(one.unwrap().unwrap().count, 1);
+        assert_eq!(counts.count(DB::SUMMARY_HISTORY_SQL), 1);
+        tx.rollback_poll_claim(saved).await.unwrap();
+        let mut last = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(run_id).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(last, 2, "the native acceptance/start prefix is retained");
+        for (total, pages) in [(15,1),(16,2),(17,2),(32,3)] {
             while last < total {
                 Self::append(&mut tx, run_id, "SideEffectRecorded", serde_json::json!({"sequence":last,"result":null}), None, None).await.unwrap();
                 last += 1;

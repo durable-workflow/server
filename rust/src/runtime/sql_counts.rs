@@ -8,6 +8,9 @@ pub(super) struct Counts(BTreeMap<&'static str, usize>);
 impl Counts {
     pub(super) fn total(&self) -> usize { self.0.values().sum() }
     pub(super) fn count(&self, sql: &'static str) -> usize { self.0.get(sql).copied().unwrap_or(0) }
+    pub(super) fn count_prefix(&self, prefix: &str) -> usize {
+        self.0.iter().filter(|(sql,_)| sql.starts_with(prefix)).map(|(_,count)| count).sum()
+    }
 }
 
 tokio::task_local! { static COUNTS: RefCell<Counts>; }

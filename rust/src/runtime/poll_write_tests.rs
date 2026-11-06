@@ -12,7 +12,7 @@ store_methods! {
         let run_id = run["run_id"].as_str().unwrap();
         // Keep transport classification far from a live clock boundary while
         // the two reference paths run one after another.
-        Self::query("UPDATE workflow_tasks SET available_at='2100-01-01 00:00:00' WHERE workflow_run_id=$1")
+        Self::query("UPDATE workflow_tasks SET available_at='2035-01-01 00:00:00' WHERE workflow_run_id=$1")
             .bind(run_id).execute(&self.pool).await.unwrap();
         let mut tx = self.begin().await.unwrap();
         let (fast, old) = Self::compare_projection_bytes(&mut tx, run_id).await.unwrap();
@@ -21,12 +21,12 @@ store_methods! {
         // Every column is compared on the same database/transaction. These
         // are stored-row classifier controls, not producer/admission claims.
         for sql in [
-            "UPDATE workflow_tasks SET status='leased',lease_owner='projection',lease_expires_at='2100-01-01 00:00:00' WHERE workflow_run_id=$1",
+            "UPDATE workflow_tasks SET status='leased',lease_owner='projection',lease_expires_at='2035-01-01 00:00:00' WHERE workflow_run_id=$1",
             "UPDATE workflow_tasks SET status='leased',lease_owner='projection',lease_expires_at='2000-01-01 00:00:00' WHERE workflow_run_id=$1",
             "UPDATE workflow_tasks SET repair_count=1 WHERE workflow_run_id=$1",
             "UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1",
             "UPDATE workflow_runs SET compatibility='unqualified' WHERE id=$1",
-            "UPDATE workflow_runs SET status='completed',closed_reason='completed',closed_at='2100-01-01 00:00:00' WHERE id=$1",
+            "UPDATE workflow_runs SET status='completed',closed_reason='completed',closed_at='2035-01-01 00:00:00' WHERE id=$1",
         ] {
             let mut tx = self.begin().await.unwrap();
             Self::query(sql).bind(run_id).execute(&mut *tx).await.unwrap();
@@ -72,7 +72,7 @@ store_methods! {
             std::sync::Arc::new(tokio::sync::Semaphore::new(1)), BTreeMap::new(), None, Some("1.20"), Default::default(), None, None).await.unwrap();
         let mut tx = self.begin().await.unwrap();
         let run_id = activity_run["run_id"].as_str().unwrap();
-        Self::query("UPDATE workflow_tasks SET available_at='2100-01-01 00:00:00' WHERE workflow_run_id=$1")
+        Self::query("UPDATE workflow_tasks SET available_at='2035-01-01 00:00:00' WHERE workflow_run_id=$1")
             .bind(run_id).execute(&mut *tx).await.unwrap();
         Self::compare_projection_bytes(&mut tx, run_id).await.unwrap();
         // A genuine scheduled activity's history still requires its wait,

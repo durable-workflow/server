@@ -61,23 +61,28 @@ store_methods! {
             Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
                 .bind(claimed["task"]["task_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
         }
-        // A malformed stored field is decoded after the task UPDATE. Its
+        // A mismatched history high-watermark is refused after the task UPDATE. Its
         // error must escape without committing that lease, while the prior
         // request-kind binding remains committed as before this refactor.
         for multiplexed in [false,true] {
             let name = format!("counted-partial-claim-{multiplexed}");
             let started = self.count_start(&name).await;
-            Self::query("UPDATE workflow_runs SET arguments=NULL WHERE id=$1")
-                .bind(started["run_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
+            let original = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+                .bind(started["run_id"].as_str().unwrap()).fetch_one(&self.pool).await.unwrap();
+            Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
+                .bind(original + 1).bind(started["run_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
             let body = json!({"worker_id":"count-worker","task_queue":"counted","poll_request_id":name,"timeout_seconds":0});
             self.count_reset();
-            let error = if multiplexed {
-                self.poll_task_kinds(&body, &["workflow","update_validation"], "1.20", Default::default(), 0, 30)
-                    .await.err().expect("malformed stored arguments must fail")
-            } else {
-                self.poll(body.clone(), "workflow", "1.20").await.unwrap_err()
-            };
-            assert!(matches!(error, super::RuntimeError::Database(_)), "{error:?}");
+            let (result, statements) = super::sql_counts::measure(async {
+                if multiplexed {
+                    self.poll_task_kinds(&body, &["workflow","update_validation"], "1.20", Default::default(), 0, 30).await.map(|_| ())
+                } else {
+                    self.poll(body.clone(), "workflow", "1.20").await.map(|_| ())
+                }
+            }).await;
+            let error = result.unwrap_err();
+            assert!(matches!(error, super::RuntimeError::Refused { reason:"history_budget_unavailable", .. }), "{error:?}");
+            assert_eq!(statements.count_prefix("UPDATE workflow_tasks SET ready_origin_at="), 1, "the refused claim actually reached the lease write");
             assert_eq!(self.count_get(), 1);
             let row = Self::query("SELECT * FROM workflow_tasks WHERE workflow_run_id=$1")
                 .bind(started["run_id"].as_str().unwrap()).fetch_one(&self.pool).await.unwrap();
@@ -98,8 +103,8 @@ store_methods! {
                 super::RuntimeError::Protocol { response, .. } => assert_eq!(response["reason"], "poll_request_task_kinds_conflict"),
                 other => panic!("{other:?}"),
             }
-            Self::query("UPDATE workflow_runs SET arguments=$1 WHERE id=$2")
-                .bind(input()["blob"].as_str().unwrap()).bind(started["run_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
+            Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
+                .bind(original).bind(started["run_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
             let retried = self.count_poll(&name, multiplexed).await;
             assert_eq!(retried["task"]["workflow_task_attempt"], 1);
             Self::query("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1")
