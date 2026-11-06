@@ -8,7 +8,7 @@ use super::{
     store::{Store, id, now},
 };
 use axum::http::StatusCode;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, SecondsFormat, Timelike, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
@@ -20,6 +20,35 @@ pub(crate) fn iso8601(time: DateTime<Utc>) -> String {
 /// `format('Y-m-d\TH:i:s.uP')`, the occurrence form PHP records.
 pub(crate) fn occurrence(time: DateTime<Utc>) -> String {
     time.format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string()
+}
+
+pub(super) const LAST_SKIP_REASON_MAX_SCALARS: usize = 64;
+pub(super) const LAST_SKIP_REASON_MAX_BYTES: usize = 256;
+pub(super) const LAST_SKIPPED_AT_MAX_BYTES: usize = 64;
+
+/// The selected skip fields preserve complete stored values in list and detail.
+pub(super) fn last_skip<DB: Backend>(row: &DB::Row) -> Result<Value> {
+    let unavailable = || refuse(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable");
+    let reason = DB::optional_string(row, "last_skip_reason").map_err(|_| unavailable())?;
+    if reason.as_ref().is_some_and(|value| {
+        value.len() > LAST_SKIP_REASON_MAX_BYTES
+            || value.chars().count() > LAST_SKIP_REASON_MAX_SCALARS
+    }) {
+        return Err(unavailable());
+    }
+    let at = DB::optional_instant(row, "last_skipped_at").map_err(|_| unavailable())?;
+    let at = at
+        .map(|value| {
+            if !(1..=9999).contains(&value.year())
+                || value.nanosecond() >= 1_000_000_000
+                || value.nanosecond() % 1000 != 0
+            {
+                return Err(unavailable());
+            }
+            Ok(value.to_rfc3339_opts(SecondsFormat::Micros, true))
+        })
+        .transpose()?;
+    Ok(json!({"last_skip_reason":reason,"last_skipped_at":at}))
 }
 
 pub(super) fn not_found(schedule_id: &str, namespace: &str) -> RuntimeError {
@@ -329,6 +358,7 @@ where
         let last = time("last_fired_at")?;
         let fires = DB::number(row, "fires_count")?;
         let failures = DB::number(row, "failures_count")?;
+        let skipped = last_skip::<DB>(row)?;
         let action = DB::optional_document_row(row, "action")?
             .map(|action| schedules::normalize_action_timeouts(&action));
         Ok(json!({
@@ -341,8 +371,8 @@ where
                 "recent_actions":DB::optional_document_row(row,"recent_actions")?.unwrap_or_else(|| json!([])),
                 "buffered_actions":DB::optional_document_row(row,"buffered_actions")?.unwrap_or_else(|| json!([])),
                 "skipped_trigger_count":DB::number(row,"skipped_trigger_count")?,
-                "last_skip_reason":DB::optional_string(row,"last_skip_reason")?,
-                "last_skipped_at":time("last_skipped_at")?},
+                "last_skip_reason":skipped["last_skip_reason"],
+                "last_skipped_at":skipped["last_skipped_at"]},
             "memo":DB::optional_document_row(row,"memo")?,
             "search_attributes":DB::optional_document_row(row,"search_attributes")?,
             "created_at":time("created_at")?,
@@ -394,5 +424,52 @@ where
         let cursor = (has_more && !events.is_empty()).then(|| events.last().unwrap()["sequence"].clone());
         Ok(json!({"schedule_id":DB::string(&schedule_row,"schedule_id")?,"namespace":DB::optional_string(&schedule_row,"namespace")?,
             "events":events,"next_cursor":cursor,"has_more":has_more}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn skip_projection_preserves_nullable_complete_values_and_microseconds() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let row = sqlx::query("SELECT NULL AS last_skip_reason,NULL AS last_skipped_at")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(last_skip::<sqlx::Sqlite>(&row).unwrap(),
+            json!({"last_skip_reason":null,"last_skipped_at":null}));
+        let maximum_reason = "🙂".repeat(64);
+        for reason in [None, Some(""), Some("NULL"), Some("  PaUsEd  "), Some("NUL\0tail"), Some(maximum_reason.as_str())] {
+            let row = sqlx::query("SELECT ? AS last_skip_reason,? AS last_skipped_at")
+                .bind(reason).bind("2026-11-05 12:00:01.123456").fetch_one(&pool).await.unwrap();
+            assert_eq!(last_skip::<sqlx::Sqlite>(&row).unwrap(),
+                json!({"last_skip_reason":reason,"last_skipped_at":"2026-11-05T12:00:01.123456Z"}));
+        }
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn skip_projection_refuses_oversized_values_and_lossy_or_unsupported_timestamps() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        for reason in ["x".repeat(65), "🙂".repeat(65)] {
+            let row = sqlx::query("SELECT ? AS last_skip_reason,NULL AS last_skipped_at")
+                .bind(reason).fetch_one(&pool).await.unwrap();
+            assert!(matches!(last_skip::<sqlx::Sqlite>(&row), Err(RuntimeError::Refused {
+                status:StatusCode::SERVICE_UNAVAILABLE,reason:"storage_unavailable"})));
+        }
+        let invalid_utf8 = sqlx::query("SELECT CAST(X'FF' AS TEXT) AS last_skip_reason,NULL AS last_skipped_at")
+            .fetch_one(&pool).await.unwrap();
+        assert!(matches!(last_skip::<sqlx::Sqlite>(&invalid_utf8), Err(RuntimeError::Refused {
+            status:StatusCode::SERVICE_UNAVAILABLE,reason:"storage_unavailable"})));
+        for timestamp in ["not a timestamp", "2026-02-30 12:00:00.000000",
+            "0000-01-01 00:00:00.000000",
+            "2026-11-05T12:00:00.123456+01:00", "2026-11-05 12:00:00.1234567",
+            "2016-12-31 23:59:60.000000"] {
+            let row = sqlx::query("SELECT 'retained' AS last_skip_reason,? AS last_skipped_at")
+                .bind(timestamp).fetch_one(&pool).await.unwrap();
+            assert!(matches!(last_skip::<sqlx::Sqlite>(&row), Err(RuntimeError::Refused {
+                status:StatusCode::SERVICE_UNAVAILABLE,reason:"storage_unavailable"})),"{timestamp}");
+        }
+        pool.close().await;
     }
 }
