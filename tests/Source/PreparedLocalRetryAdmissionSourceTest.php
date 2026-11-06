@@ -300,7 +300,11 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
             $duplicate = $this->outcome($task, $prepared['activity_attempt_id'], $report);
             $this->assertSame(200, $duplicate->status(), $duplicate->getContent());
             $duplicate->assertJsonPath('duplicate', true)->assertJsonPath('event_id', $reply['event_id']);
-            $this->assertSame($reply['retry_disposition'], $duplicate->json('retry_disposition'));
+            $originalDecision = $reply['retry_disposition'];
+            $duplicateDecision = $duplicate->json('retry_disposition');
+            ksort($originalDecision);
+            ksort($duplicateDecision);
+            $this->assertSame($originalDecision, $duplicateDecision);
             $this->assertSame($before, $this->state());
         }
     }
