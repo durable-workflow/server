@@ -457,7 +457,12 @@ mod tests {
             assert!(matches!(last_skip::<sqlx::Sqlite>(&row), Err(RuntimeError::Refused {
                 status:StatusCode::SERVICE_UNAVAILABLE,reason:"storage_unavailable"})));
         }
+        let invalid_utf8 = sqlx::query("SELECT CAST(X'FF' AS TEXT) AS last_skip_reason,NULL AS last_skipped_at")
+            .fetch_one(&pool).await.unwrap();
+        assert!(matches!(last_skip::<sqlx::Sqlite>(&invalid_utf8), Err(RuntimeError::Refused {
+            status:StatusCode::SERVICE_UNAVAILABLE,reason:"storage_unavailable"})));
         for timestamp in ["not a timestamp", "2026-02-30 12:00:00.000000",
+            "0000-01-01 00:00:00.000000",
             "2026-11-05T12:00:00.123456+01:00", "2026-11-05 12:00:00.1234567",
             "2016-12-31 23:59:60.000000"] {
             let row = sqlx::query("SELECT 'retained' AS last_skip_reason,? AS last_skipped_at")
