@@ -26,6 +26,36 @@ const FIRE_TIMES = [[], [], [], [],
 
 const ids = step => step.response.schedules.map(item => item.schedule_id);
 
+function checkedLastSkip(item, skipped, raw) {
+  assert.ok(Object.hasOwn(item, 'last_skip_reason') && Object.hasOwn(item, 'last_skipped_at'),
+    'complete schedule last-skip pair');
+  if (skipped === 0) {
+    assert.deepStrictEqual([item.last_skip_reason, item.last_skipped_at], [null, null],
+      'new fixture schedules have no stored skip');
+    return;
+  }
+  // These causes follow the fixture's paused, repeated-occurrence and overlap requests.
+  const reasons = {beta: 'status_not_triggerable', bf: 'already_fired_occurrence', 'bf-skip': 'overlap_policy_skip'};
+  assert.ok(Object.hasOwn(reasons, item.schedule_id), 'fixture has a known skip cause');
+  assert.equal(item.last_skip_reason, reasons[item.schedule_id], 'last skip retains its complete cause');
+  assert.match(item.last_skipped_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/,
+    'last skip has six fractional digits and UTC Z');
+  assert.notEqual(item.last_skipped_at.slice(0, 4), '0000', 'last skip has a supported stored year');
+  const instant = new Date(item.last_skipped_at);
+  assert.ok(Number.isFinite(instant.getTime()), 'last skip is an actual instant');
+  assert.equal(instant.toISOString().slice(0, 19), item.last_skipped_at.slice(0, 19),
+    'last skip has valid calendar fields');
+  const audit = raw.find(step => step.request === `GET schedules/${item.schedule_id}/history?limit=20`);
+  if (audit) {
+    const event = audit.response.events.filter(event => event.event_type === 'ScheduleTriggerSkipped').at(-1);
+    assert.equal(item.last_skip_reason, event.payload.reason, 'last skip agrees with retained audit cause');
+    // The existing audit writer stores whole seconds. Exact microseconds are
+    // compared between list/describe and the stored row in the backend suites.
+    assert.equal(item.last_skipped_at.slice(0, 19), event.payload.last_skipped_at.slice(0, 19),
+      'later successful backfills preserve the earlier audited skip');
+  }
+}
+
 // Keep the frozen PHP response contract intact. Native's additive fields are
 // checked against the preceding HTTP backfill results before projecting them
 // away for comparison with an older published PHP server.
@@ -49,6 +79,11 @@ function checkedListSummaries(raw, target) {
       if (target !== 'rust' && present.length === 0) return item;
       assert.deepStrictEqual(present, fields, 'complete schedule list summary');
       const state = known.get(item.schedule_id) ?? {failures: 0, skipped: 0, latest: null};
+      const skipFields = ['last_skip_reason', 'last_skipped_at'];
+      if (target === 'rust' || skipFields.some(field => Object.hasOwn(item, field))) {
+        checkedLastSkip(item, state.skipped, raw);
+        fields.push(...skipFields);
+      }
       assert.deepStrictEqual([item.failures_count, item.skipped_trigger_count, item.latest_workflow_instance_id],
         [state.failures, state.skipped, state.latest], 'summary counters and latest identity match preceding HTTP results');
       if (state.latest === null) assert.equal(item.current_run, null, 'unfired schedule has unknown current run');

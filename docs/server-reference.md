@@ -1204,8 +1204,16 @@ heartbeat, complete, and fail responses include `run_closed_reason` and
 - `POST /api/schedules/{id}/backfill` — Backfill missed runs
 
 The native development [scalar summary draft](schedule-list-scalar-summary.md) adds
-counters, latest-instance identity and a nullable current-run summary. Full last-
-dispatch/buffer/skip summaries and published capability remain pending Server #1014.
+counters, latest-instance identity, a nullable current-run summary and the stored
+`last_skip_reason` / `last_skipped_at` pair. The reason is nullable complete text
+with at most 64 Unicode scalars / 256 UTF-8 bytes. The nullable UTC timestamp
+preserves six fractional digits, for example `2026-11-05T12:00:01.123456Z`, and
+matches describe's `info.last_skipped_at`. Invalid or oversized stored values
+return HTTP 503 `storage_unavailable`. A later successful fire preserves an
+earlier skip, so this pair is not the latest overall dispatch outcome. Full
+last-dispatch/buffer summaries and published capability remain pending Server
+#1014. An empty list cannot prove pair support; consumers retain describe
+fallback and their current polling policy.
 
 Schedule listing is namespace-scoped and never returns deleted schedules. The
 optional `status` (`active` or `paused`) and `workflow_type` filters are exact
