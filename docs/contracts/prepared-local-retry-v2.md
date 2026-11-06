@@ -107,6 +107,37 @@ actual backend duration or timestamp bound. Neither the old 100-report batch
 limit nor
 its 86,400-second executed-backoff ceiling becomes an implicit version-2 cap.
 
+The engine-interruption extension follows General's
+[bounded source choice](https://github.com/durable-workflow/.github/issues/219#issuecomment-6674785967).
+It appends 24 proposed recovery controls while preserving all 133 reviewed cases.
+Only an engine recovery that proves loss or fencing of the original claim may
+retain `failure_source: engine_interruption`. Its clock is the first locked
+recovery observation that commits. An actually due activity timeout takes the
+existing engine-timeout branch instead. Interruption uses the retained policy,
+attempt budget, cap and original deadline, with no requested delay or timeout
+kind. An ordinary valid failed report remains an application failure; a worker
+cannot select recovery provenance or supply engine decision or stop metadata.
+
+Recovery retains its existing `recovered` receipt carrier, which differs from an
+outcome's `recorded` receipt. The proposed version-2 recovery response adds the
+retained `retry_disposition` to that closed carrier and its existing cursor and
+protocol envelope. Its task identity is the recovering task, independently
+bound to the original prepared graph. The existing `local_recovery.version: 1`
+identity envelope does not grant local contract 2; that authority still comes
+from the canonical original preparation, snapshot and retained claim. Version-1
+recovery bytes are unchanged.
+
+A matching committed recovery receipt returns its original sample and decision
+before fresh fence or clock calculations. Rollback publishes no receipt,
+decision, task or event. A terminal decision creates no following attempt; a
+scheduled decision still requires independent retry preparation and callback
+admission. Recovery and lease fencing do not prove physical callback stop or a
+supervisor join. The immutable recovery receipt's `callback_stop_state` stays
+`unknown`, including after a separate real stop acknowledgement updates other
+state. These guards and the unadvertised installed role remain in force. The
+extension requires cross-owner shape reconciliation before a shared freeze;
+the appended data is not an executing recovery result.
+
 Workflow owns the complete normalized snapshot and existing timeout/range
 binding. Server owns the companion validator, transaction, transport and storage
 bindings. The reviewed output object, normalized ranges and HTTP bindings are the source

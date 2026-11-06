@@ -1,6 +1,6 @@
 {
   "schema": "durable-workflow.prepared-local-retry-companion.v1",
-  "status": "unfrozen source proposal; no validator, writer or executing result",
+  "status": "reviewed 133-row baseline with proposed engine-interruption extension; no validator, writer or executing result",
   "runtime_enabled": false,
   "authority": {
     "scope": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6668566058",
@@ -24,10 +24,32 @@
     },
     "prior_rows_mutated": false,
     "prepared_timeout_projection": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6669526988",
-    "core_snapshot_range_proposal": "https://github.com/durable-workflow/workflow/pull/1038#issuecomment-6669717376"
+    "core_snapshot_range_proposal": "https://github.com/durable-workflow/workflow/pull/1038#issuecomment-6669717376",
+    "engine_interruption": {
+      "selection": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6674785967",
+      "core_proposal": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6673550956",
+      "existing_carrier_source": {
+        "commit": "4b2cdc5507120d9c213b0b02a85738bec96c574a",
+        "executor": {
+          "path": "src/V2/Support/LocalActivityExecutor.php",
+          "blob": "4398d6e705c8e1bdece33d2734ef0d868cb5bebb"
+        },
+        "preparation": {
+          "path": "src/V2/Support/PortableLocalActivityPreparation.php",
+          "blob": "07d3f302159293c1785a99ba50aeb2512e86c6b5"
+        },
+        "runtime": {
+          "path": "src/V2/Support/LocalActivityRuntime.php",
+          "blob": "49e7e3d7574fafd9d7246c97932d49f9cbb8fba9"
+        }
+      },
+      "scope": "existing v1 recovery/receipt source facts only; not a contract-2 writer or installed-role qualification",
+      "prior_133_cases_mutated": false,
+      "extension_frozen": false
+    }
   },
   "adoption_gates": [
-    "Core accepts the proposed closed retry_disposition fields and normalized snapshot/range binding",
+    "Core/Server reconcile this engine-interruption extension over the reviewed closed 133-row baseline before its writer/consumer adoption",
     "Core/Server reconcile the proposed HTTP families, pure preflight placement and separate completed payload scope before final source freeze",
     "Native implements the prepared role and validator/transaction writer before advertisement",
     "Actual native/database/SDK/installed qualification and release remain separate"
@@ -89,7 +111,12 @@
       "retry_available_at",
       "failure_time",
       "original_schedule_to_close_deadline_at",
-      "snapshot_version"
+      "snapshot_version",
+      "failure_source",
+      "requested_delay_seconds",
+      "timeout_kind",
+      "local_recovery",
+      "callback_stop_state"
     ]
   },
   "clock": {
@@ -111,7 +138,9 @@
       "fresh original claim and temporal fences using one sample",
       "actually due engine timeout",
       "application failure retry selection"
-    ]
+    ],
+    "recovery_sample": "for a fresh proven contract-2 recovery, the first locked engine observation that commits; never a claimed callback failure time or original lease-expiry timestamp",
+    "recovery_duplicate": "after scoped immutable identity/mode validation, return the matching committed recovery receipt and decision before any fresh clock, fence or policy calculation; rollback publishes none"
   },
   "retry_disposition_proposal": {
     "boundary": "engine-owned object shared exactly by the stored outcome metadata and its prepared receipt; never accepted in a worker report",
@@ -121,7 +150,7 @@
       "decision": "scheduled or terminal",
       "failure_time": "the stored first accepted engine sample",
       "original_schedule_to_close_deadline_at": "stored UTC timestamp or null",
-      "failure_source": "application or engine_timeout"
+      "failure_source": "application or engine_timeout or engine_interruption"
     },
     "common_optional": {
       "requested_delay_seconds": "present iff the valid failed report supplied next_retry_delay_seconds; exact requested integer, including zero; diagnostic input does not prove application"
@@ -130,7 +159,7 @@
       "candidate_delay_seconds": "selected nonnegative portable integer",
       "maximum_interval_seconds": "finite cap from retained snapshot 2",
       "retry_available_at": "checked failure_time plus selected seconds, strictly before original deadline if set",
-      "delay_source": "policy or failure_override; engine timeouts always policy"
+      "delay_source": "policy or failure_override; engine timeouts and engine interruptions always policy"
     },
     "scheduled_forbidden": [
       "terminal_classification"
@@ -168,7 +197,8 @@
     ],
     "unknown_members": "refused by a future consumer; never silently ignored",
     "conditional_common": {
-      "timeout_kind": "required iff failure_source is engine_timeout; one of start_to_close, schedule_to_close, heartbeat; forbidden otherwise"
+      "timeout_kind": "required iff failure_source is engine_timeout; one of start_to_close, schedule_to_close, heartbeat; forbidden otherwise",
+      "engine_interruption": "only a fenced engine recovery branch; requested_delay_seconds and timeout_kind forbidden; any selected delay_source must be policy"
     },
     "delay_source_rule": "failure_override only for a still-admitted application failure with a supplied valid override; otherwise policy. A preempted application override stays requested diagnostic input only.",
     "engine_timeout_terminal_classification": "reserved for overall schedule_to_close expiry; start_to_close/heartbeat before the total deadline may schedule the policy retry or terminate under their actual budget/cap/deadline branch"
@@ -220,7 +250,8 @@
       "created_task_ids": [],
       "retry_disposition": "absent"
     },
-    "http_boundary": "the proposed full reply envelopes and distinct refusal families are declared in http_proposal; they still require actual future handler/adapter implementation and qualification"
+    "http_boundary": "the proposed full reply envelopes and distinct refusal families are declared in http_proposal; they still require actual future handler/adapter implementation and qualification",
+    "boundary": "existing_required and outcome variants describe outcome receipts only; recovery retains its distinct existing recovered carrier declared in recovery_proposal"
   },
   "history": {
     "identity": "same run/execution/real attempt/worker attempt/original task epoch as the prepared outcome receipt",
@@ -228,7 +259,10 @@
     "terminal": "one existing ActivityFailed or ActivityTimedOut outcome for the real attempt; matching retry_disposition; no retry task, following attempt/start or ActivityRetryScheduled",
     "failure_preservation": "cap/deadline retry termination preserves the admitted application failure/type; already-due engine timeout preserves engine timeout provenance instead",
     "cold_replay": "consume stored failed/timeout retry disposition and availability; never evaluate current policy/clock for that decision; no fetch-free completed replay claim",
-    "timeout_scheduled": "an actual pre-total-deadline start_to_close/heartbeat timeout may record ActivityRetryScheduled with retry_reason timeout, actual timeout_kind and policy-selected delay; no worker override is applied"
+    "timeout_scheduled": "an actual pre-total-deadline start_to_close/heartbeat timeout may record ActivityRetryScheduled with retry_reason timeout, actual timeout_kind and policy-selected delay; no worker override is applied",
+    "interruption": "retain local_recovery and the engine RuntimeException provenance; scheduled uses the existing cold-replay retry reason; terminal uses ActivityFailed, except that an actually due timeout retains engine_timeout precedence",
+    "recovery_replay": "consume the stored recovery decision and original unknown stop state without current clock/policy/physical-state substitution; no callback is invoked by recovery",
+    "interruption_retry_reason": "cold_replay"
   },
   "ranges": {
     "portable_integer_minimum": 0,
@@ -2334,6 +2368,587 @@
         "next_callback_count": 0,
         "v2_support_inferred": false
       }
+    },
+    {
+      "id": "local_v2_recovery_policy_retry",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "scheduled",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 5,
+        "retry_available_at_seconds": 95,
+        "event_type": "ActivityRetryScheduled",
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "recovered": true,
+        "status": 200,
+        "response_family": "recovered_retry_decision",
+        "retry_reason": "cold_replay",
+        "maximum_interval_seconds": 20
+      }
+    },
+    {
+      "id": "local_v2_recovery_zero_policy_retry",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 0,
+        "maximum_interval_seconds": 0
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "scheduled",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 0,
+        "retry_available_at_seconds": 90,
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "retry_reason": "cold_replay",
+        "maximum_interval_seconds": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_policy_non_retryable",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20,
+        "snapshot_non_retryable_error_types": [
+          "RuntimeException"
+        ]
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "terminal",
+        "terminal_classification": "non_retryable",
+        "candidate_delay_member": "absent",
+        "delay_source_member": "absent",
+        "event_type": "ActivityFailed",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "maximum_interval_member": "absent"
+      }
+    },
+    {
+      "id": "local_v2_recovery_attempts_exhausted",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 3,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "terminal",
+        "terminal_classification": "attempts_exhausted",
+        "candidate_delay_member": "absent",
+        "delay_source_member": "absent",
+        "event_type": "ActivityFailed",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "maximum_interval_member": "absent"
+      }
+    },
+    {
+      "id": "local_v2_recovery_terminal_cap",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 21,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "terminal",
+        "terminal_classification": "retry_delay_exceeds_policy_cap",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 21,
+        "retry_available_at_member": "absent",
+        "event_type": "ActivityFailed",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "maximum_interval_seconds": 20
+      }
+    },
+    {
+      "id": "local_v2_recovery_terminal_deadline",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 10,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "decision": "terminal",
+        "terminal_classification": "retry_delay_exceeds_schedule_to_close",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 10,
+        "retry_available_at_member": "absent",
+        "event_type": "ActivityFailed",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "maximum_interval_seconds": 20
+      }
+    },
+    {
+      "id": "local_v2_recovery_due_overall_timeout",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 100,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": "schedule_to_close",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_timeout",
+        "timeout_kind": "schedule_to_close",
+        "decision": "terminal",
+        "terminal_classification": "engine_timeout",
+        "requested_delay_member": "absent",
+        "event_type": "ActivityTimedOut",
+        "callback_stop_state": "unknown",
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "interruption_selection_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_due_start_timeout_policy_retry",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": "start_to_close",
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "failure_source": "engine_timeout",
+        "timeout_kind": "start_to_close",
+        "decision": "scheduled",
+        "delay_source": "policy",
+        "candidate_delay_seconds": 5,
+        "retry_available_at_seconds": 95,
+        "requested_delay_member": "absent",
+        "callback_stop_state": "unknown",
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1,
+        "new_attempt_count": 0,
+        "interruption_selection_count": 0,
+        "retry_reason": "timeout"
+      }
+    },
+    {
+      "id": "local_v2_recovery_duplicate_after_deadline",
+      "carrier": {
+        "first_recovery": {
+          "operation": "prepared_recovery",
+          "original_mode": "proven contract 2 and retained snapshot 2",
+          "previous_claim_loss": "independently proven under canonical locks",
+          "current_recovery_claim": "independently scoped and valid",
+          "engine_sample_seconds": 90,
+          "original_deadline_seconds": 100,
+          "actually_due_timeout_kind": null,
+          "attempt_number": 1,
+          "max_attempts": 3,
+          "policy_delay_seconds": 5,
+          "maximum_interval_seconds": 20
+        },
+        "first_transaction": "committed",
+        "original_reply": "lost",
+        "identical_duplicate_sample_seconds": 110,
+        "current_policy": "changed",
+        "separate_stop_acknowledgement": "arrived after the committed recovery"
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "duplicate": true,
+        "retained_failure_time_seconds": 90,
+        "retained_retry_available_at_seconds": 95,
+        "retained_decision_unchanged": true,
+        "fresh_clock_sample_count": 0,
+        "fresh_fence_calculation_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_rollback",
+      "carrier": {
+        "fresh_recovery": {
+          "operation": "prepared_recovery",
+          "original_mode": "proven contract 2 and retained snapshot 2",
+          "previous_claim_loss": "independently proven under canonical locks",
+          "current_recovery_claim": "independently scoped and valid",
+          "engine_sample_seconds": 90,
+          "original_deadline_seconds": 100,
+          "actually_due_timeout_kind": null,
+          "attempt_number": 1,
+          "max_attempts": 3,
+          "policy_delay_seconds": 5,
+          "maximum_interval_seconds": 20
+        },
+        "transaction": "rollback"
+      },
+      "expected": {
+        "published_sample_count": 0,
+        "published_decision_count": 0,
+        "published_receipt_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "durable_attempt_status_change_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_original_claim_still_live",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "original different hosting task remains live",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "reason": "local_activity_original_claim_live",
+        "engine_interruption_decision_count": 0,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_foreign_retained_receipt",
+      "carrier": {
+        "recovery_identity": "otherwise valid scoped original graph",
+        "retained_receipt": "descriptor fingerprint alone differs; every run/attempt/task identity remains matched"
+      },
+      "expected": {
+        "reason": "local_activity_recovery_mismatch",
+        "retained_receipt_returned": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_failure_source",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "failure_source": "engine_interruption"
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_outcome",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "engine_interruption"
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_requested_delay",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "requested_delay_seconds": 1
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_timeout_kind",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "timeout_kind": "heartbeat"
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_worker_stop_state",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "callback_stop_state": "unknown"
+        }
+      },
+      "expected": {
+        "status": 409,
+        "response_family": "engine_refusal",
+        "reason": "invalid_local_activity_outcome",
+        "engine_interruption_authority_granted": false,
+        "durable_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_output_requested_delay",
+      "carrier": {
+        "otherwise_valid_engine_interruption_output": true,
+        "isolated_extra_member": {
+          "requested_delay_seconds": 1
+        }
+      },
+      "expected": {
+        "consumer_verdict": "refuse",
+        "qualified_engine_decision": false
+      }
+    },
+    {
+      "id": "local_v2_recovery_output_timeout_kind",
+      "carrier": {
+        "otherwise_valid_engine_interruption_output": true,
+        "isolated_extra_member": {
+          "timeout_kind": "heartbeat"
+        }
+      },
+      "expected": {
+        "consumer_verdict": "refuse",
+        "qualified_engine_decision": false
+      }
+    },
+    {
+      "id": "local_v2_recovery_output_stop_state_rewritten",
+      "carrier": {
+        "original_committed_recovery_receipt": "unknown",
+        "after_separate_real_stop_acknowledgement": true,
+        "duplicate_receipt_callback_stop_state": "stopped"
+      },
+      "expected": {
+        "consumer_verdict": "refuse",
+        "retained_recovery_receipt_mutation_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_ordinary_failed_override_remains_application",
+      "carrier": {
+        "operation": "prepared_outcome",
+        "report": {
+          "outcome": "failed",
+          "message": "synthetic failure",
+          "next_retry_delay_seconds": 1
+        },
+        "original_claim_live": true
+      },
+      "expected": {
+        "failure_source": "application",
+        "delay_source": "failure_override",
+        "engine_interruption_authority_granted": false
+      }
+    },
+    {
+      "id": "local_v2_recovery_v1_remains_v1",
+      "carrier": {
+        "original_local_contract_version": 1,
+        "recovery_identity_envelope_version": 1,
+        "otherwise_plausible_policy": true
+      },
+      "expected": {
+        "local_v2_authority": "unsupported",
+        "legacy_recovery_and_history_bytes": "unchanged",
+        "v2_relabelling_count": 0
+      }
+    },
+    {
+      "id": "local_v2_recovery_first_locked_observation_not_lease_expiry",
+      "carrier": {
+        "operation": "prepared_recovery",
+        "original_mode": "proven contract 2 and retained snapshot 2",
+        "previous_claim_loss": "independently proven under canonical locks",
+        "current_recovery_claim": "independently scoped and valid",
+        "engine_sample_seconds": 90,
+        "original_deadline_seconds": 100,
+        "actually_due_timeout_kind": null,
+        "attempt_number": 1,
+        "max_attempts": 3,
+        "policy_delay_seconds": 5,
+        "maximum_interval_seconds": 20,
+        "original_lease_expiry_seconds": 20,
+        "claimed_worker_failure_seconds": 30
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "failure_time_seconds": 90,
+        "decision": "scheduled",
+        "retry_available_at_seconds": 95,
+        "selected_sample_count": 1
+      }
+    },
+    {
+      "id": "local_v2_recovery_concurrent_identical_recovery",
+      "carrier": {
+        "fresh_recovery": {
+          "operation": "prepared_recovery",
+          "original_mode": "proven contract 2 and retained snapshot 2",
+          "previous_claim_loss": "independently proven under canonical locks",
+          "current_recovery_claim": "independently scoped and valid",
+          "engine_sample_seconds": 90,
+          "original_deadline_seconds": 100,
+          "actually_due_timeout_kind": null,
+          "attempt_number": 1,
+          "max_attempts": 3,
+          "policy_delay_seconds": 5,
+          "maximum_interval_seconds": 20
+        },
+        "requests": "two identical scoped recovery operations under canonical serialization"
+      },
+      "expected": {
+        "failure_source": "engine_interruption",
+        "callback_stop_state": "unknown",
+        "requested_delay_member": "absent",
+        "timeout_kind_member": "absent",
+        "new_attempt_count": 0,
+        "callback_invocation_count": 0,
+        "committed_decision_count": 1,
+        "committed_receipt_count": 1,
+        "first_duplicate": false,
+        "second_duplicate": true,
+        "published_sample_count": 1,
+        "new_retry_task_count": 1,
+        "new_retry_event_count": 1
+      }
     }
   ],
   "prepared_policy_proposal": {
@@ -2476,7 +3091,8 @@
       "$unavailable": "the exact ordered array explicitly chosen by the case; no wildcard members",
       "$duplicate_boolean": "actual Boolean required by the case, false for first commit and true for identical retained reply",
       "$case_claim_released_boolean": "actual Boolean, true only for ActivityRetryScheduled, false for terminal/completed",
-      "$case_json_error": "only the fixed case.expected.json_error literal, independently derived from pinned payload_limits::json_error; never copied from a response or generalized to another malformed input"
+      "$case_json_error": "only the fixed case.expected.json_error literal, independently derived from pinned payload_limits::json_error; never copied from a response or generalized to another malformed input",
+      "$recovery_workflow_task_id": "the independently authorized recovering task ID from the matching recovery event, distinct from the original prepared hosting task"
     },
     "matching": "resolve declared bindings only; compare full exact JSON keys/types/values and the protocol response header; response decoding must consume strict UTF-8 original bytes fully and refuse duplicate member names before schema matching",
     "envelope": {
@@ -2632,6 +3248,29 @@
           "Syntax error",
           "Malformed UTF-8 characters, possibly incorrectly encoded"
         ]
+      },
+      "recovered_retry_decision": {
+        "status": 200,
+        "body": {
+          "recovered": true,
+          "duplicate": "$duplicate_boolean",
+          "reason": null,
+          "event_id": "$event_id",
+          "event_type": "$event_type",
+          "activity_execution_id": "$activity_execution_id",
+          "activity_attempt_id": "$activity_attempt_id",
+          "workflow_task_id": "$recovery_workflow_task_id",
+          "recorded_at": "$recorded_at",
+          "callback_stop_state": "unknown",
+          "claim_released": "$case_claim_released_boolean",
+          "created_task_ids": "$created_task_ids",
+          "history_refresh_page_token": "MA==",
+          "protocol_version": "$protocol_version",
+          "server_capabilities": "$server_capabilities",
+          "retry_disposition": "$retry_disposition"
+        },
+        "recorded_member": "absent, never a recorded/recovered alias",
+        "binding_scope": "existing canonical recovery receipt validation, with v2 event metadata/disposition equality; no new worker-report authority"
       }
     },
     "mode_gate_unavailable_proposal": {
@@ -2645,12 +3284,83 @@
       "X-Durable-Workflow-Protocol-Version": "$protocol_version",
       "Content-Type": "application/json media type; unrelated standard headers are not an equality contract"
     },
-    "counter_scope": "after existing independently scoped auth/protocol/runtime-role and outer claim/report validation; malformed supplied overrides count all subsequent task/attempt/claim/registration reads as zero; post-mode pure-validator counters cover only the function invocation and do not claim zero earlier request lookups"
+    "counter_scope": "after existing independently scoped auth/protocol/runtime-role and outer claim/report validation; malformed supplied overrides count all subsequent task/attempt/claim/registration reads as zero; post-mode pure-validator counters cover only the function invocation and do not claim zero earlier request lookups",
+    "recovery_scope": "the existing recover route keeps its recovered carrier; this v2 extension adds a retained retry_disposition only after actual original mode/claim authority. Outcome report refusals and the nine original families are unchanged"
   },
   "canonical_projection": {
     "override": "prepared failed report.next_retry_delay_seconds maps to canonical application failure.next_retry_delay_seconds only",
     "failure_type": "the normalized admitted application exception_type; engine timeouts retain their own source/type",
     "time": "canonical whole-second examples map into the single stored authoritative UTC microsecond sample and immutable deadline; do not truncate subsecond comparisons",
     "preempted_row": "zero_at_original_deadline_is_terminal remains an abstract selector row, preempted by actual overall engine timeout in the prepared HTTP path"
+  },
+  "recovery_proposal": {
+    "boundary": "existing prepared recover operation and canonical engine primitive, not a new worker-report outcome or global interface",
+    "authority": "existing scoped current recovery claim, canonical original Started/preparation, actual loss/fencing of the previous claim, stored contract 2 plus snapshot 2 and retained original claim capability; request flags and unread fields grant nothing",
+    "precedence": [
+      "independently scoped auth/protocol/role and strict input/mode/identity validation",
+      "matching immutable committed v2 recovery receipt",
+      "fresh canonical current-recovery and previous-claim-loss fences using one engine sample",
+      "actually due activity timeout under the existing timeout-kind precedence",
+      "engine-observed interruption selected only when no activity timeout is due"
+    ],
+    "interruption_exception": "the existing engine-generated RuntimeException and message from recordInterruptedAttempt; never a worker-supplied exception, failure timestamp or timeout kind",
+    "policy": "retained snapshot 2 only, including non-retryable type, attempt budget, finite cap, checked availability and original deadline; no cap clamp, v1 fallback or batch-clock substitution",
+    "worker_input": "no new worker-report member; engine_interruption is forbidden as report.outcome or report.failure_source, and engine output/requested-delay/timeout/stop metadata remains forbidden. A valid ordinary failed override remains an application report, never recovery provenance",
+    "local_recovery": {
+      "placement": "unchanged event payload.local_recovery, sibling of retry_disposition; never accepted from a worker",
+      "required": {
+        "version": 1,
+        "descriptor_fingerprint": "original normalized descriptor fingerprint",
+        "workflow_task_id": "current independently authorized recovery task ID",
+        "workflow_task_attempt": "current recovery task epoch integer",
+        "lease_owner": "current recovery lease owner",
+        "original_workflow_task_id": "original prepared task ID",
+        "original_workflow_task_attempt": "original prepared task epoch integer",
+        "original_lease_owner": "original attempt lease owner",
+        "original_lease_expires_at": "original retained attempt lease expiry",
+        "callback_stop_state": "unknown"
+      },
+      "optional": [],
+      "unknown_members": "refuse in a future v2 validator",
+      "version_scope": "the existing recovery identity-envelope version is not local_activity_contract_version; it supplies no contract-2 authority and v1 events remain byte-unchanged"
+    },
+    "receipt": {
+      "existing_required": [
+        "recovered",
+        "duplicate",
+        "reason",
+        "event_id",
+        "event_type",
+        "activity_execution_id",
+        "activity_attempt_id",
+        "workflow_task_id",
+        "recorded_at",
+        "callback_stop_state",
+        "claim_released",
+        "created_task_ids"
+      ],
+      "new_required_for_v2": [
+        "retry_disposition"
+      ],
+      "recovered": true,
+      "reason": null,
+      "callback_stop_state": "unknown",
+      "event_type": "ActivityRetryScheduled for scheduled; ActivityFailed for terminal interruption; existing ActivityRetryScheduled/ActivityTimedOut timeout branches when a timeout is due",
+      "claim_released": "true iff the retained event is ActivityRetryScheduled",
+      "created_task_ids": "exactly the retained single retry task ID for scheduled, empty for terminal",
+      "workflow_task_id": "the recovering task, not a substituted original task",
+      "forbidden": [
+        "recorded",
+        "workflow_run_id",
+        "workflow_task_attempt",
+        "worker_attempt_id"
+      ],
+      "unknown_members": "refuse in the complete future v2 recovery reply after its existing protocol/cursor envelope"
+    },
+    "identity": "receipt/event must bind the same original run, execution, real attempt, worker-attempt identity, original task epoch and descriptor, plus the distinct current recovery task/epoch/owner; absence of a top-level reply field is not permission to omit the canonical binding",
+    "physical_state": "lease fencing and an engine recovery event prove neither physical callback stop nor supervisor join; this immutable recovery metadata/receipt stays unknown even after a separate real stop acknowledgement changes other state",
+    "retry_preparation": "a scheduled recovery creates one retry task/event and zero following attempts; actual callback admission/preparation retains all existing independent physical/admission/claim guards, retained availability and the original total deadline",
+    "legacy": "all original v1 recovery, zero-tail/history and corpus bytes remain unchanged; a recovery envelope version of 1 cannot relabel a v1 preparation as contract 2",
+    "execution": "all appended cases are source requirements, not executing results; no role, capability, SDK adoption or operation is enabled"
   }
 }
