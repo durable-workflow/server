@@ -9,6 +9,12 @@ store_methods! {
         Self::scalar(table).fetch_one(&self.pool).await.unwrap()
     }
 
+    async fn poll_work_family_count(&self, workflow: bool) -> usize {
+        let prefix = if workflow { "dw-native-workflow-poll:" } else { "dw-native-query-poll:" };
+        let rows = Self::query(DB::QUERY_CACHE_PAGE).bind("").fetch_all(&self.pool).await.unwrap();
+        rows.iter().filter(|row| DB::string(row, "key").unwrap().starts_with(prefix)).count()
+    }
+
     async fn poll_work_seed(&self) -> String {
         let run = self.start(json!({"workflow_id":format!("poll-work-{}",id()), "workflow_type":"bounds",
             "task_queue":"bounds", "input":{"codec":"avro","blob":"AA=="}}), BTreeMap::new(), None, None).await.unwrap();
@@ -40,15 +46,15 @@ store_methods! {
         let mut tx = self.begin().await.unwrap();
         self.sweep_workflow_poll_rows(&mut tx).await.unwrap();
         tx.commit().await.unwrap();
-        assert_eq!(self.poll_work_count("SELECT COUNT(*) FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-workflow-poll:%'").await, 13);
+        assert_eq!(self.poll_work_family_count(true).await, 13);
         let other = self.in_namespace("other");
         let mut tx = other.begin().await.unwrap();
         other.sweep_workflow_poll_rows(&mut tx).await.unwrap();
         self.sweep_poll_rows(&mut tx).await.unwrap();
         self.sweep_poll_receipts(&mut tx).await.unwrap();
         tx.commit().await.unwrap();
-        assert_eq!(self.poll_work_count("SELECT COUNT(*) FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-workflow-poll:%'").await, 13);
-        assert_eq!(self.poll_work_count("SELECT COUNT(*) FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query-poll:%'").await, 13);
+        assert_eq!(self.poll_work_family_count(true).await, 13);
+        assert_eq!(self.poll_work_family_count(false).await, 13);
         assert_eq!(self.poll_work_count("SELECT COUNT(*) FROM dw_poll_receipts").await, 13);
         let mut tx = self.begin().await.unwrap();
         self.sweep_poll_rows(&mut tx).await.unwrap();
@@ -57,7 +63,7 @@ store_methods! {
         assert!(Self::workflow_poll_row(&mut tx, "dw-native-workflow-poll:019").await.unwrap().is_none());
         assert!(Self::poll_row(&mut tx, "dw-native-query-poll:019").await.unwrap().is_none());
         tx.commit().await.unwrap();
-        assert_eq!(self.poll_work_count("SELECT COUNT(*) FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-workflow-poll:%'").await, 12);
+        assert_eq!(self.poll_work_family_count(true).await, 12);
         assert_eq!(self.poll_work_count("SELECT COUNT(*) FROM dw_poll_receipts").await, 13);
         self.register(json!({"worker_id":"bounds-worker","task_queue":"bounds","runtime":"php",
             "supported_workflow_types":["bounds"],"supported_activity_types":["bounds"]}), &super::QueryTaskConfig::default(), None).await.unwrap();
@@ -112,14 +118,36 @@ store_methods! {
         rows.iter().map(|row| DB::string(row, "id").unwrap()).collect()
     }
 
+    async fn poll_work_plan(&self, sql: &'static str, wake: bool) -> Vec<String> {
+        let explain = if DB::NAME == "SQLite" { "EXPLAIN QUERY PLAN " } else { "EXPLAIN " };
+        let query = sqlx::query::<DB>(AssertSqlSafe(format!("{explain}{}", DB::statement(sql))))
+            .bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
+            .bind(DB::bind_time(now())).bind(DB::bind_time(now()));
+        let rows = if wake { query.fetch_all(&self.pool).await.unwrap() }
+            else { query.bind(None::<&str>).fetch_all(&self.pool).await.unwrap() };
+        let mut plan = Vec::new();
+        for row in rows {
+            let line = match DB::NAME {
+                "SQLite" => DB::string(&row, "detail").unwrap(),
+                "PostgreSQL" => DB::string(&row, "QUERY PLAN").unwrap(),
+                "MySQL" => format!("table={:?} type={:?} key={:?}", DB::optional_string(&row,"table").unwrap(), DB::optional_string(&row,"type").unwrap(), DB::optional_string(&row,"key").unwrap()),
+                _ => unreachable!(),
+            };
+            plan.push(line);
+        }
+        plan
+    }
+
     pub(super) async fn qualify_poll_query_plans(&self) {
         let task = self.poll_work_seed().await;
         for size in [1, 7200] {
             if size > 1 {
                 let mut tx = self.begin().await.unwrap();
                 for index in 1..size {
-                    Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at) SELECT $1,workflow_run_id,namespace,queue,task_type,$2,priority,available_at FROM workflow_tasks WHERE id=$3")
-                        .bind(id()).bind(if index < 100 {"ready"} else {"completed"}).bind(&task).execute(&mut *tx).await.unwrap();
+                    Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at) SELECT $1,workflow_run_id,namespace,$2,$3,$4,priority,available_at FROM workflow_tasks WHERE id=$5")
+                        .bind(id()).bind(if (100..350).contains(&index) {"other"} else {"bounds"})
+                        .bind(if (350..600).contains(&index) {"activity"} else {"workflow"})
+                        .bind(if index < 600 {"ready"} else {"completed"}).bind(&task).execute(&mut *tx).await.unwrap();
                 }
                 tx.commit().await.unwrap();
             }
@@ -141,24 +169,23 @@ store_methods! {
                 }
                 println!("poll_sql_source_samples backend={} tasks={size} wake={wake} old_new_ns={samples:?}", DB::NAME);
                 if size == 1 { continue; }
-                let explain = if DB::NAME == "SQLite" { "EXPLAIN QUERY PLAN " } else { "EXPLAIN " };
-                let query = sqlx::query::<DB>(AssertSqlSafe(format!("{explain}{compiled}")))
-                    .bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
-                    .bind(DB::bind_time(now())).bind(DB::bind_time(now()));
-                let rows = if wake { query.fetch_all(&self.pool).await.unwrap() }
-                    else { query.bind(None::<&str>).fetch_all(&self.pool).await.unwrap() };
-                let mut plan = Vec::new();
-                for row in rows {
-                    let line = match DB::NAME {
-                        "SQLite" => DB::string(&row, "detail").unwrap(),
-                        "PostgreSQL" => DB::string(&row, "QUERY PLAN").unwrap(),
-                        "MySQL" => format!("table={:?} type={:?} key={:?}", DB::optional_string(&row,"table").unwrap(), DB::optional_string(&row,"type").unwrap(), DB::optional_string(&row,"key").unwrap()),
-                        _ => unreachable!(),
-                    };
-                    plan.push(line);
+                let raw = self.poll_work_plan(sql, wake).await;
+                println!("poll_query_plan backend={} wake={wake} statistics=before_explicit_refresh: {raw:?}", DB::NAME);
+                // The disposable fixture was bulk-loaded in one transaction.
+                // Refresh its statistics, never production planner settings.
+                Self::query(if DB::NAME == "MySQL" { "ANALYZE TABLE workflow_tasks" } else { "ANALYZE workflow_tasks" })
+                    .execute(&self.pool).await.unwrap();
+                let plan = self.poll_work_plan(sql, wake).await;
+                println!("poll_query_plan backend={} wake={wake} statistics=after_explicit_refresh: {plan:?}", DB::NAME);
+                // Both existing indexes seek the scoped live-status range.
+                // A scope-only metrics index or run-index walk is not enough.
+                let indexed = |line: &str| line.contains("dw_workflow_tasks_poll") || line.contains("workflow_tasks_namespace_queue_status_idx");
+                match DB::NAME {
+                    "SQLite" => assert!(plan.iter().any(|line| indexed(line) && line.contains("status=?")), "{plan:?}"),
+                    "PostgreSQL" => assert!(plan.windows(2).any(|pair| indexed(&pair[0]) && pair[1].contains("Index Cond:") && pair[1].contains("status")), "{plan:?}"),
+                    "MySQL" => assert!(plan.iter().any(|line| indexed(line) && (line.contains("type=Some(\"range\")") || line.contains("type=Some(\"ref\")"))), "{plan:?}"),
+                    _ => unreachable!(),
                 }
-                println!("poll_query_plan backend={} wake={wake}: {plan:?}",DB::NAME);
-                assert!(plan.iter().any(|line| line.contains("dw_workflow_tasks_poll")), "{plan:?}");
                 assert!(!plan.iter().any(|line| line.contains("Seq Scan on workflow_tasks") || line == "SCAN t"), "{plan:?}");
             }
         }
