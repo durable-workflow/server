@@ -109,13 +109,16 @@ its 86,400-second executed-backoff ceiling becomes an implicit version-2 cap.
 
 The engine-interruption extension follows General's
 [bounded source choice](https://github.com/durable-workflow/.github/issues/219#issuecomment-6674785967).
-It appends 24 proposed recovery controls while preserving all 133 reviewed cases.
+It appends 25 proposed recovery controls while preserving all 133 reviewed cases.
 Only an engine recovery that proves loss or fencing of the original claim may
 retain `failure_source: engine_interruption`. Its clock is the first locked
 recovery observation that commits. An actually due activity timeout takes the
 existing engine-timeout branch instead. Interruption uses the retained policy,
 attempt budget, cap and original deadline, with no requested delay or timeout
-kind. An ordinary valid failed report remains an application failure; a worker
+kind. Valid normalized policy delays already fit their cap; a corrupt retained
+cap/delay relationship refuses without a decision or mutation, while the
+existing application-override cap cases retain their separate behavior. An
+ordinary valid failed report remains an application failure; a worker
 cannot select recovery provenance or supply engine decision or stop metadata.
 
 Recovery retains its existing `recovered` receipt carrier, which differs from an
@@ -128,7 +131,11 @@ from the canonical original preparation, snapshot and retained claim. Version-1
 recovery bytes are unchanged.
 
 A matching committed recovery receipt returns its original sample and decision
-before fresh fence or clock calculations. Rollback publishes no receipt,
+before fresh fence or clock calculations. Later configuration for new authoring
+may differ, while the original retained snapshot, request descriptor and Started
+authority remain exact. A changed canonical retained graph refuses even when a
+committed receipt exists; replay does not repair or replace that authority.
+Rollback publishes no receipt,
 decision, task or event. A terminal decision creates no following attempt; a
 scheduled decision still requires independent retry preparation and callback
 admission. Recovery and lease fencing do not prove physical callback stop or a

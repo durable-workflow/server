@@ -45,7 +45,8 @@
       },
       "scope": "existing v1 recovery/receipt source facts only; not a contract-2 writer or installed-role qualification",
       "prior_133_cases_mutated": false,
-      "extension_frozen": false
+      "extension_frozen": false,
+      "core_shape_review": "https://github.com/durable-workflow/server/pull/1034#issuecomment-6675154532"
     }
   },
   "adoption_gates": [
@@ -140,7 +141,7 @@
       "application failure retry selection"
     ],
     "recovery_sample": "for a fresh proven contract-2 recovery, the first locked engine observation that commits; never a claimed callback failure time or original lease-expiry timestamp",
-    "recovery_duplicate": "after scoped immutable identity/mode validation, return the matching committed recovery receipt and decision before any fresh clock, fence or policy calculation; rollback publishes none"
+    "recovery_duplicate": "after scoped immutable identity/mode, strict retained-snapshot and original Started-authority validation, return the matching committed recovery receipt and decision before fresh clock/fence/policy calculation. Later new-authoring configuration may differ; mutation of the canonical retained graph refuses and is never repaired from the receipt"
   },
   "retry_disposition_proposal": {
     "boundary": "engine-owned object shared exactly by the stored outcome metadata and its prepared receipt; never accepted in a worker report",
@@ -198,7 +199,8 @@
     "unknown_members": "refused by a future consumer; never silently ignored",
     "conditional_common": {
       "timeout_kind": "required iff failure_source is engine_timeout; one of start_to_close, schedule_to_close, heartbeat; forbidden otherwise",
-      "engine_interruption": "only a fenced engine recovery branch; requested_delay_seconds and timeout_kind forbidden; any selected delay_source must be policy"
+      "engine_interruption": "only a fenced engine recovery branch; requested_delay_seconds and timeout_kind forbidden; any selected delay_source must be policy",
+      "engine_interruption_cap": "a validated snapshot-2 policy delay cannot exceed its normalized cap; retry_delay_exceeds_policy_cap is not a valid engine_interruption decision. A corrupt retained cap/delay relationship refuses before any decision, event, task, attempt or status mutation"
     },
     "delay_source_rule": "failure_override only for a still-admitted application failure with a supplied valid override; otherwise policy. A preempted application override stays requested diagnostic input only.",
     "engine_timeout_terminal_classification": "reserved for overall schedule_to_close expiry; start_to_close/heartbeat before the total deadline may schedule the policy retry or terminate under their actual budget/cap/deadline branch"
@@ -261,7 +263,7 @@
     "cold_replay": "consume stored failed/timeout retry disposition and availability; never evaluate current policy/clock for that decision; no fetch-free completed replay claim",
     "timeout_scheduled": "an actual pre-total-deadline start_to_close/heartbeat timeout may record ActivityRetryScheduled with retry_reason timeout, actual timeout_kind and policy-selected delay; no worker override is applied",
     "interruption": "retain local_recovery and the engine RuntimeException provenance; scheduled uses the existing cold-replay retry reason; terminal uses ActivityFailed, except that an actually due timeout retains engine_timeout precedence",
-    "recovery_replay": "consume the stored recovery decision and original unknown stop state without current clock/policy/physical-state substitution; no callback is invoked by recovery",
+    "recovery_replay": "validate the exact original retained snapshot and Started authority, then consume the stored recovery decision and unknown stop state without recalculation from later new-authoring configuration, a fresh clock or physical-state substitution; do not repair a changed original graph and do not invoke a callback",
     "interruption_retry_reason": "cold_replay"
   },
   "ranges": {
@@ -2505,10 +2507,10 @@
       }
     },
     {
-      "id": "local_v2_recovery_terminal_cap",
+      "id": "local_v2_recovery_corrupt_snapshot_cap_refusal",
       "carrier": {
         "operation": "prepared_recovery",
-        "original_mode": "proven contract 2 and retained snapshot 2",
+        "original_mode": "original contract 2 and retained claim otherwise valid; the stored execution snapshot is deliberately corrupted",
         "previous_claim_loss": "independently proven under canonical locks",
         "current_recovery_claim": "independently scoped and valid",
         "engine_sample_seconds": 90,
@@ -2517,24 +2519,22 @@
         "attempt_number": 1,
         "max_attempts": 3,
         "policy_delay_seconds": 21,
-        "maximum_interval_seconds": 20
+        "maximum_interval_seconds": 20,
+        "original_started_authority": "retains the original valid delay 5/cap 20 snapshot unchanged",
+        "retained_snapshot_mutation": "execution snapshot policy delay changed to 21 while cap remains 20"
       },
       "expected": {
-        "failure_source": "engine_interruption",
-        "callback_stop_state": "unknown",
-        "requested_delay_member": "absent",
-        "timeout_kind_member": "absent",
-        "new_attempt_count": 0,
-        "callback_invocation_count": 0,
-        "decision": "terminal",
-        "terminal_classification": "retry_delay_exceeds_policy_cap",
-        "delay_source": "policy",
-        "candidate_delay_seconds": 21,
-        "retry_available_at_member": "absent",
-        "event_type": "ActivityFailed",
+        "verdict": "corrupt_retained_snapshot_refusal",
+        "retry_disposition_member": "absent",
+        "published_sample_count": 0,
+        "published_decision_count": 0,
+        "new_event_count": 0,
         "new_retry_task_count": 0,
         "new_retry_event_count": 0,
-        "maximum_interval_seconds": 20
+        "new_attempt_count": 0,
+        "attempt_status_mutation_count": 0,
+        "durable_mutation_count": 0,
+        "callback_invocation_count": 0
       }
     },
     {
@@ -2649,8 +2649,10 @@
         "first_transaction": "committed",
         "original_reply": "lost",
         "identical_duplicate_sample_seconds": 110,
-        "current_policy": "changed",
-        "separate_stop_acknowledgement": "arrived after the committed recovery"
+        "separate_stop_acknowledgement": "arrived after the committed recovery",
+        "later_configuration_for_new_authoring": "changed independently of this original execution",
+        "duplicate_request_descriptor": "the identical original normalized descriptor",
+        "original_retained_snapshot_and_started_authority": "exact and unchanged"
       },
       "expected": {
         "failure_source": "engine_interruption",
@@ -2666,7 +2668,8 @@
         "fresh_clock_sample_count": 0,
         "fresh_fence_calculation_count": 0,
         "new_retry_task_count": 0,
-        "new_retry_event_count": 0
+        "new_retry_event_count": 0,
+        "original_retained_graph_mutation_count": 0
       }
     },
     {
@@ -2948,6 +2951,29 @@
         "published_sample_count": 1,
         "new_retry_task_count": 1,
         "new_retry_event_count": 1
+      }
+    },
+    {
+      "id": "local_v2_recovery_duplicate_canonical_snapshot_mutation",
+      "carrier": {
+        "first_recovery": "valid scoped contract-2 recovery committed with an exact retained snapshot and Started binding",
+        "matching_receipt": "the existing original committed receipt remains present",
+        "isolated_mutation": "canonical retained execution snapshot changed after commit; original Started authority and receipt remain unchanged",
+        "later_new_authoring_configuration": "irrelevant"
+      },
+      "expected": {
+        "verdict": "original_preparation_authority_mismatch_refusal",
+        "retained_receipt_returned": false,
+        "new_retry_calculation_count": 0,
+        "new_published_sample_count": 0,
+        "new_published_decision_count": 0,
+        "new_event_count": 0,
+        "new_retry_task_count": 0,
+        "new_retry_event_count": 0,
+        "new_attempt_count": 0,
+        "attempt_status_mutation_count": 0,
+        "durable_mutation_count": 0,
+        "receipt_or_original_graph_repair_count": 0
       }
     }
   ],
@@ -3304,7 +3330,7 @@
       "engine-observed interruption selected only when no activity timeout is due"
     ],
     "interruption_exception": "the existing engine-generated RuntimeException and message from recordInterruptedAttempt; never a worker-supplied exception, failure timestamp or timeout kind",
-    "policy": "retained snapshot 2 only, including non-retryable type, attempt budget, finite cap, checked availability and original deadline; no cap clamp, v1 fallback or batch-clock substitution",
+    "policy": "strictly validate the original retained snapshot 2 and Started binding before any decision; use that snapshot only, including non-retryable type, attempt budget, finite cap, checked availability and original deadline. Supplied policy delays already fit the cap; corrupt retained delay/cap relationships refuse without mutation, never a fabricated terminal-cap decision. No cap clamp, v1 fallback or batch-clock substitution",
     "worker_input": "no new worker-report member; engine_interruption is forbidden as report.outcome or report.failure_source, and engine output/requested-delay/timeout/stop metadata remains forbidden. A valid ordinary failed override remains an application report, never recovery provenance",
     "local_recovery": {
       "placement": "unchanged event payload.local_recovery, sibling of retry_disposition; never accepted from a worker",
