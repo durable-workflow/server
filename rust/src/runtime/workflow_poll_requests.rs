@@ -48,11 +48,10 @@ impl WorkflowPollRequest {
 /// and the poller's `nonEmptyString` leave it. A blank ID asks for no
 /// idempotency.
 pub(super) fn request_id(body: &serde_json::Value) -> Option<String> {
-    body.get("poll_request_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
+    match super::laravel_rules::normalize(body.get("poll_request_id")?) {
+        Value::String(id) if !id.is_empty() => Some(id),
+        _ => None,
+    }
 }
 
 /// PHP's pending window: the configured poll timeout plus five seconds.
@@ -386,6 +385,19 @@ store_methods! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_poll_identity_uses_the_same_laravel_trimming_as_validation() {
+        for padding in ["\u{feff}", "\u{200b}", "\u{200e}"] {
+            let supplied = format!(" \t{padding}original-id{padding} \t");
+            assert_ne!(supplied.trim(), "original-id", "the former Rust-only trimming splits this identity");
+            assert_eq!(request_id(&json!({"poll_request_id":supplied})).as_deref(), Some("original-id"));
+            assert_eq!(request_id(&json!({"poll_request_id":padding})), None);
+        }
+        for body in [json!({}), json!({"poll_request_id":null}), json!({"poll_request_id":true}), json!({"poll_request_id":1})] {
+            assert_eq!(request_id(&body), None);
+        }
+    }
 
     #[test]
     fn either_order_of_a_multiplexed_request_is_one_set() {

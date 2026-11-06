@@ -288,7 +288,7 @@ fn after(seconds: i64) -> DateTime<Utc> {
 /// As PHP's `ActivityTaskController::poll` (since 2.11.0): an activity poll
 /// answer carries `server_time`, the clock its lease expiry is measured
 /// against. Published SDKs refuse a claimed activity without it.
-fn activity_server_time(kind: &str, mut answer: Value) -> Value {
+pub(super) fn activity_server_time(kind: &str, mut answer: Value) -> Value {
     if kind == "activity" {
         answer["server_time"] = json!(super::activity_lease_renewal::micros(now()));
     }
@@ -3470,8 +3470,8 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created});
-        if let Some(poll) = carried.response() { response["activity_poll"] = poll; }
-        if let Some(poll) = carried_workflow.response() { response["workflow_poll"] = poll; }
+        if let Some(poll) = carried.activity_response()? { response["activity_poll"] = poll; }
+        if let Some(poll) = carried_workflow.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
         Ok(response)
     }
 
@@ -4047,7 +4047,7 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         let mut response = json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id});
-        if let Some(poll) = carried.response() { response["workflow_poll"] = poll; }
+        if let Some(poll) = carried.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
         Ok(response)
     }
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {

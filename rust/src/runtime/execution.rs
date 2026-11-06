@@ -1235,15 +1235,7 @@ impl Runtime {
         let kinds = super::update_validation::task_kinds(&body)?;
         let pages = self.history_pages();
         let wait = self.worker_poll_wait();
-        let mark = |mut answer: Value| {
-            if let Some(task) = answer["task"].as_object_mut() {
-                task.insert("task_kind".into(), json!("workflow"));
-                // Observe this response after claim/replay. The cached lease
-                // and history remain the original authority.
-                answer["server_time"] = json!(super::activity_lease_renewal::micros(super::store::now()));
-            }
-            answer
-        };
+        let mark = super::carried_polls::workflow_answer;
         if kinds == ["workflow"] {
             return self.poll_with_pages(body, "workflow", protocol_version, pages, wait).await.map(mark);
         }

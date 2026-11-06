@@ -69,6 +69,15 @@ x-durable-workflow-workflow-completion-poll-order:
   activity_leased: omit_workflow_poll_and_do_not_attempt_its_claim
   missing_workflow_poll: no_workflow_lease_delivered_release_reservation_without_assuming_empty_queue_or_disabling_capability
   duplicate_completion: no_new_dispatch_recover_with_the_original_poll_request_ids
+x-durable-workflow-carried-poll-answer:
+  response_path: optional_poll_result.answer_on_leased_true_only
+  capabilities: [workflow_task_completion_activity_poll, activity_completion_workflow_poll, workflow_task_completion_workflow_poll]
+  envelope: same_as_ordinary_poll_including_protocol_version_and_server_capabilities
+  clock: fresh_server_time_sample_after_completion_commit
+  original_authority: [task_id, lease_owner, activity_attempt_id, attempt_number, workflow_task_attempt, lease_expires_at, worker_session, deadlines, ready_age_ms, history_events, history_events_compressed, history_events_encoding, next_history_page_token]
+  presentation: actual_normal_history_projection_encoding_and_configured_page_limits
+  transport_age: charge_original_completion_request_before_reuse_never_restamp_on_receipt_or_cache_read
+  recovery: same_original_poll_request_id_if_completion_answer_or_embedded_answer_is_unavailable
 x-durable-workflow-cross-kind-poll-wake:
   opt_in_worker_capability: cross_kind_poll_wake
   scope: [namespace, task_queue]
@@ -2064,20 +2073,35 @@ components:
           description: Opaque original identity containing at least one character left by Laravel string trimming. Padding is retained.
         timeout_seconds: { type: [integer, "null"], minimum: 0, maximum: 60 }
     CarriedActivityPollResult:
-      type: object
-      additionalProperties: false
-      required: [leased]
       description: >
-        leased reports whether this completion delivered an activity lease.
-        false follows an eligible probe that leased nothing. An omitted result
-        means no eager lease was delivered, including a declined carrier or a
-        duplicate completion that never dispatches again. The next standalone
-        activity poll uses the original poll_request_id to recover any committed
-        lease. A fresh replay observation clock never renews the original lease,
-        session or deadline authority; consumers charge the original request's
-        transport time before relying on it.
-      properties:
-        leased: { type: boolean }
+        A true result may carry the complete ordinary poll answer. Consumers
+        accept older flag-only producers and fall back with the original poll
+        request ID if answer is absent. A false result contains no answer. Omission
+        delivers no lease and permits releasing the reservation without assuming
+        queue emptiness or disabling a capability. Duplicate completion dispatches
+        nothing new; recover a still-deliverable grant with the original ID.
+        A supplied answer uses post-commit presentation and a fresh server_time.
+        Original lease/session/deadline/history/ready-age authority is retained.
+        Charge the ORIGINAL completion request transport before using the answer;
+        receipt or cache read time cannot renew authority.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [leased]
+          properties:
+            leased: { const: false }
+        - type: object
+          additionalProperties: false
+          required: [leased]
+          properties:
+            leased: { const: true }
+            answer: { $ref: "#/components/schemas/CarriedActivityPollAnswer" }
+    CarriedActivityPollAnswer:
+      allOf:
+        - $ref: "#/components/schemas/CarriedPollAnswerEnvelope"
+        - type: object
+          properties:
+            task: { $ref: "#/components/schemas/ActivityTaskClaim/allOf/1/properties/task" }
     CarriedWorkflowPollRequest:
       type: object
       additionalProperties: false
@@ -2110,19 +2134,57 @@ components:
           maxItems: 1
           items: { type: string, const: workflow }
     CarriedWorkflowPollResult:
+      description: >
+        A true result may carry the complete ordinary poll answer. Consumers
+        accept older flag-only producers and fall back with the original poll
+        request ID if answer is absent. A false result contains no answer. Omission
+        delivers no lease and permits releasing the reservation without assuming
+        queue emptiness or disabling a capability. Duplicate completion dispatches
+        nothing new; recover a still-deliverable grant with the original ID.
+        A supplied answer uses post-commit presentation and a fresh server_time.
+        Original lease/session/deadline/history/ready-age authority is retained.
+        Charge the ORIGINAL completion request transport before using the answer;
+        receipt or cache read time cannot renew authority.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [leased]
+          properties:
+            leased: { const: false }
+        - type: object
+          additionalProperties: false
+          required: [leased]
+          properties:
+            leased: { const: true }
+            answer: { $ref: "#/components/schemas/CarriedWorkflowPollAnswer" }
+    CarriedWorkflowPollAnswer:
+      allOf:
+        - $ref: "#/components/schemas/CarriedPollAnswerEnvelope"
+        - type: object
+          properties:
+            task: { $ref: "#/components/schemas/WorkflowTask" }
+    CarriedPollAnswerEnvelope:
       type: object
       additionalProperties: false
-      required: [leased]
+      required: [task, poll_status, protocol_version, server_capabilities, server_time]
       description: >
-        true delivers a workflow lease and false follows a probe that delivered
-        none. Omission means no workflow lease was delivered by this completion,
-        allowing the caller to free its reservation and poll normally if capacity
-        is free. It never proves the queue empty or disables the capability.
-        Completion retries retain the original poll request ID. Duplicate activity
-        completion preserves its stale-attempt receipt and dispatches nothing new;
-        the ordinary same-ID poll recovers a still-deliverable original lease.
+        Exact native leased-poll envelope, shared with the ordinary route.
+        Capabilities are the same producer-owned map the ordinary poll returns;
+        absence of an unrelated optional role never advertises its support.
+        Only this outer observation clock is refreshed. Every task lease,
+        session, deadline, history page and payload reference remains original.
       properties:
-        leased: { type: boolean }
+        task: { type: object }
+        poll_status: { const: leased }
+        protocol_version: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        server_time: { $ref: "#/components/schemas/WorkerServerTime" }
+        server_capabilities:
+          type: object
+          additionalProperties: true
+          properties:
+            workflow_task_completion_activity_poll: { type: boolean }
+            activity_completion_workflow_poll: { type: boolean }
+            workflow_task_completion_workflow_poll: { type: boolean }
     WorkflowTaskPollRequest:
       type: object
       additionalProperties: true
@@ -3135,16 +3197,27 @@ components:
         - type: object
           required: [task]
           properties:
+            server_time: { $ref: "#/components/schemas/WorkerServerTime" }
+            poll_status: { type: string, const: leased }
             task:
               type: object
               additionalProperties: true
-              required: [task_id, activity_type, attempt]
+              required: [task_id, activity_execution_id, activity_attempt_id, activity_type, attempt_number, lease_owner, lease_expires_at, payload_codec]
               properties:
                 ready_age_ms:
                   $ref: "#/components/schemas/ClaimedTaskReadyAgeMs"
                 task_id: { type: string }
                 activity_type: { type: string }
-                attempt: { type: integer, minimum: 1 }
+                activity_execution_id: { type: string, minLength: 1 }
+                activity_attempt_id: { type: string, minLength: 1 }
+                attempt_number: { type: integer, minimum: 1 }
+                idempotency_key: { type: string, minLength: 1 }
+                lease_owner: { type: string, minLength: 1 }
+                lease_expires_at: { type: string, format: date-time }
+                payload_codec: { type: string, const: avro }
+                arguments: true
+                retry_policy: { type: [object, "null"], additionalProperties: true }
+                deadlines: { type: object, additionalProperties: true }
                 worker_session:
                   $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionTaskAffinity"
     HistoryPageRequest:

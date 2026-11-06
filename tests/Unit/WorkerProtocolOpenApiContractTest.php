@@ -99,6 +99,59 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         }
     }
 
+    private static function carriedAnswer(string $kind): object
+    {
+        $task = (object) [
+            'task_id' => 'original-task', 'workflow_id' => 'original-workflow', 'run_id' => 'original-run',
+            'lease_owner' => 'owner', 'lease_expires_at' => '2026-11-06T23:01:00.000000Z', 'payload_codec' => 'avro',
+        ];
+        if ($kind === 'Activity') {
+            $task->activity_execution_id = 'original-execution';
+            $task->activity_attempt_id = 'original-attempt';
+            $task->activity_type = 'activity';
+            $task->attempt_number = 1;
+        } else {
+            $task->task_kind = 'workflow';
+            $task->workflow_task_attempt = 1;
+            $task->history_events = [];
+        }
+
+        return (object) [
+            'task' => $task, 'poll_status' => 'leased', 'protocol_version' => '1.20',
+            'server_capabilities' => (object) [], 'server_time' => '2026-11-06T23:00:00.123000Z',
+        ];
+    }
+
+    public static function invalidCarriedAnswer(): iterable
+    {
+        foreach (['Activity', 'Workflow'] as $kind) {
+            foreach (['false-with-answer', 'missing-clock', 'missing-protocol', 'unknown-result-member', 'wrong-attempt-type'] as $fault) {
+                yield $kind.' '.$fault => [$kind, $fault];
+            }
+        }
+    }
+
+    #[DataProvider('invalidCarriedAnswer')]
+    public function test_carried_answers_preserve_the_closed_result_and_normal_authority(string $kind, string $fault): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $reference = '#/components/schemas/Carried'.$kind.'PollResult';
+        $result = (object) ['leased' => true, 'answer' => self::carriedAnswer($kind)];
+        $schema->assertReferenceMatches($reference, $result);
+        switch ($fault) {
+            case 'false-with-answer': $result->leased = false; break;
+            case 'missing-clock': unset($result->answer->server_time); break;
+            case 'missing-protocol': unset($result->answer->protocol_version); break;
+            case 'unknown-result-member': $result->unknown = true; break;
+            case 'wrong-attempt-type':
+                $field = $kind === 'Activity' ? 'attempt_number' : 'workflow_task_attempt';
+                $result->answer->task->{$field} = '1';
+                break;
+        }
+        $this->expectException(AssertionFailedError::class);
+        $schema->assertReferenceMatches($reference, $result);
+    }
+
     public function test_ready_age_is_an_optional_bounded_actual_integer(): void
     {
         $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');

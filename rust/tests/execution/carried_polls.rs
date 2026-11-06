@@ -5,6 +5,21 @@ fn registration(owner: &str, queue: &str) -> Value {
         "supported_workflow_types":["echo"],"supported_activity_types":["activity"]})
 }
 
+fn assert_granted(result: &Value) -> &Value {
+    assert_eq!(result["leased"], true);
+    assert_eq!(result.as_object().unwrap().len(), 2);
+    let answer = &result["answer"];
+    let vectors: Value = serde_json::from_str(include_str!("../../../resources/platform-protocol-specs/carried-poll-v1-vectors.json")).unwrap();
+    let keys: std::collections::BTreeSet<_> = answer.as_object().unwrap().keys().map(String::as_str).collect();
+    let expected: std::collections::BTreeSet<_> = vectors["answer_contract"]["keys"].as_array().unwrap().iter().map(|key| key.as_str().unwrap()).collect();
+    assert_eq!(keys, expected);
+    assert_eq!(answer["poll_status"], "leased");
+    assert_eq!(answer["protocol_version"], "1.20");
+    assert!(answer["server_capabilities"].is_object());
+    assert!(chrono::DateTime::parse_from_rfc3339(answer["server_time"].as_str().unwrap()).is_ok());
+    answer
+}
+
 #[tokio::test]
 async fn carried_activity_vectors_and_lost_completion_ack_preserve_the_original_lease() {
     let vectors: Value = serde_json::from_str(include_str!(
@@ -51,7 +66,7 @@ async fn carried_activity_vectors_and_lost_completion_ack_preserve_the_original_
             "omitted" => assert!(done.1.get("activity_poll").is_none(), "{id}: {}", done.1),
             "empty" => assert_eq!(done.1["activity_poll"], json!({"leased":false}), "{id}"),
             "leased" => {
-                assert_eq!(done.1["activity_poll"], json!({"leased":true}), "{id}");
+                assert_granted(&done.1["activity_poll"]);
                 // Treat the initial answer as lost. Repeating the completion
                 // cannot allocate a second lease; recover with the original ID.
                 let repeated = request(&app, "POST", &path, body).await;
@@ -61,6 +76,7 @@ async fn carried_activity_vectors_and_lost_completion_ack_preserve_the_original_
                 assert!(repeated.1.get("activity_poll").is_none());
                 let first = request(&app, "POST", "/api/worker/activity-tasks/poll", carried.clone()).await;
                 assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+                assert_poll_replay(assert_granted(&done.1["activity_poll"]), &first.1, "embedded activity answer is the normal poll envelope");
                 assert_eq!(first.1["task"]["lease_owner"], owner);
                 assert_eq!(first.1["task"]["attempt_number"], 1);
                 assert!(first.1["task"]["ready_age_ms"].is_u64());
@@ -138,7 +154,7 @@ async fn carried_workflow_vectors_preserve_activity_completion_and_normal_poll_i
             "omitted" => assert!(done.1.get("workflow_poll").is_none(), "{id}: {}", done.1),
             "empty" => assert_eq!(done.1["workflow_poll"], json!({"leased":false})),
             "leased" => {
-                assert_eq!(done.1["workflow_poll"], json!({"leased":true}));
+                assert_granted(&done.1["workflow_poll"]);
                 let retry = request(&app, "POST", &path, body).await;
                 assert_eq!(retry.0, StatusCode::CONFLICT, "{}", retry.1);
                 assert_eq!(retry.1["reason"], "stale_attempt");
@@ -146,6 +162,7 @@ async fn carried_workflow_vectors_preserve_activity_completion_and_normal_poll_i
                 assert!(retry.1.get("workflow_poll").is_none());
                 let first = request(&app, "POST", "/api/worker/workflow-tasks/poll", carried.clone()).await;
                 assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+                assert_poll_replay(assert_granted(&done.1["workflow_poll"]), &first.1, "embedded workflow answer is the normal poll envelope");
                 assert_eq!(first.1["task"]["task_id"], done.1["next_task_id"]);
                 assert_eq!(first.1["task"]["task_kind"], "workflow");
                 assert_eq!(first.1["task"]["workflow_task_attempt"], 1);
@@ -160,7 +177,7 @@ async fn carried_workflow_vectors_preserve_activity_completion_and_normal_poll_i
             unexpected => panic!("unknown vector result: {unexpected}"),
         }
     }
-    assert_eq!(seen.len(), 10);
+    assert_eq!(seen.len(), 11);
     runtime.close().await;
     drop(app);
     database.remove().await;
@@ -212,10 +229,11 @@ async fn workflow_completion_vectors_deliver_at_most_one_kind_and_pin_omission()
                 "omitted" => assert!(done.1.get(member).is_none(), "{id}: {member}: {}", done.1),
                 "empty" => assert_eq!(done.1[member], json!({"leased":false})),
                 "leased" => {
-                    assert_eq!(done.1[member], json!({"leased":true}));
+                    assert_granted(&done.1[member]);
                     let kind = if member == "activity_poll" { "activity" } else { "workflow" };
                     let replay = request(&app, "POST", &format!("/api/worker/{kind}-tasks/poll"), poll).await;
                     assert_eq!(replay.0, StatusCode::OK, "{}", replay.1);
+                    assert_poll_replay(assert_granted(&done.1[member]), &replay.1, "paired carrier answer preserves every normal poll field");
                     assert_eq!(replay.1["task"]["lease_owner"], owner);
                     if kind == "workflow" { assert_eq!(replay.1["task"]["run_id"], next.1["run_id"]); }
                 }
@@ -229,6 +247,99 @@ async fn workflow_completion_vectors_deliver_at_most_one_kind_and_pin_omission()
         assert!(duplicate.1.get("workflow_poll").is_none());
     }
     assert_eq!(seen.len(), 5);
+    runtime.close().await;
+    drop(app);
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn workflow_carrier_and_ordinary_polls_share_laravel_id_normalization_in_both_orders() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let vectors: Value = serde_json::from_str(include_str!("../../../resources/platform-protocol-specs/carried-poll-v1-vectors.json")).unwrap();
+    assert_eq!(vectors["workflow_request_id_padding"].as_array().unwrap().len(), 3);
+    for (index, padding) in vectors["workflow_request_id_padding"].as_array().unwrap().iter().enumerate() {
+        let padding = padding.as_str().unwrap();
+        for ordinary_first in [false, true] {
+            let name = format!("normalized-carrier-{index}-{ordinary_first}");
+            let queue = name.clone();
+            let owner = name.clone();
+            assert_eq!(request(&app, "POST", "/api/worker/register", registration(&owner, &queue)).await.0, StatusCode::CREATED);
+            assert_eq!(request(&app, "POST", "/api/workflows", json!({"workflow_id":format!("{name}-parent"),
+                "workflow_type":"echo","task_queue":queue,"input":envelope(Payload::Array(vec![]))})).await.0, StatusCode::CREATED);
+            let ordinary = json!({"worker_id":owner,"task_queue":queue,"timeout_seconds":0});
+            let parent = request(&app, "POST", "/api/worker/workflow-tasks/poll", ordinary.clone()).await.1["task"].clone();
+            let next = request(&app, "POST", "/api/workflows", json!({"workflow_id":name,
+                "workflow_type":"echo","task_queue":queue,"input":envelope(Payload::Array(vec![]))})).await;
+            assert_eq!(next.0, StatusCode::CREATED, "{}", next.1);
+            let mut padded = ordinary.clone();
+            padded["poll_request_id"] = json!(format!(" \t{padding}logical-id{padding} \t"));
+            let mut plain = ordinary;
+            plain["poll_request_id"] = json!("logical-id");
+            let prior = if ordinary_first {
+                let first = request(&app, "POST", "/api/worker/workflow-tasks/poll", padded.clone()).await;
+                assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+                Some(first.1)
+            } else { None };
+            let carried = if ordinary_first { plain.clone() } else { padded.clone() };
+            let mut body = completion(&parent, json!([{"type":"record_side_effect","result":envelope(Payload::Null)}]));
+            body["workflow_poll"] = carried;
+            let complete = request(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", parent["task_id"].as_str().unwrap()), body).await;
+            assert_eq!(complete.0, StatusCode::OK, "{}", complete.1);
+            let answer = assert_granted(&complete.1["workflow_poll"]);
+            assert_eq!(answer["task"]["run_id"], next.1["run_id"]);
+            assert_eq!(answer["task"]["workflow_task_attempt"], 1);
+            if let Some(first) = prior { assert_poll_replay(&first, answer, "ordinary to carrier shares one original lease"); }
+            for id in [plain, padded] {
+                let replay = request(&app, "POST", "/api/worker/workflow-tasks/poll", id).await;
+                assert_eq!(replay.0, StatusCode::OK, "{}", replay.1);
+                assert_poll_replay(answer, &replay.1, "both workflow spellings recover the same original lease");
+            }
+        }
+    }
+    runtime.close().await;
+    drop(app);
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn embedded_workflow_history_uses_normal_compression_and_survives_cold_replay() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "compressed-carrier", json!(["echo"]), json!(["activity"])).await;
+    start(&app, "compressed-carrier").await;
+    let task = poll(&app, "compressed-carrier", "workflow").await;
+    assert_eq!(finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"activity","arguments":envelope(Payload::Array(vec![]))}])).await.0, StatusCode::OK);
+    for index in 0..55 {
+        let signal = request(&app, "POST", "/api/workflows/compressed-carrier/signal/note", json!([index])).await;
+        assert_eq!(signal.0, StatusCode::ACCEPTED, "{}", signal.1);
+    }
+    assert_eq!(request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"compressed-carrier"})).await.0, StatusCode::OK);
+    let activity = poll(&app, "compressed-carrier", "activity").await;
+    let carried = json!({"worker_id":"compressed-carrier","task_queue":"test","timeout_seconds":0,
+        "poll_request_id":"compressed-original","history_page_size":100,"accept_history_encoding":"gzip,deflate"});
+    let before = chrono::Utc::now().timestamp_millis();
+    let done = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner":"compressed-carrier","activity_attempt_id":activity["activity_attempt_id"],"result":envelope(Payload::Null),"workflow_poll":carried})).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    let answer = assert_granted(&done.1["workflow_poll"]).clone();
+    let clock = chrono::DateTime::parse_from_rfc3339(answer["server_time"].as_str().unwrap()).unwrap();
+    assert!((before..=chrono::Utc::now().timestamp_millis()).contains(&clock.timestamp_millis()));
+    assert!(answer["task"]["history_events"].as_array().unwrap().is_empty());
+    assert!(answer["task"]["history_events_compressed"].is_string());
+    assert_eq!(answer["task"]["history_events_encoding"], "gzip");
+    let normal = request(&app, "POST", "/api/worker/workflow-tasks/poll", carried.clone()).await;
+    assert_eq!(normal.0, StatusCode::OK, "{}", normal.1);
+    assert_poll_replay(&answer, &normal.1, "compressed answer is the normal page and lease");
+    runtime.close().await;
+    drop(app);
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let cold = request(&app, "POST", "/api/worker/workflow-tasks/poll", carried).await;
+    assert_eq!(cold.0, StatusCode::OK, "{}", cold.1);
+    assert_poll_replay(&answer, &cold.1, "cold normal recovery retains the original compressed page, attempt and deadline");
     runtime.close().await;
     drop(app);
     database.remove().await;

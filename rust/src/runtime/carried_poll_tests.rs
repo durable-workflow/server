@@ -22,6 +22,24 @@ fn polling() -> super::carried_polls::Config<'static> {
     super::carried_polls::Config { protocol: Some("1.20"), pages: super::history_pages::HistoryPages { default: 1, max: 1 }, default_wait: 30 }
 }
 
+fn assert_granted(result: &Value) -> &Value {
+    assert_eq!(result["leased"], true);
+    assert_eq!(result.as_object().unwrap().len(), 2);
+    let answer = &result["answer"];
+    assert_eq!(answer["poll_status"], "leased");
+    assert_eq!(answer["protocol_version"], "1.20");
+    assert!(answer["server_capabilities"].is_object());
+    assert!(chrono::DateTime::parse_from_rfc3339(answer["server_time"].as_str().unwrap()).is_ok());
+    answer
+}
+
+fn assert_store_poll_matches(answer: &Value, mut poll: Value, workflow: bool) {
+    poll["protocol_version"] = json!(super::WORKER_PROTOCOL_VERSION);
+    if workflow { poll["task"]["task_kind"] = json!("workflow"); }
+    poll["server_time"] = answer["server_time"].clone();
+    assert_eq!(*answer, poll, "all original authority/history fields match the ordinary poll");
+}
+
 store_methods! {
     async fn carrier_workers(&self) {
         for worker in ["owner", "other"] {
@@ -90,11 +108,12 @@ store_methods! {
         store.test_transitions.store(0, Ordering::Relaxed);
         let completed = store.carrier_complete(&task, Some(activity_poll())).await.unwrap();
         assert_eq!(completed["recorded"], true);
-        assert_eq!(completed["activity_poll"], json!({"leased":true}));
+        assert_granted(&completed["activity_poll"]);
         assert_eq!(store.test_transitions.load(Ordering::Relaxed), 1);
         assert_eq!(store.carrier_activity_state(&task).await, ("leased".into(), 1));
         store.test_transitions.store(0, Ordering::Relaxed);
         let first = store.poll(activity_poll(), "activity", "1.20").await.unwrap();
+        assert_store_poll_matches(assert_granted(&completed["activity_poll"]), first.clone(), false);
         assert_eq!(store.test_transitions.load(Ordering::Relaxed), 0, "the committed receipt replays without a transition lock");
         let mut second = store.poll(activity_poll(), "activity", "1.20").await.unwrap();
         second["server_time"] = first["server_time"].clone();
@@ -244,7 +263,7 @@ store_methods! {
         assert_eq!(Self::scalar("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id=$1")
             .bind(task["run_id"].as_str().unwrap()).fetch_one(&store.pool).await.unwrap(), 0);
         let retried = store.carrier_complete(&task, Some(activity_poll())).await.unwrap();
-        assert_eq!(retried["activity_poll"], json!({"leased":true}));
+        assert_granted(&retried["activity_poll"]);
         assert_eq!(store.carrier_activity_state(&task).await, ("leased".into(), 1));
 
         let store = self.in_namespace("carrier-corrupt-candidate");
@@ -270,10 +289,11 @@ store_methods! {
         store.test_transitions.store(0, Ordering::Relaxed);
         let done = store.carrier_finish_activity(&activity, Some(workflow_poll())).await.unwrap();
         assert_eq!(done["recorded"], true);
-        assert_eq!(done["workflow_poll"], json!({"leased":true}));
+        assert_granted(&done["workflow_poll"]);
         assert_eq!(store.test_transitions.load(Ordering::Relaxed), 1);
         store.test_transitions.store(0, Ordering::Relaxed);
         let replay = store.poll_with_pages(workflow_poll(), "workflow", "1.20", polling().pages, polling().default_wait).await.unwrap();
+        assert_store_poll_matches(assert_granted(&done["workflow_poll"]), replay.clone(), true);
         assert_eq!(store.test_transitions.load(Ordering::Relaxed), 0, "a carried workflow lease replays without another transition");
         assert_eq!(replay["task"]["task_id"], done["next_task_id"]);
         assert_eq!(replay["task"]["history_events"].as_array().unwrap().len(), 1, "use the actual configured page maximum");
@@ -368,7 +388,7 @@ store_methods! {
         let row = Self::query("SELECT status FROM workflow_tasks WHERE id=$1").bind(activity["task_id"].as_str().unwrap())
             .fetch_one(&store.pool).await.unwrap();
         assert_eq!(DB::string(&row, "status").unwrap(), "leased", "unexpected claim failure rolls back the parent completion");
-        assert_eq!(store.carrier_finish_activity(&activity, Some(workflow_poll())).await.unwrap()["workflow_poll"], json!({"leased":true}));
+        assert_granted(&store.carrier_finish_activity(&activity, Some(workflow_poll())).await.unwrap()["workflow_poll"]);
     }
 
     pub(super) async fn qualify_workflow_completion_carriers(&self) {
@@ -388,7 +408,7 @@ store_methods! {
             assert_eq!(done["recorded"], true, "{case}");
             match case {
                 "activity-first" => {
-                    assert_eq!(done["activity_poll"], json!({"leased":true}));
+                    assert_granted(&done["activity_poll"]);
                     assert!(done.get("workflow_poll").is_none(), "absence delivers no workflow lease and releases its SDK reservation");
                     assert_eq!(counts.count_prefix("SELECT COUNT(*) FROM workflow_tasks WHERE namespace=$1 AND lease_owner=$2 AND task_type='activity'"), 0,
                         "workflow carrier is not attempted after an activity grant");
@@ -398,7 +418,7 @@ store_methods! {
                     assert_eq!(DB::number(&row, "attempt_count").unwrap(), 0);
                 }
                 "activity-empty" | "workflow-only" => {
-                    assert_eq!(done["workflow_poll"], json!({"leased":true}));
+                    assert_granted(&done["workflow_poll"]);
                     if case == "activity-empty" { assert_eq!(done["activity_poll"], json!({"leased":false})); }
                     let replay = store.poll(workflow_poll(), "workflow", "1.20").await.unwrap();
                     assert_eq!(replay["task"]["run_id"], next["run_id"]);

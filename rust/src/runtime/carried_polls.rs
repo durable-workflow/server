@@ -21,6 +21,7 @@ pub(super) struct WorkflowPoll {
     fence: WorkerPollFence,
     protocol: String,
     page: Option<i64>,
+    encoding: Option<&'static str>,
     request: super::workflow_poll_requests::WorkflowPollRequest,
 }
 
@@ -31,13 +32,39 @@ pub(super) enum Outcome {
 }
 
 impl Outcome {
-    pub(super) fn response(self) -> Option<Value> {
-        match self {
+    pub(super) fn activity_response(self) -> Result<Option<Value>> {
+        self.response(false, None)
+    }
+
+    pub(super) fn workflow_response(self, poll: Option<&WorkflowPoll>) -> Result<Option<Value>> {
+        self.response(true, poll.and_then(|poll| poll.encoding))
+    }
+
+    // Called only after the completion commits. The receipt retains plain
+    // original data; presentation and this response's clock are fresh.
+    fn response(self, workflow: bool, encoding: Option<&'static str>) -> Result<Option<Value>> {
+        Ok(match self {
             Self::Declined => None,
             Self::Empty => Some(json!({"leased":false})),
-            Self::Leased(_task) => Some(json!({"leased":true})),
-        }
+            Self::Leased(mut task) => {
+                if workflow { super::history_pages::compress(&mut task, encoding)?; }
+                let answer = json!({"task":task,"poll_status":"leased",
+                    "server_capabilities":super::store::capabilities(),"protocol_version":super::WORKER_PROTOCOL_VERSION});
+                let answer = if workflow { workflow_answer(answer) } else { super::store::activity_server_time("activity", answer) };
+                Some(json!({"leased":true,"answer":answer}))
+            }
+        })
     }
+}
+
+/// The normal workflow poll and a committed carrier share presentation and
+/// the response clock. Original lease, history and deadline fields stay put.
+pub(super) fn workflow_answer(mut answer: Value) -> Value {
+    if let Some(task) = answer["task"].as_object_mut() {
+        task.insert("task_kind".into(), json!("workflow"));
+        answer["server_time"] = json!(super::activity_lease_renewal::micros(super::store::now()));
+    }
+    answer
 }
 
 // Request validation happens before claim_in. In particular, invalid_request
@@ -175,8 +202,9 @@ store_methods! {
         let request = self.workflow_poll_request(owner, queue,
             super::workflow_poll_requests::request_id(&poll).expect("validated poll request identity"),
             config.default_wait, &["workflow"]).await?;
-        let page = config.pages.poll(super::history_pages::requested_size(&poll)?, super::history_pages::requested(&poll)?);
-        Ok(Some(WorkflowPoll { body: poll, fence, protocol: protocol.to_owned(), page, request }))
+        let encoding = super::history_pages::requested(&poll)?;
+        let page = config.pages.poll(super::history_pages::requested_size(&poll)?, encoding);
+        Ok(Some(WorkflowPoll { body: poll, fence, protocol: protocol.to_owned(), page, encoding, request }))
     }
 
     pub(super) async fn claim_carried_workflow(

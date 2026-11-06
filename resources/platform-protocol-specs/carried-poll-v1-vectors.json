@@ -230,6 +230,17 @@
         "unknown": true
       },
       "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-laravel-blank-id",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "\u200b\ufeff\u200e",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
     }
   ],
   "workflow_completion_capability": "workflow_task_completion_workflow_poll",
@@ -274,5 +285,25 @@
       "expected_activity": "omitted",
       "expected_workflow": "omitted"
     }
-  ]
+  ],
+  "workflow_request_id_padding": [
+    "\ufeff",
+    "\u200b",
+    "\u200e"
+  ],
+  "answer_contract": {
+    "keys": [
+      "poll_status",
+      "protocol_version",
+      "server_capabilities",
+      "server_time",
+      "task"
+    ],
+    "clock": "post_commit_response_observation",
+    "transport_age": "original_completion_request",
+    "replay_changes": [
+      "server_time"
+    ],
+    "history_and_payload": "ordinary_poll_presentation_and_limits"
+  }
 }

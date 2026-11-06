@@ -13,6 +13,8 @@ mod completion_uploads;
 mod retention;
 #[path = "external_payloads/namespace_delete.rs"]
 mod namespace_delete;
+#[path = "external_payloads/carried_polls.rs"]
+mod carried_polls;
 use axum::{body::Bytes, http::HeaderMap};
 use durable_workflow_server::runtime::ExternalPayloadConfig;
 use sha2::{Digest, Sha256};
