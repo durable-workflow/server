@@ -4,7 +4,7 @@
 //! request from the same worker ends an older one that is still waiting.
 use super::{
     Backend, ColumnIndex, Decode, Duration, Encode, Executor, IntoArguments, QueryTaskConfig, Result, Store,
-    Transaction, Type, Value, QueryClaim, authority, json, key, now, poll_result, text,
+    Transaction, Type, Value, QueryClaim, CheckedQueryPoll, authority, json, key, now, poll_result, text,
 };
 use sha2::{Digest, Sha256};
 
@@ -319,7 +319,8 @@ where
         let mut tx = self.begin().await?;
         self.sweep_poll_rows(&mut tx).await?;
         let pending = Self::poll_row(&mut tx, &keys.pending).await?.is_some();
-        if !pending && Self::poll_row(&mut tx, &keys.result).await?.is_none() {
+        let fresh = !pending && Self::poll_row(&mut tx, &keys.result).await?.is_none();
+        if fresh {
             Self::put_poll_row(&mut tx, &keys.current, &json!({"poll_request_id":keys.request_id}), pending_ttl(config)).await?;
         }
         let current = Self::query_worker_proof(&mut *tx, self.namespace.as_ref(), owner, config).await?;
@@ -331,7 +332,8 @@ where
             tx.commit().await?;
             return Ok(Some(poll_result(None, "stale_worker_registration")));
         }
-        if let Some(cached) = self.cached_query_poll_in(&mut tx, keys, body, proof, config).await? {
+        let cached = if fresh { None } else { self.cached_query_poll_in(&mut tx, keys, body, proof, config).await? };
+        if let Some(cached) = cached {
             tx.commit().await?;
             return Ok(Some(cached));
         }
@@ -340,7 +342,8 @@ where
             return Ok(None);
         }
         let saved = tx.poll_savepoint().await?;
-        let claim = match self.claim_query_in(&mut tx, body, config, proof, fence, Some(keys)).await {
+        let checked = fresh.then_some(CheckedQueryPoll { proof });
+        let claim = match self.claim_query_in(&mut tx, body, config, proof, fence, Some(keys), checked).await {
             Ok(claim) => {
                 tx.release_poll_claim().await?;
                 claim

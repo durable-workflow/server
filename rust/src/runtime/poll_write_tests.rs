@@ -39,6 +39,49 @@ store_methods! {
             .bind(run_id).execute(&mut *tx).await.unwrap();
         Self::compare_projection_bytes(&mut tx, run_id).await.unwrap();
         tx.rollback().await.unwrap();
+        for (kind, status, source, available) in [
+            ("other", "open", "pending", false),
+            ("condition", "resolved", "timed_out", false),
+            ("signal", "resolved", "timed_out", false),
+            ("condition", "resolved", "satisfied", true),
+            ("timer", "resolved", "fired", true),
+            ("activity", "resolved", "completed", true),
+            ("child", "resolved", "completed", false),
+            ("update", "resolved", "completed", false),
+        ] {
+            let mut tx = self.begin().await.unwrap();
+            Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,status,source_status) VALUES ($1,$2,$3,'census-control',0,$4,$5,$6)")
+                .bind(super::store::id()).bind(run_id).bind(run["workflow_id"].as_str().unwrap())
+                .bind(kind).bind(status).bind(source).execute(&mut *tx).await.unwrap();
+            Self::compare_projection_bytes(&mut tx, run_id).await.unwrap();
+            assert_eq!(Self::scalar("SELECT COUNT(*) FROM workflow_run_summaries WHERE id=$1").bind(run_id).fetch_one(&mut *tx).await.unwrap() != 0,
+                available, "{kind}/{status}/{source}");
+            tx.rollback().await.unwrap();
+        }
+        self.register(json!({"worker_id":"projection-worker","task_queue":"projection-activity","runtime":"php",
+            "supported_workflow_types":["projection-activity"],"supported_activity_types":["projection-activity"]}),
+            &super::QueryTaskConfig::default(), Some("1.20")).await.unwrap();
+        let input = crate::codec::ValueCodec::new().unwrap()
+            .encode(&crate::codec::Value::Array(vec![])).unwrap();
+        let activity_run = self.start(json!({"workflow_id":"projection-activity","workflow_type":"projection-activity",
+            "task_queue":"projection-activity","input":{"codec":"avro","blob":input}}), BTreeMap::new(), None, None).await.unwrap();
+        let task = self.poll(json!({"worker_id":"projection-worker","task_queue":"projection-activity","timeout_seconds":0}), "workflow", "1.20").await.unwrap()["task"].clone();
+        self.complete_or_checkpoint(task["task_id"].as_str().unwrap(), json!({"lease_owner":"projection-worker",
+            "workflow_task_attempt":task["workflow_task_attempt"],"commands":[{"type":"schedule_activity",
+                "activity_type":"projection-activity","arguments":{"codec":"avro","blob":input}}]}),
+            std::sync::Arc::new(tokio::sync::Semaphore::new(1)), BTreeMap::new(), None, Some("1.20"), Default::default(), None, None).await.unwrap();
+        let mut tx = self.begin().await.unwrap();
+        let run_id = activity_run["run_id"].as_str().unwrap();
+        Self::query("UPDATE workflow_tasks SET available_at='2100-01-01 00:00:00' WHERE workflow_run_id=$1")
+            .bind(run_id).execute(&mut *tx).await.unwrap();
+        Self::compare_projection_bytes(&mut tx, run_id).await.unwrap();
+        // A genuine scheduled activity's history still requires its wait,
+        // even when the census proves there is no corresponding stored row.
+        Self::query("DELETE FROM workflow_run_waits WHERE workflow_run_id=$1 AND kind='activity'")
+            .bind(run_id).execute(&mut *tx).await.unwrap();
+        Self::compare_projection_bytes(&mut tx, run_id).await.unwrap();
+        assert_eq!(Self::scalar("SELECT COUNT(*) FROM workflow_run_summaries WHERE id=$1").bind(run_id).fetch_one(&mut *tx).await.unwrap(), 0);
+        tx.rollback().await.unwrap();
     }
 }
 
@@ -49,5 +92,6 @@ async fn sqlite_poll_cache_writes_use_one_statement_and_rollback() {
     store.qualify_query_poll_cache_writes().await;
     store.qualify_workflow_poll_cache_writes().await;
     store.qualify_summary_projection_bytes().await;
+    store.qualify_summary_history_pages().await;
     store.close().await;
 }

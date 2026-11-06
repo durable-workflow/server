@@ -48,6 +48,14 @@ enum QueryClaim {
     Blocked(&'static str),
 }
 
+/// Private handoff from the immediate poll after it checked this proof,
+/// fence and fresh current-request row under the same transition lock.
+struct CheckedQueryPoll<'a> {
+    proof: &'a str,
+}
+
+pub(super) const QUERY_WORKER_PROOF_SQL: &str = "SELECT w.worker_id,w.namespace,w.last_heartbeat_at,i.token,i.worker_id AS incarnation_worker_id,i.namespace AS incarnation_namespace FROM workflow_worker_registrations w JOIN dw_worker_registration_incarnations i ON i.worker_id=w.worker_id AND i.namespace=w.namespace AND i.status='active' WHERE w.namespace=$1 AND w.worker_id=$2 AND w.status='active' LIMIT 2";
+
 const LEASED_WORKFLOW_TASKS: &str = "SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='leased' AND (lease_expires_at IS NULL OR lease_expires_at>$2)";
 
 /// Laravel binds "now" in whole seconds when PHP compares task leases.
@@ -1036,7 +1044,7 @@ where
     where
         E: Executor<'e, Database = DB>,
     {
-        let rows = Self::query("SELECT w.worker_id,w.namespace,w.last_heartbeat_at,i.token,i.worker_id AS incarnation_worker_id,i.namespace AS incarnation_namespace FROM workflow_worker_registrations w JOIN dw_worker_registration_incarnations i ON i.worker_id=w.worker_id AND i.namespace=w.namespace AND i.status='active' WHERE w.namespace=$1 AND w.worker_id=$2 AND w.status='active' LIMIT 2")
+        let rows = Self::query(QUERY_WORKER_PROOF_SQL)
             .bind(namespace.to_owned()).bind(owner.to_owned()).fetch_all(executor).await?;
         if rows.len() != 1 {
             return Ok(None);
@@ -1139,7 +1147,7 @@ where
         keys: Option<&poll_requests::PollKeys>,
     ) -> Result<QueryClaim> {
         let mut tx = self.begin().await?;
-        let claim = self.claim_query_in(&mut tx, body, config, expected_proof, fence, keys).await?;
+        let claim = self.claim_query_in(&mut tx, body, config, expected_proof, fence, keys, None).await?;
         tx.commit().await?;
         Ok(claim)
     }
@@ -1152,6 +1160,7 @@ where
         expected_proof: &str,
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
         keys: Option<&poll_requests::PollKeys>,
+        checked: Option<CheckedQueryPoll<'_>>,
     ) -> Result<QueryClaim> {
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
@@ -1166,21 +1175,26 @@ where
         let Some(worker) = worker else {
             return Ok(QueryClaim::StaleWorker);
         };
-        let proof =
-            Self::query_worker_proof(&mut **tx, self.namespace.as_ref(), owner, config).await?;
-        let Some(proof) = proof.filter(|proof| proof == expected_proof) else {
-            return Ok(QueryClaim::StaleWorker);
+        let proof = match checked {
+            Some(checked) if checked.proof == expected_proof => checked.proof.to_owned(),
+            _ => {
+                let proof = Self::query_worker_proof(&mut **tx, self.namespace.as_ref(), owner, config).await?;
+                let Some(proof) = proof.filter(|proof| proof == expected_proof) else {
+                    return Ok(QueryClaim::StaleWorker);
+                };
+                if let Some(fence) = fence
+                    && !self.worker_poll_fence_holds_in(tx, fence, owner).await?
+                {
+                    return Ok(QueryClaim::StaleWorker);
+                }
+                if let Some(keys) = keys
+                    && !Self::poll_request_is_current(tx, keys).await?
+                {
+                    return Ok(QueryClaim::Superseded);
+                }
+                proof
+            }
         };
-        if let Some(fence) = fence
-            && !self.worker_poll_fence_holds_in(tx, fence, owner).await?
-        {
-            return Ok(QueryClaim::StaleWorker);
-        }
-        if let Some(keys) = keys
-            && !Self::poll_request_is_current(tx, keys).await?
-        {
-            return Ok(QueryClaim::Superseded);
-        }
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }

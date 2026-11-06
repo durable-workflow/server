@@ -154,7 +154,13 @@ store_methods! {
                 }).await.unwrap();
                 let body = json!({"worker_id":"count-worker","task_queue":"counted","timeout_seconds":timeout,"poll_request_id":format!("counted-query-{timeout}")});
                 self.count_reset();
-                let claimed = self.poll_query(body.clone(), &config).await.unwrap();
+                let (claimed, statements) = super::sql_counts::measure(self.poll_query(body.clone(), &config)).await;
+                let claimed = claimed.unwrap();
+                assert_eq!(statements.count(super::queries::QUERY_WORKER_PROOF_SQL), if timeout == 0 {2} else {3},
+                    "fresh immediate admission reuses its proof under the same lock");
+                if timeout == 0 {
+                    assert_eq!(statements.count(DB::QUERY_CACHE_PUT), 2, "current request and remembered answer each use one write");
+                }
                 assert!(claimed["task"].is_object(), "{claimed}");
                 assert_eq!(self.count_get(), if timeout == 0 {1} else {5});
                 if timeout == 0 {

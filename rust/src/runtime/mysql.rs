@@ -1140,6 +1140,7 @@ mod tests {
         store.qualify_query_poll_cache_writes().await;
         store.qualify_workflow_poll_cache_writes().await;
         store.qualify_summary_projection_bytes().await;
+        store.qualify_summary_history_pages().await;
         store.close().await;
         db.remove().await;
     }
