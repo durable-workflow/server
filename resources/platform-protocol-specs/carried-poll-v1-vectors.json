@@ -115,5 +115,164 @@
     "only_mutable_reply_field": "server_time",
     "expiry": "poll_cached_task_expired",
     "replacement": "original_lease_not_renewed"
-  }
+  },
+  "workflow_capability": "activity_completion_workflow_poll",
+  "workflow_cases": [
+    {
+      "id": "workflow-leased",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "workflow-paged",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0,
+        "history_page_size": 1,
+        "task_kinds": [
+          "workflow"
+        ]
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "workflow-empty-host",
+      "standalone_activity": true,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 60
+      },
+      "expected_result": "empty"
+    },
+    {
+      "id": "workflow-omitted",
+      "standalone_activity": false,
+      "workflow_poll": null,
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-wrong-worker",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "other",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-wrong-queue",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "different",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-missing-id",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-blank-id",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-validation-kind",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0,
+        "task_kinds": [
+          "workflow",
+          "update_validation"
+        ]
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-unknown-field",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0,
+        "unknown": true
+      },
+      "expected_result": "omitted"
+    }
+  ],
+  "workflow_completion_capability": "workflow_task_completion_workflow_poll",
+  "paired_cases": [
+    {
+      "id": "activity-first",
+      "activity": true,
+      "schedule_activity": true,
+      "foreign": null,
+      "expected_activity": "leased",
+      "expected_workflow": "omitted"
+    },
+    {
+      "id": "activity-empty",
+      "activity": true,
+      "schedule_activity": false,
+      "foreign": null,
+      "expected_activity": "empty",
+      "expected_workflow": "leased"
+    },
+    {
+      "id": "workflow-only",
+      "activity": false,
+      "schedule_activity": false,
+      "foreign": null,
+      "expected_activity": "omitted",
+      "expected_workflow": "leased"
+    },
+    {
+      "id": "foreign-activity",
+      "activity": true,
+      "schedule_activity": false,
+      "foreign": "activity",
+      "expected_activity": "omitted",
+      "expected_workflow": "omitted"
+    },
+    {
+      "id": "foreign-workflow",
+      "activity": true,
+      "schedule_activity": false,
+      "foreign": "workflow",
+      "expected_activity": "omitted",
+      "expected_workflow": "omitted"
+    }
+  ]
 }

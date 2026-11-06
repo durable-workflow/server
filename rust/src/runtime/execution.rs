@@ -1650,20 +1650,21 @@ impl Runtime {
                 .await?;
             }
         }
+        let polling = super::carried_polls::Config { protocol, pages: self.history_pages(), default_wait: self.worker_poll_wait() };
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
-                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint, signal.as_ref())
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, polling, self.structural, checkpoint, signal.as_ref())
                     .await
             }
             Storage::Postgres(store) => {
                 store
-                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint, signal.as_ref())
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, polling, self.structural, checkpoint, signal.as_ref())
                     .await
             }
             Storage::MySql(store) => {
                 store
-                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, protocol, self.structural, checkpoint, signal.as_ref())
+                    .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, polling, self.structural, checkpoint, signal.as_ref())
                     .await
             }
         }
@@ -1772,7 +1773,7 @@ impl Runtime {
             }
         }
     }
-    pub(crate) async fn complete_activity(&self, task_id: &str, body: Value) -> Result<Value> {
+    pub(crate) async fn complete_activity(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
         let external = self.prepare_external(&body["result"]).await?;
         // `ActivityOutcomeRecorder` measures the result it would store.
         let stored = match &external {
@@ -1789,10 +1790,11 @@ impl Runtime {
                 Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob, limit).await,
             };
         }
+        let polling = super::carried_polls::Config { protocol: Some(protocol), pages: self.history_pages(), default_wait: self.worker_poll_wait() };
         match &*self.storage {
-            Storage::Sqlite(store) => store.complete_activity(task_id, body, external).await,
-            Storage::Postgres(store) => store.complete_activity(task_id, body, external).await,
-            Storage::MySql(store) => store.complete_activity(task_id, body, external).await,
+            Storage::Sqlite(store) => store.complete_activity(task_id, body, external, polling).await,
+            Storage::Postgres(store) => store.complete_activity(task_id, body, external, polling).await,
+            Storage::MySql(store) => store.complete_activity(task_id, body, external, polling).await,
         }
     }
     delegate!(heartbeat_activity(task_id: &str, body: Value) -> Result<Value>);

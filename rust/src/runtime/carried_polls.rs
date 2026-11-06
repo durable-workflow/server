@@ -9,6 +9,21 @@ pub(super) struct ActivityPoll {
     protocol: String,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct Config<'a> {
+    pub(super) protocol: Option<&'a str>,
+    pub(super) pages: super::history_pages::HistoryPages,
+    pub(super) default_wait: u64,
+}
+
+pub(super) struct WorkflowPoll {
+    body: Value,
+    fence: WorkerPollFence,
+    protocol: String,
+    page: Option<i64>,
+    request: super::workflow_poll_requests::WorkflowPollRequest,
+}
+
 pub(super) enum Outcome {
     Declined,
     Empty,
@@ -42,9 +57,30 @@ fn activity_shape(poll: &Value, owner: &str) -> bool {
     poll.as_object().is_some_and(|fields| fields.keys().all(|key|
         matches!(key.as_str(), "worker_id" | "task_queue" | "build_id" | "poll_request_id" | "timeout_seconds")))
         && poll["worker_id"].as_str() == Some(owner)
+        && super::text(poll, "task_queue").is_ok()
+        && super::text(poll, "poll_request_id").is_ok()
         && poll["poll_request_id"].as_str().is_some_and(|id| id.chars().count() <= 255)
         && normalized["poll_request_id"].as_str().is_some_and(|id| !id.is_empty())
         && super::laravel_rules::errors(&normalized, super::http::ACTIVITY_POLL_RULES).is_empty()
+}
+
+fn workflow_shape(poll: &Value, owner: &str) -> bool {
+    let normalized = super::laravel_rules::normalize(poll);
+    poll.as_object().is_some_and(|fields| fields.keys().all(|key|
+        matches!(key.as_str(), "worker_id" | "task_queue" | "build_id" | "poll_request_id" | "timeout_seconds"
+            | "history_page_size" | "accept_history_encoding" | "task_kinds")))
+        && poll["worker_id"].as_str() == Some(owner)
+        && super::text(poll, "task_queue").is_ok()
+        && poll["poll_request_id"].as_str().is_some_and(|id| id.chars().count() <= 255)
+        && normalized["poll_request_id"].as_str().is_some_and(|id| !id.is_empty())
+        && super::laravel_rules::errors(&normalized, super::http::WORKFLOW_POLL_RULES).is_empty()
+        && (poll["task_kinds"].is_null() || poll["task_kinds"].as_array().is_some_and(|kinds| kinds.len() == 1 && kinds[0] == "workflow"))
+        && super::history_pages::requested_size(poll).is_ok()
+        && super::history_pages::requested(poll).is_ok()
+}
+
+pub(super) fn paired_owners_match(activity: Option<&Value>, workflow: Option<&Value>, owner: &str) -> bool {
+    activity.into_iter().chain(workflow).all(|poll| poll["worker_id"].as_str() == Some(owner))
 }
 
 store_methods! {
@@ -125,6 +161,59 @@ store_methods! {
             }
         }
     }
+
+    pub(super) async fn admit_workflow_carrier(
+        &self, poll: Option<Value>, owner: &str, config: Config<'_>,
+    ) -> Result<Option<WorkflowPoll>> {
+        let (Some(poll), Some(protocol)) = (poll, config.protocol) else { return Ok(None); };
+        if !workflow_shape(&poll, owner) { return Ok(None); }
+        let queue = super::text(&poll, "task_queue")?;
+        if let Err(error) = self.refuse_draining_worker(owner, queue).await {
+            return if soft_refusal(&error) { Ok(None) } else { Err(error) };
+        }
+        let PollAdmission::Fenced(fence) = self.admit_carried_worker_poll(owner, queue).await? else { return Ok(None); };
+        let request = self.workflow_poll_request(owner, queue,
+            super::workflow_poll_requests::request_id(&poll).expect("validated poll request identity"),
+            config.default_wait, &["workflow"]).await?;
+        let page = config.pages.poll(super::history_pages::requested_size(&poll)?, super::history_pages::requested(&poll)?);
+        Ok(Some(WorkflowPoll { body: poll, fence, protocol: protocol.to_owned(), page, request }))
+    }
+
+    pub(super) async fn claim_carried_workflow(
+        &self, tx: &mut super::transaction::Transaction<'_, DB>, poll: &WorkflowPoll, completion_owner: &str,
+    ) -> Result<Outcome> {
+        let owner = super::text(&poll.body, "worker_id")?;
+        if owner != completion_owner || !self.worker_poll_fence_holds_in(tx, &poll.fence, owner).await? {
+            return Ok(Outcome::Declined);
+        }
+        let occupied = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE namespace=$1 AND lease_owner=$2 AND task_type='activity' AND status='leased' AND (lease_expires_at IS NULL OR lease_expires_at>$3)")
+            .bind(self.namespace.as_ref()).bind(owner).bind(DB::bind_time(super::store::now())).fetch_one(&mut **tx).await?;
+        if occupied > 0 { return Ok(Outcome::Declined); }
+        let saved = tx.poll_savepoint().await?;
+        let result: Result<Outcome> = async {
+            // A preceding ordinary empty poll is already an answer for this
+            // ID. A carrier must honor it instead of claiming past it.
+            if let Some(answer) = self.replay_workflow_poll_in(tx, &poll.request, owner, super::text(&poll.body, "task_queue")?).await? {
+                return Ok(if answer["task"].is_object() { Outcome::Leased(answer["task"].clone()) } else { Outcome::Empty });
+            }
+            let task = self.claim_in(tx, &poll.body, "workflow", &poll.protocol, poll.page, Some(&poll.request)).await?;
+            if let Some(task) = task {
+                Self::remember_workflow_poll(tx, &poll.request, &json!({"task":task,"poll_status":"leased"})).await?;
+                Ok(Outcome::Leased(task))
+            } else {
+                // Keep the kind binding, but no new ordinary empty answer:
+                // follow-up polling under this ID must see later arrivals.
+                Ok(Outcome::Empty)
+            }
+        }.await;
+        match result {
+            Ok(outcome) => { tx.release_poll_claim().await?; Ok(outcome) }
+            Err(error) => {
+                tx.rollback_poll_claim(saved).await?;
+                if soft_refusal(&error) { Ok(Outcome::Declined) } else { Err(error) }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +231,16 @@ mod tests {
         extra = poll.clone();
         extra["poll_request_id"] = json!("\u{200b}\u{feff}");
         assert!(!activity_shape(&extra, "owner"));
+        extra = poll.clone();
+        extra["poll_request_id"] = json!("λ".repeat(128));
+        assert!(!activity_shape(&extra, "owner"), "native opaque activity IDs retain the existing UTF-8 byte bound");
+        assert!(workflow_shape(&poll, "owner"));
+        assert!(!workflow_shape(&poll, "other"));
+        extra = poll.clone();
+        extra["task_kinds"] = json!(["workflow","update_validation"]);
+        assert!(!workflow_shape(&extra, "owner"));
+        extra["task_kinds"] = json!({"0":"workflow"});
+        assert!(!workflow_shape(&extra, "owner"));
         assert!(!soft_refusal(&sqlx::Error::PoolTimedOut.into()));
         assert!(!soft_refusal(&serde_json::from_str::<Value>("{").unwrap_err().into()));
         for reason in ["invalid_request", "task_attempt_exhausted", "history_event_exceeds_page_budget", "unsupported_stored_timestamp"] {

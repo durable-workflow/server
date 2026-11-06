@@ -1151,6 +1151,8 @@ mod tests {
         let db = Database::new().await;
         let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_carried_activity_polls().await;
+        store.qualify_carried_workflow_polls().await;
+        store.qualify_workflow_completion_carriers().await;
         store.close().await;
         db.remove().await;
     }

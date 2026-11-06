@@ -20,7 +20,7 @@ store_methods! {
                 "commands":[{"type":"schedule_activity","activity_type":"ready-age-activity",
                     "arguments":{"codec":"avro","blob":"AA=="},
                     "retry_policy":{"max_attempts":2,"backoff_seconds":[0]}}]}),
-                Arc::new(Semaphore::new(1)), BTreeMap::new(), None, Some("1.20"), Default::default(), None, None).await.unwrap();
+                Arc::new(Semaphore::new(1)), BTreeMap::new(), None, super::carried_polls::Config { protocol: Some("1.20"), pages: Default::default(), default_wait: 30 }, Default::default(), None, None).await.unwrap();
         }
         let row = Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type=$2 AND status='ready'")
             .bind(run).bind(kind).fetch_one(&self.pool).await.unwrap();

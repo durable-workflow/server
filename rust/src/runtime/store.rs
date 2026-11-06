@@ -1986,6 +1986,11 @@ where
             }
             _ => None,
         };
+        if let (Some(request), Some(fence)) = (poll_request.as_ref(), fence.as_ref())
+            && let Some(answer) = self.replay_workflow_poll_read_only(request, text(&body, "worker_id")?, text(&body, "task_queue")?, fence).await?
+        {
+            return replayed_poll(answer, encoding);
+        }
         let mut cross_kind = if timeout > 0 {
             self.poll_wake_snapshot(&body, kind).await?
         } else {
@@ -2957,17 +2962,21 @@ where
         transition_codec: Arc<Semaphore>,
         external: super::external_resolution::PreparedCommands,
         worker: Option<super::runtime_credentials::Principal>,
-        protocol: Option<&str>,
+        polling: super::carried_polls::Config<'_>,
         limits: super::memo_limits::StructuralLimits,
         checkpoint: Option<&super::scope_checkpoint::Checkpoint>,
         signal: Option<&super::signal_payloads::ResolvedSignal>,
     ) -> Result<Value> {
+        let protocol = polling.protocol;
         let transition_codec_for_streams = transition_codec.clone();
         let mut body = body;
         // Transport poll identities do not change the authored completion
         // receipt. Repeating a completion never dispatches another task.
         let activity_poll = if checkpoint.is_none() {
             body.as_object_mut().and_then(|fields| fields.remove("activity_poll"))
+        } else { None };
+        let workflow_poll = if checkpoint.is_none() {
+            body.as_object_mut().and_then(|fields| fields.remove("workflow_poll"))
         } else { None };
         // `commands` is required and non-empty, with no count limit of its
         // own: each command meets the run's structural limits instead.
@@ -3121,10 +3130,14 @@ where
                 }
             }
         }
-        let activity_poll = match activity_poll {
-            Some(poll) => self.admit_activity_carrier(Some(poll), text(&body, "lease_owner")?, protocol).await?,
-            None => None,
-        };
+        let carriers = if activity_poll.is_some() || workflow_poll.is_some() {
+            let owner = text(&body, "lease_owner")?;
+            if super::carried_polls::paired_owners_match(activity_poll.as_ref(), workflow_poll.as_ref(), owner) {
+                (self.admit_activity_carrier(activity_poll, owner, protocol).await?,
+                    self.admit_workflow_carrier(workflow_poll, owner, polling).await?)
+            } else { (None, None) }
+        } else { (None, None) };
+        let (activity_poll, workflow_poll) = carriers;
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
@@ -3444,10 +3457,21 @@ where
             Some(poll) => self.claim_carried_activity(&mut tx, poll, &DB::string(&task, "lease_owner")?).await?,
             None => super::carried_polls::Outcome::Declined,
         };
+        let carried_workflow = if matches!(&carried, super::carried_polls::Outcome::Leased(_)) {
+            // One completion never delivers both kinds. Omission means no
+            // workflow lease, so the SDK can release its reservation.
+            super::carried_polls::Outcome::Declined
+        } else {
+            match workflow_poll.as_ref() {
+                Some(poll) => self.claim_carried_workflow(&mut tx, poll, &DB::string(&task, "lease_owner")?).await?,
+                None => super::carried_polls::Outcome::Declined,
+            }
+        };
         tx.commit().await?;
         self.wake.notify_waiters();
         let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created});
         if let Some(poll) = carried.response() { response["activity_poll"] = poll; }
+        if let Some(poll) = carried_workflow.response() { response["workflow_poll"] = poll; }
         Ok(response)
     }
 
@@ -3869,7 +3893,14 @@ where
         task_id: &str,
         body: Value,
         external: Option<super::external_resolution::PreparedExternal>,
+        polling: super::carried_polls::Config<'_>,
     ) -> Result<Value> {
+        let mut body = body;
+        let workflow_poll = body.as_object_mut().and_then(|fields| fields.remove("workflow_poll"));
+        let workflow_poll = match workflow_poll {
+            Some(poll) => self.admit_workflow_carrier(Some(poll), text(&body, "lease_owner")?, polling).await?,
+            None => None,
+        };
         let result = match &external {
             Some(prepared) => prepared.stored(),
             None => envelope(&body, "result")?,
@@ -4009,11 +4040,15 @@ where
             )
             .await?
         };
+        let carried = match workflow_poll.as_ref() {
+            Some(poll) => self.claim_carried_workflow(&mut tx, poll, &DB::string(&task, "lease_owner")?).await?,
+            None => super::carried_polls::Outcome::Declined,
+        };
         tx.commit().await?;
         self.wake.notify_waiters();
-        Ok(
-            json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id}),
-        )
+        let mut response = json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id});
+        if let Some(poll) = carried.response() { response["workflow_poll"] = poll; }
+        Ok(response)
     }
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {
         // Expired root authority wins before any ordinary due timer fires.
@@ -5347,7 +5382,7 @@ pub(crate) fn capabilities() -> Value {
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
         "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true,
-        "workflow_task_completion_activity_poll": true});
+        "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
     value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
     value["supported_workflow_task_commands"]
         .as_array_mut()

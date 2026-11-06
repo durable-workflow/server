@@ -103,6 +103,32 @@ fn epoch() -> i64 {
 }
 
 store_methods! {
+    /// A committed live workflow receipt needs no binding or result rewrite.
+    /// Empty answers, missing/expired bindings and stale leases retain the
+    /// ordinary locked path, including its existing terminal-answer rules.
+    pub(super) async fn replay_workflow_poll_read_only(
+        &self, request: &WorkflowPollRequest, worker_id: &str, queue: &str,
+        fence: &super::worker_poll_fence::WorkerPollFence,
+    ) -> Result<Option<Value>> {
+        let mut read = self.begin_read().await?;
+        if !self.worker_poll_fence_holds_in(&mut read, fence, worker_id).await? { return Ok(None); }
+        let at = epoch();
+        let Some(binding) = Self::query(DB::QUERY_CACHE_GET).bind(&request.keys.binding).fetch_optional(&mut *read).await? else { return Ok(None); };
+        if DB::number(&binding, "expiration")? <= at { return Ok(None); }
+        let bound: Value = serde_json::from_str(&DB::string(&binding, "value")?)?;
+        if bound["task_kinds"] != json!(request.kinds) {
+            return Err(kinds_conflict(request, bound["task_kinds"].clone()));
+        }
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&request.keys.result).fetch_optional(&mut *read).await? else { return Ok(None); };
+        if DB::number(&row, "expiration")? <= at { return Ok(None); }
+        let mut result: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+        if !result["task"].is_object() || task_kind(&result) != "workflow"
+            || !Self::workflow_lease_deliverable(&mut read, &mut result["task"], worker_id, queue).await?
+        { return Ok(None); }
+        read.commit().await?;
+        Ok(Some(result))
+    }
+
     /// Keys cover namespace, queue, the registration's build ID, the worker
     /// and the request ID, as PHP's cache keys do; the kind set is the
     /// binding's value, not part of the key.

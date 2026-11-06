@@ -69,7 +69,7 @@ store_methods! {
         self.complete_or_checkpoint(task["task_id"].as_str().unwrap(), json!({"lease_owner":"projection-worker",
             "workflow_task_attempt":task["workflow_task_attempt"],"commands":[{"type":"schedule_activity",
                 "activity_type":"projection-activity","arguments":{"codec":"avro","blob":input}}]}),
-            std::sync::Arc::new(tokio::sync::Semaphore::new(1)), BTreeMap::new(), None, Some("1.20"), Default::default(), None, None).await.unwrap();
+            std::sync::Arc::new(tokio::sync::Semaphore::new(1)), BTreeMap::new(), None, super::carried_polls::Config { protocol: Some("1.20"), pages: Default::default(), default_wait: 30 }, Default::default(), None, None).await.unwrap();
         let mut tx = self.begin().await.unwrap();
         let run_id = activity_run["run_id"].as_str().unwrap();
         Self::query("UPDATE workflow_tasks SET available_at='2035-01-01 00:00:00' WHERE workflow_run_id=$1")

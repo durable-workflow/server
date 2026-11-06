@@ -41,14 +41,14 @@ class WorkerProtocolOpenApiContractTest extends TestCase
     public function test_carried_activity_poll_has_a_closed_shape_and_optional_result(): void
     {
         $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
-        $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', [
+        $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', (object) [
             'worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => 'original-request', 'timeout_seconds' => 0,
         ]);
-        $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', [
+        $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', (object) [
             'worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => " original-request \t",
         ]);
         foreach ([false, true] as $leased) {
-            $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollResult', ['leased' => $leased]);
+            $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollResult', (object) ['leased' => $leased]);
         }
         $request = $this->spec['components']['schemas']['WorkflowTaskCompleteRequest'];
         $this->assertSame('#/components/schemas/CarriedActivityPollRequest', $request['properties']['activity_poll']['$ref']);
@@ -76,7 +76,27 @@ class WorkerProtocolOpenApiContractTest extends TestCase
     {
         $this->expectException(AssertionFailedError::class);
         OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml')
-            ->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', $value);
+            ->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', (object) $value);
+    }
+
+    public function test_carried_workflow_poll_binds_actual_activity_completion_fields(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $poll = (object) ['worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => ' original-request ', 'task_kinds' => ['workflow'], 'history_page_size' => 1];
+        $schema->assertReferenceMatches('#/components/schemas/CarriedWorkflowPollRequest', $poll);
+        $schema->assertReferenceMatches('#/components/schemas/ActivityTaskCompleteRequest', (object) [
+            'lease_owner' => 'owner', 'activity_attempt_id' => 'original-attempt',
+            'result' => ['codec' => 'avro', 'blob' => 'AA=='], 'workflow_poll' => $poll,
+        ]);
+        $request = $this->spec['components']['schemas']['ActivityTaskCompleteRequest'];
+        $this->assertNotContains('workflow_poll', $request['required']);
+        $this->assertSame('#/components/schemas/CarriedWorkflowPollRequest', $request['properties']['workflow_poll']['$ref']);
+        $result = $this->spec['components']['schemas']['ActivityTaskCompletionResult']['allOf'][1];
+        $this->assertNotContains('workflow_poll', $result['required']);
+        $this->assertSame('#/components/schemas/CarriedWorkflowPollResult', $result['properties']['workflow_poll']['$ref']);
+        foreach ([false, true] as $leased) {
+            $schema->assertReferenceMatches('#/components/schemas/CarriedWorkflowPollResult', (object) ['leased' => $leased]);
+        }
     }
 
     public function test_ready_age_is_an_optional_bounded_actual_integer(): void
