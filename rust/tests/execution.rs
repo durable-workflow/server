@@ -379,6 +379,8 @@ mod task_fairness;
 mod worker_protocol_envelope;
 #[path = "execution/child_start_turn.rs"]
 mod child_start_turn;
+#[path = "execution/workflow_poll_clock.rs"]
+mod workflow_poll_clock;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
@@ -1101,6 +1103,16 @@ fn envelope(value: Payload) -> Value {
 
 async fn request(app: &Router, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
     request_protocol(app, method, path, body, "1.19").await
+}
+
+fn assert_poll_replay(first: &Value, repeated: &Value, message: &str) {
+    let clock = |answer: &Value| {
+        chrono::DateTime::parse_from_rfc3339(answer["server_time"].as_str().expect("poll observation clock")).unwrap()
+    };
+    assert!(clock(repeated) >= clock(first), "{message}");
+    let mut replay = repeated.clone();
+    replay["server_time"] = first["server_time"].clone();
+    assert_eq!(replay, *first, "{message}");
 }
 
 async fn request_protocol(
@@ -5223,8 +5235,8 @@ async fn repeated_poll_retains_the_original_claim_and_worker_history_paginates()
     .await;
     let b = request(&app_b, "POST", "/api/worker/workflow-tasks/poll", body).await;
     assert_eq!(a.0, StatusCode::OK);
-    assert_eq!(
-        a.1, b.1,
+    assert_poll_replay(
+        &a.1, &b.1,
         "retry on another process obtains the original task/snapshot/fence"
     );
     let task = &a.1["task"];

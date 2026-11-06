@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "58"
+  version: "59"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -2029,6 +2029,16 @@ components:
             task: { type: "null" }
             poll_status: { type: string, const: draining }
             drain_reason: { type: [string, "null"] }
+    WorkerServerTime:
+      type: string
+      format: date-time
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$'
+      description: >-
+        Server observation time when this response was made, encoded as UTC
+        RFC3339 with six fractional digits, like an activity poll's server_time.
+        A replayed native workflow poll refreshes this clock while preserving
+        its original claim, attempt, lease and history. It does not renew the
+        lease or identify workflow entry time. Older producers may omit it.
     WorkflowTaskClaim:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
@@ -2036,6 +2046,7 @@ components:
           required: [task, poll_status]
           properties:
             poll_status: { type: string, const: leased }
+            server_time: { $ref: "#/components/schemas/WorkerServerTime" }
             task:
               $ref: "#/components/schemas/WorkflowTask"
     MultiplexedWorkflowTaskClaim:
@@ -2045,6 +2056,9 @@ components:
           required: [task, poll_status]
           properties:
             poll_status: { type: string, const: leased }
+            server_time:
+              $ref: "#/components/schemas/WorkerServerTime"
+              description: Present on native workflow-task leases, including replayed answers. Validation-task leases retain their separate contract.
             task:
               $ref: "#/components/schemas/MultiplexedWorkflowTask"
     UpdateValidationTaskClaim:
