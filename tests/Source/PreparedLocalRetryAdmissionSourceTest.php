@@ -265,20 +265,22 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
     #[DataProvider('totalDeadlines')]
     public function test_total_deadline_preserves_selection_and_engine_timeout_precedence(int $seconds): void
     {
+        config(['server.workers.stale_after_seconds' => 300]);
         $task = $this->claim();
-        $prepared = $this->local($task, 'prepare', $this->descriptor([
-            'start_to_close_timeout' => 200, 'schedule_to_close_timeout' => 100,
-        ]))->assertOk()->json();
+        $preparation = $this->local($task, 'prepare', $this->descriptor([
+            'start_to_close_timeout' => 100, 'schedule_to_close_timeout' => 100,
+        ]));
+        $this->assertSame(200, $preparation->status(), $preparation->getContent());
+        $prepared = $preparation->json();
         $before = ActivityAttempt::query()->count();
         $this->travel($seconds)->seconds();
-        WorkerRegistration::query()->where('worker_id', 'retry-worker')->update(['last_heartbeat_at' => now()]);
         $hosting = WorkflowTask::query()->findOrFail($task['task_id']);
         $attempt = ActivityAttempt::query()->findOrFail($prepared['activity_attempt_id']);
         $this->assertTrue(WorkerPollFence::isCurrent($hosting->payload['_server_workflow_claim']), 'The original registration must still be current.');
         $this->assertTrue($hosting->lease_expires_at->gt(now()), 'The hosting task lease must outlive the activity deadline sample.');
         $this->assertTrue($attempt->lease_expires_at->gt(now()), 'The callback lease must outlive the activity deadline sample.');
-        $response = $this->outcome($task, $prepared['activity_attempt_id'],
-            ['outcome' => 'failed', 'message' => 'caller failure', 'next_retry_delay_seconds' => 1]);
+        $report = ['outcome' => 'failed', 'message' => 'caller failure', 'next_retry_delay_seconds' => 1];
+        $response = $this->outcome($task, $prepared['activity_attempt_id'], $report);
         $this->assertSame(200, $response->status(), $response->getContent());
         $reply = $response->assertJsonPath('recorded', true)->assertJsonPath('created_task_ids', [])->json();
         $this->assertSame('terminal', $reply['retry_disposition']['decision']);
@@ -291,6 +293,16 @@ final class PreparedLocalRetryAdmissionSourceTest extends TestCase
         $this->assertSame($before, ActivityAttempt::query()->count());
         $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $task['run_id'])
             ->where('event_type', HistoryEventType::ActivityRetryScheduled)->count());
+        if ($seconds === 99) {
+            $this->travel(20)->seconds();
+            WorkerRegistration::query()->where('worker_id', 'retry-worker')->update(['status' => 'superseded']);
+            $before = $this->state();
+            $duplicate = $this->outcome($task, $prepared['activity_attempt_id'], $report);
+            $this->assertSame(200, $duplicate->status(), $duplicate->getContent());
+            $duplicate->assertJsonPath('duplicate', true)->assertJsonPath('event_id', $reply['event_id']);
+            $this->assertSame($reply['retry_disposition'], $duplicate->json('retry_disposition'));
+            $this->assertSame($before, $this->state());
+        }
     }
 
     private function assertNoAuthorityRows(): void
