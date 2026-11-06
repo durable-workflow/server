@@ -20,6 +20,7 @@ export function selectFixturePaths({root, directory, fixture = [], include = [],
   }
   const paths = selected.filter(path => !excluded.includes(path));
   if (shard === undefined) return paths;
+  if (paths.some(path => !path.endsWith('.json'))) throw new Error('Selected fixtures must be JSON files');
   const byName = new Map(paths.map(path => [basename(path), path]));
   if (byName.size !== paths.length) throw new Error('Selected fixtures require distinct JSON filenames');
   const offset = shard === '1/2' ? 0 : 1;

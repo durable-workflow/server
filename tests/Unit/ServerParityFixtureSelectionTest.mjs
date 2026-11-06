@@ -71,6 +71,8 @@ test('shards reject colliding fixture names and empty selections', () => {
     assert.throws(() => selectFixturePaths({root, directory, shard,
       fixture: ['first/same.json', 'second/same.json']}), /distinct JSON filenames/);
     assert.throws(() => selectFixturePaths({root, directory, shard,
+      fixture: ['first/a.json', 'first/b.txt']}), /must be JSON files/);
+    assert.throws(() => selectFixturePaths({root, directory, shard,
       fixture: [pending], exclude: [pending]}), /Choose either/);
   }
   assert.throws(() => selectFixturePaths({root, directory, fixture: [pending], shard: '2/2'}), /must not be empty/);
