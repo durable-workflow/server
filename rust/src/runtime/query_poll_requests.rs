@@ -70,7 +70,7 @@ where
         })
     }
 
-    async fn poll_row(tx: &mut Transaction<'_, DB>, key: &str) -> Result<Option<Value>> {
+    pub(in crate::runtime) async fn poll_row(tx: &mut Transaction<'_, DB>, key: &str) -> Result<Option<Value>> {
         let Some(row) = Self::query(DB::QUERY_CACHE_GET)
             .bind(key)
             .fetch_optional(&mut **tx)
@@ -119,10 +119,12 @@ where
     }
 
     // Workers send a fresh request ID with every poll, so retire a bounded
-    // batch of expired poll rows whenever a new request arrives.
-    async fn sweep_poll_rows(tx: &mut Transaction<'_, DB>) -> Result<()> {
+    // batch of expired poll rows once per configured interval.
+    pub(in crate::runtime) async fn sweep_poll_rows(&self, tx: &mut Transaction<'_, DB>) -> Result<()> {
+        if !self.poll_sweeps.due(crate::runtime::poll_sweeps::Kind::Query, self.poll_sweep_config.interval) { return Ok(()); }
         let expired = Self::query(DB::QUERY_POLL_EXPIRED)
             .bind(now())
+            .bind(self.poll_sweep_config.batch)
             .fetch_all(&mut **tx)
             .await?;
         for row in expired {
@@ -165,7 +167,7 @@ where
     // of an older request never takes that place back.
     async fn mark_current_if_fresh(&self, keys: &PollKeys, config: &QueryTaskConfig) -> Result<()> {
         let mut tx = self.begin().await?;
-        Self::sweep_poll_rows(&mut tx).await?;
+        self.sweep_poll_rows(&mut tx).await?;
         if Self::poll_row(&mut tx, &keys.pending).await?.is_none()
             && Self::poll_row(&mut tx, &keys.result).await?.is_none()
         {

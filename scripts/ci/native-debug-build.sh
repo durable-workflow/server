@@ -24,7 +24,7 @@ if ! docker run --rm --init --name "$RESOURCE_SCOPE-build" \
   --user="$(id -u):$(id -g)" --network=none --cpus=2 --memory=6g --memory-swap=6g \
   -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
   -v "$root:/source:ro" -v "$root/cargo-home:/cargo" -v "$root/rust-target:/target" -w /source/rust \
-  "$image" bash -c 'set -e; rustc --version; cargo build --locked --offline --bin durable-workflow-server' \
+  "$image" bash -c 'set -e; rustc --version; cargo check --locked --offline --all-targets; cargo build --locked --offline --bin durable-workflow-server' \
   > "$output.build.txt" 2>&1; then
   tail -n 40 "$output.build.txt" >&2
   exit 1

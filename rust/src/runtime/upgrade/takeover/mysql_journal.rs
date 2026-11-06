@@ -310,6 +310,7 @@ async fn perform(connection: &mut MySqlConnection, run: &mut Run<'_>, step: i64)
             if indexed == 0 {
                 connection.execute("ALTER TABLE workflow_tasks ADD KEY dw_workflow_tasks_poll (namespace(64),queue(64),task_type(16),status(16),available_at)").await?;
             }
+            mysql::ensure_poll_expiry_indexes(connection, run.flavor).await?;
         }
         3 => {
             // Rows, unlike DDL, commit with the step that records them.

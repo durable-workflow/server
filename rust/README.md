@@ -534,3 +534,17 @@ claim and completes through a new published PHP SDK worker. It checks original
 run/history IDs, timer deadline, signal acknowledgement and wait fingerprint,
 one cursor advancement and one committed outcome per workflow on each configured
 database backend. That bounded kill check does not qualify all failure boundaries.
+
+### Poll expiry cleanup
+
+Native polls enforce receipt/cache expiry when reading the requested key.
+Physical cleanup runs under the database transition lock, independently for
+workflow poll rows, query poll rows and activity poll receipts. Namespace
+stores share each server process's monotonic cleanup throttle.
+
+`DW_NATIVE_POLL_SWEEP_INTERVAL_MS` defaults to `1000` and
+`DW_NATIVE_POLL_SWEEP_BATCH_SIZE` defaults to `256`. Both require positive
+integers. Each sweep deletes at most one batch. A failed transaction still
+consumes its sweep interval; logical expiry does not wait for cleanup.
+The native schema adds expiry indexes through `schema-upgrade` and retains
+all earlier migration checksums and existing poll/claim identities.

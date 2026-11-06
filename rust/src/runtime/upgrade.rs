@@ -169,6 +169,8 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_poll_receipts_pkey"
                 | "dw_query_cache_pkey"
                 | "dw_workflow_tasks_poll"
+                | "dw_query_cache_expiration"
+                | "dw_poll_receipts_expiration"
                 | "dw_worker_registration_incarnations_pkey"
                 | "dw_worker_incarnation_authority"
                 | "dw_worker_incarnation_retention"

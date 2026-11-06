@@ -84,8 +84,8 @@ pub(super) trait Backend: Database {
     // cutover of 3.0.1 query rows (Server #964).
     const QUERY_CACHE_PAGE: &str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\">$1 ORDER BY \"key\" LIMIT 64";
     // A bounded batch of expired per-request query poll rows.
-    const QUERY_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY \"key\" LIMIT 32";
-    const WORKFLOW_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-workflow-poll:%' AND expiration<=$1 ORDER BY \"key\" LIMIT 32";
+    const QUERY_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY expiration,\"key\" LIMIT $2";
+    const WORKFLOW_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-workflow-poll:%' AND expiration<=$1 ORDER BY expiration,\"key\" LIMIT $2";
     /// Add a cache row, or lock the existing one with a no-op update, so
     /// transactions over one poll request ID run one at a time.
     /// A worker session's running activity attempts held by its owner,
@@ -243,7 +243,7 @@ WITH utc_tasks AS (
     SELECT t.id,t.namespace,t.queue,t.workflow_run_id,t.status,t.available_at,
         replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS available_utc,
         replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS lease_utc
-    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type!=$3 AND t.task_type IN ('workflow','activity')
+    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type!=$3 AND t.task_type IN ('workflow','activity') AND t.status IN ('ready','leased')
 ), ordered_tasks AS (
     SELECT *,
         rtrim(rtrim(CASE WHEN length(available_utc)=19 THEN available_utc||'.0' ELSE available_utc END,'0'),'.') AS available_order,
@@ -296,7 +296,7 @@ WITH utc_tasks AS (
     SELECT t.*,
         replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS _dw_available_utc,
         replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS _dw_lease_utc
-    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3
+    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased')
 ), ordered_tasks AS (
     SELECT *,
         rtrim(rtrim(CASE WHEN length(_dw_available_utc)=19 THEN _dw_available_utc||'.0' ELSE _dw_available_utc END,'0'),'.') AS _dw_available_order,
@@ -311,16 +311,12 @@ WHERE r.status IN ('pending','running','waiting')
 ORDER BY t.priority,t._dw_available_order,t.id LIMIT 100
 "#;
     const POLL_RECEIPT_CLEANUP_SQL: &str = r#"
-WITH utc_receipts AS (
-    SELECT p.namespace,p.worker_id,p.kind,p.request_id,t.status,
-        replace(replace(replace(p.expires_at,'T',' '),'Z',''),'+00:00','') AS receipt_utc,
-        replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS lease_utc
-    FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id
-)
 DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
-    SELECT namespace,worker_id,kind,request_id FROM utc_receipts
-    WHERE rtrim(rtrim(CASE WHEN length(receipt_utc)=19 THEN receipt_utc||'.0' ELSE receipt_utc END,'0'),'.')<=rtrim(rtrim($1,'0'),'.')
-        AND (status!='leased' OR rtrim(rtrim(CASE WHEN length(lease_utc)=19 THEN lease_utc||'.0' ELSE lease_utc END,'0'),'.')<=rtrim(rtrim($2,'0'),'.'))
+    SELECT p.namespace,p.worker_id,p.kind,p.request_id
+    FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id
+    WHERE rtrim(rtrim(CASE WHEN length(replace(replace(replace(p.expires_at,'T',' '),'Z',''),'+00:00',''))=19 THEN replace(replace(replace(p.expires_at,'T',' '),'Z',''),'+00:00','')||'.0' ELSE replace(replace(replace(p.expires_at,'T',' '),'Z',''),'+00:00','') END,'0'),'.')<=rtrim(rtrim($1,'0'),'.')
+        AND (t.status!='leased' OR rtrim(rtrim(CASE WHEN length(replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00',''))=19 THEN replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','')||'.0' ELSE replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') END,'0'),'.')<=rtrim(rtrim($2,'0'),'.'))
+    ORDER BY rtrim(rtrim(CASE WHEN length(replace(replace(replace(p.expires_at,'T',' '),'Z',''),'+00:00',''))=19 THEN replace(replace(replace(p.expires_at,'T',' '),'Z',''),'+00:00','')||'.0' ELSE replace(replace(replace(p.expires_at,'T',' '),'Z',''),'+00:00','') END,'0'),'.') LIMIT $3
 )
 "#;
     fn bind_time(time: DateTime<Utc>) -> String {
@@ -501,6 +497,12 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    // The wake query can otherwise start from a run and range-check every
+    // task in its queue, even with the explicit live-status predicate. Keep
+    // the task status range first, then look up each candidate's run by PK.
+    // All filters, ordering, limits and bound values use the common templates.
+    const TASK_CANDIDATES_SQL: &str = super::store::task_candidates_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r");
+    const POLL_WAKE_TASKS_SQL: &str = super::cross_kind_poll::poll_wake_tasks_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r");
     type EncodedInteger = Option<i64>;
     // MariaDB's Laravel driver may store the owner as its uuid type.
     const BACKUP_HOLD_CLOCK: &str = "SELECT UTC_TIMESTAMP(6) AS database_time";
@@ -579,8 +581,8 @@ impl Backend for MySql {
     const QUERY_CACHE_DELETE: &str = "DELETE FROM dw_query_cache WHERE `key`=$1";
     const QUERY_CACHE_DELETE_EXPIRED: &str = "DELETE FROM dw_query_cache WHERE `key`=$1 AND expiration<=$2";
     const QUERY_CACHE_PAGE: &str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key`>$1 ORDER BY `key` LIMIT 64";
-    const QUERY_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY `key` LIMIT 32";
-    const WORKFLOW_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-workflow-poll:%' AND expiration<=$1 ORDER BY `key` LIMIT 32";
+    const QUERY_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";
+    const WORKFLOW_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-workflow-poll:%' AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";
     const QUERY_CACHE_LOCK: &str = "INSERT INTO dw_query_cache(`key`,value,expiration) VALUES ($1,$2,$3) ON DUPLICATE KEY UPDATE expiration=expiration";
     const SESSION_RUNNING_ATTEMPTS: &str = "SELECT COUNT(*) FROM activity_attempts p JOIN activity_executions e ON e.id=p.activity_execution_id JOIN workflow_tasks t ON t.id=p.workflow_task_id WHERE t.namespace=? AND p.status='running' AND p.lease_expires_at>? AND p.lease_owner=? AND JSON_UNQUOTE(JSON_EXTRACT(e.activity_options,'$.worker_session.session_id'))=? AND p.workflow_task_id<>?";
     const TASK_KIND_CURSOR_LOCK: &str = "INSERT INTO workflow_task_poll_cursors(namespace,task_queue,next_task_kind,created_at,updated_at) VALUES ($1,$2,'update_validation',$3,$4) ON DUPLICATE KEY UPDATE next_task_kind=next_task_kind";
@@ -811,6 +813,7 @@ mod timestamp_tests {
             sqlx::query(Sqlite::POLL_RECEIPT_CLEANUP_SQL)
                 .bind(Sqlite::bind_time(clock))
                 .bind(Sqlite::bind_time(clock))
+                .bind(256_i64)
                 .execute(pool)
                 .await
                 .unwrap();
@@ -853,6 +856,7 @@ mod timestamp_tests {
             sqlx::query(Sqlite::POLL_RECEIPT_CLEANUP_SQL)
                 .bind(Sqlite::bind_time(clock))
                 .bind(Sqlite::bind_time(clock))
+                .bind(256_i64)
                 .execute(pool)
                 .await
                 .unwrap();

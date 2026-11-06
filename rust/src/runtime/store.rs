@@ -93,7 +93,13 @@ pub(super) struct SignalWrite<'a> {
 }
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
-pub(super) const TASK_CANDIDATES_SQL: &str = "SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100";
+macro_rules! task_candidates_sql {
+    ($tables:literal) => {
+        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100")
+    };
+}
+pub(super) use task_candidates_sql;
+pub(super) const TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r");
 /// A signal record's place in `PendingMessageTask::signalFollows`: its
 /// command sequence (unsequenced last), receipt and creation times, id.
 struct SignalOrder {
@@ -134,7 +140,7 @@ impl SignalOrder {
 /// sequence (unsequenced last), receipt time, then id.
 const RECEIVED_SIGNALS: &str = "SELECT id,signal_name,signal_wait_id,command_sequence,workflow_command_id,received_at,created_at FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received' AND closed_at IS NULL ORDER BY CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END,command_sequence,received_at,id LIMIT 100";
 
-pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE expires_at<=$1 AND task_id IN (SELECT id FROM workflow_tasks WHERE status!='leased' OR lease_expires_at<=$2)";
+pub(super) const POLL_RECEIPT_CLEANUP_SQL: &str = "DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (SELECT namespace,worker_id,kind,request_id FROM (SELECT p.namespace,p.worker_id,p.kind,p.request_id FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id WHERE p.expires_at<=$1 AND (t.status!='leased' OR t.lease_expires_at<=$2) ORDER BY p.expires_at LIMIT $3) AS expired)";
 pub(super) const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(worker_id,namespace) DO UPDATE SET task_queue=excluded.task_queue,runtime=excluded.runtime,sdk_version=excluded.sdk_version,build_id=excluded.build_id,supported_workflow_types=excluded.supported_workflow_types,supported_activity_types=excluded.supported_activity_types,capabilities=excluded.capabilities,capability_manifest=excluded.capability_manifest,last_heartbeat_at=excluded.last_heartbeat_at,updated_at=excluded.updated_at";
 /// A registration's build id as the pollers compare it: trimmed, and none
 /// when blank. A task pinned to a build goes only to that build's workers.
@@ -167,6 +173,8 @@ pub(super) struct Store<DB: Backend> {
     /// When this server last ran a task repair pass, shared by its namespaces
     /// as PHP shares its loop throttle key.
     pub(super) repair_pass_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    pub(super) poll_sweep_config: super::poll_sweeps::Config,
+    pub(super) poll_sweeps: Arc<super::poll_sweeps::Sweeps>,
     // A per-store source-test clock for deterministic claim arithmetic. All
     // production claims continue to sample the existing canonical clock.
     #[cfg(test)]
@@ -318,6 +326,8 @@ where
             workflow_task_recovery_scan_limit: 5,
             repair_codec: Arc::new(Semaphore::new(1)),
             repair_pass_at: Arc::default(),
+            poll_sweep_config: super::poll_sweeps::Config::default(),
+            poll_sweeps: Arc::default(),
             #[cfg(test)]
             test_claim_at: None,
         }
@@ -338,6 +348,8 @@ where
             workflow_task_recovery_scan_limit: self.workflow_task_recovery_scan_limit,
             repair_codec: self.repair_codec.clone(),
             repair_pass_at: self.repair_pass_at.clone(),
+            poll_sweep_config: self.poll_sweep_config,
+            poll_sweeps: self.poll_sweeps.clone(),
             #[cfg(test)]
             test_claim_at: self.test_claim_at,
         }
@@ -2177,11 +2189,7 @@ where
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
-        Self::query(DB::POLL_RECEIPT_CLEANUP_SQL)
-            .bind(DB::bind_time(now()))
-            .bind(DB::bind_time(now()))
-            .execute(&mut **tx)
-            .await?;
+        self.sweep_poll_receipts(tx).await?;
         // A concurrent duplicate may have leased since this poll began: the
         // binding row, locked here, makes it wait for that one's answer. Only
         // a workflow answer replays as a workflow claim; a multiplexed probe
@@ -2204,12 +2212,23 @@ where
         if let Some(request_id) = request_id
             && let Some(receipt) = Self::query("SELECT p.*,t.status,t.attempt_count,t.lease_owner,t.lease_expires_at FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id WHERE p.worker_id=$1 AND p.kind=$2 AND p.request_id=$3 AND p.namespace=$4")
                 .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref()).fetch_optional(&mut **tx).await? {
-                if DB::string(&receipt,"status")? == "leased" && DB::number(&receipt,"attempt")? == DB::number(&receipt,"attempt_count")?
-                    && DB::optional_string(&receipt,"lease_owner")?.as_deref() == Some(worker_id)
-                    && DB::optional_instant(&receipt,"lease_expires_at")?.is_some_and(|expires| expires > now()) {
-                    return Ok(Some(DB::document_row(&receipt,"response")?));
+                let at = now();
+                let expired = DB::instant(&receipt, "expires_at")? <= at
+                    && (DB::string(&receipt, "status")? != "leased"
+                        || DB::optional_instant(&receipt, "lease_expires_at")?.is_some_and(|lease| lease <= at));
+                if expired {
+                    Self::query("DELETE FROM dw_poll_receipts WHERE worker_id=$1 AND kind=$2 AND request_id=$3 AND namespace=$4")
+                        .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref())
+                        .execute(&mut **tx).await?;
+                } else if DB::string(&receipt, "status")? == "leased"
+                    && DB::number(&receipt, "attempt")? == DB::number(&receipt, "attempt_count")?
+                    && DB::optional_string(&receipt, "lease_owner")?.as_deref() == Some(worker_id)
+                    && DB::optional_instant(&receipt, "lease_expires_at")?.is_some_and(|expires| expires > at)
+                {
+                    return Ok(Some(DB::document_row(&receipt, "response")?));
+                } else {
+                    return Err(refuse(StatusCode::CONFLICT, "poll_cached_task_expired"));
                 }
-                return Err(refuse(StatusCode::CONFLICT,"poll_cached_task_expired"));
         }
         let types: Value = DB::document_row(
             &worker,

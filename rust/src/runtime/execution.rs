@@ -219,6 +219,7 @@ impl Runtime {
         Self::validate_token(&token)?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
+        let poll_sweeps = super::poll_sweeps::Config::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
@@ -232,6 +233,7 @@ impl Runtime {
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
+        store.poll_sweep_config = poll_sweeps;
         Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
     }
 
@@ -239,6 +241,7 @@ impl Runtime {
         Self::validate_token(&token)?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
+        let poll_sweeps = super::poll_sweeps::Config::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
@@ -252,6 +255,7 @@ impl Runtime {
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
+        store.poll_sweep_config = poll_sweeps;
         Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
     }
 
@@ -259,6 +263,7 @@ impl Runtime {
         Self::validate_token(&token)?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
+        let poll_sweeps = super::poll_sweeps::Config::from_env()?;
         let limit = super::memo_limits::configured_limit()?;
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
@@ -272,6 +277,7 @@ impl Runtime {
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
+        store.poll_sweep_config = poll_sweeps;
         Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
     }
 

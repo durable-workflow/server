@@ -169,6 +169,7 @@ import('node:fs').then(async fs => {
   if (args[0] !== 'run') return;
   if (!args.some(arg => arg.includes('cargo build'))) return;
   if (process.env.FAKE_BUILD_FAIL) process.exit(23);
+  if (process.env.FAKE_CHECK_FAIL && args.some(arg => arg.includes('cargo check --locked --offline --all-targets'))) process.exit(24);
   const target = args.find(arg => arg.endsWith(':/target')).slice(0, -8);
   fs.mkdirSync(target + '/debug', {recursive: true});
   fs.writeFileSync(target + '/debug/durable-workflow-server', 'fake compiled server\\n');
@@ -178,13 +179,14 @@ import('node:fs').then(async fs => {
   return bin;
 }
 
-for (const failure of [false, true]) {
-  test(`the build helper ${failure ? 'uses scoped ephemeral containers on failure' : 'exports only the thin artifact'}`, t => {
+for (const failure of [false, 'build', 'check']) {
+  test(`the build helper ${failure ? `refuses ${failure} failure within scoped ephemeral containers` : 'exports only the thin artifact'}`, t => {
     const {root, env} = fixture(t);
     const bin = fakeDocker(root);
     const log = join(root, 'docker-calls.jsonl');
     const commandEnv = {...env, PATH: `${bin}:${env.PATH}`, FAKE_DOCKER_LOG: log};
-    if (failure) commandEnv.FAKE_BUILD_FAIL = '1';
+    if (failure === 'build') commandEnv.FAKE_BUILD_FAIL = '1';
+    if (failure === 'check') commandEnv.FAKE_CHECK_FAIL = '1';
     const run = spawnSync('bash', ['scripts/ci/native-debug-build.sh', 'bundle'], {cwd: root, env: commandEnv, encoding: 'utf8'});
     assert.equal(run.status === 0, !failure, run.stderr);
     const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
@@ -197,6 +199,8 @@ for (const failure of [false, true]) {
     }
     assert.deepEqual(builds[0].slice(-6), ['cargo', 'clean', '--locked', '--offline', '--package', 'durable-workflow-server']);
     assert.ok(builds[1].some(arg => arg.includes('cargo build --locked --offline --bin durable-workflow-server')));
+    assert.ok(builds[1].some(arg => arg.includes('cargo check --locked --offline --all-targets')));
+    if (failure === 'check') assert.equal(existsSync(join(root, 'bundle', 'build.json')), false);
     assert.ok(builds[1].includes('--memory=6g') && builds[1].includes('--memory-swap=6g'));
     assert.deepEqual(builds.map(args => args[args.indexOf('--name') + 1]),
       [`${env.RESOURCE_SCOPE}-clean`, `${env.RESOURCE_SCOPE}-build`]);
