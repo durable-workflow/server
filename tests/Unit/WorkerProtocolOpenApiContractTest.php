@@ -44,6 +44,9 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', [
             'worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => 'original-request', 'timeout_seconds' => 0,
         ]);
+        $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', [
+            'worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => " original-request \t",
+        ]);
         foreach ([false, true] as $leased) {
             $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollResult', ['leased' => $leased]);
         }
@@ -61,7 +64,7 @@ class WorkerProtocolOpenApiContractTest extends TestCase
     public static function invalidCarriedActivityPoll(): iterable
     {
         $valid = ['worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => 'original-request'];
-        foreach ([null, true, '', str_repeat('a', 256)] as $index => $id) {
+        foreach ([null, true, '', " \t", "\u{200b}\u{feff}", "\u{0085}", str_repeat('a', 256)] as $index => $id) {
             yield 'request identity '.$index => [array_replace($valid, ['poll_request_id' => $id])];
         }
         yield 'missing request identity' => [['worker_id' => 'owner', 'task_queue' => 'queue']];
