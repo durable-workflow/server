@@ -4,14 +4,11 @@ declare(strict_types=1);
 
 // The owning source job kills the native process between these two phases.
 // Raw worker HTTP isolates this optional producer field from SDK observations.
-function readyAgeRequest(string $url, string $path, array $body, bool $control = false): array
+function readyAgeRequest(string $url, string $path, array $body): array
 {
     $headers = ['Content-Type: application/json', 'X-Namespace: default',
         'X-Durable-Workflow-Protocol-Version: 1.20',
         'Authorization: Bearer '.(getenv('DW_PARITY_TOKEN') ?: 'parity-test-token')];
-    if ($control) {
-        $headers[] = 'X-Durable-Workflow-Control-Plane-Version: 2';
-    }
     $context = stream_context_create(['http' => ['method' => 'POST', 'header' => implode("\r\n", $headers),
         'content' => json_encode($body, JSON_THROW_ON_ERROR), 'timeout' => 5, 'ignore_errors' => true]]);
     $response = file_get_contents(rtrim($url, '/').$path, false, $context);
@@ -43,22 +40,26 @@ if ($argc !== 4 || ! in_array($argv[1], ['prepare', 'finish'], true)) {
 }
 [$script, $phase, $url, $path] = $argv;
 if ($phase === 'prepare') {
+    require __DIR__.'/vendor/autoload.php';
+    $client = new \DurableWorkflow\Client($url, namespace: 'default',
+        token: getenv('DW_PARITY_TOKEN') ?: null, workerProtocolVersion: '1.20');
     $claims = [];
     foreach (['workflow', 'activity'] as $kind) {
         $queue = 'ready-age-restart-'.$kind;
         $worker = $queue.'-worker';
-        readyAgeRequest($url, '/api/worker/register', ['worker_id' => $worker, 'task_queue' => $queue,
-            'runtime' => 'php', 'supported_workflow_types' => ['ready-age-restart'], 'supported_activity_types' => ['ready-age-restart']]);
-        readyAgeRequest($url, '/api/workflows', ['workflow_type' => 'ready-age-restart',
-            'workflow_id' => $queue, 'task_queue' => $queue, 'input' => ['codec' => 'avro', 'blob' => 'AA==']], true);
+        // Reuse published admission/Avro authoring, including its required
+        // affinity manifest. The measurement comparison uses raw poll bytes.
+        $client->registerWorker($worker, $queue, ['ready-age-restart'], ['ready-age-restart']);
+        $client->startWorkflow('ready-age-restart', $queue, $queue, ['source restart']);
         $request = ['worker_id' => $worker, 'task_queue' => $queue, 'timeout_seconds' => 0, 'poll_request_id' => $queue];
-        $response = readyAgeRequest($url, '/api/worker/workflow-tasks/poll', $request);
+        $workflowRequest = $kind === 'activity' ? [...$request, 'poll_request_id' => $queue.'-author'] : $request;
+        $response = readyAgeRequest($url, '/api/worker/workflow-tasks/poll', $workflowRequest);
         if ($kind === 'activity') {
             $task = $response['task'];
             readyAgeRequest($url, '/api/worker/workflow-tasks/'.$task['task_id'].'/complete', [
                 'lease_owner' => $task['lease_owner'], 'workflow_task_attempt' => $task['workflow_task_attempt'],
                 'commands' => [['type' => 'schedule_activity', 'activity_type' => 'ready-age-restart',
-                    'arguments' => ['codec' => 'avro', 'blob' => 'AA==']]]]);
+                    'arguments' => $client->payloadCodec()->envelope(['source restart'])]]]);
             $response = readyAgeRequest($url, '/api/worker/activity-tasks/poll', $request);
         }
         $claims[$kind] = ['request' => $request, 'claim' => readyAgeClaim($response)];
