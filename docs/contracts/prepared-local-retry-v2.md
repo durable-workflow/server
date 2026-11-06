@@ -1,7 +1,9 @@
 # Prepared local retry contract proposal
 
-This is an unfrozen source proposal for the local part of organization issue
-[#219](https://github.com/durable-workflow/.github/issues/219). The machine-readable
+This is the reviewed semantic source baseline for the local part of organization
+issue [#219](https://github.com/durable-workflow/.github/issues/219). General recorded
+the [implementation and adoption order](https://github.com/durable-workflow/.github/issues/219#issuecomment-6671268805)
+after the joint source comparison. The machine-readable
 companion is [prepared-local.v2.json](../../tests/Fixtures/contracts/activity-retry-policy/prepared-local.v2.json).
 It adds no runtime validator, producer, advertisement or executing test result.
 The existing 54 canonical policy cases and 37 remote adapter cases are unchanged.
@@ -50,7 +52,8 @@ matching receipt. It is not accepted worker input. Existing receipt identities,
 claim-release behavior and created-task identity remain authoritative. The
 companion now also proposes complete HTTP response families, the fixed
 zero-history cursor, pinned protocol envelope and finite status/refusal cases.
-Those templates still need joint source review and an actual future adapter.
+Core completed the [bounded joint source comparison](https://github.com/durable-workflow/server/pull/1034#issuecomment-6671101501).
+These templates still require an actual future adapter.
 They retain the distinct controller-missing, controller-stale and structured
 engine refusals rather than accepting arbitrary `recorded:false` shapes.
 No new top-level reason alias is selected.
@@ -106,7 +109,13 @@ its 86,400-second executed-backoff ceiling becomes an implicit version-2 cap.
 
 Workflow owns the complete normalized snapshot and existing timeout/range
 binding. Server owns the companion validator, transaction, transport and storage
-bindings. The exact output object, final normalized ranges
-and HTTP bindings must be reconciled before these bytes are frozen or SDKs
-adopt them. Native implementation, schema, installed/backend qualification and
-release remain separate work.
+bindings. The reviewed output object, normalized ranges and HTTP bindings are the source
+baseline for the guarded implementation. SDK adoption requires concrete producer
+capability and receipt evidence; a remote capability alone does not supply local
+contract-2 authority. Core
+[#1051](https://github.com/durable-workflow/workflow/pull/1051) owns its kernel and
+optional installed bridge role. Server must bind that actual role and its
+canonical original mode/snapshot to the retained claim under the existing outer
+transaction. The current bound bridge does not expose that role. Native
+implementation, schema, installed/backend qualification and release remain
+separate work.
