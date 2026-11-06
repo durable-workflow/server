@@ -119,7 +119,7 @@ store_methods! {
                 let mut tx = self.begin().await.unwrap();
                 for index in 1..size {
                     Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at) SELECT $1,workflow_run_id,namespace,queue,task_type,$2,priority,available_at FROM workflow_tasks WHERE id=$3")
-                        .bind(id()).bind(if index < 100 {"ready"} else {"completed"}).bind(&task).execute(&mut **tx).await.unwrap();
+                        .bind(id()).bind(if index < 100 {"ready"} else {"completed"}).bind(&task).execute(&mut *tx).await.unwrap();
                 }
                 tx.commit().await.unwrap();
             }

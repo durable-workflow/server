@@ -475,7 +475,7 @@ jobs:
     # others instead of listing every matrix value.
     name: mysql-execution (${{ matrix.label }}, ${{ matrix.part }})
     needs: [changes, published-sdk-adapters, native-debug-build]
-    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' && needs.changes.outputs.full != 'false' }}
+    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' && needs.native-debug-build.result == 'success' && needs.changes.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
     # later profile before failing, and scenario budgets stay fixed.
@@ -1279,7 +1279,7 @@ jobs:
 
   postgres-storage:
     needs: [changes, published-sdk-adapters, native-debug-build]
-    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' && needs.changes.outputs.full != 'false' }}
+    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' && needs.native-debug-build.result == 'success' && needs.changes.outputs.full != 'false' }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
     # later profile before failing, and scenario budgets stay fixed.
@@ -2080,7 +2080,7 @@ jobs:
 
   execution-and-codec:
     needs: [changes, published-sdk-adapters, native-debug-build]
-    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' }}
+    if: ${{ !cancelled() && needs.published-sdk-adapters.result == 'success' && (needs.changes.outputs.full == 'false' || needs.native-debug-build.result == 'success') }}
     runs-on: ubuntu-latest
     # Each part takes about 20 to 35 minutes; the fixture step runs every
     # later profile before failing, and scenario budgets stay fixed.
