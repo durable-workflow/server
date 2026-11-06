@@ -913,7 +913,11 @@ where
             .unwrap()
             .with_timezone(&Utc);
         let maximum_reason = "🙂".repeat(64);
-        for reason in [None, Some(""), Some("NULL"), Some("  PaUsEd  "), Some(maximum_reason.as_str())] {
+        let mut reasons = vec![None, Some(""), Some("NULL"), Some("  PaUsEd  "), Some(maximum_reason.as_str())];
+        if DB::NAME != "PostgreSQL" {
+            reasons.push(Some("NUL\0tail"));
+        }
+        for reason in reasons {
             Self::query("UPDATE workflow_schedules SET last_skip_reason=$1,last_skipped_at=$2 WHERE id=$3")
                 .bind(reason).bind(DB::bind_time(at)).bind(schedule).execute(&self.pool).await.unwrap();
             let page = self.list_schedules(None,"fixture-secret").await.unwrap();
@@ -1185,6 +1189,7 @@ mod tests {
         let (_directory, store) = summary_store().await;
         add_schedule(&store,"skip-bounds").await;
         for (field, reason, at) in [("last_skip_reason","x".repeat(300000),None),
+            ("last_skip_reason",format!("\0{}","x".repeat(300000)),None),
             ("last_skipped_at","retained".to_owned(),Some("9".repeat(10000)))] {
             sqlx::query("UPDATE workflow_schedules SET last_skip_reason=?,last_skipped_at=? WHERE schedule_id='skip-bounds'")
                 .bind(reason).bind(at).execute(&store.pool).await.unwrap();

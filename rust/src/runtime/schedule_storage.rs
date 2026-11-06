@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(last_skip::<sqlx::Sqlite>(&row).unwrap(),
             json!({"last_skip_reason":null,"last_skipped_at":null}));
         let maximum_reason = "🙂".repeat(64);
-        for reason in [None, Some(""), Some("NULL"), Some("  PaUsEd  "), Some(maximum_reason.as_str())] {
+        for reason in [None, Some(""), Some("NULL"), Some("  PaUsEd  "), Some("NUL\0tail"), Some(maximum_reason.as_str())] {
             let row = sqlx::query("SELECT ? AS last_skip_reason,? AS last_skipped_at")
                 .bind(reason).bind("2026-11-05 12:00:01.123456").fetch_one(&pool).await.unwrap();
             assert_eq!(last_skip::<sqlx::Sqlite>(&row).unwrap(),
