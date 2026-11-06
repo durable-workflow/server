@@ -235,8 +235,8 @@ test('all non-test consumers verify the same-run artifact before installing the 
     // Only execution-and-codec runs on a push to main the merge queue already
     // qualified; its native-tests part saves main's dependency cache.
     assert.match(block, id === 'execution-and-codec'
-      ? /if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' && \(needs\.changes\.outputs\.full == 'false' \|\| needs\.native-debug-build\.result == 'success'\) \}\}/
-      : /if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' && needs\.native-debug-build\.result == 'success' && needs\.changes\.outputs\.full != 'false' \}\}/);
+      ? /if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' \}\}/
+      : /if: \$\{\{ !cancelled\(\) && needs\.published-sdk-adapters\.result == 'success' && needs\.changes\.outputs\.full != 'false' \}\}/);
     const download = block.slice(block.indexOf("      - name: Fetch this run's native debug server"),
       block.indexOf("      - name: Verify and install this run's native debug server"));
     assert.match(download, /matrix\.part != 'native-tests' && matrix\.part != 'native-tests-b'/);
