@@ -42,3 +42,15 @@ export function writeRecord(path, record, originals = new Map()) {
     appendFileSync(path, index + 1 === entries.length ? '\n}\n' : ',\n');
   }
 }
+
+// Retain the validated fixture inventory without raw observations or payloads.
+export function writeFixtureSummary(path, record) {
+  const summary = {
+    schema: 'durable-workflow.server-parity-fixture-summary.v1',
+    outcome: record.outcome, target: record.target, mode: record.mode,
+    runner_revision: record.runner_revision,
+    fixture_hashes: record.fixture_hashes,
+    cases: record.cases.map(item => ({fixture_id: item.fixture_id, outcome: item.outcome})),
+  };
+  writeFileSync(path.replace(/\.json$/, '') + '-fixtures.json', `${JSON.stringify(summary, null, 2)}\n`);
+}
