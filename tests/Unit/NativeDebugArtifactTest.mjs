@@ -273,8 +273,7 @@ test('consumer preflight refuses a failed producer or missing identity before do
 });
 
 function databaseCommand(id) {
-  const line = workflowJob(id).split('\n').find(value => value.trimStart().startsWith(
-    id === 'mysql-execution' ? "'case \"$DW_PARITY_PART\"" : "'if [ \"$DW_PARITY_PART\""));
+  const line = workflowJob(id).split('\n').find(value => value.trimStart().startsWith("'case \"$DW_PARITY_PART\""));
   assert.ok(line?.trim().endsWith("'"));
   return line.trim().slice(1, -1);
 }
@@ -332,15 +331,28 @@ for (const part of ['native-tests', 'native-tests-b']) {
   });
 }
 
-test('PostgreSQL native tests retain qualification, execution and build commands', t => {
-  const run = runDatabaseCommand(t, 'postgres-storage', 'native-tests');
-  assert.equal(run.status, 0, run.stderr);
-  const flags = ['--locked', '--offline'];
-  assert.deepEqual(run.calls, [
-    ['test', ...flags, '--lib', 'runtime::postgres::tests::qualification_', '--', '--ignored', '--nocapture'],
-    ['test', ...flags, '--test', 'execution', '--', '--nocapture'], ['build', ...flags],
-  ]);
-});
+for (const part of ['native-tests', 'native-tests-b']) {
+  test(`PostgreSQL ${part} retains qualification, sharded execution and build commands`, t => {
+    const run = runDatabaseCommand(t, 'postgres-storage', part);
+    assert.equal(run.status, 0, run.stderr);
+    const flags = ['--locked', '--offline'];
+    const expected = part === 'native-tests' ? [
+      ['test', ...flags, '--lib', 'runtime::postgres::tests::qualification_', '--', '--ignored', '--nocapture'],
+    ] : [];
+    expected.push(['test', ...flags, '--test', 'execution', '--', '--list', '--format', 'terse'],
+      ['test', ...flags, '--test', 'execution', '--', '--exact', '--nocapture', '--test-threads=2',
+        part === 'native-tests' ? 'case_a' : 'case_b'], ['build', ...flags]);
+    assert.deepEqual(run.calls, expected);
+    assert.equal(run.listed, 'case_a\ncase_b\n');
+    assert.equal(run.selected, part === 'native-tests' ? 'case_a\n' : 'case_b\n');
+  });
+  test(`PostgreSQL ${part} refuses a failing test-list command even with partial output`, t => {
+    const run = runDatabaseCommand(t, 'postgres-storage', part, true, 7);
+    assert.notEqual(run.status, 0);
+    assert.equal(run.calls.some(args => args.includes('--exact')), false);
+    assert.equal(run.calls.some(args => args[0] === 'build'), false);
+  });
+}
 
 test('database corpus/profile parts never invoke Cargo and fail without their executable', t => {
   for (const id of ['mysql-execution', 'postgres-storage']) {

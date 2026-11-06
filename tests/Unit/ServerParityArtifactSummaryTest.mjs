@@ -44,7 +44,8 @@ test('execution inventories retain exact bytes with explicit truncation and omit
   const {source, output} = fixture(t);
   const inventories = {'execution-listed-tests.txt': 'case_a\ncase_b\n',
     'execution-shard.txt': 'case_a\n', 'execution-shard-b.txt': 'case_b\n',
-    'mysql-execution-tests-b.txt': 'test result: ok. 1 passed; 0 failed;\n'};
+    'mysql-execution-tests-b.txt': 'test result: ok. 1 passed; 0 failed;\n',
+    'postgres-execution-tests-b.txt': 'test result: ok. 1 passed; 0 failed;\n'};
   for (const [name, content] of Object.entries(inventories)) writeFileSync(join(source, name), content);
   writeFileSync(join(source, 'execution-unrelated.txt'), 'not a selected-test inventory');
   const summary = summarizeEvidence(source, output, {outcome: 'success'});
@@ -58,6 +59,22 @@ test('execution inventories retain exact bytes with explicit truncation and omit
   const truncated = summarizeEvidence(other.source, other.output, {outcome: 'success'}).retained[0];
   assert.equal(truncated.retained_bytes, 64 * 1024);
   assert.equal(truncated.tail_only, true);
+});
+
+test('fixture inventories retain all three targets without retaining raw records', t => {
+  const {source, output} = fixture(t);
+  const content = '{"outcome":"pass","fixture_hashes":{"one.json":"hash"},"cases":[{"fixture_id":"one","outcome":"pass"}]}\n';
+  for (const target of ['php', 'embedded', 'rust']) {
+    writeFileSync(join(source, `${target}-fixtures.json`), content);
+    writeFileSync(join(source, `${target}.json`), 'raw payload data');
+  }
+  const summary = summarizeEvidence(source, output, {outcome: 'success'});
+  assert.equal(summary.retained.length, 3);
+  for (const target of ['php', 'embedded', 'rust']) {
+    assert.equal(readFileSync(join(output, `${target}-fixtures.json`), 'utf8'), content);
+    assert.equal(summary.retained.find(file => file.path === `${target}-fixtures.json`).tail_only, false);
+    assert.equal(existsSync(join(output, `${target}.json`)), false);
+  }
 });
 
 test('failed summaries keep bounded diagnostic tails without truncating JSON into a false report', t => {
