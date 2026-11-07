@@ -161,6 +161,7 @@ main and differ from the producer only in the closed qualification-source set.
 The existing v1 model still requires runner and producer to be the same commit.
 V2 receipts retain both identities, each actual dependency image, the owned
 resource scope, body observations and verified cleanup. The four Compose cells
+retain engine target IDs, platform manifests and config digests distinctly, and
 run on amd64 hosts; their arm64 server cells use the pinned QEMU helper. These
 receipts do not select alias promotion or a GitHub Release.
 
