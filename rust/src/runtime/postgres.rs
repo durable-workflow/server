@@ -1768,10 +1768,9 @@ mod tests {
         assert_eq!(hex, include_str!("../../migrations/postgres/0007_checksum.txt").trim());
     }
 
-    /// A database exactly as release candidates 1 and 2 bootstrapped it, with
-    /// its catalog checked against the one captured for version 7.
-    async fn version_7_database(db: &Database) {
-        let (earlier, earlier_catalog) = earlier_migration(7).unwrap();
+    // Reconstruct each retained bootstrap and verify its original physical catalog.
+    async fn version_database(db: &Database, version: i64) {
+        let (earlier, earlier_catalog) = earlier_migration(version).unwrap();
         let mut connection = db.connection().await;
         let mut tx = connection.begin().await.unwrap();
         let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
@@ -1779,58 +1778,8 @@ mod tests {
         migrator.run(&mut *tx).await.unwrap();
         let expected: Catalog = serde_json::from_str(earlier_catalog).unwrap();
         assert_eq!(catalog(&mut tx).await.unwrap(), expected);
-        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 7')")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        connection.close().await.unwrap();
-    }
-
-    async fn version_10_database(db: &Database) {
-        let (earlier, earlier_catalog) = earlier_migration(10).unwrap();
-        let mut connection = db.connection().await;
-        let mut tx = connection.begin().await.unwrap();
-        let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
-        migrator.set_locking(false);
-        migrator.run(&mut *tx).await.unwrap();
-        let expected: Catalog = serde_json::from_str(earlier_catalog).unwrap();
-        assert_eq!(catalog(&mut tx).await.unwrap(), expected);
-        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 10')")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        connection.close().await.unwrap();
-    }
-
-    async fn version_9_database(db: &Database) {
-        let (earlier, earlier_catalog) = earlier_migration(9).unwrap();
-        let mut connection = db.connection().await;
-        let mut tx = connection.begin().await.unwrap();
-        let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
-        migrator.set_locking(false);
-        migrator.run(&mut *tx).await.unwrap();
-        let expected: Catalog = serde_json::from_str(earlier_catalog).unwrap();
-        assert_eq!(catalog(&mut tx).await.unwrap(), expected);
-        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 9')")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
-        connection.close().await.unwrap();
-    }
-
-    async fn version_8_database(db: &Database) {
-        let (earlier, earlier_catalog) = earlier_migration(8).unwrap();
-        let mut connection = db.connection().await;
-        let mut tx = connection.begin().await.unwrap();
-        let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
-        migrator.set_locking(false);
-        migrator.run(&mut *tx).await.unwrap();
-        let expected: Catalog = serde_json::from_str(earlier_catalog).unwrap();
-        assert_eq!(catalog(&mut tx).await.unwrap(), expected);
-        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 8')")
+        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept',$1)")
+            .bind(format!("seeded at version {version}"))
             .execute(&mut *tx)
             .await
             .unwrap();
@@ -1856,7 +1805,7 @@ mod tests {
     #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_version_10_scoped_index_upgrade_is_atomic_and_preserves_rows() {
         let db = Database::new().await;
-        version_10_database(&db).await;
+        version_database(&db, 10).await;
         refused(PostgresStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
         let mut connection = db.connection().await;
         let before = catalog(&mut connection).await.unwrap();
@@ -1880,7 +1829,7 @@ mod tests {
     #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_version_10_upgrade_refuses_a_wrong_prefix_index() {
         let db = Database::new().await;
-        version_10_database(&db).await;
+        version_database(&db, 10).await;
         let mut connection = db.connection().await;
         sqlx::query("CREATE INDEX dw_workflow_tasks_scoped_dispatch ON workflow_tasks(queue,status,priority,available_at,id)")
             .execute(&mut connection).await.unwrap();
@@ -1906,7 +1855,7 @@ mod tests {
     #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_version_9_expiry_indexes_preserve_rows_and_exact_catalog() {
         let db = Database::new().await;
-        version_9_database(&db).await;
+        version_database(&db, 9).await;
         assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), 9);
         PostgresStorage::check(db.options.clone()).await.unwrap();
         let mut connection = db.connection().await;
@@ -1922,7 +1871,7 @@ mod tests {
     #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_version_8_ready_origin_upgrade_has_no_backfill() {
         let db=Database::new().await;
-        version_8_database(&db).await;
+        version_database(&db, 8).await;
         let mut connection=db.connection().await;
         sqlx::raw_sql("INSERT INTO workflow_instances(id,workflow_class,workflow_type,namespace) VALUES ('legacy-instance','Legacy','legacy','default');
 INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status) VALUES ('legacy-run','legacy-instance',1,'Legacy','legacy','default','pending');
@@ -1941,7 +1890,7 @@ INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,namespace,availab
     #[ignore = "requires a disposable PostgreSQL; run the qualification_ tests explicitly"]
     async fn qualification_schema_upgrade_moves_version_7_to_the_current_schema() {
         let db = Database::new().await;
-        version_7_database(&db).await;
+        version_database(&db, 7).await;
         refused(PostgresStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
         assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), 7);
         PostgresStorage::check(db.options.clone()).await.unwrap();
@@ -1968,7 +1917,7 @@ INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,namespace,availab
             ("UPDATE dw_server_schema SET version=5", "unsupported_rust_schema"),
         ] {
             let db = Database::new().await;
-            version_7_database(&db).await;
+            version_database(&db, 7).await;
             let mut connection = db.connection().await;
             sqlx::raw_sql(mutation.into_sql_str()).execute(&mut connection).await.unwrap();
             upgrade_refused(PostgresStorage::upgrade(db.options.clone()).await, reason);
