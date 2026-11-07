@@ -315,6 +315,18 @@ summary writes, when commit starts. The next writer still waits on the database
 lock. SQLite keeps the process queue until commit finishes. Ordinary history
 sequence allocation uses one update statement; missing, exhausted or
 noncanonical counters retain the original typed read/write path.
+
+MySQL candidate polls read ready and leased status ranges separately through
+the native scoped dispatch index. Its leading keys bind the full namespace
+and queue, task type and status before priority, availability and task ID.
+Each range applies the candidate filters before its 100-row limit. The final
+merge sorts at most 200 rows and returns 100.
+
+This index advances MySQL/MariaDB to schema 11. Stop the native nodes, back up
+the database and run the existing explicit `schema-upgrade` command before
+starting this binary on schema 10. Startup does not add the index. The retained
+schema-10 checksum and exact old/new table definitions govern interrupted DDL
+resumption. SQLite and PostgreSQL remain on schema 10 in this change.
 This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 
 Implemented paths cover health/schema readiness, limited capability discovery,
