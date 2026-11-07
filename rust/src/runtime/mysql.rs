@@ -1183,6 +1183,20 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_commit_handoff_and_history_allocation() {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let db = Database::new().await;
+            let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+            store.qualify_commit_handoff().await;
+            store.qualify_history_sequence_allocation().await;
+            store.qualify_authored_sequence_reads().await;
+            store.close().await;
+            db.remove().await;
+        }).await.expect("bounded MySQL commit/sequence qualification");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
     async fn qualification_sweep_expiry_and_batch_bounds() {
         let db = Database::new().await;
         let mut store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());

@@ -57,6 +57,10 @@ pub(super) trait Backend: Database {
     // Multi-statement reads that must observe one committed state. SQLite's
     // deferred read transaction already keeps one WAL snapshot.
     const READ_SNAPSHOT_BEGIN: &str = "BEGIN";
+    const COMMIT_HANDOFF: bool = false;
+    const HISTORY_SEQUENCE_MAX: i64 = i64::MAX;
+    const HISTORY_ADVANCE_RETURNS_ROW: bool = true;
+    const HISTORY_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1 AND last_history_sequence>=0 AND last_history_sequence<$2 RETURNING last_history_sequence";
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT sequence,event_type,CASE WHEN projection_bytes<=8388608 THEN payload ELSE NULL END AS payload,workflow_task_id,recorded_at,projection_count FROM (SELECT sequence,event_type,payload,workflow_task_id,recorded_at,COUNT(*) OVER () AS projection_count,SUM(octet_length(CAST(payload AS TEXT))) OVER (ORDER BY sequence) AS projection_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') ORDER BY sequence LIMIT 10001) AS page ORDER BY sequence";
     // Waits whose stored position differs from their chronological ordinal
     // over every retained wait of the run, as Workflow #941's projector stores.
@@ -184,6 +188,7 @@ pub(super) trait Backend: Database {
     fn optional_number(row: &Self::Row, field: &str) -> Result<Option<i64>>;
     fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>>;
     fn affected(result: Self::QueryResult) -> u64;
+    fn advanced_history_sequence(_result: &Self::QueryResult) -> Option<i64> { None }
     fn instant(row: &Self::Row, field: &str) -> Result<DateTime<Utc>>;
     fn optional_instant(row: &Self::Row, field: &str) -> Result<Option<DateTime<Utc>>>;
     fn document_row(row: &Self::Row, field: &str) -> Result<Value>;
@@ -216,6 +221,7 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 }
 
 impl Backend for Sqlite {
+    const HISTORY_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1 AND typeof(last_history_sequence)='integer' AND last_history_sequence>=0 AND last_history_sequence<$2 RETURNING last_history_sequence";
     type EncodedInteger = Option<i64>;
     type EncodedFloat = Option<f64>;
     type EncodedFlag = Option<bool>;
@@ -423,6 +429,8 @@ impl Encode<'_, Postgres> for PostgresDocument {
 }
 
 impl Backend for Postgres {
+    const COMMIT_HANDOFF: bool = true;
+    const HISTORY_SEQUENCE_MAX: i64 = i32::MAX as i64;
     type EncodedInteger = Option<i64>;
     type EncodedFloat = Option<f64>;
     type EncodedFlag = Option<bool>;
@@ -500,14 +508,10 @@ impl Backend for Postgres {
             .map(|value| value.0))
     }
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
-        let mut tx = pool.begin().await?;
         // The first single-namespace slice serializes its durable transitions
         // across independent pools/processes. Held long polls wait without it
         // (Store::task_poll_ready). Throughput/idle cost remain unqualified.
-        sqlx::query("SELECT pg_advisory_xact_lock(4924501473315676163)")
-            .execute(&mut *tx)
-            .await?;
-        Ok(tx)
+        Ok(pool.begin_with("BEGIN; SELECT pg_advisory_xact_lock(4924501473315676163)").await?)
     }
     async fn history_ready(pool: &Pool<Self>) -> bool {
         let Ok(mut connection) = pool.acquire().await else {
@@ -518,6 +522,13 @@ impl Backend for Postgres {
 }
 
 impl Backend for MySql {
+    const COMMIT_HANDOFF: bool = true;
+    const HISTORY_SEQUENCE_MAX: i64 = u32::MAX as i64;
+    const HISTORY_ADVANCE_RETURNS_ROW: bool = false;
+    const HISTORY_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=LAST_INSERT_ID(last_history_sequence+1) WHERE id=$1 AND last_history_sequence>=0 AND last_history_sequence<$2";
+    fn advanced_history_sequence(result: &Self::QueryResult) -> Option<i64> {
+        i64::try_from(result.last_insert_id()).ok()
+    }
     // The wake query can otherwise start from a run and range-check every
     // task in its queue, even with the explicit live-status predicate. Keep
     // the task status range first, then look up each candidate's run by PK.
