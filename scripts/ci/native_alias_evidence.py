@@ -200,8 +200,12 @@ def runner_subject(provider: Provider, runner: dict[str, str], release: dict[str
         data = base64.b64decode(record["content"].replace("\n", ""), validate=True)
     except ValueError:
         raise Refusal("qualification_subject_encoding") from None
+    # Git's object format requires SHA-1 for this object identifier. The
+    # selected commit, protected-main ancestry and frozen delta bind authority.
+    object_id = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data,
+                             usedforsecurity=False).hexdigest()
     require(len(data) <= MANIFEST_LIMIT and literal(record.get("size"), len(data))
-            and hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() == runner["subject_blob"],
+            and object_id == runner["subject_blob"],
             "qualification_subject_digest")
     subject = qualification_subject(strict_json(data, MANIFEST_LIMIT))
     require(subject["release"] == release, "qualification_subject_release")
@@ -525,6 +529,39 @@ def bind_dependencies(value: Any, role: str, platform: str, subject: dict[str,An
                     "receipt_database_container")
 
 
+def qualification_receipts(provider: Provider, role: str, selected: dict[str, Any],
+                           run: dict[str, Any], release: dict[str, Any],
+                           subjects: dict[str, Any], runner: dict[str, str] | None,
+                           binding: dict[str, Any] | None) -> list[tuple[Any, ...]]:
+    required = ({CORPUS_JOB: QUALIFICATION_STEPS[role]} if role == "corpus" else {
+        platform + " " + profile + " published image": QUALIFICATION_STEPS[role]
+        for platform in PLATFORMS for profile in PROFILES})
+    if runner:
+        required = {name: ("Admit published qualification subject",) + steps
+                    + (("Set up QEMU",) if name.startswith("linux/arm64") else ())
+                    for name, steps in required.items()}
+    current_jobs = jobs(provider, run, required)
+    checks = []
+    if role == "corpus":
+        job = current_jobs[CORPUS_JOB]
+        checks.append((selected["artifact_id"], selected["artifact_digest"],
+                       "native-corpus-promotion-receipt", run, job))
+        record = receipt(provider, *checks[-1])
+        bind_receipt(record, role, selected, run, job, release, AMD64, None,
+                     subjects[AMD64], runner, binding)
+        return checks
+    for cell in selected["cells"]:
+        platform, profile = cell["platform"], cell["profile"]
+        job = current_jobs[platform + " " + profile + " published image"]
+        require(literal(cell["job_id"], job["id"]), "compose_selected_job")
+        name = "native-compose-promotion-receipt-" + platform.split("/")[1] + "-" + profile
+        checks.append((cell["artifact_id"], cell["artifact_digest"], name, run, job))
+        record = receipt(provider, *checks[-1])
+        bind_receipt(record, role, selected, run, job, release, platform, profile,
+                     subjects[platform], runner, binding)
+    return checks
+
+
 def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
     """Verify once. Re-read mutable run/artifact authority before returning."""
     # Revalidate programmatic callers exactly as CLI manifest bytes.
@@ -554,32 +591,9 @@ def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
                 "qualifier_workflow_source")
         run = workflow_run(provider, selected, role, release, runner)
         require(timestamp(run["run_started_at"]) >= completed, "qualification_precedes_publication")
-        required = ({CORPUS_JOB: QUALIFICATION_STEPS[role]} if role == "corpus" else {
-            platform + " " + profile + " published image": QUALIFICATION_STEPS[role]
-            for platform in PLATFORMS for profile in PROFILES})
-        if runner:
-            required = {name: ("Admit published qualification subject",) + steps
-                        + (("Set up QEMU",) if name.startswith("linux/arm64") else ())
-                        for name, steps in required.items()}
-        current_jobs = jobs(provider, run, required)
-        if role == "corpus":
-            job = current_jobs[CORPUS_JOB]
-            artifact_checks.append((selected["artifact_id"], selected["artifact_digest"],
-                                    "native-corpus-promotion-receipt", run, job))
-            record = receipt(provider, *artifact_checks[-1])
-            bind_receipt(record, role, selected, run, job, release, AMD64, None,
-                         subjects[AMD64], runner, binding)
-            artifact_ids.append(selected["artifact_id"])
-        else:
-            for cell in selected["cells"]:
-                platform, profile = cell["platform"], cell["profile"]
-                job = current_jobs[platform + " " + profile + " published image"]
-                require(literal(cell["job_id"], job["id"]), "compose_selected_job")
-                name = "native-compose-promotion-receipt-" + platform.split("/")[1] + "-" + profile
-                artifact_checks.append((cell["artifact_id"], cell["artifact_digest"], name, run, job))
-                record = receipt(provider, *artifact_checks[-1])
-                bind_receipt(record, role, selected, run, job, release, platform, profile, subjects[platform], runner, binding)
-                artifact_ids.append(cell["artifact_id"])
+        checks = qualification_receipts(provider, role, selected, run, release, subjects, runner, binding)
+        artifact_checks.extend(checks)
+        artifact_ids.extend(check[0] for check in checks)
         snapshots.append((role, selected))
     for role, selected in snapshots:
         workflow_run(provider, selected, role, release, runner)

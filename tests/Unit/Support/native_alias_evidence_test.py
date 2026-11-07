@@ -198,7 +198,8 @@ class RunnerProvider(FakeProvider):
         self.binding = E.qualification_subject(json.loads((ROOT / E.SUBJECT_PATH).read_text()))
         self.binding["release"] = copy.deepcopy(self.selected["release"])
         self.binding_bytes = E.canonical(self.binding)
-        self.binding_blob = hashlib.sha1(b"blob " + str(len(self.binding_bytes)).encode() + b"\0" + self.binding_bytes).hexdigest()
+        self.binding_blob = hashlib.sha1(b"blob " + str(len(self.binding_bytes)).encode() + b"\0" + self.binding_bytes,
+                                         usedforsecurity=False).hexdigest()
         self.selected.update(schema=E.MANIFEST_SCHEMA_V2, runner={"source_commit": RUNNER,
                              "ref": E.RUNNER_REF, "subject_blob": self.binding_blob})
         self.diff_files = [{"filename": path,"status": "modified"} for path in sorted(E.RUNNER_PATHS)]
@@ -261,9 +262,9 @@ class RunnerEvidenceTests(unittest.TestCase):
     def test_reviewed_runner_can_qualify_the_unchanged_published_producer(self):
         provider = RunnerProvider()
         proof = E.verify(provider.selected,provider)
-        self.assertEqual(proof["release"]["source_commit"],SOURCE)
-        self.assertEqual(len(proof["qualified_artifact_ids"]),5)
-        self.assertEqual(provider.selected["runner"]["source_commit"],RUNNER)
+        self.assertEqual(SOURCE,proof["release"]["source_commit"])
+        self.assertEqual(5,len(proof["qualified_artifact_ids"]))
+        self.assertEqual(RUNNER,provider.selected["runner"]["source_commit"])
 
     def test_runner_changes_cannot_cross_the_frozen_product_boundary(self):
         for path in ("rust/src/runtime/store.rs","resources/worker-protocol-api.openapi.yaml",
@@ -301,7 +302,7 @@ class RunnerEvidenceTests(unittest.TestCase):
             provider=RunnerProvider();change(provider)
             with self.subTest(mutation=i),self.assertRaises(E.Refusal):
                 E.verify(provider.selected,provider)
-            self.assertEqual(provider.writes,[])
+            self.assertEqual([],provider.writes)
 
 
 class EvidenceTests(unittest.TestCase):
