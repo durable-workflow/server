@@ -176,10 +176,10 @@ store_methods! {
         assert_eq!(last,4);
         for (after,size) in [(0,1),(1,2),(0,1000),(last,1)] {
             let (reference, reference_count) = super::sql_counts::measure(
-                Self::history_page_connection(&mut **tx,run_id,after,size),
+                Self::history_page_connection(&mut *tx,run_id,after,size),
             ).await;
             let (known, known_count) = super::sql_counts::measure(
-                Self::history_page_connection_with_total(&mut **tx,run_id,after,size,Some(last)),
+                Self::history_page_connection_with_total(&mut *tx,run_id,after,size,Some(last)),
             ).await;
             assert_eq!(known.unwrap(),reference.unwrap(),"after={after}, size={size}");
             let query = "SELECT last_history_sequence FROM workflow_runs WHERE id=$1";
@@ -192,7 +192,7 @@ store_methods! {
             Self::append(&mut tx,run_id,"SideEffectRecorded",json!({"sequence":3,"result":null}),None,None)
                 .await.unwrap();
             let refused = std::panic::AssertUnwindSafe(
-                Self::history_page_connection_with_total(&mut **tx,run_id,0,1,Some(last)),
+                Self::history_page_connection_with_total(&mut *tx,run_id,0,1,Some(last)),
             ).catch_unwind().await.expect_err("an intervening history write must trip the debug assertion");
             let message = refused.downcast_ref::<String>().map(String::as_str)
                 .or_else(|| refused.downcast_ref::<&str>().copied()).unwrap_or("");
