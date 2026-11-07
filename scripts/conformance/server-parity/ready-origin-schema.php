@@ -90,11 +90,7 @@ function projectPostgresScopedDispatch(array $rows): array
     $definition = ['index', 'dw_workflow_tasks_scoped_dispatch', ['ready' => true, 'valid' => true,
         'unique' => false, 'primary' => false,
         'definition' => 'CREATE INDEX dw_workflow_tasks_scoped_dispatch ON public.workflow_tasks USING btree (namespace, queue, task_type, status, priority, available_at, id)']];
-    $legacy = ['index', 'workflow_tasks_dispatch_order_index', ['ready' => true, 'valid' => true,
-        'unique' => false, 'primary' => false,
-        'definition' => 'CREATE INDEX workflow_tasks_dispatch_order_index ON public.workflow_tasks USING btree (queue, status, priority, available_at, id)']];
     $found = 0;
-    $legacyFound = 0;
     $result = [];
     foreach ($rows as $row) {
         if ($row[0] === 'index' && $row[1] === 'dw_workflow_tasks_scoped_dispatch') {
@@ -102,19 +98,11 @@ function projectPostgresScopedDispatch(array $rows): array
                 throw new RuntimeException('Native scoped dispatch definition mismatch.');
             }
             $found++;
-            continue;
+        } else {
+            $result[] = $row;
         }
-        if ($row[0] === 'index' && $row[1] === 'workflow_tasks_dispatch_order_index') {
-            if ($row !== $legacy) {
-                throw new RuntimeException('Native scoped dispatch legacy order mismatch.');
-            }
-            $legacyFound++;
-            // Map only the exact ID extension to the retained PHP definition.
-            $row[2]['definition'] = 'CREATE INDEX workflow_tasks_dispatch_order_index ON public.workflow_tasks USING btree (queue, status, priority, available_at)';
-        }
-        $result[] = $row;
     }
-    if ($found !== 1 || $legacyFound !== 1) {
+    if ($found !== 1) {
         throw new RuntimeException('Native scoped dispatch index missing or duplicated.');
     }
 

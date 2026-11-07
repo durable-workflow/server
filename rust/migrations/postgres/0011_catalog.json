@@ -17086,7 +17086,7 @@
       "valid": true,
       "unique": false,
       "primary": false,
-      "definition": "CREATE INDEX workflow_tasks_dispatch_order_index ON public.workflow_tasks USING btree (queue, status, priority, available_at, id)"
+      "definition": "CREATE INDEX workflow_tasks_dispatch_order_index ON public.workflow_tasks USING btree (queue, status, priority, available_at)"
     }
   ],
   [

@@ -26,7 +26,7 @@ macro_rules! status_candidates {
             "WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status='", $status, "' ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",
             "AND (t.available_at IS NULL OR t.available_at<=$5) ",
-            "ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit, ")")
+            "ORDER BY t.priority,t.available_at,t.id LIMIT (SELECT ", $limit, "))")
     };
 }
 
@@ -42,6 +42,8 @@ macro_rules! postgres_task_candidates_sql {
 // keeps each fully filtered run lookup correlated, including before the tables
 // have statistics. Keep compatibility under its LIMIT rather than estimating a
 // second filter on the joined relation.
+// The scalar constant preserves the exact bound while keeping a one-row fresh
+// estimate from turning the range into an all-rows bitmap/sort plan.
 pub(super) const TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("100");
 pub(super) const FIRST_TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("10");
 
