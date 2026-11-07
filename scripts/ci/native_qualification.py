@@ -217,7 +217,14 @@ def inspect(commands: Commands, resource: str, identity: str, *, platform: str |
     if not pinned_image and not re.fullmatch(r"(?:sha256:[0-9a-f]{64}|[A-Za-z0-9][A-Za-z0-9_.-]{0,180})", identity):
         raise Refusal("docker_resource_identity")
     require(platform is None or resource == "image" and platform in PLATFORMS, "docker_inspect_platform")
-    args = ["docker", resource, "inspect"] + (["--platform", platform] if platform else []) + [identity]
+    # Keep this option's value compiled into the command. The caller's CLI
+    # platform selects one supported literal and never supplies an argument.
+    platform_args = []
+    if platform == "linux/amd64":
+        platform_args = ["--platform", "linux/amd64"]
+    elif platform == "linux/arm64":
+        platform_args = ["--platform", "linux/arm64"]
+    args = ["docker", resource, "inspect"] + platform_args + [identity]
     value = strict_json(commands.run(args), JSON_LIMIT)
     require(type(value) is list and len(value) == 1 and type(value[0]) is dict,
             "docker_inspect_shape")
