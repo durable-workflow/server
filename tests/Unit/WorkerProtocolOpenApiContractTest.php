@@ -61,6 +61,19 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->assertNotContains('workflow_task_completion_activity_poll', $caps['required']);
     }
 
+    public function test_workflow_poll_normalization_pending_is_a_closed_conflict(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $valid = (object) ['reason' => 'workflow_poll_normalization_pending', 'message' => 'workflow_poll_normalization_pending'];
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', $valid);
+        $this->assertContains(
+            ['$ref' => '#/components/schemas/WorkflowPollNormalizationPending'],
+            $this->spec['components']['responses']['WorkflowTaskPollConflict']['content']['application/json']['schema']['oneOf'],
+        );
+        $this->expectException(AssertionFailedError::class);
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', (object) [...(array) $valid, 'task' => null]);
+    }
+
     public static function invalidCarriedActivityPoll(): iterable
     {
         $valid = ['worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => 'original-request'];
@@ -619,6 +632,7 @@ class WorkerProtocolOpenApiContractTest extends TestCase
             ['$ref' => '#/components/schemas/PollRequestTaskKindsConflict'],
             ['$ref' => '#/components/schemas/CachedPollTaskKindConflict'],
             ['$ref' => '#/components/schemas/UpdateValidationCapabilityConflict'],
+            ['$ref' => '#/components/schemas/WorkflowPollNormalizationPending'],
         ], $response['content']['application/json']['schema']['oneOf']);
 
         $capabilityProperties = $this->spec['components']['schemas']['UpdateValidationCapabilityConflict']['allOf'][1]['properties'];

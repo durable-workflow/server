@@ -450,7 +450,7 @@ store_methods! {
                 body["poll_request_id"] = json!(raw_id);
                 // Use the actual former key recipe and normal claim/receipt
                 // writers, rather than fabricating a cached lease document.
-                let legacy = store.workflow_poll_request("owner", "carried", raw_id.trim().to_owned(), None, 30, &["workflow"]).await.unwrap();
+                let legacy = store.workflow_poll_request("owner", "carried", raw_id.trim().to_owned(), None, 30, &["workflow"]).await.unwrap().predecessor();
                 let mut tx = store.begin().await.unwrap();
                 let leased = store.claim_in(&mut tx, &body, "workflow", "1.20", Some(1), Some(&legacy)).await.unwrap().unwrap();
                 assert_eq!(leased["run_id"], next["run_id"]);
@@ -476,6 +476,82 @@ store_methods! {
                 assert_eq!(DB::number(&row, "attempt_count").unwrap(), 1);
                 let again = store.poll(body, "workflow", "1.20").await.unwrap();
                 assert_eq!(again["task"], leased);
+                if expired_binding { store.assert_workflow_poll_binding_expiry_for_test(&legacy).await; }
+                store.expire_workflow_poll_for_test(&legacy).await;
+            }
+        }
+
+        let vectors: Value = serde_json::from_str(include_str!("../../../resources/platform-protocol-specs/carried-poll-v1-vectors.json")).unwrap();
+        let cases = vectors["predecessor_cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 6);
+        for case in cases {
+            for expired_binding in [false, true] {
+                for carrier in [false, true] {
+                    let name = format!("cutover-{}-{expired_binding}-{carrier}", case["id"].as_str().unwrap());
+                    let store = self.in_namespace(&name);
+                    store.carrier_workers().await;
+                    let parent = store.carrier_task(&format!("{name}-parent")).await;
+                    let original = store.start(json!({"workflow_id":format!("{name}-original"),"workflow_type":"carried","task_queue":"carried","input":input()}),
+                        BTreeMap::new(), None, None).await.unwrap();
+                    let raw_id = case["original_request_id"].as_str().unwrap();
+                    let mut old_body = workflow_poll();
+                    old_body["poll_request_id"] = json!(raw_id);
+                    let predecessor = store.workflow_poll_request("owner", "carried", raw_id.trim().to_owned(), None, 30, &["workflow"]).await.unwrap().predecessor();
+                    let mut tx = store.begin().await.unwrap();
+                    let leased = store.claim_in(&mut tx, &old_body, "workflow", "1.20", Some(1), Some(&predecessor)).await.unwrap().unwrap();
+                    assert_eq!(leased["run_id"], original["run_id"]);
+                    tx.commit().await.unwrap();
+                    if expired_binding { store.expire_workflow_poll_binding_for_test(&predecessor).await; }
+                    // A second eligible task makes the predecessor split causal:
+                    // the unsafe normalized-key fallback would lease this row.
+                    let next = store.start(json!({"workflow_id":format!("{name}-next"),"workflow_type":"carried","task_queue":"carried","input":input()}),
+                        BTreeMap::new(), None, None).await.unwrap();
+                    let before = Self::scalar("SELECT COUNT(*) FROM dw_query_cache").fetch_one(&store.pool).await.unwrap();
+                    let mut retry = workflow_poll();
+                    retry["poll_request_id"] = case["retry_request_id"].clone();
+                    assert_eq!(super::workflow_poll_requests::request_id(&old_body), super::workflow_poll_requests::request_id(&retry));
+                    assert!(matches!(case["expected"].as_str(), Some("normalization_pending" | "replay")));
+                    let pending = case["expected"] == "normalization_pending";
+                    if carrier {
+                        let done = store.carrier_finish_workflow(&parent, None, Some(retry.clone()), false).await.unwrap();
+                        assert_eq!(done["recorded"], true);
+                        if pending {
+                            assert!(done.get("workflow_poll").is_none(), "a cutover decline preserves the completion but delivers no lease");
+                        } else {
+                            let answer = assert_granted(&done["workflow_poll"]);
+                            assert_eq!(answer["task"]["task_id"], leased["task_id"]);
+                            assert_eq!(answer["task"]["workflow_task_attempt"], 1);
+                        }
+                    } else {
+                        let result = store.poll(retry.clone(), "workflow", "1.20").await;
+                        if pending {
+                            let error = result.unwrap_err();
+                            assert!(matches!(&error, super::RuntimeError::Refused {
+                                status: axum::http::StatusCode::CONFLICT, reason: "workflow_poll_normalization_pending" }));
+                            let response = axum::response::IntoResponse::into_response(error);
+                            assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+                            let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+                            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),
+                                json!({"reason":"workflow_poll_normalization_pending","message":"workflow_poll_normalization_pending"}));
+                        } else {
+                            assert_eq!(result.unwrap()["task"], leased);
+                        }
+                    }
+                    let untouched = Self::query("SELECT status,attempt_count FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow'")
+                        .bind(next["run_id"].as_str().unwrap()).fetch_one(&store.pool).await.unwrap();
+                    assert_eq!(DB::string(&untouched, "status").unwrap(), "ready");
+                    assert_eq!(DB::number(&untouched, "attempt_count").unwrap(), 0, "an alternate spelling cannot take a second lease");
+                    assert_eq!(Self::scalar("SELECT COUNT(*) FROM dw_query_cache").fetch_one(&store.pool).await.unwrap(), before,
+                        "cutover recovery/decline must not create a separate canonical binding or receipt");
+                    assert_eq!(store.poll(old_body, "workflow", "1.20").await.unwrap()["task"], leased,
+                        "the original predecessor identity remains recoverable");
+                    if expired_binding { store.assert_workflow_poll_binding_expiry_for_test(&predecessor).await; }
+                    store.carrier_finish_workflow(&leased, None, None, false).await.unwrap();
+                    store.expire_workflow_poll_for_test(&predecessor).await;
+                    let fresh = store.poll(retry, "workflow", "1.20").await.unwrap();
+                    assert_eq!(fresh["task"]["run_id"], next["run_id"], "original predecessor expiry admits a fresh canonical claim");
+                    assert_eq!(fresh["task"]["workflow_task_attempt"], 1);
+                }
             }
         }
 
@@ -496,6 +572,29 @@ store_methods! {
                 .fetch_one(&store.pool).await.unwrap();
             assert_eq!(DB::string(&row, "status").unwrap(), "leased", "malformed stored replies cannot become an empty eager result or commit the parent");
         }
+
+        // Both internal key generations share one physical expiry budget.
+        let mut sweep = self.in_namespace("cutover-sweep");
+        sweep.poll_sweeps = Arc::default();
+        sweep.poll_sweep_config.batch = 3;
+        let mut keys = vec![];
+        for prefix in ["dw-native-workflow-poll:", "dw-native-workflow-poll-v2:"] {
+            for index in 0..2 {
+                let key = format!("{prefix}cutover-sweep-{index}");
+                Self::query(DB::QUERY_CACHE_PUT).bind(&key).bind("{\"expired\":true}").bind(1_i64)
+                    .execute(&sweep.pool).await.unwrap();
+                keys.push(key);
+            }
+        }
+        let mut tx = sweep.begin().await.unwrap();
+        sweep.sweep_workflow_poll_rows(&mut tx).await.unwrap();
+        let mut retained = 0;
+        for key in &keys {
+            if Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&mut *tx).await.unwrap().is_some() { retained += 1; }
+        }
+        assert_eq!(retained, 1, "a single batch covers both key generations and cannot delete four rows with a budget of three");
+        tx.rollback().await.unwrap();
+        for key in &keys { Self::query(DB::QUERY_CACHE_DELETE).bind(key).execute(&sweep.pool).await.unwrap(); }
     }
 }
 

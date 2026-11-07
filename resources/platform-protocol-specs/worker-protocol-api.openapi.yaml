@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "60"
+  version: "61"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -61,6 +61,15 @@ x-durable-workflow-carried-workflow-poll:
   claim_fault_before_commit: fail_visibly_and_roll_back_the_completion_transaction
   commit_outcome_unknown: preserve_existing_storage_unavailable_503_and_recover_with_original_completion_and_poll_ids
   history: configured_normal_poll_projection_page_maximum_and_budget
+  normalization_cutover:
+    cache_key_family: normalized_v2_separate_from_predecessor_digests
+    known_predecessor: replay_original_raw_or_normalized_key_without_new_lease
+    unknown_predecessor: no_new_canonical_claim_while_any_unexpired_predecessor_cache_row_remains
+    ordinary_refusal: { status: 409, reason: workflow_poll_normalization_pending }
+    carried_refusal: omit_workflow_poll_and_preserve_valid_completion
+    scope: conservative_database_wide_drain_because_predecessor_keys_are_opaque
+    expiry: original_predecessor_result_and_binding_expiry_not_process_restart_or_a_new_wait_window
+    new_requests: canonical_key_only_after_predecessor_drain
 x-durable-workflow-workflow-completion-poll-order:
   server_capability: workflow_task_completion_workflow_poll
   endpoint: /worker/workflow-tasks/{taskId}/complete
@@ -80,7 +89,7 @@ x-durable-workflow-carried-poll-answer:
   presentation: actual_normal_history_projection_encoding_and_configured_page_limits
   transport_age: charge_original_completion_request_before_reuse_never_restamp_on_receipt_or_cache_read
   recovery: same_original_poll_request_id_if_completion_answer_or_embedded_answer_is_unavailable
-  retained_legacy_key: recover_exact_original_supplied_spelling_without_rewriting_or_renewing_its_lease
+  retained_legacy_key: recover_known_original_keys_or_decline_new_normalized_claim_until_predecessor_drain
 x-durable-workflow-cross-kind-poll-wake:
   opt_in_worker_capability: cross_kind_poll_wake
   scope: [namespace, task_queue]
@@ -1511,7 +1520,7 @@ components:
               - $ref: "#/components/schemas/PortableWorkerAffinityFailure"
               - $ref: "#/components/schemas/WorkerError"
     WorkflowTaskPollConflict:
-      description: The poll request is unsupported, its idempotency identity conflicts with a previously bound task-kind set, or a cached task cannot be replayed within the requested task-kind set.
+      description: The poll request is unsupported, its identity conflicts with a bound task-kind set, a cached task has another kind, or predecessor identity normalization is still draining.
       headers:
         X-Durable-Workflow-Protocol-Version:
           schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
@@ -1522,6 +1531,7 @@ components:
               - $ref: "#/components/schemas/PollRequestTaskKindsConflict"
               - $ref: "#/components/schemas/CachedPollTaskKindConflict"
               - $ref: "#/components/schemas/UpdateValidationCapabilityConflict"
+              - $ref: "#/components/schemas/WorkflowPollNormalizationPending"
     UpdateValidationTaskCompletion:
       description: A fenced update-validation task approval or rejection result.
       headers:
@@ -3018,6 +3028,13 @@ components:
         task_queue: { type: string, minLength: 1 }
         lease_owner: { type: string, minLength: 1 }
         lease_expires_at: { type: string, format: date-time }
+    WorkflowPollNormalizationPending:
+      type: object
+      additionalProperties: false
+      required: [reason, message]
+      properties:
+        reason: { type: string, const: workflow_poll_normalization_pending }
+        message: { type: string, const: workflow_poll_normalization_pending }
     PollRequestTaskKindsConflict:
       allOf:
         - $ref: "#/components/schemas/WorkerError"

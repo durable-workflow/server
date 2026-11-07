@@ -324,6 +324,14 @@
     "\u200b",
     "\u200e"
   ],
+  "predecessor_cases": [
+    { "id": "feff-padded-to-normalized", "original_request_id": "\ufeffcutover-id\ufeff", "retry_request_id": "cutover-id", "expected": "normalization_pending" },
+    { "id": "feff-normalized-to-padded", "original_request_id": "cutover-id", "retry_request_id": "\ufeffcutover-id\ufeff", "expected": "replay" },
+    { "id": "200b-padded-to-normalized", "original_request_id": "\u200bcutover-id\u200b", "retry_request_id": "cutover-id", "expected": "normalization_pending" },
+    { "id": "200b-normalized-to-padded", "original_request_id": "cutover-id", "retry_request_id": "\u200bcutover-id\u200b", "expected": "replay" },
+    { "id": "200e-padded-to-normalized", "original_request_id": "\u200ecutover-id\u200e", "retry_request_id": "cutover-id", "expected": "normalization_pending" },
+    { "id": "200e-normalized-to-padded", "original_request_id": "cutover-id", "retry_request_id": "\u200ecutover-id\u200e", "expected": "replay" }
+  ],
   "answer_contract": {
     "keys": [
       "poll_status",

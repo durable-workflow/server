@@ -22,7 +22,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 // Distinct from the query poll prefix, so each sweep sees only its own rows.
-const PREFIX: &str = "dw-native-workflow-poll:";
+const PREFIX: &str = "dw-native-workflow-poll-v2:";
+const LEGACY_PREFIX: &str = "dw-native-workflow-poll:";
 
 #[derive(Clone)]
 pub(super) struct WorkflowPollKeys {
@@ -37,13 +38,19 @@ pub(super) struct WorkflowPollRequest {
     pub(super) keys: WorkflowPollKeys,
     pub(super) pending_ttl: i64,
     pub(super) kinds: Vec<&'static str>,
-    legacy_keys: Option<WorkflowPollKeys>,
+    legacy_keys: Vec<WorkflowPollKeys>,
+    expiration_cap: Option<i64>,
 }
 
 impl WorkflowPollRequest {
-    fn legacy(&self) -> Option<Self> {
-        self.legacy_keys.as_ref().map(|keys| Self { keys: keys.clone(), id: self.id.clone(),
-            pending_ttl: self.pending_ttl, kinds: self.kinds.clone(), legacy_keys: None })
+    fn legacy(&self, keys: &WorkflowPollKeys) -> Self {
+        Self { keys: keys.clone(), id: self.id.clone(),
+            pending_ttl: self.pending_ttl, kinds: self.kinds.clone(), legacy_keys: vec![], expiration_cap: None }
+    }
+
+    #[cfg(test)]
+    pub(super) fn predecessor(&self) -> Self {
+        self.legacy(self.legacy_keys.last().expect("the former normalized key is always present"))
     }
 
     pub(super) fn replayed_in<DB: crate::runtime::backend::Backend>(&self, tx: &Transaction<'_, DB>) -> bool {
@@ -136,10 +143,11 @@ store_methods! {
     ) -> Result<Option<Value>> {
         let mut read = self.begin_read().await?;
         if !self.worker_poll_fence_holds_in(&mut read, fence, worker_id).await? { return Ok(None); }
-        let legacy = match request.legacy_keys.as_ref() {
-            Some(keys) => self.cached_workflow_poll_read_only_in(&mut read, request, keys, worker_id, queue, false).await?,
-            None => None,
-        };
+        let mut legacy = None;
+        for keys in &request.legacy_keys {
+            legacy = self.cached_workflow_poll_read_only_in(&mut read, request, keys, worker_id, queue, false).await?;
+            if legacy.is_some() { break; }
+        }
         let answer = match legacy {
             Some(answer) => Some(answer),
             None => self.cached_workflow_poll_read_only_in(&mut read, request, &request.keys, worker_id, queue, true).await?,
@@ -194,18 +202,21 @@ store_methods! {
             .flatten()
             .filter(|build| !build.is_empty());
         // MySQL and MariaDB keys are varchar(64): keep 128 bits of the digest.
-        let key = |kind: &str, request_id: &str| {
+        let key = |prefix: &str, kind: &str, request_id: &str| {
             let material = json!([kind, self.namespace.as_ref(), queue, build, worker_id, request_id]);
             let digest: String = Sha256::digest(material.to_string().as_bytes())[..16]
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
-            format!("{PREFIX}{digest}")
+            format!("{prefix}{digest}")
         };
-        let keys = WorkflowPollKeys { binding: key("binding", &id), result: key("result", &id) };
-        let legacy_keys = raw_id.map(str::trim).filter(|raw| !raw.is_empty() && *raw != id)
-            .map(|raw| WorkflowPollKeys { binding: key("binding", raw), result: key("result", raw) });
-        Ok(WorkflowPollRequest { keys, legacy_keys, pending_ttl: pending_ttl(default_wait), kinds: normalized(kinds), id })
+        let keys = WorkflowPollKeys { binding: key(PREFIX, "binding", &id), result: key(PREFIX, "result", &id) };
+        let mut legacy_keys = vec![];
+        if let Some(raw) = raw_id.map(str::trim).filter(|raw| !raw.is_empty() && *raw != id) {
+            legacy_keys.push(WorkflowPollKeys { binding: key(LEGACY_PREFIX, "binding", raw), result: key(LEGACY_PREFIX, "result", raw) });
+        }
+        legacy_keys.push(WorkflowPollKeys { binding: key(LEGACY_PREFIX, "binding", &id), result: key(LEGACY_PREFIX, "result", &id) });
+        Ok(WorkflowPollRequest { keys, legacy_keys, expiration_cap: None, pending_ttl: pending_ttl(default_wait), kinds: normalized(kinds), id })
     }
 
     /// Only an existing answer can select the old exact-spelling key. When
@@ -214,11 +225,33 @@ store_methods! {
     async fn replay_legacy_workflow_poll_in(
         &self, tx: &mut Transaction<'_, DB>, request: &WorkflowPollRequest, worker_id: &str, queue: &str,
     ) -> Result<Option<Value>> {
-        let Some(legacy) = request.legacy() else { return Ok(None); };
-        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&legacy.keys.result).fetch_optional(&mut **tx).await? else { return Ok(None); };
-        if DB::number(&row, "expiration")? <= epoch() { return Ok(None); }
-        Self::bind_workflow_poll(tx, &legacy).await?;
-        self.deliverable_workflow_poll(tx, &legacy, worker_id, queue).await
+        for keys in &request.legacy_keys {
+            let mut legacy = request.legacy(keys);
+            let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&legacy.keys.result).fetch_optional(&mut **tx).await? else { continue; };
+            let expiration = DB::number(&row, "expiration")?;
+            if expiration <= epoch() { continue; }
+            // Recovering an expired binding cannot start a new drain window
+            // beyond the retained answer's original absolute expiry.
+            legacy.expiration_cap = Some(expiration);
+            Self::bind_workflow_poll(tx, &legacy).await?;
+            if let Some(answer) = self.deliverable_workflow_poll(tx, &legacy, worker_id, queue).await? { return Ok(Some(answer)); }
+        }
+        Ok(None)
+    }
+
+    /// Former keys are irreversible digests. An unknown padded predecessor
+    /// cannot be enumerated from a normalized ID. Until all former rows have
+    /// expired, decline a new canonical claim instead of splitting its lease.
+    /// Exact known predecessor answers still replay, without renewing them.
+    async fn workflow_poll_normalization_ready(
+        tx: &mut Transaction<'_, DB>, request: &WorkflowPollRequest,
+    ) -> Result<()> {
+        if request.keys.binding.starts_with(PREFIX)
+            && Self::query(DB::WORKFLOW_POLL_LEGACY_ACTIVE).bind(epoch()).fetch_optional(&mut **tx).await?.is_some()
+        {
+            return Err(super::refuse(StatusCode::CONFLICT, "workflow_poll_normalization_pending"));
+        }
+        Ok(())
     }
 
     /// At the start of a poll: bind the request ID to its kind set, then
@@ -238,6 +271,7 @@ store_methods! {
         self.sweep_workflow_poll_rows(tx).await?;
         Self::bind_workflow_poll(tx, request).await?;
         let replay = self.deliverable_workflow_poll(tx, request, worker_id, queue).await?;
+        if replay.is_none() { Self::workflow_poll_normalization_ready(tx, request).await?; }
         tx.workflow_poll_replayed = Some(request.keys.binding.clone());
         Ok(replay)
     }
@@ -248,16 +282,17 @@ store_methods! {
     /// claim waits and then sees this one's answer.
     pub(super) async fn bind_workflow_poll(tx: &mut Transaction<'_, DB>, request: &WorkflowPollRequest) -> Result<()> {
         let binding = json!({"task_kinds": request.kinds});
+        let expiration = (epoch() + request.pending_ttl).min(request.expiration_cap.unwrap_or(i64::MAX));
         Self::query(DB::QUERY_CACHE_LOCK)
             .bind(&request.keys.binding)
             .bind(binding.to_string())
-            .bind(epoch() + request.pending_ttl)
+            .bind(expiration)
             .execute(&mut **tx)
             .await?;
         match Self::workflow_poll_row(tx, &request.keys.binding).await? {
             Some(bound) if bound["task_kinds"] != binding["task_kinds"] => Err(kinds_conflict(request, bound["task_kinds"].clone())),
             Some(_) => Ok(()),
-            None => Self::put_workflow_poll_row(tx, &request.keys.binding, &binding, request.pending_ttl).await,
+            None => Self::put_workflow_poll_row_until(tx, &request.keys.binding, &binding, expiration).await,
         }
     }
 
@@ -306,7 +341,9 @@ store_methods! {
         worker_id: &str,
         queue: &str,
     ) -> Result<Option<Value>> {
-        Ok(self.deliverable_workflow_poll(tx, request, worker_id, queue).await?.filter(|answer| answer["task"].is_object()))
+        let answer = self.deliverable_workflow_poll(tx, request, worker_id, queue).await?.filter(|answer| answer["task"].is_object());
+        if answer.is_none() { Self::workflow_poll_normalization_ready(tx, request).await?; }
+        Ok(answer)
     }
 
     /// `cachedTaskStillDeliverable` for a workflow task: leased on this
@@ -415,8 +452,12 @@ store_methods! {
     }
 
     async fn put_workflow_poll_row(tx: &mut Transaction<'_, DB>, key: &str, value: &Value, ttl: i64) -> Result<()> {
+        Self::put_workflow_poll_row_until(tx, key, value, epoch() + ttl).await
+    }
+
+    async fn put_workflow_poll_row_until(tx: &mut Transaction<'_, DB>, key: &str, value: &Value, expiration: i64) -> Result<()> {
         Self::query(DB::QUERY_CACHE_PUT).bind(key).bind(value.to_string())
-            .bind(epoch() + ttl).execute(&mut **tx).await?;
+            .bind(expiration).execute(&mut **tx).await?;
         Ok(())
     }
 
@@ -425,6 +466,26 @@ store_methods! {
         Self::query(DB::QUERY_CACHE_PUT).bind(&request.keys.binding)
             .bind(json!({"task_kinds":request.kinds}).to_string()).bind(epoch() - 1)
             .execute(&self.pool).await.unwrap();
+        let row = Self::query(DB::QUERY_CACHE_GET).bind(&request.keys.result).fetch_one(&self.pool).await.unwrap();
+        Self::query(DB::QUERY_CACHE_UPDATE).bind(DB::string(&row, "value").unwrap())
+            .bind(epoch() + 20).bind(&request.keys.result).execute(&self.pool).await.unwrap();
+    }
+
+    #[cfg(test)]
+    pub(super) async fn assert_workflow_poll_binding_expiry_for_test(&self, request: &WorkflowPollRequest) {
+        let binding = Self::query(DB::QUERY_CACHE_GET).bind(&request.keys.binding).fetch_one(&self.pool).await.unwrap();
+        let result = Self::query(DB::QUERY_CACHE_GET).bind(&request.keys.result).fetch_one(&self.pool).await.unwrap();
+        assert!(DB::number(&binding, "expiration").unwrap() <= DB::number(&result, "expiration").unwrap(),
+            "binding recovery cannot extend the original predecessor answer's drain window");
+    }
+
+    #[cfg(test)]
+    pub(super) async fn expire_workflow_poll_for_test(&self, request: &WorkflowPollRequest) {
+        for key in [&request.keys.binding, &request.keys.result] {
+            let row = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&self.pool).await.unwrap();
+            Self::query(DB::QUERY_CACHE_UPDATE).bind(DB::string(&row, "value").unwrap())
+                .bind(epoch() - 1).bind(key).execute(&self.pool).await.unwrap();
+        }
     }
 
     #[cfg(test)]
