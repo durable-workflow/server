@@ -18,12 +18,14 @@ async fn explain(tx: &mut Transaction<'_, Postgres>, sql: &str, at: DateTime<Utc
     row.get::<Json<Value>, _>("QUERY PLAN").0
 }
 
-fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize) {
+fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize, in_range: bool) {
+    assert!(!in_range || !matches!(node["Node Type"].as_str(), Some("Sort" | "Incremental Sort")),
+        "a status range must retain index order: {node}");
     match node["Relation Name"].as_str() {
         Some("workflow_tasks") => {
             assert!(matches!(node["Node Type"].as_str(),Some("Index Scan" | "Index Only Scan")),"{node}");
-            assert_eq!(node["Index Name"],"workflow_tasks_dispatch_order_index","the status range must use dispatch order: {node}");
-            assert!(node["Index Cond"].as_str().is_some_and(|condition| condition.contains("status")),"{node}");
+            assert_eq!(node["Index Name"],"dw_workflow_tasks_scoped_dispatch","the status range must use dispatch order: {node}");
+            assert!(node["Index Cond"].as_str().is_some_and(|condition| ["namespace","queue","task_type","status"].iter().all(|key| condition.contains(key))),"{node}");
             *tasks += 1;
         }
         Some("workflow_runs") => {
@@ -34,7 +36,8 @@ fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize) {
         _ => {}
     }
     if let Some(children) = node["Plans"].as_array() {
-        for child in children { require_index_ranges(child,tasks,runs); }
+        let in_range = in_range || matches!(node["Node Type"].as_str(), Some("Append" | "Merge Append"));
+        for child in children { require_index_ranges(child,tasks,runs,in_range); }
     }
 }
 
@@ -69,6 +72,16 @@ impl Store<Postgres> {
                 .bind(match index % 5 {0=>Some("other"),1=>Some(""),_=>None})
                 .execute(&mut *transaction).await.unwrap();
         }
+        // A global queue/status index encounters these earlier rows first.
+        // The scoped equality range must exclude each foreign dimension.
+        for index in 0..6000 {
+            Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at) VALUES ($1,$2,$3,$4,$5,'ready',0,$6)")
+                .bind(id()).bind(&runs[1])
+                .bind(if index < 2400 {"foreign"} else {"default"})
+                .bind(if index >= 4800 {"elsewhere"} else {"ordered"})
+                .bind(if (2400..4800).contains(&index) {"activity"} else {"workflow"})
+                .bind(Postgres::optional_time(None)).execute(&mut *transaction).await.unwrap();
+        }
         let statistics:i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pg_stats WHERE schemaname='public' AND tablename IN ('workflow_tasks','workflow_runs')")
             .fetch_one(&mut *transaction).await.unwrap();
         assert_eq!(statistics,0,"the first plan must precede actual table analysis");
@@ -88,7 +101,7 @@ impl Store<Postgres> {
             let after = explain(&mut transaction,new,at).await;
             println!("postgres_status_candidate_plan analyzed={analyzed} old={before} new={after}");
             let (mut tasks,mut run_lookups) = (0,0);
-            require_index_ranges(&after[0]["Plan"],&mut tasks,&mut run_lookups);
+            require_index_ranges(&after[0]["Plan"],&mut tasks,&mut run_lookups,false);
             assert_eq!((tasks,run_lookups),(2,2),"{after}");
         }
         transaction.rollback().await.unwrap();
