@@ -813,8 +813,10 @@ mod timestamp_tests {
     fn mysql_status_candidate_template_keeps_positions_unique_across_both_ranges() {
         // Convert the actual production template. Reusing $1 in the second
         // range must fail the existing adapter assertion before any query.
-        let statement = MySql::statement(MySql::TASK_CANDIDATES_SQL);
-        assert_eq!(statement.matches('?').count(), 12);
+        for sql in [MySql::TASK_CANDIDATES_SQL, MySql::FIRST_TASK_CANDIDATES_SQL] {
+            let statement = MySql::statement(sql);
+            assert_eq!(statement.matches('?').count(), 12);
+        }
         assert_eq!(MySql::TASK_CANDIDATE_BIND_SETS, 2);
     }
 

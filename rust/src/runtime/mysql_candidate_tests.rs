@@ -124,7 +124,7 @@ store_methods! {
     async fn mysql_candidate_scope_work(&self, queue: &str, at: chrono::DateTime<chrono::Utc>) {
         let mut connection = self.pool.acquire().await.unwrap();
         let before = Self::mysql_candidate_read_next(&mut connection).await;
-        let expected = self.task_candidate_query(queue,"workflow",None,at,at)
+        let expected = self.task_candidate_query(queue,"workflow",None,at,at,false)
             .fetch_all(&mut *connection).await.unwrap();
         let bounded = Self::mysql_candidate_read_next(&mut connection).await - before;
         // Reproduce the rejected cross-tenant index choice with the same
@@ -213,26 +213,31 @@ store_methods! {
                 for build in [None,Some("build"),Some("other")] {
                     let old = Self::query(predecessor).bind(self.namespace.as_ref()).bind(&queue).bind(kind)
                         .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(build).fetch_all(&self.pool).await.unwrap();
-                    let new = self.task_candidate_query(&queue, kind, build, at, at).fetch_all(&self.pool).await.unwrap();
+                    let new = self.task_candidate_query(&queue, kind, build, at, at, false).fetch_all(&self.pool).await.unwrap();
                     let identities = |rows: &[DB::Row]| rows.iter().map(|row|
                         (DB::string(row,"id").unwrap(),DB::string(row,"workflow_type").unwrap())).collect::<Vec<_>>();
                     assert!(!old.is_empty());
                     assert_eq!(identities(&new), identities(&old), "{statistics} / {kind} / {build:?}");
+                    let first = self.task_candidate_query(&queue, kind, build, at, at, true)
+                        .fetch_all(&self.pool).await.unwrap();
+                    assert_eq!(identities(&first), identities(&old[..old.len().min(super::priority_fairness::FAIRNESS_BATCH)]));
                     assert!(new.len() <= 100);
                     if kind == "activity" {
                         assert!(new.iter().all(|row| DB::string(row,"status").unwrap() == "ready"));
                     } else if build.is_none() {
                         assert!(new.iter().any(|row| DB::string(row,"status").unwrap() == "leased"));
                     }
-                    let mut explain = sqlx::query::<DB>(AssertSqlSafe(format!("EXPLAIN FORMAT=JSON {}",DB::statement(DB::TASK_CANDIDATES_SQL))));
-                    for _ in 0..2 {
-                        explain = explain.bind(self.namespace.as_ref()).bind(&queue).bind(kind)
-                            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(build);
+                    for (first, sql) in [(false, DB::TASK_CANDIDATES_SQL), (true, DB::FIRST_TASK_CANDIDATES_SQL)] {
+                        let mut explain = sqlx::query::<DB>(AssertSqlSafe(format!("EXPLAIN FORMAT=JSON {}",DB::statement(sql))));
+                        for _ in 0..2 {
+                            explain = explain.bind(self.namespace.as_ref()).bind(&queue).bind(kind)
+                                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(build);
+                        }
+                        let row = explain.fetch_one(&self.pool).await.unwrap();
+                        let plan: Value = serde_json::from_str(&DB::string(&row,"EXPLAIN").unwrap()).unwrap();
+                        println!("mysql_status_candidate_plan statistics={statistics} kind={kind} build={build:?} first={first}: {plan}");
+                        assert!(ordered_ranges(&plan, kind == "activity"), "each status range must arrive in dispatch order: {plan}");
                     }
-                    let row = explain.fetch_one(&self.pool).await.unwrap();
-                    let plan: Value = serde_json::from_str(&DB::string(&row,"EXPLAIN").unwrap()).unwrap();
-                    println!("mysql_status_candidate_plan statistics={statistics} kind={kind} build={build:?}: {plan}");
-                    assert!(ordered_ranges(&plan, kind == "activity"), "each status range must arrive in dispatch order: {plan}");
                 }
             }
         }
