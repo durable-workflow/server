@@ -38,6 +38,167 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->assertSame('1.20', $this->spec['x-durable-workflow-worker-protocol-negotiation']['default_advertised_version']);
     }
 
+    public function test_carried_activity_poll_has_a_closed_shape_and_optional_result(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', (object) [
+            'worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => 'original-request', 'timeout_seconds' => 0,
+        ]);
+        $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', (object) [
+            'worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => " original-request \t",
+        ]);
+        foreach ([false, true] as $leased) {
+            $schema->assertReferenceMatches('#/components/schemas/CarriedActivityPollResult', (object) ['leased' => $leased]);
+        }
+        $request = $this->spec['components']['schemas']['WorkflowTaskCompleteRequest'];
+        $this->assertSame('#/components/schemas/CarriedActivityPollRequest', $request['properties']['activity_poll']['$ref']);
+        $this->assertNotContains('activity_poll', $request['required']);
+        $result = $this->spec['components']['schemas']['WorkflowTaskCompletionResult']['allOf'][1];
+        $this->assertSame('#/components/schemas/CarriedActivityPollResult', $result['properties']['activity_poll']['$ref']);
+        $this->assertNotContains('activity_poll', $result['required']);
+        $caps = $this->spec['components']['schemas']['WorkerServerCapabilities'];
+        $this->assertSame('boolean', $caps['properties']['workflow_task_completion_activity_poll']['type']);
+        $this->assertNotContains('workflow_task_completion_activity_poll', $caps['required']);
+    }
+
+    public function test_workflow_poll_normalization_pending_is_a_closed_retryable_refusal(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $valid = self::normalizationPendingHttpExample();
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', $valid);
+        $this->assertContains(
+            ['$ref' => '#/components/schemas/WorkflowPollNormalizationPending'],
+            $this->spec['components']['responses']['WorkerServiceUnavailable']['content']['application/json']['schema']['anyOf'],
+        );
+        $this->expectException(AssertionFailedError::class);
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', (object) [...(array) $valid, 'claim_admitted' => true]);
+    }
+
+    public static function invalidNormalizationPendingEnvelope(): iterable
+    {
+        $valid = (array) self::normalizationPendingHttpExample();
+        foreach (['protocol_version', 'server_capabilities'] as $key) {
+            $missing = $valid;
+            unset($missing[$key]);
+            yield 'missing '.$key => [$missing];
+        }
+        yield 'unknown field' => [$valid + ['unknown' => true]];
+        yield 'wrong protocol' => [array_replace($valid, ['protocol_version' => 'v1.20'])];
+        yield 'wrong capabilities' => [array_replace($valid, ['server_capabilities' => true])];
+    }
+
+    #[DataProvider('invalidNormalizationPendingEnvelope')]
+    public function test_normalization_pending_wire_envelope_rejects_missing_or_unrelated_fields(array $value): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', self::normalizationPendingHttpExample());
+        $this->expectException(AssertionFailedError::class);
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', (object) $value);
+    }
+
+    private static function normalizationPendingHttpExample(): \stdClass
+    {
+        $vectors = json_decode((string) file_get_contents(dirname(__DIR__, 2).'/resources/platform-protocol-specs/carried-poll-v1-vectors.json'), flags: JSON_THROW_ON_ERROR);
+        if (!$vectors instanceof \stdClass
+            || !$vectors->normalization_refusal_contract instanceof \stdClass
+            || !$vectors->normalization_refusal_contract->http_example instanceof \stdClass) {
+            throw new \UnexpectedValueException('Invalid normalization refusal wire fixture.');
+        }
+
+        return $vectors->normalization_refusal_contract->http_example;
+    }
+
+    public static function invalidCarriedActivityPoll(): iterable
+    {
+        $valid = ['worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => 'original-request'];
+        foreach ([null, true, '', " \t", "\u{200b}\u{feff}", "\u{0085}", str_repeat('a', 256)] as $index => $id) {
+            yield 'request identity '.$index => [array_replace($valid, ['poll_request_id' => $id])];
+        }
+        yield 'missing request identity' => [['worker_id' => 'owner', 'task_queue' => 'queue']];
+        yield 'unknown field' => [$valid + ['unknown' => true]];
+    }
+
+    #[DataProvider('invalidCarriedActivityPoll')]
+    public function test_ineligible_carried_activity_shape_is_not_the_documented_request(mixed $value): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml')
+            ->assertReferenceMatches('#/components/schemas/CarriedActivityPollRequest', (object) $value);
+    }
+
+    public function test_carried_workflow_poll_binds_actual_activity_completion_fields(): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $poll = (object) ['worker_id' => 'owner', 'task_queue' => 'queue', 'poll_request_id' => ' original-request ', 'task_kinds' => ['workflow'], 'history_page_size' => 1];
+        $schema->assertReferenceMatches('#/components/schemas/CarriedWorkflowPollRequest', $poll);
+        $schema->assertReferenceMatches('#/components/schemas/ActivityTaskCompleteRequest', (object) [
+            'lease_owner' => 'owner', 'activity_attempt_id' => 'original-attempt',
+            'result' => ['codec' => 'avro', 'blob' => 'AA=='], 'workflow_poll' => $poll,
+        ]);
+        $request = $this->spec['components']['schemas']['ActivityTaskCompleteRequest'];
+        $this->assertNotContains('workflow_poll', $request['required']);
+        $this->assertSame('#/components/schemas/CarriedWorkflowPollRequest', $request['properties']['workflow_poll']['$ref']);
+        $result = $this->spec['components']['schemas']['ActivityTaskCompletionResult']['allOf'][1];
+        $this->assertNotContains('workflow_poll', $result['required']);
+        $this->assertSame('#/components/schemas/CarriedWorkflowPollResult', $result['properties']['workflow_poll']['$ref']);
+        foreach ([false, true] as $leased) {
+            $schema->assertReferenceMatches('#/components/schemas/CarriedWorkflowPollResult', (object) ['leased' => $leased]);
+        }
+    }
+
+    private static function carriedAnswer(string $kind): object
+    {
+        $task = (object) [
+            'task_id' => 'original-task', 'workflow_id' => 'original-workflow', 'run_id' => 'original-run',
+            'lease_owner' => 'owner', 'lease_expires_at' => '2026-11-06T23:01:00.000000Z', 'payload_codec' => 'avro',
+        ];
+        if ($kind === 'Activity') {
+            $task->activity_execution_id = 'original-execution';
+            $task->activity_attempt_id = 'original-attempt';
+            $task->activity_type = 'activity';
+            $task->attempt_number = 1;
+        } else {
+            $task->task_kind = 'workflow';
+            $task->workflow_task_attempt = 1;
+            $task->history_events = [];
+        }
+
+        return (object) [
+            'task' => $task, 'poll_status' => 'leased', 'protocol_version' => '1.20',
+            'server_capabilities' => (object) [], 'server_time' => '2026-11-06T23:00:00.123000Z',
+        ];
+    }
+
+    public static function invalidCarriedAnswer(): iterable
+    {
+        foreach (['Activity', 'Workflow'] as $kind) {
+            foreach (['false-with-answer', 'missing-clock', 'missing-protocol', 'unknown-result-member', 'wrong-attempt-type'] as $fault) {
+                yield $kind.' '.$fault => [$kind, $fault];
+            }
+        }
+    }
+
+    #[DataProvider('invalidCarriedAnswer')]
+    public function test_carried_answers_preserve_the_closed_result_and_normal_authority(string $kind, string $fault): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $reference = '#/components/schemas/Carried'.$kind.'PollResult';
+        $result = (object) ['leased' => true, 'answer' => self::carriedAnswer($kind)];
+        $schema->assertReferenceMatches($reference, $result);
+        switch ($fault) {
+            case 'false-with-answer': $result->leased = false; break;
+            case 'missing-clock': unset($result->answer->server_time); break;
+            case 'missing-protocol': unset($result->answer->protocol_version); break;
+            case 'unknown-result-member': $result->unknown = true; break;
+            case 'wrong-attempt-type':
+                $field = $kind === 'Activity' ? 'attempt_number' : 'workflow_task_attempt';
+                $result->answer->task->{$field} = '1';
+                break;
+        }
+        $this->expectException(AssertionFailedError::class);
+        $schema->assertReferenceMatches($reference, $result);
+    }
+
     public function test_ready_age_is_an_optional_bounded_actual_integer(): void
     {
         $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');

@@ -379,6 +379,9 @@ mod task_fairness;
 mod worker_protocol_envelope;
 #[path = "execution/child_start_turn.rs"]
 mod child_start_turn;
+#[path = "execution/carried_polls.rs"]
+mod carried_polls;
+
 #[path = "execution/workflow_poll_clock.rs"]
 mod workflow_poll_clock;
 

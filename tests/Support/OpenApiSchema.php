@@ -107,6 +107,10 @@ final class OpenApiSchema
         }
 
         if (is_string($value)) {
+            if (isset($schema['pattern'])) {
+                $pattern = '~'.str_replace('~', '\\~', $schema['pattern']).'~u';
+                Assert::assertSame(1, preg_match($pattern, $value), "{$pointer} must match its string pattern.");
+            }
             if (isset($schema['minLength'])) {
                 Assert::assertGreaterThanOrEqual($schema['minLength'], mb_strlen($value), "{$pointer} is too short.");
             }

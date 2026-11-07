@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "59"
+  version: "63"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -23,6 +23,74 @@ x-durable-workflow-catalog-entry: worker_protocol_api
 x-durable-workflow-catalog-schema: durable-workflow.v2.platform-protocol-specs.catalog
 x-durable-workflow-catalog-version: 16
 x-durable-workflow-evolution-rule: additive_minor_breaking_major
+x-durable-workflow-carried-activity-poll:
+  server_capability: workflow_task_completion_activity_poll
+  endpoint: /worker/workflow-tasks/{taskId}/complete
+  request_member: activity_poll
+  response_member: activity_poll
+  sender_rule: send_only_with_a_free_activity_slot
+  worker_binding: completing_lease_owner_before_admission_and_under_the_retained_task_fence
+  capacity_rule: no_live_workflow_or_validation_lease_for_the_worker
+  request_identity: the_original_standalone_activity_poll_request_id
+  omitted_result: no_activity_lease_delivered_by_this_completion
+  leased_false: the_probe_leased_nothing
+  reply_table:
+    new_lease: { activity_poll: { leased: true }, follow_up: original_poll_request_id }
+    attempted_empty: { activity_poll: { leased: false }, follow_up: original_poll_request_id }
+    declined: { activity_poll: omitted, follow_up: ordinary_poll_with_original_request_id }
+    duplicate_completion: { activity_poll: omitted, follow_up: recover_original_grant_with_original_request_id }
+  completion_authority: existing_parent_completion_guards_are_required_even_when_the_carrier_is_declined
+  vectors: carried-poll-v1-vectors.json
+  soft_declines: [invalid_carrier, worker_not_registered, task_queue_mismatch, worker_draining, stale_worker_registration, poll_cached_task_expired, occupied_workflow_slot]
+  claim_fault_before_commit: fail_visibly_and_roll_back_the_completion_transaction
+  commit_outcome_unknown: preserve_existing_storage_unavailable_503_and_recover_with_original_completion_and_poll_ids
+  duplicate_completion: never_dispatch_again_recover_with_the_original_poll_request_id
+  replay_clock: fresh_response_observation_without_renewing_original_lease_or_deadline_authority
+x-durable-workflow-carried-workflow-poll:
+  server_capability: activity_completion_workflow_poll
+  endpoint: /worker/activity-tasks/{taskId}/complete
+  request_member: workflow_poll
+  response_member: workflow_poll
+  task_kinds: [workflow]
+  sender_rule: send_only_with_a_free_workflow_slot
+  worker_binding: completing_lease_owner_before_admission_and_under_the_retained_task_fence
+  capacity_rule: no_live_activity_lease_for_the_worker_null_deadline_is_protected
+  omitted_result: no_workflow_lease_delivered_reservation_may_be_freed_without_inference_of_queue_emptiness
+  empty_probe: preserve_existing_cached_empty_but_do_not_cache_a_new_empty_answer
+  duplicate_completion: preserve_stale_attempt_receipt_without_new_dispatch_recover_original_poll_request_id
+  claim_fault_before_commit: fail_visibly_and_roll_back_the_completion_transaction
+  commit_outcome_unknown: preserve_existing_storage_unavailable_503_and_recover_with_original_completion_and_poll_ids
+  history: configured_normal_poll_projection_page_maximum_and_budget
+  normalization_cutover:
+    cache_key_family: normalized_v2_separate_from_predecessor_digests
+    deployment_condition: all_predecessor_writers_stopped_before_cutover_no_mixed_version_guarantee
+    known_predecessor: replay_original_raw_or_normalized_key_without_new_lease
+    unknown_predecessor: no_new_canonical_claim_while_any_unexpired_predecessor_cache_row_remains
+    ordinary_refusal: { status: 503, reason: workflow_poll_normalization_pending, retryable: true, retry_same_poll_request_id: true, claim_admitted: false }
+    carried_refusal: omit_workflow_poll_and_preserve_valid_completion
+    scope: conservative_database_wide_drain_because_predecessor_keys_are_opaque
+    expiry: original_predecessor_result_and_binding_expiry_not_process_restart_or_a_new_wait_window
+    new_requests: canonical_key_only_after_predecessor_drain
+x-durable-workflow-workflow-completion-poll-order:
+  server_capability: workflow_task_completion_workflow_poll
+  endpoint: /worker/workflow-tasks/{taskId}/complete
+  request_member: workflow_poll
+  response_member: workflow_poll
+  both_carriers: both_worker_ids_must_equal_the_completion_lease_owner_otherwise_decline_both
+  priority: activity_first_and_workflow_only_if_no_activity_lease_was_delivered
+  activity_leased: omit_workflow_poll_and_do_not_attempt_its_claim
+  missing_workflow_poll: no_workflow_lease_delivered_release_reservation_without_assuming_empty_queue_or_disabling_capability
+  duplicate_completion: no_new_dispatch_recover_with_the_original_poll_request_ids
+x-durable-workflow-carried-poll-answer:
+  response_path: optional_poll_result.answer_on_leased_true_only
+  capabilities: [workflow_task_completion_activity_poll, activity_completion_workflow_poll, workflow_task_completion_workflow_poll]
+  envelope: same_as_ordinary_poll_including_protocol_version_and_server_capabilities
+  clock: fresh_server_time_sample_after_completion_commit
+  original_authority: [task_id, lease_owner, activity_attempt_id, attempt_number, workflow_task_attempt, lease_expires_at, worker_session, deadlines, ready_age_ms, history_events, history_events_compressed, history_events_encoding, next_history_page_token]
+  presentation: actual_normal_history_projection_encoding_and_configured_page_limits
+  transport_age: charge_original_completion_request_before_reuse_never_restamp_on_receipt_or_cache_read
+  recovery: same_original_poll_request_id_if_completion_answer_or_embedded_answer_is_unavailable
+  retained_legacy_key: recover_known_original_keys_or_decline_new_normalized_claim_until_predecessor_drain
 x-durable-workflow-cross-kind-poll-wake:
   opt_in_worker_capability: cross_kind_poll_wake
   scope: [namespace, task_queue]
@@ -1111,7 +1179,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/PollRequest" }
+            schema: { $ref: "#/components/schemas/ActivityTaskPollRequest" }
       responses:
         "200":
           description: A claimed activity task, an empty long-poll result, or a draining-worker response.
@@ -1262,7 +1330,11 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ActivityTaskCompleteRequest" }
       responses:
-        "200": { $ref: "#/components/responses/WorkerEnvelope" }
+        "200":
+          description: A recorded activity completion and any optional carried workflow poll result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityTaskCompletionResult" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/activity-tasks/{taskId}/fail:
@@ -1377,6 +1449,9 @@ components:
         storage admission returns storage_pressure or storage_admission_unavailable
         before admitting a request or a new poll claim. Retain the poll ID on
         retry: refusal of this attempt does not describe an earlier outcome.
+        Identity-normalization cutover likewise returns an explicit retryable
+        workflow_poll_normalization_pending response before a new claim. It
+        does not settle a predecessor request's outcome; retain the original ID.
       headers:
         X-Durable-Workflow-Protocol-Version:
           schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
@@ -1388,6 +1463,7 @@ components:
             anyOf:
               - $ref: "#/components/schemas/WorkerBackendUnavailable"
               - $ref: "#/components/schemas/WorkerStorageAdmissionRefusal"
+              - $ref: "#/components/schemas/WorkflowPollNormalizationPending"
               - $ref: "#/components/schemas/WorkerError"
     WorkerPollBackpressure:
       description: The node has no capacity for another held long poll; retry after the advertised delay.
@@ -1707,6 +1783,15 @@ components:
       additionalProperties: true
       required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
+        workflow_task_completion_workflow_poll:
+          type: boolean
+          description: Literal true supports workflow_poll on workflow-task completion. If activity_poll delivers a lease, workflow_poll is not attempted and its response member is omitted. Omission delivers no workflow lease and releases its reservation without assuming queue emptiness or disabling this capability. Both supplied carriers must name the completing owner.
+        activity_completion_workflow_poll:
+          type: boolean
+          description: Literal true supports a workflow-only poll on activity completion under the completing owner and retained registration fence. A live activity lease with known or unknown expiry protects the opposite slot. Omission delivers no lease, permitting reservation release without assuming an empty queue.
+        workflow_task_completion_activity_poll:
+          type: boolean
+          description: Literal true supports an optional activity_poll on workflow-task completion. The poll identifies the completing worker and asserts a free activity slot. Completion and claim share a transaction; opposite-slot occupancy, draining or stale registration declines eager dispatch. Internal claim faults remain visible failures.
         claimed_task_ready_age:
           type: boolean
           description: Literal true supports optional authoritative ready_age_ms on actual workflow/activity claims. Unknown legacy origins and old stored poll answers may omit the measurement. No query or update-validation measurement is supplied.
@@ -1966,6 +2051,161 @@ components:
         task_queues: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
         build_id: { type: [string, "null"] }
         poll_timeout_seconds: { type: integer, minimum: 0 }
+    ActivityTaskPollRequest:
+      type: object
+      additionalProperties: true
+      required: [worker_id, task_queue]
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queue: { type: string, minLength: 1 }
+        build_id: { type: [string, "null"] }
+        poll_request_id: { type: [string, "null"], maxLength: 255 }
+        timeout_seconds: { type: [integer, "null"], minimum: 0, maximum: 60 }
+    CarriedActivityPollRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_id, task_queue, poll_request_id]
+      description: >
+        Eligible activity poll carried by a workflow-task completion. worker_id
+        must equal the completing lease_owner, checked again under the retained
+        task fence. Send it only with a free activity slot. The known fields use
+        standalone activity-poll rules; poll_request_id is additionally required
+        and nonblank, and retains its original identity. The carrier makes one
+        immediate probe and never waits, even if timeout_seconds is positive.
+        Invalid carriers, occupied opposite slots and ordinary admission refusals
+        decline eager dispatch while the valid completion remains recorded.
+        Internal storage, decoding, budget or invariant faults fail visibly and
+        roll back the transaction. This member never bypasses the parent's
+        existing completion guard; a stale or draining parent remains refused.
+        Omitting this member preserves old behavior.
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queue: { type: string, minLength: 1 }
+        build_id: { type: [string, "null"] }
+        poll_request_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: "[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200B\u200E\u2028\u2029\u202F\u205F\u3000\uFEFF]"
+          description: Opaque original identity containing at least one character left by Laravel string trimming. Padding is retained.
+        timeout_seconds: { type: [integer, "null"], minimum: 0, maximum: 60 }
+    CarriedActivityPollResult:
+      description: >
+        On a valid completion reply, a true result may carry the complete ordinary
+        poll answer. A storage-unavailable reply leaves the commit outcome unknown;
+        it does not prove that no lease was delivered. Consumers
+        accept older flag-only producers and fall back with the original poll
+        request ID if answer is absent. A false result contains no answer. Omission
+        delivers no lease and permits releasing the reservation without assuming
+        queue emptiness or disabling a capability. Duplicate completion dispatches
+        nothing new; recover a still-deliverable grant with the original ID.
+        A supplied answer uses post-commit presentation and a fresh server_time.
+        Original lease/session/deadline/history/ready-age authority is retained.
+        Charge the ORIGINAL completion request transport before using the answer;
+        receipt or cache read time cannot renew authority.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [leased]
+          properties:
+            leased: { const: false }
+        - type: object
+          additionalProperties: false
+          required: [leased]
+          properties:
+            leased: { const: true }
+            answer: { $ref: "#/components/schemas/CarriedActivityPollAnswer" }
+    CarriedActivityPollAnswer:
+      allOf:
+        - $ref: "#/components/schemas/CarriedPollAnswerEnvelope"
+        - type: object
+          properties:
+            task: { $ref: "#/components/schemas/ActivityTaskClaim/allOf/1/properties/task" }
+    CarriedWorkflowPollRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_id, task_queue, poll_request_id]
+      description: >
+        Same-owner workflow-only request for one immediate probe. Send only with
+        a free workflow slot. Its original request ID follows standalone workflow
+        trimming and remains stable through completion retries and ordinary
+        follow-up. The actual configured page limits, encoding and history
+        budgets apply. Invalid carriers or ordinary admission declines leave a
+        valid completion recorded. Internal faults roll back and surface.
+        Existing ordinary cached empty replies are honored; a new empty carrier
+        probe records no new ordinary empty reply, so later arrivals remain visible.
+      properties:
+        worker_id: { type: string, minLength: 1 }
+        task_queue: { type: string, minLength: 1 }
+        build_id: { type: [string, "null"] }
+        poll_request_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: "[^\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200B\u200E\u2028\u2029\u202F\u205F\u3000\uFEFF]"
+          description: Original workflow poll identity containing a nonblank character. The workflow poller applies its ordinary trimming.
+        timeout_seconds: { type: [integer, "null"], minimum: 0, maximum: 60 }
+        history_page_size: { type: [integer, "null"], minimum: 1, maximum: 1000 }
+        accept_history_encoding: { type: [string, "null"], maxLength: 64 }
+        task_kinds:
+          type: [array, "null"]
+          minItems: 1
+          maxItems: 1
+          items: { type: string, const: workflow }
+    CarriedWorkflowPollResult:
+      description: >
+        On a valid completion reply, a true result may carry the complete ordinary
+        poll answer. A storage-unavailable reply leaves the commit outcome unknown;
+        it does not prove that no lease was delivered. Consumers
+        accept older flag-only producers and fall back with the original poll
+        request ID if answer is absent. A false result contains no answer. Omission
+        delivers no lease and permits releasing the reservation without assuming
+        queue emptiness or disabling a capability. Duplicate completion dispatches
+        nothing new; recover a still-deliverable grant with the original ID.
+        A supplied answer uses post-commit presentation and a fresh server_time.
+        Original lease/session/deadline/history/ready-age authority is retained.
+        Charge the ORIGINAL completion request transport before using the answer;
+        receipt or cache read time cannot renew authority.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [leased]
+          properties:
+            leased: { const: false }
+        - type: object
+          additionalProperties: false
+          required: [leased]
+          properties:
+            leased: { const: true }
+            answer: { $ref: "#/components/schemas/CarriedWorkflowPollAnswer" }
+    CarriedWorkflowPollAnswer:
+      allOf:
+        - $ref: "#/components/schemas/CarriedPollAnswerEnvelope"
+        - type: object
+          properties:
+            task: { $ref: "#/components/schemas/WorkflowTask" }
+    CarriedPollAnswerEnvelope:
+      type: object
+      additionalProperties: false
+      required: [task, poll_status, protocol_version, server_capabilities, server_time]
+      description: >
+        Exact native leased-poll envelope, shared with the ordinary route.
+        Capabilities are the same producer-owned map the ordinary poll returns;
+        absence of an unrelated optional role never advertises its support.
+        Only this outer observation clock is refreshed. Every task lease,
+        session, deadline, history page and payload reference remains original.
+      properties:
+        task: { type: object }
+        poll_status: { const: leased }
+        protocol_version: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        server_time: { $ref: "#/components/schemas/WorkerServerTime" }
+        server_capabilities:
+          type: object
+          additionalProperties: true
+          properties:
+            workflow_task_completion_activity_poll: { type: boolean }
+            activity_completion_workflow_poll: { type: boolean }
+            workflow_task_completion_workflow_poll: { type: boolean }
     WorkflowTaskPollRequest:
       type: object
       additionalProperties: true
@@ -2792,6 +3032,23 @@ components:
         task_queue: { type: string, minLength: 1 }
         lease_owner: { type: string, minLength: 1 }
         lease_expires_at: { type: string, format: date-time }
+    WorkflowPollNormalizationPending:
+      type: object
+      description: Temporary cutover refusal for this attempt only. Retained predecessor answers remain authoritative; retry with the original poll identity.
+      additionalProperties: false
+      required: [task, poll_status, reason, message, retryable, retry_after_seconds, poll_request_id, retry_same_poll_request_id, claim_admitted, protocol_version, server_capabilities]
+      properties:
+        task: { type: "null" }
+        poll_status: { type: string, const: workflow_poll_normalization_pending }
+        reason: { type: string, const: workflow_poll_normalization_pending }
+        message: { type: string, const: workflow_poll_normalization_pending }
+        retryable: { type: boolean, const: true }
+        retry_after_seconds: { type: integer, const: 1 }
+        poll_request_id: { $ref: "#/components/schemas/CarriedWorkflowPollRequest/properties/poll_request_id" }
+        retry_same_poll_request_id: { type: boolean, const: true }
+        claim_admitted: { type: boolean, const: false }
+        protocol_version: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        server_capabilities: { $ref: "#/components/schemas/CarriedPollAnswerEnvelope/properties/server_capabilities" }
     PollRequestTaskKindsConflict:
       allOf:
         - $ref: "#/components/schemas/WorkerError"
@@ -2978,16 +3235,27 @@ components:
         - type: object
           required: [task]
           properties:
+            server_time: { $ref: "#/components/schemas/WorkerServerTime" }
+            poll_status: { type: string, const: leased }
             task:
               type: object
               additionalProperties: true
-              required: [task_id, activity_type, attempt]
+              required: [task_id, activity_execution_id, activity_attempt_id, activity_type, attempt_number, lease_owner, lease_expires_at, payload_codec]
               properties:
                 ready_age_ms:
                   $ref: "#/components/schemas/ClaimedTaskReadyAgeMs"
                 task_id: { type: string }
                 activity_type: { type: string }
-                attempt: { type: integer, minimum: 1 }
+                activity_execution_id: { type: string, minLength: 1 }
+                activity_attempt_id: { type: string, minLength: 1 }
+                attempt_number: { type: integer, minimum: 1 }
+                idempotency_key: { type: string, minLength: 1 }
+                lease_owner: { type: string, minLength: 1 }
+                lease_expires_at: { type: string, format: date-time }
+                payload_codec: { type: string, const: avro }
+                arguments: true
+                retry_policy: { type: [object, "null"], additionalProperties: true }
+                deadlines: { type: object, additionalProperties: true }
                 worker_session:
                   $ref: "./worker-sessions-runtime.schema.json#/$defs/workerSessionTaskAffinity"
     HistoryPageRequest:
@@ -3137,6 +3405,12 @@ components:
       properties:
         lease_owner: { type: string, minLength: 1 }
         workflow_task_attempt: { type: integer, minimum: 1 }
+        activity_poll:
+          $ref: "#/components/schemas/CarriedActivityPollRequest"
+          description: Requires server capability workflow_task_completion_activity_poll. A transport poll is separate from authored completion idempotency.
+        workflow_poll:
+          $ref: "#/components/schemas/CarriedWorkflowPollRequest"
+          description: Requires workflow_task_completion_workflow_poll. Both supplied carrier owners must match lease_owner. The activity carrier has priority and a delivered activity lease causes workflow result omission.
         commands:
           type: array
           items:
@@ -3365,6 +3639,10 @@ components:
             run_status: { type: [string, "null"] }
             created_task_ids: { type: array, items: { type: string } }
             reason: { type: [string, "null"] }
+            activity_poll:
+              $ref: "#/components/schemas/CarriedActivityPollResult"
+            workflow_poll:
+              $ref: "#/components/schemas/CarriedWorkflowPollResult"
     SearchAttributeTypeMap:
       type: object
       additionalProperties: { $ref: "#/components/schemas/SearchAttributeType" }
@@ -3448,13 +3726,30 @@ components:
               oneOf: [{ type: "null" }, { $ref: "#/components/schemas/QueryAuthorityTimestamp" }]
             lease_expires_at:
               oneOf: [{ type: "null" }, { $ref: "#/components/schemas/QueryAuthorityTimestamp" }]
+    ActivityTaskCompletionResult:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task_id, activity_attempt_id, outcome, recorded, reason, next_task_id]
+          properties:
+            task_id: { type: string, minLength: 1 }
+            activity_attempt_id: { type: string, minLength: 1 }
+            outcome: { type: string, const: completed }
+            recorded: { type: boolean }
+            reason: { type: [string, "null"] }
+            next_task_id: { type: [string, "null"] }
+            workflow_poll: { $ref: "#/components/schemas/CarriedWorkflowPollResult" }
     ActivityTaskCompleteRequest:
       type: object
       additionalProperties: true
-      required: [worker_id]
+      required: [lease_owner, activity_attempt_id, result]
       properties:
-        worker_id: { type: string, minLength: 1 }
+        lease_owner: { type: string, minLength: 1 }
+        activity_attempt_id: { type: string, minLength: 1 }
         result: true
+        workflow_poll:
+          $ref: "#/components/schemas/CarriedWorkflowPollRequest"
+          description: Requires activity_completion_workflow_poll. No eager poll is granted if the normal result is refused or converted to a structural-limit failure.
     TaskFailureRequest:
       type: object
       additionalProperties: true

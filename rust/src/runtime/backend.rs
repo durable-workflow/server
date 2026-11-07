@@ -105,7 +105,8 @@ pub(super) trait Backend: Database {
     const QUERY_CACHE_PAGE: &str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\">$1 ORDER BY \"key\" LIMIT 64";
     // A bounded batch of expired per-request query poll rows.
     const QUERY_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY expiration,\"key\" LIMIT $2";
-    const WORKFLOW_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-workflow-poll:%' AND expiration<=$1 ORDER BY expiration,\"key\" LIMIT $2";
+    const WORKFLOW_POLL_EXPIRED: &str = "SELECT \"key\" FROM dw_query_cache WHERE (\"key\" LIKE 'dw-native-workflow-poll:%' OR \"key\" LIKE 'dw-native-workflow-poll-v2:%') AND expiration<=$1 ORDER BY expiration,\"key\" LIMIT $2";
+    const WORKFLOW_POLL_LEGACY_ACTIVE: &str = "SELECT expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-workflow-poll:%' AND expiration>$1 ORDER BY expiration DESC LIMIT 1";
     /// Add a cache row, or lock the existing one with a no-op update, so
     /// transactions over one poll request ID run one at a time.
     /// A worker session's running activity attempts held by its owner,
@@ -603,7 +604,8 @@ impl Backend for MySql {
     const QUERY_CACHE_DELETE_EXPIRED: &str = "DELETE FROM dw_query_cache WHERE `key`=$1 AND expiration<=$2";
     const QUERY_CACHE_PAGE: &str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key`>$1 ORDER BY `key` LIMIT 64";
     const QUERY_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";
-    const WORKFLOW_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-workflow-poll:%' AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";
+    const WORKFLOW_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE (`key` LIKE 'dw-native-workflow-poll:%' OR `key` LIKE 'dw-native-workflow-poll-v2:%') AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";
+    const WORKFLOW_POLL_LEGACY_ACTIVE: &str = "SELECT expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-workflow-poll:%' AND expiration>$1 ORDER BY expiration DESC LIMIT 1";
     const QUERY_CACHE_LOCK: &str = "INSERT INTO dw_query_cache(`key`,value,expiration) VALUES ($1,$2,$3) ON DUPLICATE KEY UPDATE expiration=expiration";
     const SESSION_RUNNING_ATTEMPTS: &str = "SELECT COUNT(*) FROM activity_attempts p JOIN activity_executions e ON e.id=p.activity_execution_id JOIN workflow_tasks t ON t.id=p.workflow_task_id WHERE t.namespace=? AND p.status='running' AND p.lease_expires_at>? AND p.lease_owner=? AND JSON_UNQUOTE(JSON_EXTRACT(e.activity_options,'$.worker_session.session_id'))=? AND p.workflow_task_id<>?";
     const TASK_KIND_CURSOR_LOCK: &str = "INSERT INTO workflow_task_poll_cursors(namespace,task_queue,next_task_kind,created_at,updated_at) VALUES ($1,$2,'update_validation',$3,$4) ON DUPLICATE KEY UPDATE next_task_kind=next_task_kind";

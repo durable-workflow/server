@@ -23,6 +23,7 @@ on:
       - scripts/ci/sdk-adapter-cache-key.sh
       - tests/Unit/NativeDebugArtifactTest.mjs
       - config/dw-contract.php
+      - resources/platform-protocol-specs/carried-poll-v1-vectors.json
       - tests/Fixtures/ActivityMetadataProjection/**
       - tests/Fixtures/CodecRegression/**
       - tests/Fixtures/HistoryBudget/**

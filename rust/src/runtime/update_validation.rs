@@ -974,7 +974,7 @@ where
             super::worker_poll_fence::PollAdmission::Unregistered => None,
         };
         let request = match super::workflow_poll_requests::request_id(body) {
-            Some(id) => Some(self.workflow_poll_request(&worker_id, &task_queue, id, default_wait, kinds).await?),
+            Some(id) => Some(self.workflow_poll_request(&worker_id, &task_queue, id, body.get("poll_request_id").and_then(Value::as_str), default_wait, kinds).await?),
             None => None,
         };
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);

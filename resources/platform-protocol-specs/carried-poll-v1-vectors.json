@@ -1,0 +1,371 @@
+{
+  "schema": "durable-workflow.carried-poll-v1",
+  "capability": "workflow_task_completion_activity_poll",
+  "cases": [
+    {
+      "id": "leased",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "raw-padded-request-id",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-request \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "empty-immediate-probe",
+      "schedule_activity": false,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 60
+      },
+      "expected_result": "empty"
+    },
+    {
+      "id": "omitted",
+      "schedule_activity": true,
+      "activity_poll": null,
+      "expected_result": "omitted"
+    },
+    {
+      "id": "wrong-worker",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "other",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "wrong-queue",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "different",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "missing-request-id",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "blank-request-id",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "unknown-field",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 0,
+        "unknown": true
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "invalid-timeout",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "original-request",
+        "timeout_seconds": 61
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "raw-custom-trim-0",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \ufeffraw-original\ufeff ",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "raw-custom-trim-1",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \u200braw-original\u200b ",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "raw-custom-trim-2",
+      "schedule_activity": true,
+      "activity_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \u200eraw-original\u200e ",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    }
+  ],
+  "recovery": {
+    "completion_retry": "same_authored_completion_and_original_poll_request_id",
+    "duplicate_result": "activity_poll_omitted",
+    "ordinary_poll": "replay_original_live_lease",
+    "only_mutable_reply_field": "server_time",
+    "expiry": "poll_cached_task_expired",
+    "replacement": "original_lease_not_renewed"
+  },
+  "workflow_capability": "activity_completion_workflow_poll",
+  "workflow_cases": [
+    {
+      "id": "workflow-leased",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "workflow-paged",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0,
+        "history_page_size": 1,
+        "task_kinds": [
+          "workflow"
+        ]
+      },
+      "expected_result": "leased"
+    },
+    {
+      "id": "workflow-empty-host",
+      "standalone_activity": true,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 60
+      },
+      "expected_result": "empty"
+    },
+    {
+      "id": "workflow-omitted",
+      "standalone_activity": false,
+      "workflow_poll": null,
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-wrong-worker",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "other",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-wrong-queue",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "different",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-missing-id",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-blank-id",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " \t",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-validation-kind",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0,
+        "task_kinds": [
+          "workflow",
+          "update_validation"
+        ]
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-unknown-field",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": " original-workflow-request \t",
+        "timeout_seconds": 0,
+        "unknown": true
+      },
+      "expected_result": "omitted"
+    },
+    {
+      "id": "workflow-laravel-blank-id",
+      "standalone_activity": false,
+      "workflow_poll": {
+        "worker_id": "owner",
+        "task_queue": "queue",
+        "poll_request_id": "\u200b\ufeff\u200e",
+        "timeout_seconds": 0
+      },
+      "expected_result": "omitted"
+    }
+  ],
+  "workflow_completion_capability": "workflow_task_completion_workflow_poll",
+  "paired_cases": [
+    {
+      "id": "activity-first",
+      "activity": true,
+      "schedule_activity": true,
+      "foreign": null,
+      "expected_activity": "leased",
+      "expected_workflow": "omitted"
+    },
+    {
+      "id": "activity-empty",
+      "activity": true,
+      "schedule_activity": false,
+      "foreign": null,
+      "expected_activity": "empty",
+      "expected_workflow": "leased"
+    },
+    {
+      "id": "workflow-only",
+      "activity": false,
+      "schedule_activity": false,
+      "foreign": null,
+      "expected_activity": "omitted",
+      "expected_workflow": "leased"
+    },
+    {
+      "id": "foreign-activity",
+      "activity": true,
+      "schedule_activity": false,
+      "foreign": "activity",
+      "expected_activity": "omitted",
+      "expected_workflow": "omitted"
+    },
+    {
+      "id": "foreign-workflow",
+      "activity": true,
+      "schedule_activity": false,
+      "foreign": "workflow",
+      "expected_activity": "omitted",
+      "expected_workflow": "omitted"
+    }
+  ],
+  "workflow_request_id_padding": [
+    "\ufeff",
+    "\u200b",
+    "\u200e"
+  ],
+  "predecessor_cases": [
+    { "id": "feff-padded-to-normalized", "original_request_id": "\ufeffcutover-id\ufeff", "retry_request_id": "cutover-id", "expected": "normalization_pending" },
+    { "id": "feff-normalized-to-padded", "original_request_id": "cutover-id", "retry_request_id": "\ufeffcutover-id\ufeff", "expected": "replay" },
+    { "id": "200b-padded-to-normalized", "original_request_id": "\u200bcutover-id\u200b", "retry_request_id": "cutover-id", "expected": "normalization_pending" },
+    { "id": "200b-normalized-to-padded", "original_request_id": "cutover-id", "retry_request_id": "\u200bcutover-id\u200b", "expected": "replay" },
+    { "id": "200e-padded-to-normalized", "original_request_id": "\u200ecutover-id\u200e", "retry_request_id": "cutover-id", "expected": "normalization_pending" },
+    { "id": "200e-normalized-to-padded", "original_request_id": "cutover-id", "retry_request_id": "\u200ecutover-id\u200e", "expected": "replay" }
+  ],
+  "normalization_refusal_contract": {
+    "http_status": 503,
+    "http_keys": ["task", "poll_status", "reason", "message", "retryable", "retry_after_seconds", "poll_request_id", "retry_same_poll_request_id", "claim_admitted", "protocol_version", "server_capabilities"],
+    "http_example": {
+      "task": null,
+      "poll_status": "workflow_poll_normalization_pending",
+      "reason": "workflow_poll_normalization_pending",
+      "message": "workflow_poll_normalization_pending",
+      "retryable": true,
+      "retry_after_seconds": 1,
+      "poll_request_id": "original-id",
+      "retry_same_poll_request_id": true,
+      "claim_admitted": false,
+      "protocol_version": "1.20",
+      "server_capabilities": {
+        "workflow_task_completion_activity_poll": true,
+        "activity_completion_workflow_poll": true,
+        "workflow_task_completion_workflow_poll": true
+      }
+    }
+  },
+  "answer_contract": {
+    "keys": [
+      "poll_status",
+      "protocol_version",
+      "server_capabilities",
+      "server_time",
+      "task"
+    ],
+    "clock": "post_commit_response_observation",
+    "transport_age": "original_completion_request",
+    "replay_changes": [
+      "server_time"
+    ],
+    "history_and_payload": "ordinary_poll_presentation_and_limits"
+  }
+}

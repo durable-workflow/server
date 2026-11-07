@@ -47,7 +47,7 @@ store_methods! {
             assert_eq!(self.count_get(), 1, "one replay/claim probe, multiplexed={multiplexed}");
             self.count_reset();
             let replayed = self.count_poll(&name, multiplexed).await;
-            assert_eq!(self.count_get(), 1, "one cached replay");
+            assert_eq!(self.count_get(), usize::from(multiplexed), "a plain live lease replays in a read snapshot; multiplexed replay retains its transition");
             assert_eq!(claimed, replayed);
             self.count_reset();
             let empty = self.count_poll(&format!("{name}-empty"), multiplexed).await;
@@ -142,7 +142,7 @@ store_methods! {
         self.complete_or_checkpoint(workflow["task"]["task_id"].as_str().unwrap(), json!({"lease_owner":"count-worker",
             "workflow_task_attempt":workflow["task"]["workflow_task_attempt"],
             "commands":[{"type":"complete_workflow","result":input()}]}),
-            Arc::new(Semaphore::new(1)), BTreeMap::new(), None, Some("1.20"), Default::default(), None, None).await.unwrap();
+            Arc::new(Semaphore::new(1)), BTreeMap::new(), None, super::carried_polls::Config { protocol: Some("1.20"), pages: Default::default(), default_wait: 30 }, Default::default(), None, None).await.unwrap();
         let config = QueryTaskConfig { timeout_seconds: 10, ..Default::default() };
         // A positive-wait query still uses the existing coordinated path but
         // finds a task immediately. It is the unchanged five-lock control.
