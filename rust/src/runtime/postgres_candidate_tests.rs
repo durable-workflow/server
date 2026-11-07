@@ -24,8 +24,14 @@ fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize, in_ra
     match node["Relation Name"].as_str() {
         Some("workflow_tasks") => {
             assert!(matches!(node["Node Type"].as_str(),Some("Index Scan" | "Index Only Scan")),"{node}");
-            assert_eq!(node["Index Name"],"workflow_tasks_dispatch_order_index","the status range must use complete scoped dispatch order: {node}");
-            assert!(node["Index Cond"].as_str().is_some_and(|condition| ["namespace","queue","task_type","status"].iter().all(|key| condition.contains(key))),"{node}");
+            assert!(matches!(node["Index Name"].as_str(),Some("workflow_tasks_dispatch_order_index" | "dw_workflow_tasks_scoped_dispatch")),
+                "the status range must use one of the two complete ordered indexes: {node}");
+            let predicates = format!("{} {}",node["Index Cond"].as_str().unwrap_or(""),node["Filter"].as_str().unwrap_or(""));
+            assert!(["namespace","queue","task_type","status"].iter().all(|key| predicates.contains(key)),
+                "all scope predicates must precede the run lookup and status-range limit: {node}");
+            if node["Index Name"] == "dw_workflow_tasks_scoped_dispatch" {
+                assert!(node["Index Cond"].as_str().is_some_and(|condition| ["namespace","queue","task_type","status"].iter().all(|key| condition.contains(key))),"{node}");
+            }
             *tasks += 1;
         }
         Some("workflow_runs") => {
