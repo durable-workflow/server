@@ -152,6 +152,8 @@ mod poll_sweeps_tests;
 #[cfg(test)]
 mod mysql_candidate_tests;
 #[cfg(test)]
+mod postgres_candidate_tests;
+#[cfg(test)]
 mod poll_transaction_tests;
 #[cfg(test)]
 mod transition_queue_tests;
