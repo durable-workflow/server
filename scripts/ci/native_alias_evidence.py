@@ -38,6 +38,7 @@ RUNNER_PATHS = {
     "scripts/ci/native-release-verify-publication.sh",
     "scripts/ci/check-docker-workflow-isolation.py",
     "tests/Unit/Support/native_alias_evidence_test.py", "tests/Unit/Support/native_qualification_test.py",
+    "tests/Feature/TaskQueueAdmissionTest.php",
     "README.md",
 }
 MANIFEST_LIMIT = 8192
