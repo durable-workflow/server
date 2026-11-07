@@ -1,4 +1,4 @@
-import {constants, existsSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, closeSync, writeFileSync} from 'node:fs';
+import {constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, closeSync, writeFileSync} from 'node:fs';
 import {basename, dirname, join, relative, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {StringDecoder} from 'node:string_decoder';
@@ -6,6 +6,93 @@ import {StringDecoder} from 'node:string_decoder';
 const FILE_LIMIT = 64 * 1024;
 const CONTENT_LIMIT = 2 * 1024 * 1024;
 const ENTRY_LIMIT = 128;
+
+// Failed actors need poll outcomes, not their request/history payloads. These
+// diagnostics read existing evidence only and never qualify a failed actor.
+function markerJournal(path, size) {
+  if (!Number.isSafeInteger(size) || size < 0 || size > CONTENT_LIMIT) return null;
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (fstatSync(descriptor).size !== size) return null;
+    const data = Buffer.alloc(size);
+    let read = 0;
+    while (read < size) {
+      const count = readSync(descriptor, data, read, size - read, read);
+      if (!count) return null;
+      read += count;
+    }
+    return fstatSync(descriptor).size === size ? data : null;
+  } finally { closeSync(descriptor); }
+}
+
+function jsonObject(text) {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch { return null; }
+}
+
+function markerTaskShape(reply) {
+  if (reply?.task === null) return 'none';
+  if (reply?.task && typeof reply.task === 'object' && !Array.isArray(reply.task)) return 'present';
+  return 'unknown';
+}
+
+function markerPollObservation(row) {
+  if (row.method !== 'POST') return null;
+  let kind;
+  if (row.path === '/api/worker/workflow-tasks/poll') kind = 'workflow';
+  else if (row.path === '/api/worker/activity-tasks/poll') kind = 'activity';
+  else return null;
+  const request = jsonObject(row.request_body), reply = jsonObject(row.response_body);
+  const phase = typeof request?.worker_id === 'string' ? request.worker_id.split(':').at(-1) : null;
+  const phases = ['original', 'excluding', 'restored', 'repaired-wait', 'policy-refusal', 'wider', 'clock-wait'];
+  const statuses = ['leased', 'empty', 'timeout', 'task_queue_changed', 'stale_worker_registration', 'workflow_poll_normalization_pending'];
+  const reasons = ['backend_lock_pressure', 'stale_worker_registration', 'poll_request_task_kinds_conflict', 'history_event_exceeds_page_budget'];
+  return {kind, phase: phases.includes(phase) ? phase : 'other',
+    status: Number.isInteger(row.status) && row.status >= 0 && row.status <= 599 ? row.status : 'unknown',
+    poll_status: statuses.includes(reply?.poll_status) ? reply.poll_status : 'other',
+    reason: reasons.includes(reply?.reason) ? reply.reason : 'other',
+    task: markerTaskShape(reply),
+    response_json_object: reply !== null,
+    client_cancelled: row.client_cancelled === true, transport_error: row.transport_error != null};
+}
+
+export function markerPollDiagnostic(path, size) {
+  const result = {schema: 'durable-workflow.marker-poll-diagnostic.v1', complete: false,
+    source_bytes: size, observed_rows: 0, poll_rows: 0, groups: []};
+  const data = markerJournal(path, size);
+  if (data === null) return result;
+  let text;
+  try { text = new TextDecoder('utf-8', {fatal: true}).decode(data); } catch { return result; }
+  const lines = text.split('\n').filter(line => line !== '');
+  if (lines.length > 512 || lines.some(line => Buffer.byteLength(line) > 128 * 1024)) return result;
+  const groups = new Map();
+  for (const line of lines) {
+    const row = jsonObject(line);
+    if (row === null) return result;
+    result.observed_rows++;
+    const observation = markerPollObservation(row);
+    if (observation === null) continue;
+    const key = JSON.stringify(observation);
+    if (!groups.has(key) && groups.size === 64) return result;
+    groups.set(key, {...observation, count: (groups.get(key)?.count ?? 0) + 1});
+    result.poll_rows++;
+  }
+  result.complete = true;
+  result.groups = [...groups.values()];
+  return result;
+}
+
+function markerDiagnostics(source, files) {
+  return files.filter(file => /^corrected-marker\/(php|rust)\/[^/]+-http\.jsonl$/.test(file.path)
+    && files.some(other => other.source_bytes > 0 && other.path.endsWith('.stderr')
+      && other.path.startsWith(file.path.slice(0, -'-http.jsonl'.length) + '-'))).slice(0, 8).map(file => {
+    const content = Buffer.from(`${JSON.stringify(markerPollDiagnostic(join(source, file.path), file.source_bytes))}\n`);
+    return {path: `${file.path}.diagnostic.json`, source_bytes: content.length,
+      derived_from: file.path, content, priority: 0};
+  });
+}
 
 function priority(path, failed) {
   const name = basename(path);
@@ -102,7 +189,8 @@ export function summarizeEvidence(source, destination, {outcome = 'unknown', rev
   }
   mkdirSync(destination, {recursive: true});
   const files = inventory(source);
-  const selected = files.map(file => ({...file, priority: priority(file.path, outcome !== 'success')}))
+  const diagnostics = outcome === 'success' ? [] : markerDiagnostics(source, files);
+  const selected = [...diagnostics, ...files.map(file => ({...file, priority: priority(file.path, outcome !== 'success')}))]
     .filter(file => file.priority !== null && file.source_bytes > 0)
     .sort((a, b) => a.priority - b.priority || a.path.localeCompare(b.path));
   const retained = [];
@@ -115,19 +203,23 @@ export function summarizeEvidence(source, destination, {outcome = 'unknown', rev
     if (bytes + size > CONTENT_LIMIT) continue;
     const output = join(destination, file.path);
     mkdirSync(dirname(output), {recursive: true});
-    const descriptor = openSync(join(source, file.path), constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const content = Buffer.alloc(size);
-      const start = file.source_bytes - size;
-      let count = 0;
-      while (count < size) {
-        const read = readSync(descriptor, content, count, size - count, start + count);
-        if (read === 0) throw new Error(`Evidence changed while summarizing: ${file.path}`);
-        count += read;
-      }
-      writeFileSync(output, content);
-    } finally { closeSync(descriptor); }
-    retained.push({path: file.path, source_bytes: file.source_bytes, retained_bytes: size, tail_only: size < file.source_bytes});
+    if (file.content !== undefined) writeFileSync(output, file.content);
+    else {
+      const descriptor = openSync(join(source, file.path), constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const content = Buffer.alloc(size);
+        const start = file.source_bytes - size;
+        let count = 0;
+        while (count < size) {
+          const read = readSync(descriptor, content, count, size - count, start + count);
+          if (read === 0) throw new Error(`Evidence changed while summarizing: ${file.path}`);
+          count += read;
+        }
+        writeFileSync(output, content);
+      } finally { closeSync(descriptor); }
+    }
+    retained.push({path: file.path, source_bytes: file.source_bytes, retained_bytes: size, tail_only: size < file.source_bytes,
+      ...(file.derived_from === undefined ? {} : {derived_from: file.derived_from})});
     bytes += size;
     // A tail-only test report also keeps its failing tests, bounded.
     if (size < file.source_bytes && TEST_SUMMARY.test(basename(file.path)) && retained.length < ENTRY_LIMIT) {
@@ -151,7 +243,7 @@ export function summarizeEvidence(source, destination, {outcome = 'unknown', rev
     omitted_files: files.length - retained.filter(file => file.derived_from === undefined).length,
     limits: {file_bytes: FILE_LIMIT, content_bytes: CONTENT_LIMIT, entries: ENTRY_LIMIT,
       excluded_directories: ['vendor', 'node_modules', 'target', '.git', 'objects']},
-    scope: 'Test summaries and bounded diagnostic tails only. Raw records, HTTP journals, databases and payload bytes are not retained. This summary does not rerun or qualify assertions.',
+    scope: 'Test summaries, bounded diagnostic tails and closed poll-outcome counts only. Raw records, HTTP journals, databases and payload bytes are not retained. This summary does not rerun or qualify assertions.',
   };
   writeFileSync(join(destination, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
   return summary;
