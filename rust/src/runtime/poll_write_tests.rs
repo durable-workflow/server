@@ -59,9 +59,19 @@ store_methods! {
                     .bind(owner).bind(instance).bind(value).bind(DB::bind_time(super::store::now()))
                     .execute(&mut *tx).await.unwrap();
             }
-            for (kind,payload) in events {
-                Self::append(&mut tx,run_id,kind,payload,None,None).await.unwrap();
+            // These are stored-reader controls, not admission examples for
+            // the wait/scope writers or their independent projections.
+            let first = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+                .bind(run_id).fetch_one(&mut *tx).await.unwrap();
+            let count = i64::try_from(events.len()).unwrap();
+            for (index,(kind,payload)) in events.into_iter().enumerate() {
+                Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,recorded_at) VALUES ($1,$2,$3,$4,$5,$6)")
+                    .bind(super::store::id()).bind(run_id).bind(first+i64::try_from(index).unwrap()+1)
+                    .bind(kind).bind(DB::document(&payload)).bind(DB::bind_time(super::store::now()))
+                    .execute(&mut *tx).await.unwrap();
             }
+            Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
+                .bind(first+count).bind(run_id).execute(&mut *tx).await.unwrap();
             let (actual, fast) = super::sql_counts::measure(Self::authored_sequence(&mut tx,run_id)).await;
             let (previous, old) = super::sql_counts::measure(Self::authored_sequence_reference(&mut tx,run_id)).await;
             assert_eq!(actual.unwrap(),expected);
