@@ -14,6 +14,12 @@ on:
       - Cargo.lock
       - scripts/conformance/**
       - scripts/ci/**
+      # Native image qualification helpers: no fixture job reads them. Their
+      # own unit, isolation and contract workflows still run on every change.
+      - '!scripts/ci/native_alias_*.py'
+      - '!scripts/ci/native_qualification.py'
+      - '!scripts/ci/native-qualification-subject.json'
+      - '!scripts/ci/check-docker-workflow-isolation.py'
       - tests/Unit/ServerParity*.mjs
       - tests/Support/ServerParity*.mjs
       - scripts/conformance/server-parity*

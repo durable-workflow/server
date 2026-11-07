@@ -71,6 +71,32 @@ test('path patterns follow GitHub filter semantics for the forms in use', () => 
   assert.deepEqual(matchingFiles(['rust/**', 'docs/x.md'], ['README.md', 'rust/Cargo.toml', 'docs/x.md']), ['rust/Cargo.toml', 'docs/x.md']);
 });
 
+test('runner-only qualification helpers skip the fixtures and every other change still selects them', () => {
+  const patterns = pushPathPatterns(workflowText);
+  const runnerOnly = ['scripts/ci/native_alias_evidence.py', 'scripts/ci/native_alias_transport.py',
+    'scripts/ci/native_alias_promote.py', 'scripts/ci/native_qualification.py',
+    'scripts/ci/native-qualification-subject.json', 'scripts/ci/check-docker-workflow-isolation.py',
+    'tests/Unit/Support/native_qualification_test.py', 'README.md'];
+  assert.deepEqual(matchingFiles(patterns, runnerOnly), []);
+  // Product, workflow, other CI helpers and unknown new paths still run everything.
+  const selected = ['rust/src/runtime/store.rs', 'Cargo.lock', '.github/workflows/server-parity.yml',
+    'scripts/ci/pull-images.sh', 'scripts/ci/new-helper.sh', 'scripts/ci/native_alias_evidence.sh',
+    'scripts/ci/nested/native_qualification.py', 'scripts/conformance/server-parity/native-image-corpus.sh'];
+  for (const file of selected) assert.deepEqual(matchingFiles(patterns, [file]), [file], `${file} must re-run the fixtures`);
+  assert.deepEqual(matchingFiles(patterns, [...runnerOnly, 'rust/src/main.rs']), ['rust/src/main.rs']);
+});
+
+test('negated path patterns follow GitHub order: the last matching pattern decides', () => {
+  assert.deepEqual(matchingFiles(['a/**', '!a/b.py', 'a/b*'], ['a/b.py', 'a/c.py', 'x.py']), ['a/b.py', 'a/c.py']);
+  assert.deepEqual(matchingFiles(['a/**', '!a/*.py'], ['a/b.py', 'a/b/c.py']), ['a/b/c.py']);
+  assert.throws(() => matchingFiles(['!a/**', 'b/**'], ['b/c']), /cannot start with a negated pattern/);
+  assert.throws(() => patternRegExp('!a/**'), /Unsupported path filter pattern/);
+  const listed = workflow => pushPathPatterns(`on:\n  push:\n    paths:\n${workflow}\njobs:\n`);
+  assert.deepEqual(listed("      - a/**\n      - '!a/b.py'"), ['a/**', '!a/b.py']);
+  assert.throws(() => listed('      - a/**\n      - !a/b.py'), /Unsupported path filter entry/);
+  assert.throws(() => listed("      - a/**\n      - '!a/b.py"), /Unsupported path filter entry/);
+});
+
 test('literal native inputs and parity imports are covered by the shared input list', () => {
   const sourceFiles = (directory, suffix) => readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
     const path = join(directory, entry.name);
