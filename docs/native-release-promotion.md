@@ -139,6 +139,9 @@ arbitration. It reads current release labels and digests, then immediately befor
 each registry write re-reads both exact tags and every selected alias. A changed
 or unreadable state stops. Absence is recognized only for the exact single-line
 Buildx diagnostic `ERROR: <requested-ref>: not found` for that requested tag.
+For the official short Docker Hub reference `durableworkflow/server:<tag>`,
+Buildx's exact subject is `docker.io/durableworkflow/server:<tag>`. Only that
+known spelling is normalized. Other registry references remain literal.
 Credential-helper, auth, transport, rate-limit, mixed/extra or unknown diagnostic
 formats refuse. This is an explicit fail-closed client-format contract, not an
 HTTP-status parser; a future client format requires separate source review. Previously confirmed writes must still name the
