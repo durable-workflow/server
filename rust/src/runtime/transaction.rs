@@ -2,10 +2,28 @@
 use super::{Result, backend::Backend, store::Store};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ops::{Deref, DerefMut},
 };
 use tokio::sync::OwnedMutexGuard;
+
+#[derive(Clone)]
+pub(super) struct RunTags {
+    pub(super) namespace: String,
+    pub(super) priority: i64,
+    pub(super) fairness_key: Option<String>,
+    pub(super) fairness_weight: i64,
+    pub(super) compatibility: Option<String>,
+}
+
+impl RunTags {
+    pub(super) fn from_row<DB: Backend>(row: &DB::Row) -> Result<Self> {
+        Ok(Self { namespace: DB::string(row,"namespace")?, priority: DB::number(row,"priority")?,
+            fairness_key: DB::optional_string(row,"fairness_key")?,
+            fairness_weight: DB::number(row,"fairness_weight")?,
+            compatibility: DB::optional_string(row,"compatibility")? })
+    }
+}
 
 pub(super) struct PollSavepoint {
     summaries: BTreeSet<String>,
@@ -14,6 +32,7 @@ pub(super) struct PollSavepoint {
 
 pub(super) struct Transaction<'a, DB: Backend> {
     inner: sqlx::Transaction<'a, DB>,
+    pub(super) run_tags: BTreeMap<String,RunTags>,
     summaries: BTreeSet<String>,
     pub(super) workflow_poll_replayed: Option<String>,
     pub(super) history_budget: super::history_budget::Config,
@@ -35,6 +54,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
     ) -> Self {
         Self {
             inner,
+            run_tags: BTreeMap::new(),
             summaries: BTreeSet::new(),
             workflow_poll_replayed: None,
             history_budget,
@@ -43,6 +63,16 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             _queue_guard: queue_guard,
             #[cfg(test)]
             commit_gate: None,
+        }
+    }
+
+    /// Cache only immutable task tags from an authoritative row this
+    /// transaction already read. A malformed tag is decoded at the original
+    /// task-creation boundary if that path needs it, not on unrelated reads.
+    pub(super) fn remember_run_tags(&mut self, run_id: &str, row: &DB::Row) {
+        self.run_tags.remove(run_id);
+        if let Ok(tags) = RunTags::from_row::<DB>(row) {
+            self.run_tags.insert(run_id.to_owned(),tags);
         }
     }
 
@@ -120,6 +150,7 @@ where
         self.summaries = saved.summaries;
         self.workflow_poll_replayed = saved.workflow_poll_replayed;
         self.scope_history = None;
+        self.run_tags.clear();
         self.release_poll_claim().await
     }
 
