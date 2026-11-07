@@ -1,5 +1,5 @@
 //! One durable execution state machine for typed database adapters.
-use super::transaction::Transaction;
+use super::transaction::{RunTags, Transaction};
 use super::{Result, backend::Backend, envelope, refuse, side_effect_result, text, wire};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
@@ -2502,6 +2502,7 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+            tx.remember_run_tags(&run_id,&run);
             let cancellation = Self::cancellation_request(&run)?;
             if cancellation.is_some()
                 && (DB::optional_instant(&run, "cancellation_deadline_at")?
@@ -4664,7 +4665,17 @@ where
                 "cancellation_deadline_expired",
             ));
         }
+        tx.remember_run_tags(run_id,&run);
         Ok(run)
+    }
+
+    async fn run_tags(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<RunTags> {
+        if let Some(tags) = tx.run_tags.get(run_id) { return Ok(tags.clone()); }
+        let row = Self::query("SELECT namespace,priority,fairness_key,fairness_weight,compatibility FROM workflow_runs WHERE id=$1")
+            .bind(run_id).fetch_one(&mut **tx).await?;
+        let tags = RunTags::from_row::<DB>(&row)?;
+        tx.run_tags.insert(run_id.to_owned(),tags.clone());
+        Ok(tags)
     }
 
     pub(super) async fn create_task(
@@ -4690,19 +4701,16 @@ where
         tx.summary_changed(run_id);
         let task_id = id();
         // A task carries its run's priority and fairness tags, as in PHP.
-        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight,compatibility FROM workflow_runs WHERE id=$1")
-            .bind(run_id)
-            .fetch_one(&mut **tx)
-            .await?;
-        let namespace = DB::string(&run, "namespace")?;
+        let tags = Self::run_tags(tx,run_id).await?;
+        let namespace = &tags.namespace;
         let created = now();
         let dispatched_at = dispatched.then_some(created);
-        let fairness_key = DB::optional_string(&run, "fairness_key")?;
+        let fairness_key = tags.fairness_key.as_deref();
         Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight,compatibility,ready_origin_at) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
-        .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
+        .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(namespace)
         .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::optional_time(dispatched_at)).bind(DB::optional_time(dispatched_at))
-        .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
-        .bind(DB::optional_string(&run, "compatibility")?.as_deref())
+        .bind(tags.priority).bind(fairness_key).bind(tags.fairness_weight)
+        .bind(tags.compatibility.as_deref())
         .bind(DB::optional_time(matches!(kind, "workflow" | "activity").then_some(created)))
         .execute(&mut **tx).await?;
         Ok(task_id)

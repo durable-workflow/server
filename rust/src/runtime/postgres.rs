@@ -719,6 +719,7 @@ mod tests {
         let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_completion_waiting_status().await;
         store.qualify_authored_run_sequences().await;
+        store.qualify_transaction_run_tags().await;
         store.qualify_query_poll_cache_writes().await;
         store.qualify_workflow_poll_cache_writes().await;
         store.qualify_summary_projection_bytes().await;
