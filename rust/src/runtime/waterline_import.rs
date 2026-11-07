@@ -921,10 +921,10 @@ store_methods! {
     /// `terminalFailurePayload` for a failed projection, which has no failure
     /// snapshots: its activity failure summaries and their last message, or
     /// null when it has none.
-    pub(crate) async fn projected_failure(&self, run_id: &str) -> Result<Value> {
+    pub(crate) async fn projected_failure_in(connection: &mut DB::Connection, run_id: &str) -> Result<Value> {
         let rows = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityFailed','ActivityTimedOut') ORDER BY sequence")
             .bind(run_id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await?;
         let mut summaries = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -958,9 +958,17 @@ store_methods! {
     /// `LegacyV1Projection::metadataForRun` for a projected run: the started
     /// event's projection context and the projection's own description.
     pub(crate) async fn projection_metadata(&self, run_id: &str, imported_at: Option<DateTime<Utc>>, dedupe_key: Option<String>) -> Result<Value> {
+        let mut connection = self.pool.acquire().await?;
+        Self::projection_metadata_in(&mut connection, run_id, imported_at, dedupe_key).await
+    }
+
+    /// `projection_metadata` on a given connection.
+    pub(crate) async fn projection_metadata_in(
+        connection: &mut DB::Connection, run_id: &str, imported_at: Option<DateTime<Utc>>, dedupe_key: Option<String>,
+    ) -> Result<Value> {
         let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence LIMIT 1")
             .bind(run_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *connection)
             .await?
             .map(|row| DB::document_row(&row, "payload"))
             .transpose()?

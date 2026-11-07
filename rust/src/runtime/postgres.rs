@@ -743,6 +743,7 @@ mod tests {
         let db = Database::new().await;
         let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_workflow_poll_transactions().await;
+        store.qualify_describe_snapshot().await;
         store.qualify_query_poll_transactions().await;
         store.close().await;
         db.remove().await;

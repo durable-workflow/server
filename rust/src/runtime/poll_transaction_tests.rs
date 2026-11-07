@@ -134,6 +134,32 @@ store_methods! {
         }
     }
 
+    /// Server #1075: one start-payload read, and every section of a
+    /// description comes from one read snapshot.
+    pub(super) async fn qualify_describe_snapshot(&self) {
+        let workflow_id = "described-snapshot";
+        let started = self.count_start(workflow_id).await;
+        let run_id = started["run_id"].as_str().unwrap().to_owned();
+        let (described, counts) = super::sql_counts::measure(self.describe_with(workflow_id, None, Some(60))).await;
+        assert_eq!(described.unwrap()["run_id"], json!(run_id));
+        assert_eq!(counts.count(super::run_describe::STARTED_PAYLOAD_SQL), 1,
+            "one start-payload read serves the description and its query route");
+        let mut tx = self.begin_read().await.unwrap();
+        let first = self.describe_in(&mut tx, workflow_id, None, Some(60)).await.unwrap();
+        // Commit changes to two tables the description reads after its snapshot began.
+        Self::query("UPDATE workflow_runs SET business_key='changed-after-snapshot' WHERE id=$1")
+            .bind(run_id.as_str()).execute(&self.pool).await.unwrap();
+        Self::query("UPDATE workflow_run_summaries SET wait_reason='changed-after-snapshot' WHERE id=$1")
+            .bind(run_id.as_str()).execute(&self.pool).await.unwrap();
+        let second = self.describe_in(&mut tx, workflow_id, None, Some(60)).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(second, first, "a description never mixes rows committed after its snapshot began");
+        let fresh = self.describe_with(workflow_id, None, Some(60)).await.unwrap();
+        assert_eq!(fresh["business_key"], json!("changed-after-snapshot"));
+        Self::query("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1")
+            .bind(run_id.as_str()).execute(&self.pool).await.unwrap();
+    }
+
     pub(super) async fn qualify_query_poll_transactions(&self) {
         self.count_worker().await;
         let workflow_id = "counted-query-workflow";
@@ -199,6 +225,7 @@ async fn sqlite_workflow_and_query_poll_transaction_counts() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::<sqlx::Sqlite>::new(super::sqlite::open(dir.path().join("counts.sqlite").to_str().unwrap()).await.unwrap());
     store.qualify_workflow_poll_transactions().await;
+    store.qualify_describe_snapshot().await;
     store.qualify_query_poll_transactions().await;
     store.close().await;
 }

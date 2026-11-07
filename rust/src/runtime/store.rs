@@ -777,9 +777,15 @@ where
 
     /// A run's decoded memo map as describe and the run list render it.
     pub(super) async fn run_memo(&self, run_id: &str) -> Result<Value> {
+        let mut connection = self.pool.acquire().await?;
+        self.run_memo_in(&mut connection, run_id).await
+    }
+
+    /// `run_memo` on a given connection.
+    pub(super) async fn run_memo_in(&self, connection: &mut DB::Connection, run_id: &str) -> Result<Value> {
         let memo_rows = Self::query(DB::MEMO_READ)
             .bind(run_id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await?;
         let mut stored = Vec::with_capacity(memo_rows.len());
         for memo in memo_rows {
@@ -808,12 +814,24 @@ where
 
     /// The run description; with a worker stale window it also carries the
     /// fields PHP's `formatRun` adds (actions, fleet, wait and updates).
+    ///
+    /// The whole description reads one bounded read-only snapshot on one
+    /// connection (Server #1075); an error drops and rolls it back.
     pub(crate) async fn describe_with(&self, workflow_id: &str, run_id: Option<&str>, stale_after: Option<i64>) -> Result<Value> {
+        let mut tx = self.begin_read().await?;
+        let described = self.describe_in(&mut tx, workflow_id, run_id, stale_after).await?;
+        tx.commit().await?;
+        Ok(described)
+    }
+
+    pub(super) async fn describe_in(
+        &self, tx: &mut Transaction<'_, DB>, workflow_id: &str, run_id: Option<&str>, stale_after: Option<i64>,
+    ) -> Result<Value> {
         let row = Self::query("SELECT r.*,i.execution_timeout_seconds,i.current_run_id,(SELECT parent_workflow_run_id FROM workflow_links l WHERE l.child_workflow_run_id=r.id AND l.link_type='continue_as_new' LIMIT 1) AS continued_from_run_id,(SELECT COUNT(*) FROM workflow_runs counted WHERE counted.workflow_instance_id=i.id) AS run_count FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3")
-            .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+            .bind(workflow_id).bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&mut **tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, if run_id.is_some() {"run_not_found"} else {"instance_not_found"}))?;
         let output = DB::optional_string(&row, "output")?;
-        let memo = self.run_memo(&DB::string(&row, "id")?).await?;
+        let memo = self.run_memo_in(&mut **tx, &DB::string(&row, "id")?).await?;
         let status = DB::string(&row, "status")?;
         let terminal = matches!(
             status.as_str(),
@@ -826,7 +844,7 @@ where
         // Only a stored external reference is read, to tell whether its preview
         // is omitted; inline payloads stay unread.
         let command_rows = Self::query(DB::RUN_COMMANDS_SQL)
-            .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&self.pool).await?;
+            .bind(DB::string(&row, "id")?).bind(workflow_id).fetch_all(&mut **tx).await?;
         let mut commands = Vec::with_capacity(command_rows.len());
         let mut reason_codec = None;
         for command in command_rows {
@@ -897,7 +915,7 @@ where
             "run_deadline_at": super::run_describe::iso8601(DB::optional_instant(&row,"run_deadline_at")?)});
         if let Some(stale_after) = stale_after {
             let fields = self
-                .describe_fields(&row, current, terminal, &described["input_envelope"], &described["output_envelope"], stale_after)
+                .describe_fields(tx, &row, current, terminal, &described["input_envelope"], &described["output_envelope"], stale_after)
                 .await?;
             described.as_object_mut().expect("description object").extend(fields);
         }
@@ -905,10 +923,10 @@ where
         // description, every action off, the stored codec and progress time,
         // and the projection's metadata.
         if DB::optional_string(&row, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
-            let metadata = self.projection_metadata(&DB::string(&row, "id")?, DB::optional_instant(&row, "imported_at")?,
+            let metadata = Self::projection_metadata_in(&mut **tx, &DB::string(&row, "id")?, DB::optional_instant(&row, "imported_at")?,
                 DB::optional_string(&row, "import_dedupe_key")?).await?;
             let failure = if stale_after.is_some() && described["status"] == "failed" {
-                self.projected_failure(&DB::string(&row, "id")?).await?
+                Self::projected_failure_in(&mut **tx, &DB::string(&row, "id")?).await?
             } else {
                 Value::Null
             };
@@ -2403,7 +2421,7 @@ where
                 let required = DB::optional_string(&task, "compatibility")?
                     .map(|build| build.trim().to_owned())
                     .filter(|build| !build.is_empty());
-                let context = Self::definition_context(tx, &run, Some(queue), required).await?;
+                let context = Self::definition_context(tx, &run, Some(queue), required, None).await?;
                 if !self.definition_allows(tx, &run, &worker, &context).await?.0 {
                     continue;
                 }
