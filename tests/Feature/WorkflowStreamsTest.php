@@ -378,10 +378,16 @@ class WorkflowStreamsTest extends TestCase
         $append = fn () => $this->withHeaders($this->apiHeaders())
             ->postJson($this->itemsRoute('wf-streams-expiry-instant', $run->id, 'tokens'), ['items' => [['payload' => 2]]]);
 
-        $this->travel(59)->seconds();
+        $stream = WorkflowDurableStream::query()->where('workflow_run_id', $run->id)->where('stream_name', 'tokens')->sole();
+        $this->assertNotNull($stream->closed_at);
+        $this->assertSame(60, $stream->retention_seconds);
+        $expiresAt = $stream->closed_at->copy()->addSeconds(60);
+        // Relative travel from a later wall clock can already cross this
+        // deadline, because the database stores closed_at to whole seconds.
+        $this->travelTo($expiresAt->copy()->subMicrosecond());
         $append()->assertStatus(409)->assertJsonPath('reason', 'stream_closed');
 
-        $this->travel(1)->seconds();
+        $this->travelTo($expiresAt);
         $append()->assertNotFound()->assertJsonPath('reason', 'stream_not_found');
         $this->assertSame(1, WorkflowDurableStreamItem::query()->where('workflow_run_id', $run->id)->count());
     }
