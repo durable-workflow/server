@@ -304,3 +304,65 @@ test('marker transport failure keeps its phase while body and cardinality remain
   assert.equal(result.complete, false);
   assert.deepEqual(result.groups, []);
 });
+
+test('a recorder-level refusal retains the selected fixture without actor stderr or raw identities', t => {
+  const {source, output, root} = fixture(t);
+  const directory = join(source, 'corrected-marker/rust');
+  mkdirSync(directory, {recursive: true});
+  for (let index = 0; index < 8; index++) {
+    writeFileSync(join(directory, `a-${index}-http.jsonl`), '{}\n');
+    writeFileSync(join(directory, `a-${index}-actor.stderr`), 'earlier actor failure');
+  }
+  const name = 'z-PRIVATE-prefix-activity-deadline-active-receipts-http.jsonl';
+  const entries = [
+    {method: 'POST', path: '/api/worker/activity-tasks/poll', status: 200,
+      response_body: '{"poll_status":"leased","task":{"id":"PRIVATE-task"}}'},
+    {method: 'POST', path: '/api/worker/activity-tasks/PRIVATE-task/complete', status: 409,
+      request_body: '{"lease_owner":"PRIVATE-worker","result":"PRIVATE-result"}',
+      response_body: '{"reason":"start_to_close_timeout","error":"PRIVATE-error"}'},
+    {method: 'POST', path: '/api/worker/workflow-tasks/PRIVATE-task/complete', status: 409,
+      response_body: '{"reason":"PRIVATE-reason"}'},
+    {method: 'POST', path: '/PRIVATE-route', status: 500, response_body: 'PRIVATE-body'},
+  ];
+  const journal = entries.map(JSON.stringify).join('\n') + '\n';
+  writeFileSync(join(directory, name), journal);
+  const excerpt = '== activity-deadline-active-receipts (runner-blocked): generic HTTP409\n';
+  writeFileSync(join(directory, 'retries-record.failure-excerpt.txt'), excerpt);
+  const summary = summarizeEvidence(source, output, {outcome: 'failure'});
+  const path = `corrected-marker/rust/${name}.diagnostic.json`;
+  const text = readFileSync(join(output, path), 'utf8');
+  assert.equal(text.includes('PRIVATE'), false);
+  const result = JSON.parse(text);
+  assert.equal(result.complete, true);
+  assert.equal(result.request_rows, 3);
+  assert.equal(result.poll_rows, 1);
+  assert.deepEqual(result.groups.map(item => [item.kind, item.operation, item.status, item.reason]),
+    [['activity', 'poll', 200, 'other'], ['activity', 'complete', 409, 'start_to_close_timeout'],
+      ['workflow', 'complete', 409, 'other']]);
+  assert.deepEqual([result.last_refusal.row, result.last_refusal.kind, result.last_refusal.operation],
+    [3, 'workflow', 'complete']);
+  assert.equal(summary.retained.filter(item => item.path.endsWith('.diagnostic.json')).length, 8);
+  assert.equal(readFileSync(join(directory, name), 'utf8'), journal);
+  assert.equal(existsSync(join(output, 'corrected-marker/rust', name)), false);
+  const success = join(root, 'success');
+  summarizeEvidence(source, success, {outcome: 'success'});
+  assert.equal(existsSync(join(success, path)), false);
+});
+
+test('a recorder excerpt cannot select an unrelated journal or turn partial evidence into a final refusal', t => {
+  const {source, output} = fixture(t);
+  const directory = join(source, 'corrected-marker/rust');
+  mkdirSync(directory, {recursive: true});
+  const row = JSON.stringify({method: 'POST', path: '/api/worker/activity-tasks/private/complete',
+    status: 409, response_body: '{"reason":"lease_expired"}'}) + '\n';
+  const journal = join(directory, 'selected-http.jsonl');
+  writeFileSync(journal, row + 'null\n');
+  const incomplete = markerPollDiagnostic(journal, Buffer.byteLength(row + 'null\n'));
+  assert.equal(incomplete.complete, false);
+  assert.equal(incomplete.last_refusal, null);
+  assert.deepEqual(incomplete.groups, []);
+  writeFileSync(join(directory, 'retries-record.failure-excerpt.txt'),
+    '== different-fixture (runner-blocked): generic HTTP409\n');
+  const summary = summarizeEvidence(source, output, {outcome: 'failure'});
+  assert.equal(summary.retained.some(item => item.path.endsWith('.diagnostic.json')), false);
+});

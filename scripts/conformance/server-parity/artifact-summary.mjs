@@ -7,7 +7,7 @@ const FILE_LIMIT = 64 * 1024;
 const CONTENT_LIMIT = 2 * 1024 * 1024;
 const ENTRY_LIMIT = 128;
 
-// Failed actors need poll outcomes, not their request/history payloads. These
+// Failed actors and recorders need request outcomes, without request/history payloads. These
 // diagnostics read existing evidence only and never qualify a failed actor.
 function markerJournal(path, size) {
   if (!Number.isSafeInteger(size) || size < 0 || size > CONTENT_LIMIT) return null;
@@ -38,18 +38,28 @@ function markerTaskShape(reply) {
   return 'unknown';
 }
 
-function markerPollObservation(row) {
+function markerRequest(row) {
   if (row.method !== 'POST') return null;
-  let kind;
-  if (row.path === '/api/worker/workflow-tasks/poll') kind = 'workflow';
-  else if (row.path === '/api/worker/activity-tasks/poll') kind = 'activity';
-  else return null;
+  if (row.path === '/api/worker/workflow-tasks/poll') return {kind: 'workflow', operation: 'poll'};
+  if (row.path === '/api/worker/activity-tasks/poll') return {kind: 'activity', operation: 'poll'};
+  if (typeof row.path !== 'string') return null;
+  const match = /^\/api\/worker\/(workflow|activity)-tasks\/[^/]{1,512}\/(complete|fail|heartbeat)$/.exec(row.path);
+  return match ? {kind: match[1], operation: match[2]} : null;
+}
+
+function markerPollObservation(row) {
+  const operation = markerRequest(row);
+  if (operation === null) return null;
   const request = jsonObject(row.request_body), reply = jsonObject(row.response_body);
   const phase = typeof request?.worker_id === 'string' ? request.worker_id.split(':').at(-1) : null;
   const phases = ['original', 'excluding', 'restored', 'repaired-wait', 'policy-refusal', 'wider', 'clock-wait'];
   const statuses = ['leased', 'empty', 'timeout', 'task_queue_changed', 'stale_worker_registration', 'workflow_poll_normalization_pending'];
-  const reasons = ['backend_lock_pressure', 'stale_worker_registration', 'poll_request_task_kinds_conflict', 'history_event_exceeds_page_budget'];
-  return {kind, phase: phases.includes(phase) ? phase : 'other',
+  const reasons = ['backend_lock_pressure', 'stale_worker_registration', 'poll_request_task_kinds_conflict',
+    'history_event_exceeds_page_budget', 'lease_expired', 'lease_owner_mismatch', 'stale_attempt',
+    'attempt_closed', 'run_closed', 'task_not_leased', 'workflow_task_attempt_mismatch', 'workflow_claim_mismatch',
+    'current_attempt_changed', 'current_attempt_not_found', 'start_to_close_timeout', 'schedule_to_close_timeout',
+    'schedule_to_start_timeout', 'heartbeat_timeout'];
+  return {...operation, phase: phases.includes(phase) ? phase : 'other',
     status: Number.isInteger(row.status) && row.status >= 0 && row.status <= 599 ? row.status : 'unknown',
     poll_status: statuses.includes(reply?.poll_status) ? reply.poll_status : 'other',
     reason: reasons.includes(reply?.reason) ? reply.reason : 'other',
@@ -60,7 +70,7 @@ function markerPollObservation(row) {
 
 export function markerPollDiagnostic(path, size) {
   const result = {schema: 'durable-workflow.marker-poll-diagnostic.v1', complete: false,
-    source_bytes: size, observed_rows: 0, poll_rows: 0, groups: []};
+    source_bytes: size, observed_rows: 0, poll_rows: 0, request_rows: 0, last_refusal: null, groups: []};
   const data = markerJournal(path, size);
   if (data === null) return result;
   let text;
@@ -68,6 +78,7 @@ export function markerPollDiagnostic(path, size) {
   const lines = text.split('\n').filter(line => line !== '');
   if (lines.length > 512 || lines.some(line => Buffer.byteLength(line) > 128 * 1024)) return result;
   const groups = new Map();
+  let lastRefusal = null;
   for (const line of lines) {
     const row = jsonObject(line);
     if (row === null) return result;
@@ -77,21 +88,46 @@ export function markerPollDiagnostic(path, size) {
     const key = JSON.stringify(observation);
     if (!groups.has(key) && groups.size === 64) return result;
     groups.set(key, {...observation, count: (groups.get(key)?.count ?? 0) + 1});
-    result.poll_rows++;
+    result.request_rows++;
+    if (observation.operation === 'poll') result.poll_rows++;
+    if (typeof observation.status === 'number' && observation.status >= 400) {
+      lastRefusal = {...observation, row: result.observed_rows};
+    }
   }
   result.complete = true;
+  result.last_refusal = lastRefusal;
   result.groups = [...groups.values()];
   return result;
 }
 
+function failedMarkerJournals(source, files) {
+  const failed = new Set();
+  for (const file of files.filter(file => /^corrected-marker\/(php|rust)\/[^/]+\.failure-excerpt\.txt$/.test(file.path)).slice(0, 8)) {
+    if (file.source_bytes > FILE_LIMIT) continue;
+    const content = markerJournal(join(source, file.path), file.source_bytes);
+    if (content === null) continue;
+    for (const match of content.toString('utf8').matchAll(/^== ([a-z0-9-]{1,96}) \(runner-blocked\): /gm)) {
+      // Match the selected fixture's journal without retaining its prefix,
+      // exception text, transport body or any supplied identifier.
+      const journal = files.find(item => dirname(item.path) === dirname(file.path)
+        && item.path.endsWith(`-${match[1]}-http.jsonl`));
+      if (journal) failed.add(journal.path);
+    }
+  }
+  return failed;
+}
+
 function markerDiagnostics(source, files) {
+  const failed = failedMarkerJournals(source, files);
   return files.filter(file => /^corrected-marker\/(php|rust)\/[^/]+-http\.jsonl$/.test(file.path)
-    && files.some(other => other.source_bytes > 0 && other.path.endsWith('.stderr')
-      && other.path.startsWith(file.path.slice(0, -'-http.jsonl'.length) + '-'))).slice(0, 8).map(file => {
-    const content = Buffer.from(`${JSON.stringify(markerPollDiagnostic(join(source, file.path), file.source_bytes))}\n`);
-    return {path: `${file.path}.diagnostic.json`, source_bytes: content.length,
-      derived_from: file.path, content, priority: 0};
-  });
+    && (failed.has(file.path) || files.some(other => other.source_bytes > 0 && other.path.endsWith('.stderr')
+      && other.path.startsWith(file.path.slice(0, -'-http.jsonl'.length) + '-'))))
+    .sort((a, b) => Number(failed.has(b.path)) - Number(failed.has(a.path)))
+    .slice(0, 8).map(file => {
+      const content = Buffer.from(`${JSON.stringify(markerPollDiagnostic(join(source, file.path), file.source_bytes))}\n`);
+      return {path: `${file.path}.diagnostic.json`, source_bytes: content.length,
+        derived_from: file.path, content, priority: 0};
+    });
 }
 
 function priority(path, failed) {
@@ -243,7 +279,7 @@ export function summarizeEvidence(source, destination, {outcome = 'unknown', rev
     omitted_files: files.length - retained.filter(file => file.derived_from === undefined).length,
     limits: {file_bytes: FILE_LIMIT, content_bytes: CONTENT_LIMIT, entries: ENTRY_LIMIT,
       excluded_directories: ['vendor', 'node_modules', 'target', '.git', 'objects']},
-    scope: 'Test summaries, bounded diagnostic tails and closed poll-outcome counts only. Raw records, HTTP journals, databases and payload bytes are not retained. This summary does not rerun or qualify assertions.',
+    scope: 'Test summaries, bounded diagnostic tails and closed worker-request outcome counts only. Raw records, HTTP journals, databases and payload bytes are not retained. This summary does not rerun or qualify assertions.',
   };
   writeFileSync(join(destination, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
   return summary;
