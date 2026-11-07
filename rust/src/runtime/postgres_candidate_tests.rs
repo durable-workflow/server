@@ -94,15 +94,19 @@ impl Store<Postgres> {
                     let expected = candidates(&mut transaction,old,at,kind,build).await;
                     let actual = candidates(&mut transaction,new,at,kind,build).await;
                     assert_eq!(actual,expected,"analyzed={analyzed} / kind={kind} / build={build:?}");
+                    let first = candidates(&mut transaction,Postgres::FIRST_TASK_CANDIDATES_SQL,at,kind,build).await;
+                    assert_eq!(first,expected[..expected.len().min(super::priority_fairness::FAIRNESS_BATCH)]);
                     if kind=="workflow" && build.is_none() { assert_eq!(actual.len(),100); }
                 }
             }
             let before = explain(&mut transaction,old,at).await;
-            let after = explain(&mut transaction,new,at).await;
-            println!("postgres_status_candidate_plan analyzed={analyzed} old={before} new={after}");
-            let (mut tasks,mut run_lookups) = (0,0);
-            require_index_ranges(&after[0]["Plan"],&mut tasks,&mut run_lookups,false);
-            assert_eq!((tasks,run_lookups),(2,2),"{after}");
+            for (first, sql) in [(false,new),(true,Postgres::FIRST_TASK_CANDIDATES_SQL)] {
+                let after = explain(&mut transaction,sql,at).await;
+                println!("postgres_status_candidate_plan analyzed={analyzed} first={first} old={before} new={after}");
+                let (mut tasks,mut run_lookups) = (0,0);
+                require_index_ranges(&after[0]["Plan"],&mut tasks,&mut run_lookups,false);
+                assert_eq!((tasks,run_lookups),(2,2),"{after}");
+            }
         }
         transaction.rollback().await.unwrap();
     }
