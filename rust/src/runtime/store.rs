@@ -2669,15 +2669,16 @@ where
                         }
                     }
                 }
+                let last = DB::number(&run, "last_history_sequence")?;
                 let (mut events, next) = match page {
-                    Some(size) => Self::history_page_connection(&mut **tx, &run_id, 0, size).await?,
-                    None => (Self::whole_history(&mut **tx, &run_id).await?, None),
+                    Some(size) => Self::history_page_connection_with_total(&mut **tx, &run_id, 0, size, Some(last)).await?,
+                    None => (Self::whole_history(&mut **tx, &run_id, last).await?, None),
                 };
                 Self::with_signal_sequences(&mut **tx, &run_id, &mut events).await?;
                 let budget = Self::workflow_history_budget(
                     tx,
                     &run_id,
-                    DB::number(&run, "last_history_sequence")?,
+                    last,
                 )
                 .await?;
                 budget.write_task(&mut claim);
@@ -4946,11 +4947,13 @@ where
         Ok(())
     }
 
-    async fn whole_history(connection: &mut DB::Connection, run_id: &str) -> Result<Vec<Value>> {
+    async fn whole_history(connection: &mut DB::Connection, run_id: &str, last: i64) -> Result<Vec<Value>> {
         let mut events = Vec::new();
         let mut after = 0;
         loop {
-            let (page, next) = Self::history_page_connection(&mut *connection, run_id, after, 1000).await?;
+            let (page, next) = Self::history_page_connection_with_total(
+                &mut *connection, run_id, after, 1000, (after == 0).then_some(last),
+            ).await?;
             if let Some(last) = page.last() {
                 after = last["sequence"].as_i64().unwrap_or(after);
             }
@@ -4967,6 +4970,16 @@ where
         after_sequence: i64,
         page_size: i64,
     ) -> Result<(Vec<Value>, Option<String>)> {
+        Self::history_page_connection_with_total(connection, run_id, after_sequence, page_size, None).await
+    }
+
+    pub(super) async fn history_page_connection_with_total(
+        connection: &mut DB::Connection,
+        run_id: &str,
+        after_sequence: i64,
+        page_size: i64,
+        known_total: Option<i64>,
+    ) -> Result<(Vec<Value>, Option<String>)> {
         use base64::{Engine, engine::general_purpose::STANDARD};
         // Bound serialized history bytes before hydrating JSON. SQLite executes
         // on SQLx's connection worker, outside Tokio request executor threads.
@@ -4976,11 +4989,20 @@ where
             .bind(page_size)
             .fetch_all(&mut *connection)
             .await?;
-        let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
-            .bind(run_id)
-            .fetch_one(connection)
-            .await?;
-        let total = DB::number(&row, "last_history_sequence")?;
+        // A workflow claim already read this run under the transition lock.
+        // No intervening history write is allowed before its first page.
+        let observed_total = if known_total.is_none() || cfg!(debug_assertions) {
+            let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+                .bind(run_id).fetch_one(connection).await?;
+            Some(DB::number(&row, "last_history_sequence")?)
+        } else { None };
+        let total = match known_total {
+            Some(total) => {
+                debug_assert_eq!(observed_total, Some(total), "claimed run history sequence changed before its first page");
+                total
+            }
+            None => observed_total.expect("an unknown history total was read"),
+        };
         let last = match rows.last() {
             Some(row) => DB::number(row, "sequence")?,
             None => after_sequence,
