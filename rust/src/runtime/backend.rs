@@ -525,13 +525,13 @@ impl Backend for Postgres {
 // Equality on the dispatch index's status prefix preserves each range's
 // order. The outer sort sees at most two bounded candidate pages.
 macro_rules! mysql_status_candidates {
-    ($status:literal) => {
+    ($status:literal, $namespace:literal, $queue:literal, $kind:literal, $lease_at:literal, $ready_at:literal, $build:literal) => {
         concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t FORCE INDEX (workflow_tasks_dispatch_order_index) STRAIGHT_JOIN workflow_runs r ON r.id=t.workflow_run_id ",
-            "WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status='", $status, "' ",
+            "WHERE t.namespace=", $namespace, " AND t.queue=", $queue, " AND t.task_type=", $kind, " AND t.status='", $status, "' ",
             "AND r.status IN ('pending','running','waiting') ",
-            "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",
-            "AND (t.available_at IS NULL OR t.available_at<=$5) ",
-            "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ",
+            "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=", $lease_at, ")) ",
+            "AND (t.available_at IS NULL OR t.available_at<=", $ready_at, ") ",
+            "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=", $build, ") ",
             "ORDER BY t.priority,t.available_at,t.id LIMIT 100)")
     };
 }
@@ -544,8 +544,8 @@ impl Backend for MySql {
     fn advanced_history_sequence(result: &Self::QueryResult) -> Option<i64> {
         i64::try_from(result.last_insert_id()).ok()
     }
-    const TASK_CANDIDATES_SQL: &str = concat!("SELECT * FROM (", mysql_status_candidates!("ready"),
-        " UNION ALL ", mysql_status_candidates!("leased"), ") AS candidates ORDER BY priority,available_at,id LIMIT 100");
+    const TASK_CANDIDATES_SQL: &str = concat!("SELECT * FROM (", mysql_status_candidates!("ready", "$1", "$2", "$3", "$4", "$5", "$6"),
+        " UNION ALL ", mysql_status_candidates!("leased", "$7", "$8", "$9", "$10", "$11", "$12"), ") AS candidates ORDER BY priority,available_at,id LIMIT 100");
     const TASK_CANDIDATE_BIND_SETS: usize = 2;
     // The wake query can otherwise start from a run and range-check every
     // task in its queue, even with the explicit live-status predicate. Keep
@@ -790,6 +790,15 @@ mod timestamp_tests {
     #[should_panic(expected = "ordered unique positions")]
     fn mysql_statement_refuses_out_of_order_positions_after_a_json_path() {
         let _ = MySql::statement("SELECT '$[*]' WHERE a=$2");
+    }
+
+    #[test]
+    fn mysql_status_candidate_template_keeps_positions_unique_across_both_ranges() {
+        // Convert the actual production template. Reusing $1 in the second
+        // range must fail the existing adapter assertion before any query.
+        let statement = MySql::statement(MySql::TASK_CANDIDATES_SQL);
+        assert_eq!(statement.matches('?').count(), 12);
+        assert_eq!(MySql::TASK_CANDIDATE_BIND_SETS, 2);
     }
 
     #[tokio::test]
