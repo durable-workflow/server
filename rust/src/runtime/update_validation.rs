@@ -1077,8 +1077,8 @@ where
         if let Some(request) = request
             && !request.replayed_in(tx)
         {
-            Self::bind_workflow_poll(tx, request).await?;
-            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, task_queue).await? {
+            let cached = Self::bind_workflow_poll(tx, request).await?;
+            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, task_queue, cached).await? {
                 return Ok(Some(Probe::Replayed(answer)));
             }
         }
