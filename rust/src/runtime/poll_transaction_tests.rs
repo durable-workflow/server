@@ -134,6 +134,56 @@ store_methods! {
         }
     }
 
+    pub(super) async fn qualify_first_candidate_batch(&self) {
+        self.count_worker().await;
+        let mut runs = Vec::new();
+        for index in 0..12 {
+            let started = self.count_start(&format!("first-batch-{index}")).await;
+            runs.push(started["run_id"].as_str().unwrap().to_owned());
+        }
+        let at = super::store::now();
+        let first = self.task_candidate_query("counted","workflow",None,at,at,true)
+            .fetch_all(&self.pool).await.unwrap();
+        let full = self.task_candidate_query("counted","workflow",None,at,at,false)
+            .fetch_all(&self.pool).await.unwrap();
+        assert_eq!(first.len(),super::priority_fairness::FAIRNESS_BATCH);
+        assert_eq!(full.len(),12);
+        let ids = |rows: &[DB::Row]| rows.iter().map(|row| DB::string(row,"id").unwrap()).collect::<Vec<_>>();
+        assert_eq!(ids(&first),ids(&full[..first.len()]));
+        let (answer, statements) = super::sql_counts::measure(self.count_poll("first-batch-poll",false)).await;
+        assert_eq!(answer["task"]["task_id"],DB::string(&first[0],"id").unwrap());
+        assert_eq!(statements.count(DB::FIRST_TASK_CANDIDATES_SQL),1);
+        assert_eq!(statements.count(DB::TASK_CANDIDATES_SQL),0,"a claimable first batch must avoid the full page");
+        for run in runs {
+            Self::query("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1")
+                .bind(run).execute(&self.pool).await.unwrap();
+        }
+        // The raw first batch contains ten unsupported workflow types. It
+        // must not hide the supported candidate at the end of the full page.
+        let mut runs = Vec::new();
+        let mut expected = Value::Null;
+        for index in 0..=10 {
+            let started = self.start(json!({"workflow_id":format!("unsupported-first-batch-{index}"),
+                "workflow_type":if index < 10 { "unsupported" } else { "counted" },
+                "task_queue":"counted","input":input()}), BTreeMap::new(), None, None).await.unwrap();
+            let run = started["run_id"].as_str().unwrap();
+            // Fix the order independently of timestamp precision or ULID ties.
+            Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE workflow_run_id=$2")
+                .bind(DB::bind_time(at - chrono::Duration::seconds(30) + chrono::Duration::milliseconds(index)))
+                .bind(run).execute(&self.pool).await.unwrap();
+            if index == 10 { expected = started["run_id"].clone(); }
+            runs.push(run.to_owned());
+        }
+        let (answer, statements) = super::sql_counts::measure(self.count_poll("unsupported-first-batch",false)).await;
+        assert_eq!(answer["task"]["run_id"],expected);
+        assert_eq!(statements.count(DB::FIRST_TASK_CANDIDATES_SQL),1);
+        assert_eq!(statements.count(DB::TASK_CANDIDATES_SQL),1,"an incomplete eligible prefix must read the full page");
+        for run in runs {
+            Self::query("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1")
+                .bind(run).execute(&self.pool).await.unwrap();
+        }
+    }
+
     pub(super) async fn qualify_query_poll_transactions(&self) {
         self.count_worker().await;
         let workflow_id = "counted-query-workflow";
@@ -199,6 +249,7 @@ async fn sqlite_workflow_and_query_poll_transaction_counts() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::<sqlx::Sqlite>::new(super::sqlite::open(dir.path().join("counts.sqlite").to_str().unwrap()).await.unwrap());
     store.qualify_workflow_poll_transactions().await;
+    store.qualify_first_candidate_batch().await;
     store.qualify_query_poll_transactions().await;
     store.close().await;
 }

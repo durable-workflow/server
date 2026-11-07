@@ -201,7 +201,7 @@ store_methods! {
             }
             for (sql, wake) in [(DB::TASK_CANDIDATES_SQL, false),(DB::POLL_WAKE_TASKS_SQL,true)] {
                 let compiled = DB::statement(sql);
-                let predecessor = if DB::NAME == "MySQL" && !wake {
+                let predecessor = if matches!(DB::NAME, "MySQL" | "PostgreSQL") && !wake {
                     DB::statement(super::store::TASK_CANDIDATES_SQL)
                 } else { compiled.clone() };
                 let predecessor = predecessor.replace(" AND t.status IN ('ready','leased')", "")
