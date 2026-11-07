@@ -526,7 +526,7 @@ impl Backend for Postgres {
 // order. The outer sort sees at most two bounded candidate pages.
 macro_rules! mysql_status_candidates {
     ($status:literal, $namespace:literal, $queue:literal, $kind:literal, $lease_at:literal, $ready_at:literal, $build:literal) => {
-        concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t FORCE INDEX (workflow_tasks_dispatch_order_index) STRAIGHT_JOIN workflow_runs r ON r.id=t.workflow_run_id ",
+        concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_scoped_dispatch) STRAIGHT_JOIN workflow_runs r ON r.id=t.workflow_run_id ",
             "WHERE t.namespace=", $namespace, " AND t.queue=", $queue, " AND t.task_type=", $kind, " AND t.status='", $status, "' ",
             "AND r.status IN ('pending','running','waiting') ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=", $lease_at, ")) ",

@@ -9,7 +9,7 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 10;
+pub const VERSION: i64 = 11;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -56,7 +56,9 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql")
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -76,14 +78,16 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql")
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 VERSION,
-                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes".into(),
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index".into(),
                 MigrationType::Simple,
                 AssertSqlSafe(bootstrap_sql(sql)).into_sql_str(),
                 false,
@@ -96,8 +100,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0010_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0010_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0011_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0011_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -177,6 +181,8 @@ impl Flavor {
         static MARIA_7: OnceLock<Migration> = OnceLock::new();
         static MYSQL_8: OnceLock<Migration> = OnceLock::new();
         static MARIA_8: OnceLock<Migration> = OnceLock::new();
+        static MYSQL_10: OnceLock<Migration> = OnceLock::new();
+        static MARIA_10: OnceLock<Migration> = OnceLock::new();
         static MYSQL_9: OnceLock<Migration> = OnceLock::new();
         static MARIA_9: OnceLock<Migration> = OnceLock::new();
         let description = "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters";
@@ -186,6 +192,58 @@ impl Flavor {
             })
         };
         match (self, version) {
+            (Self::MySql, 10) => Some((
+                MYSQL_10.get_or_init(|| Migration::new(
+                    10,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(bootstrap_sql_v10(concat!(
+                include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql")
+            ))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mysql/0010_catalog.json"),
+            )),
+            (Self::MariaDb, 10) => Some((
+                MARIA_10.get_or_init(|| Migration::new(
+                    10,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(bootstrap_sql_v10(concat!(
+                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql")
+            ))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mariadb/0010_catalog.json"),
+            )),
             (Self::MySql, 9) => Some((
                 MYSQL_9.get_or_init(|| Migration::new(
                     9,
@@ -318,6 +376,8 @@ impl Flavor {
             (Self::MySql, 9) => Some(include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql")),
             (Self::MariaDb, 8) => Some(include_str!("../../migrations/mariadb/0009_task_ready_origin.sql")),
             (Self::MariaDb, 9) => Some(include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql")),
+            (Self::MySql, 10) => Some(include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql")),
+            (Self::MariaDb, 10) => Some(include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql")),
             _ => None,
         }
     }
@@ -340,7 +400,7 @@ fn bootstrap_sql_v9(sql: &str) -> String {
         .replace("IF NOT EXISTS IF NOT EXISTS", "IF NOT EXISTS")
 }
 
-fn bootstrap_sql(sql: &str) -> String {
+fn bootstrap_sql_v10(sql: &str) -> String {
     let mut sql = bootstrap_sql_v9(sql);
     let start = sql.find("CREATE TABLE IF NOT EXISTS dw_query_cache (").expect("compiled query cache");
     let end = start + sql[start..].find("\n) ENGINE=").expect("compiled query cache end");
@@ -352,15 +412,24 @@ fn bootstrap_sql(sql: &str) -> String {
         .replace("CREATE INDEX dw_poll_receipts_expiration ON dw_poll_receipts (expires_at);", "")
 }
 
+fn bootstrap_sql(sql: &str) -> String {
+    let mut sql = bootstrap_sql_v10(sql);
+    let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_tasks` (").expect("compiled workflow task definition");
+    let end = start + sql[start..].find("\n) ENGINE=").expect("compiled workflow task end");
+    sql.insert_str(end, ",\n  KEY `dw_workflow_tasks_scoped_dispatch` (`namespace`,`queue`,`task_type`(16),`status`(16),`priority`,`available_at`,`id`)");
+    sql.replace("CREATE INDEX dw_workflow_tasks_scoped_dispatch ON workflow_tasks (namespace,queue,task_type(16),status(16),priority,available_at,id);", "")
+}
+
 /// An implicit-commit step may already have committed before interruption.
 /// Accept only the exact old or exact new task table, never a column-name probe.
 pub(super) async fn ensure_ready_origin(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
     let (_, old) = flavor.earlier(8).expect("released v8 schema");
     let old: Catalog = serde_json::from_str(&canonical(old))?;
-    let current = flavor.expected()?;
     let actual = catalog(connection).await?;
     let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
-    let expected = task(current);
+    if task(actual.clone()) == task(flavor.expected()?) { return Ok(()); }
+    let (_, ready) = flavor.earlier(10).expect("retained v10 schema");
+    let expected = task(serde_json::from_str(&canonical(ready))?);
     match task(actual) {
         found if found == expected => Ok(()),
         found if found == task(old) => {
@@ -392,6 +461,23 @@ pub(super) async fn ensure_poll_expiry_indexes(connection: &mut MySqlConnection,
         if row(&catalog(connection).await?) != row(&expected) {
             return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
         }
+    }
+    Ok(())
+}
+
+/// Index DDL commits independently. A resumed upgrade accepts only the
+/// exact retained task table or the exact new definition, never name presence.
+pub(super) async fn ensure_scoped_dispatch_index(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let (_, old) = flavor.earlier(10).expect("retained v10 schema");
+    let old: Catalog = serde_json::from_str(&canonical(old))?;
+    let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
+    let expected = task(flavor.expected()?);
+    let found = task(catalog(connection).await?);
+    if found == expected { return Ok(()); }
+    if found != task(old) { return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")); }
+    connection.execute(flavor.step(10).expect("compiled scoped dispatch index")).await?;
+    if task(catalog(connection).await?) != expected {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
     }
     Ok(())
 }
@@ -835,8 +921,13 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             // new definition, and every earlier relation is still there.
             let earlier_tables: BTreeMap<_, _> = earlier_catalog.into_iter().collect();
             let current: BTreeMap<_, _> = flavor.expected()?.into_iter().collect();
+            // The ready-origin step can commit before the scoped index step.
+            // Accept that exact retained intermediate task definition too.
+            let intermediate: Catalog = serde_json::from_str(&canonical(flavor.earlier(10).expect("retained v10 schema").1))?;
+            let intermediate_task = intermediate.into_iter().find(|(name, _)| name == "workflow_tasks");
             let partial = actual.iter().all(|(name, ddl)| {
                 earlier_tables.get(name) == Some(ddl) || current.get(name) == Some(ddl)
+                    || name == "workflow_tasks" && intermediate_task.as_ref().is_some_and(|(_, task)| task == ddl)
             }) && earlier_tables
                 .keys()
                 .all(|name| actual.iter().any(|(table, _)| table == name));
@@ -853,6 +944,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             }
             if version == 9 {
                 ensure_poll_expiry_indexes(&mut connection, flavor).await?;
+                continue;
+            }
+            if version == 10 {
+                ensure_scoped_dispatch_index(&mut connection, flavor).await?;
                 continue;
             }
             let sql = flavor
@@ -2343,6 +2438,35 @@ mod tests {
         flavor
     }
 
+    async fn version_10_database(db: &Database) -> Flavor {
+        let mut connection = db.connection().await;
+        configure(&mut connection).await.unwrap();
+        let flavor = Flavor::detect(&mut connection).await.unwrap();
+        let (earlier, earlier_catalog) = flavor.earlier(10).unwrap();
+        connection.execute(MARKER_SQL).await.unwrap();
+        sqlx::query("INSERT INTO dw_server_schema VALUES ('rust-initializing',10,?)")
+            .bind(earlier.checksum.as_ref())
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.execute(LEDGER_SQL).await.unwrap();
+        let mut migrator = Migrator::with_migrations(vec![earlier.clone()]);
+        migrator.set_locking(false);
+        migrator.run(&mut connection).await.unwrap();
+        let expected: Catalog = serde_json::from_str(&canonical(earlier_catalog)).unwrap();
+        assert_eq!(catalog(&mut connection).await.unwrap(), expected);
+        sqlx::query("UPDATE dw_server_schema SET engine='rust-development' WHERE engine='rust-initializing'")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 10')")
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        connection.close().await.unwrap();
+        flavor
+    }
+
     async fn version_9_database(db: &Database) -> Flavor {
         let mut connection = db.connection().await;
         configure(&mut connection).await.unwrap();
@@ -2406,6 +2530,58 @@ mod tests {
             Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
             Err(error) => panic!("unexpected upgrade error: {error}"),
             Ok(found) => panic!("upgrade accepted {found:?}"),
+        }
+    }
+
+    #[test]
+    fn version_10_bootstraps_keep_their_pinned_source_checksums() {
+        for (flavor, pinned) in [
+            (Flavor::MySql, include_str!("../../migrations/mysql/0010_checksum.txt")),
+            (Flavor::MariaDb, include_str!("../../migrations/mariadb/0010_checksum.txt")),
+        ] {
+            assert_eq!(checksum_hex(flavor.earlier(10).unwrap().0), pinned.trim());
+            let sql = flavor.migration().sql.as_ref();
+            assert_eq!(sql.matches("KEY `dw_workflow_tasks_scoped_dispatch`").count(), 1);
+            assert!(!sql.contains("CREATE INDEX dw_workflow_tasks_scoped_dispatch"));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_version_10_scoped_index_upgrade_resumes_only_exact_definitions() {
+        for stage in ["before", "committed", "wrong-prefix"] {
+            let db = Database::new().await;
+            let flavor = version_10_database(&db).await;
+            if stage == "before" {
+                refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+            } else {
+                let mut connection = db.connection().await;
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                if stage == "committed" {
+                    connection.execute(flavor.step(10).unwrap()).await.unwrap();
+                } else {
+                    connection.execute("CREATE INDEX dw_workflow_tasks_scoped_dispatch ON workflow_tasks (namespace(64),queue(64),task_type(16),status(16),priority,available_at,id)").await.unwrap();
+                }
+                connection.close().await.unwrap();
+            }
+            if stage == "wrong-prefix" {
+                let mut connection = db.connection().await;
+                let before = catalog(&mut connection).await.unwrap();
+                upgrade_refused(upgrade(db.options.clone()).await, "native_schema_catalog_mismatch");
+                assert_eq!(catalog(&mut connection).await.unwrap(), before);
+                connection.close().await.unwrap();
+            } else {
+                assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 10));
+                MySqlStorage::check(db.options.clone()).await.unwrap();
+                let mut connection = db.connection().await;
+                let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+                assert_eq!(kept, "seeded at version 10");
+                assert_eq!(catalog(&mut connection).await.unwrap(), flavor.expected().unwrap());
+                connection.execute("DROP INDEX dw_workflow_tasks_scoped_dispatch ON workflow_tasks").await.unwrap();
+                connection.close().await.unwrap();
+                refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+            }
+            db.remove().await;
         }
     }
 
