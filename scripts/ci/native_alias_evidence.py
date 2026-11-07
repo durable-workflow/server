@@ -33,9 +33,12 @@ RUNNER_REF = "refs/heads/feat/server-native32-qualification-runner"
 RUNNER_PATHS = {
     ".github/workflows/native-image-parity.yml", ".github/workflows/published-compose.yml",
     ".github/workflows/native-promotion-contracts.yml",
-    "scripts/ci/native_alias_evidence.py", "scripts/ci/native_qualification.py", SUBJECT_PATH,
+    "scripts/ci/native_alias_evidence.py", "scripts/ci/native_alias_transport.py",
+    "scripts/ci/native_qualification.py", SUBJECT_PATH,
+    "scripts/ci/native-release-verify-publication.sh",
     "scripts/ci/check-docker-workflow-isolation.py",
     "tests/Unit/Support/native_alias_evidence_test.py", "tests/Unit/Support/native_qualification_test.py",
+    "tests/Feature/TaskQueueAdmissionTest.php",
     "README.md",
 }
 MANIFEST_LIMIT = 8192

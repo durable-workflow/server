@@ -650,6 +650,110 @@ class ReadCommands:
 
 
 class TransportTests(unittest.TestCase):
+    def test_publication_verifier_uses_a_digest_template_buildx_actually_evaluates(self):
+        # Buildx 0.30 treats templates beginning with {{.Manifest as its
+        # human-readable manifest printer. Model that actual CLI behavior at
+        # the command boundary, without a registry, image or provider write.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gh = root / "gh"
+            gh.write_text(textwrap.dedent('''\
+                #!/usr/bin/env python3
+                import os,sys
+                args=sys.argv[1:]
+                if args[:2]==['attestation','verify']:
+                    print('https://github.com/durable-workflow/server/actions/runs/41/attempts/1')
+                elif args[:1]==['api']:
+                    path=args[1]
+                    if '/git/ref/tags/' in path: print('commit '+os.environ['SOURCE'])
+                    elif '/compare/' in path: print('ahead')
+                    elif '/actions/runs/41' in path:
+                        print('.github/workflows/native-release.yml workflow_dispatch completed success 3.2.0 '+os.environ['SOURCE']+' 1')
+                    else: raise SystemExit(74)
+                else: raise SystemExit(74)
+                '''))
+            docker = root / "docker"
+            docker.write_text(textwrap.dedent('''\
+                #!/usr/bin/env python3
+                import os,sys
+                args=sys.argv[1:]
+                if len(args)!=6 or args[:4]!=['buildx','imagetools','inspect','--format']:
+                    raise SystemExit(74)
+                if args[5] not in ['ghcr.io/durable-workflow/server:3.2.0','durableworkflow/server:3.2.0']:
+                    raise SystemExit(74)
+                if args[4].startswith('{{.Manifest'):
+                    print('Name: fixture')
+                    print('Digest: '+os.environ['INDEX'])
+                elif args[4]=='{{printf "%s" .Manifest.Digest}}': print(os.environ['INDEX'])
+                else: raise SystemExit(74)
+                '''))
+            gh.chmod(0o700)
+            docker.chmod(0o700)
+            environment = {'PATH':os.environ['PATH'], 'SOURCE':SOURCE, 'INDEX':INDEX,
+                           'GH':str(gh), 'DOCKER':str(docker), 'GITHUB_REPOSITORY':E.REPOSITORY,
+                           'GHCR_IMAGE':E.GHCR_IMAGE, 'DOCKERHUB_IMAGE':E.DOCKERHUB_IMAGE,
+                           'RELEASE_TAG':'3.2.0', 'RELEASE_RUN_ID':'41', 'RELEASE_RUN_ATTEMPT':'1'}
+            result = subprocess.run(['bash',str(ROOT / 'scripts/ci/native-release-verify-publication.sh')],
+                                    env=environment, capture_output=True, text=True, timeout=5, check=False)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout), {'tag':'3.2.0','source_commit':SOURCE,
+                                                         'index_digest':INDEX,'run_id':41,'run_attempt':1})
+
+    def test_git_comparisons_only_allow_the_exact_source_and_main_read_shapes(self):
+        commands = ReadCommands(b"{}")
+        provider = T.GitHubRegistryProvider(commands)
+        prefix = "repos/" + E.REPOSITORY + "/compare/"
+        allowed = [prefix + SOURCE + "..." + RUNNER + "?per_page=100",
+                   prefix + RUNNER + "...main?per_page=1", prefix + SOURCE + "...main"]
+        for path in allowed:
+            self.assertEqual(provider.api(path), {})
+        self.assertEqual([call[0] for call in commands.calls],
+                         [["gh", "api", "--hostname", "github.com", "--method", "GET", path]
+                          for path in allowed])
+        refused = [prefix + SOURCE + suffix for suffix in (
+            ".." + RUNNER, "...." + RUNNER, "...main/../secrets", "...main?per_page=2",
+            "...main?per_page=100", "...main&per_page=1", "...main?per_page=1&page=2",
+            "..." + RUNNER, "..." + RUNNER + "?per_page=1", "...foreign?per_page=1")]
+        refused += [prefix + "main..." + RUNNER + "?per_page=100",
+                    prefix + "A" * 40 + "...main", prefix + SOURCE + "...%2e%2e",
+                    "repos/foreign/server/compare/" + SOURCE + "...main",
+                    "repos/" + E.REPOSITORY + "/contents/../secrets"]
+        for path in refused:
+            with self.subTest(path=path), self.assertRaisesRegex(E.Refusal, "provider_api_path"):
+                provider.api(path)
+        self.assertEqual(len(commands.calls), len(allowed), "refused paths never reach the command transport")
+
+    def test_runner_ancestry_uses_the_actual_provider_path_guard(self):
+        fixture = RunnerProvider()
+
+        class ApiCommands:
+            def __init__(self):
+                self.paths = []
+
+            def run(self, argv, limit=E.JSON_LIMIT, env=None, accepted=(0,)):
+                self_test.assertEqual(argv[:6], ["gh", "api", "--hostname", "github.com", "--method", "GET"])
+                self_test.assertEqual(len(argv), 7)
+                self.paths.append(argv[6])
+                return E.canonical(fixture.api(argv[6]))
+
+        self_test = self
+        commands = ApiCommands()
+        provider = T.GitHubRegistryProvider(commands)
+        selected = fixture.selected
+        self.assertEqual(E.runner_subject(provider, selected["runner"], selected["release"]), fixture.binding)
+        self.assertEqual(commands.paths, [
+            f"repos/{E.REPOSITORY}/contents/{E.SUBJECT_PATH}?ref={RUNNER}",
+            f"repos/{E.REPOSITORY}/compare/{SOURCE}...{RUNNER}?per_page=100",
+            f"repos/{E.REPOSITORY}/compare/{RUNNER}...main?per_page=1",
+        ])
+        fixture.on_main = False
+        with self.assertRaisesRegex(E.Refusal, "qualification_runner_not_on_main"):
+            E.runner_subject(provider, selected["runner"], selected["release"])
+        fixture.on_main = True
+        fixture.diff_files.append({"filename": "rust/src/runtime/store.rs", "status": "modified"})
+        with self.assertRaisesRegex(E.Refusal, "qualification_runner_frozen_source"):
+            E.runner_subject(provider, selected["runner"], selected["release"])
+
     def test_unprivileged_plan_requires_exact_tag_and_accepted_main_source(self):
         value = {"release": {"tag": "3.2.0", "source_commit": SOURCE}}
         context = {**CONTEXT, "GITHUB_WORKFLOW_REF": E.REPOSITORY + "/.github/workflows/native-alias-promotion.yml@refs/tags/3.2.0"}

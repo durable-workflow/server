@@ -367,6 +367,7 @@ class TaskQueueAdmissionTest extends TestCase
 
     public function test_workflow_task_polls_respect_namespace_dispatch_rate_caps_across_queues(): void
     {
+        $this->freezeTime();
         Queue::fake();
 
         config([
@@ -427,6 +428,7 @@ class TaskQueueAdmissionTest extends TestCase
 
     public function test_workflow_task_polls_respect_budget_group_dispatch_rate_caps_across_queues(): void
     {
+        $this->freezeTime();
         Queue::fake();
 
         config([
@@ -498,6 +500,26 @@ class TaskQueueAdmissionTest extends TestCase
             ->assertJsonPath('admission.workflow_tasks.server_remaining_budget_group_dispatch_capacity', 0)
             ->assertJsonPath('admission.workflow_tasks.server_lock_required', true)
             ->assertJsonPath('admission.workflow_tasks.server_lock_supported', true);
+
+        // The counter is keyed by minute. Keep the same-minute checks above
+        // fixed, then exercise the next bucket explicitly.
+        $this->travel(1)->minutes();
+
+        // The worker heartbeat has its own shorter freshness window.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'php-workflow-budget-group-b',
+            ])
+            ->assertOk()
+            ->assertJsonPath('acknowledged', true);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/task-queues/external-workflows-b')
+            ->assertOk()
+            ->assertJsonPath('admission.workflow_tasks.status', 'accepting')
+            ->assertJsonPath('admission.workflow_tasks.active_worker_count', 1)
+            ->assertJsonPath('admission.workflow_tasks.server_budget_group_dispatch_count_this_minute', 0)
+            ->assertJsonPath('admission.workflow_tasks.server_remaining_budget_group_dispatch_capacity', 1);
     }
 
     public function test_activity_task_polls_respect_queue_specific_active_lease_caps(): void
@@ -584,6 +606,7 @@ class TaskQueueAdmissionTest extends TestCase
 
     public function test_activity_task_polls_respect_queue_specific_dispatch_rate_caps(): void
     {
+        $this->freezeTime();
         Queue::fake();
 
         config([

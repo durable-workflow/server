@@ -114,9 +114,16 @@ class GitHubRegistryProvider:
         self.commands = commands if commands is not None else Commands()
 
     def api(self, path: str) -> Any:
+        # GitHub comparisons use a three-dot separator, not a traversal
+        # segment. Only the immutable-source and protected-main reads used by
+        # the evidence predicates may contain it; every other path keeps the
+        # original dot/traversal refusal.
+        comparison = type(path) is str and re.fullmatch(
+            rf"repos/{REPOSITORY}/compare/[0-9a-f]{{40}}\.\.\.(?:"
+            r"[0-9a-f]{40}\?per_page=100|main(?:\?per_page=1)?)", path) is not None
         require(type(path) is str and path.startswith(f"repos/{REPOSITORY}/")
                 and re.fullmatch(r"[A-Za-z0-9_./?=&-]+", path) is not None
-                and ".." not in path, "provider_api_path")
+                and (".." not in path or comparison), "provider_api_path")
         return strict_json(self.commands.run(
             ["gh", "api", "--hostname", GITHUB_HOST, "--method", "GET", path]), JSON_LIMIT)
 
