@@ -6,6 +6,29 @@ use std::borrow::Cow;
 
 use super::{Result, mysql, postgres, schema};
 
+macro_rules! sqlite_task_candidates_sql {
+    ($limit:literal) => {
+        concat!(r#"
+WITH utc_tasks AS (
+    SELECT t.*,
+        replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS _dw_available_utc,
+        replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS _dw_lease_utc
+    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased')
+), ordered_tasks AS (
+    SELECT *,
+        rtrim(rtrim(CASE WHEN length(_dw_available_utc)=19 THEN _dw_available_utc||'.0' ELSE _dw_available_utc END,'0'),'.') AS _dw_available_order,
+        rtrim(rtrim(CASE WHEN length(_dw_lease_utc)=19 THEN _dw_lease_utc||'.0' ELSE _dw_lease_utc END,'0'),'.') AS _dw_lease_order
+    FROM utc_tasks
+)
+SELECT t.*,r.workflow_type FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
+WHERE r.status IN ('pending','running','waiting')
+    AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t._dw_lease_order<=rtrim(rtrim($4,'0'),'.')))
+    AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($5,'0'),'.'))
+    AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6)
+ORDER BY t.priority,t._dw_available_order,t.id LIMIT "#, $limit, "\n")
+    };
+}
+
 /// Counts every durable stream item, durable stream and inbound message that
 /// holds an external payload reference. The arguments name the JSON payload
 /// and metadata columns as the backend reads them as text.
@@ -74,6 +97,7 @@ pub(super) trait Backend: Database {
     const WORKER_REGISTRATION_SQL: &str = super::store::WORKER_REGISTRATION_SQL;
     const TASK_CANDIDATES_SQL: &str = super::store::TASK_CANDIDATES_SQL;
     const TASK_CANDIDATE_BIND_SETS: usize = 1;
+    const FIRST_TASK_CANDIDATES_SQL: &str = super::store::FIRST_TASK_CANDIDATES_SQL;
     const POLL_WAKE_TASKS_SQL: &str = super::cross_kind_poll::TASKS_SQL;
     const POLL_RECEIPT_CLEANUP_SQL: &str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &str;
@@ -319,25 +343,8 @@ ORDER BY t.available_order,t.id LIMIT 100
     // Normalize only the two supported UTC storage shapes. Removing trailing
     // fractional zeros preserves exact decimal ordering, including earlier
     // native precision; SQLite's floating-point date functions are avoided.
-    const TASK_CANDIDATES_SQL: &str = r#"
-WITH utc_tasks AS (
-    SELECT t.*,
-        replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS _dw_available_utc,
-        replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS _dw_lease_utc
-    FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased')
-), ordered_tasks AS (
-    SELECT *,
-        rtrim(rtrim(CASE WHEN length(_dw_available_utc)=19 THEN _dw_available_utc||'.0' ELSE _dw_available_utc END,'0'),'.') AS _dw_available_order,
-        rtrim(rtrim(CASE WHEN length(_dw_lease_utc)=19 THEN _dw_lease_utc||'.0' ELSE _dw_lease_utc END,'0'),'.') AS _dw_lease_order
-    FROM utc_tasks
-)
-SELECT t.*,r.workflow_type FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
-WHERE r.status IN ('pending','running','waiting')
-    AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t._dw_lease_order<=rtrim(rtrim($4,'0'),'.')))
-    AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($5,'0'),'.'))
-    AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6)
-ORDER BY t.priority,t._dw_available_order,t.id LIMIT 100
-"#;
+    const TASK_CANDIDATES_SQL: &str = sqlite_task_candidates_sql!("100");
+    const FIRST_TASK_CANDIDATES_SQL: &str = sqlite_task_candidates_sql!("10");
     const POLL_RECEIPT_CLEANUP_SQL: &str = r#"
 DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
     SELECT p.namespace,p.worker_id,p.kind,p.request_id
@@ -432,6 +439,8 @@ impl Encode<'_, Postgres> for PostgresDocument {
 impl Backend for Postgres {
     const COMMIT_HANDOFF: bool = true;
     const HISTORY_SEQUENCE_MAX: i64 = i32::MAX as i64;
+    const TASK_CANDIDATES_SQL: &str = super::postgres::TASK_CANDIDATES_SQL;
+    const FIRST_TASK_CANDIDATES_SQL: &str = super::postgres::FIRST_TASK_CANDIDATES_SQL;
     type EncodedInteger = Option<i64>;
     type EncodedFloat = Option<f64>;
     type EncodedFlag = Option<bool>;
@@ -525,14 +534,22 @@ impl Backend for Postgres {
 // Equality on the dispatch index's status prefix preserves each range's
 // order. The outer sort sees at most two bounded candidate pages.
 macro_rules! mysql_status_candidates {
-    ($status:literal, $namespace:literal, $queue:literal, $kind:literal, $lease_at:literal, $ready_at:literal, $build:literal) => {
+    ($status:literal, $namespace:literal, $queue:literal, $kind:literal, $lease_at:literal, $ready_at:literal, $build:literal, $limit:literal) => {
         concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_scoped_dispatch) STRAIGHT_JOIN workflow_runs r FORCE INDEX (PRIMARY) ON r.id=t.workflow_run_id ",
             "WHERE t.namespace=", $namespace, " AND t.queue=", $queue, " AND t.task_type=", $kind, " AND t.status='", $status, "' ",
             "AND r.status IN ('pending','running','waiting') ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=", $lease_at, ")) ",
             "AND (t.available_at IS NULL OR t.available_at<=", $ready_at, ") ",
             "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=", $build, ") ",
-            "ORDER BY t.priority,t.available_at,t.id LIMIT 100)")
+            "ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit, ")")
+    };
+}
+
+macro_rules! mysql_task_candidates_sql {
+    ($limit:literal) => {
+        concat!("SELECT * FROM (", mysql_status_candidates!("ready", "$1", "$2", "$3", "$4", "$5", "$6", $limit),
+            " UNION ALL ", mysql_status_candidates!("leased", "$7", "$8", "$9", "$10", "$11", "$12", $limit),
+            ") AS candidates ORDER BY priority,available_at,id LIMIT ", $limit)
     };
 }
 
@@ -544,8 +561,8 @@ impl Backend for MySql {
     fn advanced_history_sequence(result: &Self::QueryResult) -> Option<i64> {
         i64::try_from(result.last_insert_id()).ok()
     }
-    const TASK_CANDIDATES_SQL: &str = concat!("SELECT * FROM (", mysql_status_candidates!("ready", "$1", "$2", "$3", "$4", "$5", "$6"),
-        " UNION ALL ", mysql_status_candidates!("leased", "$7", "$8", "$9", "$10", "$11", "$12"), ") AS candidates ORDER BY priority,available_at,id LIMIT 100");
+    const TASK_CANDIDATES_SQL: &str = mysql_task_candidates_sql!("100");
+    const FIRST_TASK_CANDIDATES_SQL: &str = mysql_task_candidates_sql!("10");
     const TASK_CANDIDATE_BIND_SETS: usize = 2;
     // The wake query can otherwise start from a run and range-check every
     // task in its queue, even with the explicit live-status predicate. Keep
@@ -796,8 +813,10 @@ mod timestamp_tests {
     fn mysql_status_candidate_template_keeps_positions_unique_across_both_ranges() {
         // Convert the actual production template. Reusing $1 in the second
         // range must fail the existing adapter assertion before any query.
-        let statement = MySql::statement(MySql::TASK_CANDIDATES_SQL);
-        assert_eq!(statement.matches('?').count(), 12);
+        for sql in [MySql::TASK_CANDIDATES_SQL, MySql::FIRST_TASK_CANDIDATES_SQL] {
+            let statement = MySql::statement(sql);
+            assert_eq!(statement.matches('?').count(), 12);
+        }
         assert_eq!(MySql::TASK_CANDIDATE_BIND_SETS, 2);
     }
 

@@ -94,13 +94,14 @@ pub(super) struct SignalWrite<'a> {
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
 macro_rules! task_candidates_sql {
-    ($tables:literal) => {
-        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100")
+    ($tables:literal, $limit:literal) => {
+        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit)
     };
 }
 #[cfg(test)]
 pub(super) use task_candidates_sql;
-pub(super) const TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r");
+pub(super) const TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r", "100");
+pub(super) const FIRST_TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r", "10");
 /// A signal record's place in `PendingMessageTask::signalFollows`: its
 /// command sequence (unsequenced last), receipt and creation times, id.
 struct SignalOrder {
@@ -2145,16 +2146,16 @@ where
             return Ok(true);
         }
         let at = now();
-        Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at)
+        Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
             .fetch_optional(&self.pool)
             .await?
             .is_some())
     }
 
     pub(super) fn task_candidate_query(
-        &self, queue: &str, kind: &str, build: Option<&str>, lease_at: DateTime<Utc>, ready_at: DateTime<Utc>,
+        &self, queue: &str, kind: &str, build: Option<&str>, lease_at: DateTime<Utc>, ready_at: DateTime<Utc>, first: bool,
     ) -> sqlx::query::Query<'static, DB, DB::Arguments> {
-        let mut query = Self::query(DB::TASK_CANDIDATES_SQL);
+        let mut query = Self::query(if first { DB::FIRST_TASK_CANDIDATES_SQL } else { DB::TASK_CANDIDATES_SQL });
         // MySQL's positional protocol needs the same values for both ranges.
         for _ in 0..DB::TASK_CANDIDATE_BIND_SETS {
             query = query.bind(self.namespace.as_ref()).bind(queue).bind(kind)
@@ -2334,11 +2335,41 @@ where
             },
         )?;
         let build = worker_build::<DB>(&worker)?;
-        let candidates = self.task_candidate_query(queue, kind, build.as_deref(), now(), now())
-            .fetch_all(&mut **tx)
-            .await?;
-        let candidates = Self::fairness_batches(candidates, kind, &types)?;
-        for task in candidates {
+        let lease_at = now();
+        let ready_at = now();
+        let first = self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, true)
+            .fetch_all(&mut **tx).await?;
+        let first_is_full = first.len() == super::priority_fairness::FAIRNESS_BATCH;
+        let mut candidates = Self::fairness_batches(first, kind, &types)?;
+        // Unsupported workflow types are removed before fairness batching.
+        // A short eligible prefix cannot decide the first complete batch.
+        let mut full_read = first_is_full && candidates.len() < super::priority_fairness::FAIRNESS_BATCH;
+        if full_read {
+            let full = self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, false)
+                .fetch_all(&mut **tx).await?;
+            candidates = Self::fairness_batches(full, kind, &types)?;
+        }
+        let mut candidates = candidates.into_iter();
+        let mut tried = std::collections::HashSet::new();
+        loop {
+            let task = match candidates.next() {
+                Some(task) => task,
+                None if first_is_full && !full_read => {
+                    full_read = true;
+                    let full = self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, false)
+                        .fetch_all(&mut **tx).await?;
+                    // Reorder the original full page before dropping tried IDs,
+                    // so later fairness batches retain their original boundaries.
+                    let mut remaining = Vec::new();
+                    for task in Self::fairness_batches(full, kind, &types)? {
+                        if !tried.contains(&DB::string(&task, "id")?) { remaining.push(task); }
+                    }
+                    candidates = remaining.into_iter();
+                    continue;
+                }
+                None => break,
+            };
+            tried.insert(DB::string(&task, "id")?);
             // Unsupported stored timestamp shapes fail before leasing work.
             // Takeover preflight must validate all records, including rows
             // that are not eligible for this poll's queue/type/deadline.
@@ -2669,15 +2700,16 @@ where
                         }
                     }
                 }
+                let last = DB::number(&run, "last_history_sequence")?;
                 let (mut events, next) = match page {
-                    Some(size) => Self::history_page_connection(&mut **tx, &run_id, 0, size).await?,
-                    None => (Self::whole_history(&mut **tx, &run_id).await?, None),
+                    Some(size) => Self::history_page_connection_with_total(&mut **tx, &run_id, 0, size, Some(last)).await?,
+                    None => (Self::whole_history(&mut **tx, &run_id, last).await?, None),
                 };
                 Self::with_signal_sequences(&mut **tx, &run_id, &mut events).await?;
                 let budget = Self::workflow_history_budget(
                     tx,
                     &run_id,
-                    DB::number(&run, "last_history_sequence")?,
+                    last,
                 )
                 .await?;
                 budget.write_task(&mut claim);
@@ -4946,11 +4978,13 @@ where
         Ok(())
     }
 
-    async fn whole_history(connection: &mut DB::Connection, run_id: &str) -> Result<Vec<Value>> {
+    async fn whole_history(connection: &mut DB::Connection, run_id: &str, last: i64) -> Result<Vec<Value>> {
         let mut events = Vec::new();
         let mut after = 0;
         loop {
-            let (page, next) = Self::history_page_connection(&mut *connection, run_id, after, 1000).await?;
+            let (page, next) = Self::history_page_connection_with_total(
+                &mut *connection, run_id, after, 1000, (after == 0).then_some(last),
+            ).await?;
             if let Some(last) = page.last() {
                 after = last["sequence"].as_i64().unwrap_or(after);
             }
@@ -4967,6 +5001,16 @@ where
         after_sequence: i64,
         page_size: i64,
     ) -> Result<(Vec<Value>, Option<String>)> {
+        Self::history_page_connection_with_total(connection, run_id, after_sequence, page_size, None).await
+    }
+
+    pub(super) async fn history_page_connection_with_total(
+        connection: &mut DB::Connection,
+        run_id: &str,
+        after_sequence: i64,
+        page_size: i64,
+        known_total: Option<i64>,
+    ) -> Result<(Vec<Value>, Option<String>)> {
         use base64::{Engine, engine::general_purpose::STANDARD};
         // Bound serialized history bytes before hydrating JSON. SQLite executes
         // on SQLx's connection worker, outside Tokio request executor threads.
@@ -4976,11 +5020,20 @@ where
             .bind(page_size)
             .fetch_all(&mut *connection)
             .await?;
-        let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
-            .bind(run_id)
-            .fetch_one(connection)
-            .await?;
-        let total = DB::number(&row, "last_history_sequence")?;
+        // A workflow claim already read this run under the transition lock.
+        // No intervening history write is allowed before its first page.
+        let observed_total = if known_total.is_none() || cfg!(debug_assertions) {
+            let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+                .bind(run_id).fetch_one(connection).await?;
+            Some(DB::number(&row, "last_history_sequence")?)
+        } else { None };
+        let total = match known_total {
+            Some(total) => {
+                debug_assert_eq!(observed_total, Some(total), "claimed run history sequence changed before its first page");
+                total
+            }
+            None => observed_total.expect("an unknown history total was read"),
+        };
         let last = match rows.last() {
             Some(row) => DB::number(row, "sequence")?,
             None => after_sequence,
