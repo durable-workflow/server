@@ -432,6 +432,8 @@ impl Encode<'_, Postgres> for PostgresDocument {
 impl Backend for Postgres {
     const COMMIT_HANDOFF: bool = true;
     const HISTORY_SEQUENCE_MAX: i64 = i32::MAX as i64;
+
+    const TASK_CANDIDATES_SQL: &str = super::postgres::TASK_CANDIDATES_SQL;
     type EncodedInteger = Option<i64>;
     type EncodedFloat = Option<f64>;
     type EncodedFlag = Option<bool>;

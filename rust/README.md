@@ -327,6 +327,10 @@ the database and run the existing explicit `schema-upgrade` command before
 starting this binary on schema 10. Startup does not add the index. The retained
 schema-10 checksum and exact old/new table definitions govern interrupted DDL
 resumption. SQLite and PostgreSQL remain on schema 10 in this change.
+
+PostgreSQL candidate polls read separate status ranges and retain a correlated
+run lookup. The source controls compare complete candidate rows and actual
+dispatch-index/primary-key plans before and after fixture statistics refresh.
 This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 
 Implemented paths cover health/schema readiness, limited capability discovery,
