@@ -1198,6 +1198,7 @@ mod tests {
         let db = Database::new().await;
         let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_completion_waiting_status().await;
+        store.qualify_authored_run_sequences().await;
         store.qualify_query_poll_cache_writes().await;
         store.qualify_workflow_poll_cache_writes().await;
         store.qualify_summary_projection_bytes().await;
