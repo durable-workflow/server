@@ -604,6 +604,36 @@ class ProducerTests(unittest.TestCase):
                     self.assertIs(result["eligible"], False)
         self.assertEqual(provider.commands.reads, [])
 
+    def test_closed_observation_sets_equal_the_producer_scripts_output(self):
+        # The receipt sets must match what the frozen producers actually write.
+        corpus = (ROOT / "scripts/conformance/server-parity/native-image-corpus.sh").read_text()
+        status = re.findall(r"status:\{([^}]*)\}", corpus)
+        self.assertEqual(len(status), 1)
+        self.assertEqual({item.split(":")[0].strip() for item in status[0].split(",")}, E.CORPUS_OBSERVATIONS)
+        compose = (ROOT / "scripts/smoke-published-compose.sh").read_text()
+        results = re.findall(r"results = \{(.*?)\n    \}", compose, re.S)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(set(re.findall(r'^\s*"([a-z_]+)":', results[0], re.M)), E.COMPOSE_OBSERVATIONS)
+
+    def test_corpus_observations_accept_every_written_status_and_refuse_a_missing_one(self):
+        # Exact status object of qualifier run 42407065494's native-image-corpus.json.
+        real = json.loads('{"reference_records":0,"native_record":0,"compare":0,"service_calls":0,'
+                          '"schedule_catalog":0,"namespace_delete_payloads":0,"retention_payloads":0}')
+        self.assertEqual(Q.qualification_observations("corpus", None, dict(real)), real)
+        old_six = E.CORPUS_OBSERVATIONS - {"retention_payloads"}
+        with self.assertRaisesRegex(E.Refusal, "qualification_observation_shape"):
+            E.closed(dict(real), old_six, "qualification_observation_shape")
+        with self.assertRaisesRegex(E.Refusal, "qualification_observation_shape"):
+            Q.qualification_observations("corpus", None, {**real, "unexpected": 0})
+        written = {key: 0 for key in E.CORPUS_OBSERVATIONS}
+        self.assertEqual(Q.qualification_observations("corpus", None, dict(written)), written)
+        for missing in sorted(E.CORPUS_OBSERVATIONS):
+            partial = {key: 0 for key in E.CORPUS_OBSERVATIONS - {missing}}
+            with self.assertRaisesRegex(E.Refusal, "qualification_observation_shape"):
+                Q.qualification_observations("corpus", None, partial)
+        with self.assertRaisesRegex(E.Refusal, "qualification_corpus_failed"):
+            Q.qualification_observations("corpus", None, {**written, "retention_payloads": 1})
+
     def test_observed_image_and_finalized_receipt_bind_to_consumer(self):
         provider = ProducerProvider()
         with patch.dict(os.environ, CONTEXT, clear=True):

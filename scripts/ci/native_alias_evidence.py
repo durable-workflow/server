@@ -452,8 +452,9 @@ RECEIPT_KEYS = {
     "actual_image_config_digest", "container_image_architecture", "container_image_os",
     "image_source_commit", "image_release_tag", "observations", "cleanup",
 }
+# Exactly the status object native-image-corpus.sh writes (Server #325).
 CORPUS_OBSERVATIONS = {"reference_records", "native_record", "compare", "service_calls",
-                       "schedule_catalog", "namespace_delete_payloads"}
+                       "schedule_catalog", "namespace_delete_payloads", "retention_payloads"}
 COMPOSE_OBSERVATIONS = {"health_serving", "ready", "cluster_version_matches_release",
                         "worker_registered", "loopback_binding", "unset_token_refused",
                         "production_default_token_refused"}
