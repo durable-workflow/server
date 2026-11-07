@@ -3,6 +3,20 @@ use super::store::{id, now};
 use serde_json::{Value, json};
 use sqlx::AssertSqlSafe;
 
+fn empty_range_message(range: &Value) -> Option<&str> {
+    let block = range.get("query_block")?.as_object()?;
+    if block.keys().all(|key| matches!(key.as_str(), "select_id" | "message")) {
+        return block.get("message")?.as_str();
+    }
+    // MariaDB wraps a pruned UNION branch's message in an empty table node.
+    if block.keys().any(|key| !matches!(key.as_str(), "select_id" | "operation" | "table"))
+        || block.get("operation")?.as_str()? != "UNION"
+    { return None; }
+    let table = block.get("table")?.as_object()?;
+    if table.len() != 1 { return None; }
+    table.get("message")?.as_str()
+}
+
 fn ordered_ranges(plan: &Value, activity: bool) -> bool {
     fn branches<'a>(value: &'a Value, found: &mut Vec<&'a Value>) {
         match value {
@@ -49,10 +63,8 @@ fn ordered_ranges(plan: &Value, activity: bool) -> bool {
         task_access(range, &mut access);
         // An activity cannot reclaim a leased workflow. MySQL eliminates
         // that second branch as Impossible WHERE without visiting a table.
-        let empty_block = range["query_block"].as_object().is_some_and(|block|
-            block.keys().all(|key| matches!(key.as_str(), "select_id" | "message")));
-        let message = range["query_block"]["message"].as_str();
-        let pruned = access.is_empty() && empty_block
+        let message = empty_range_message(range);
+        let pruned = access.is_empty()
             && (message == Some("no matching row in const table")
                 || activity && position == 1 && message == Some("Impossible WHERE"));
         if access == [true] { scans += 1; }
@@ -77,6 +89,12 @@ fn the_plan_guard_rejects_a_queue_sort_even_when_another_range_uses_the_index() 
     let mut extra = pruned.clone();
     extra["query_block"]["ordering_operation"]["union_result"]["query_specifications"][1]["query_block"]["nested_loop"] = json!([]);
     assert!(!ordered_ranges(&extra, false));
+    let mut maria = valid.clone();
+    maria["query_block"]["ordering_operation"]["union_result"]["query_specifications"][1] = json!({"query_block":{"select_id":3,"operation":"UNION","table":{"message":"Impossible WHERE"}}});
+    assert!(ordered_ranges(&maria, true));
+    assert!(!ordered_ranges(&maria, false));
+    maria["query_block"]["ordering_operation"]["union_result"]["query_specifications"][1]["query_block"]["table"]["key"] = json!("PRIMARY");
+    assert!(!ordered_ranges(&maria, true));
     pruned["query_block"]["ordering_operation"]["union_result"]["query_specifications"][1]["query_block"]["message"] = json!("unknown");
     assert!(!ordered_ranges(&pruned, true));
     for failure in ["mysql-sort", "mariadb-sort", "wrong-key", "missing-namespace", "missing-kind", "missing-status"] {
