@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, sync::Arc, time::{Duration, Instant}};
 fn status_index(line: &str) -> bool {
     ["dw_workflow_tasks_poll", "workflow_tasks_namespace_queue_status_idx",
         "workflow_tasks_fairness_class_index", "workflow_tasks_dispatch_order_index",
-        "workflow_tasks_status_available_at_index"].iter().any(|name| line.contains(name))
+        "workflow_tasks_status_available_at_index", "dw_workflow_tasks_scoped_dispatch"].iter().any(|name| line.contains(name))
 }
 
 fn postgres_live_status_seek(plan: &[String]) -> bool {

@@ -192,58 +192,20 @@ impl Flavor {
             })
         };
         match (self, version) {
-            (Self::MySql, 10) => Some((
-                MYSQL_10.get_or_init(|| Migration::new(
-                    10,
-                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes".into(),
-                    MigrationType::Simple,
-                    AssertSqlSafe(bootstrap_sql_v10(concat!(
-                include_str!("../../migrations/mysql/0003_full_schema.sql"),
-                "\n",
-                include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
-                "\n",
-                include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
-                "\n",
-                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
-                "\n",
-                include_str!("../../migrations/mysql/0007_service_calls.sql"),
-                "\n",
-                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
-                "\n",
-                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
-                "\n",
-                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql")
-            ))).into_sql_str(),
-                    false,
-                )),
-                include_str!("../../migrations/mysql/0010_catalog.json"),
-            )),
-            (Self::MariaDb, 10) => Some((
-                MARIA_10.get_or_init(|| Migration::new(
-                    10,
-                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes".into(),
-                    MigrationType::Simple,
-                    AssertSqlSafe(bootstrap_sql_v10(concat!(
-                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
-                "\n",
-                include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
-                "\n",
-                include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
-                "\n",
-                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
-                "\n",
-                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
-                "\n",
-                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
-                "\n",
-                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
-                "\n",
-                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql")
-            ))).into_sql_str(),
-                    false,
-                )),
-                include_str!("../../migrations/mariadb/0010_catalog.json"),
-            )),
+            (_, 10) => {
+                let (slot, expected) = match self {
+                    Self::MySql => (&MYSQL_10, include_str!("../../migrations/mysql/0010_catalog.json")),
+                    Self::MariaDb => (&MARIA_10, include_str!("../../migrations/mariadb/0010_catalog.json")),
+                };
+                Some((slot.get_or_init(|| {
+                    let previous = self.earlier(9).expect("retained v9 schema").0;
+                    let previous_sql: &str = previous.sql.as_ref();
+                    let sql = format!("{previous_sql}\n{}", self.step(9).expect("compiled v10 step"));
+                    Migration::new(10,
+                        "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes".into(),
+                        MigrationType::Simple, AssertSqlSafe(poll_expiry_bootstrap_sql(sql)).into_sql_str(), false)
+                }), expected))
+            },
             (Self::MySql, 9) => Some((
                 MYSQL_9.get_or_init(|| Migration::new(
                     9,
@@ -401,7 +363,10 @@ fn bootstrap_sql_v9(sql: &str) -> String {
 }
 
 fn bootstrap_sql_v10(sql: &str) -> String {
-    let mut sql = bootstrap_sql_v9(sql);
+    poll_expiry_bootstrap_sql(bootstrap_sql_v9(sql))
+}
+
+fn poll_expiry_bootstrap_sql(mut sql: String) -> String {
     let start = sql.find("CREATE TABLE IF NOT EXISTS dw_query_cache (").expect("compiled query cache");
     let end = start + sql[start..].find("\n) ENGINE=").expect("compiled query cache end");
     sql.insert_str(end, ",\n    KEY dw_query_cache_expiration (expiration)");

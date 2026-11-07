@@ -43,15 +43,22 @@ fn ordered_ranges(plan: &Value, activity: bool) -> bool {
     }
     let mut ranges = Vec::new();
     branches(plan, &mut ranges);
-    ranges.len() == 2 && ranges.iter().enumerate().all(|(position, range)| {
+    let mut scans = 0;
+    let ordered = ranges.len() == 2 && ranges.iter().enumerate().all(|(position, range)| {
         let mut access = Vec::new();
         task_access(range, &mut access);
         // An activity cannot reclaim a leased workflow. MySQL eliminates
         // that second branch as Impossible WHERE without visiting a table.
-        let pruned = activity && position == 1 && access.is_empty()
-            && range["query_block"]["message"] == "Impossible WHERE";
+        let empty_block = range["query_block"].as_object().is_some_and(|block|
+            block.keys().all(|key| matches!(key.as_str(), "select_id" | "message")));
+        let message = range["query_block"]["message"].as_str();
+        let pruned = access.is_empty() && empty_block
+            && (message == Some("no matching row in const table")
+                || activity && position == 1 && message == Some("Impossible WHERE"));
+        if access == [true] { scans += 1; }
         (access == [true] || pruned) && !sorted(range)
-    })
+    });
+    ordered && scans > 0
 }
 
 #[test]
@@ -65,6 +72,11 @@ fn the_plan_guard_rejects_a_queue_sort_even_when_another_range_uses_the_index() 
     pruned["query_block"]["ordering_operation"]["union_result"]["query_specifications"][1] = json!({"query_block":{"message":"Impossible WHERE"}});
     assert!(ordered_ranges(&pruned, true));
     assert!(!ordered_ranges(&pruned, false));
+    pruned["query_block"]["ordering_operation"]["union_result"]["query_specifications"][1]["query_block"]["message"] = json!("no matching row in const table");
+    assert!(ordered_ranges(&pruned, false));
+    let mut extra = pruned.clone();
+    extra["query_block"]["ordering_operation"]["union_result"]["query_specifications"][1]["query_block"]["nested_loop"] = json!([]);
+    assert!(!ordered_ranges(&extra, false));
     pruned["query_block"]["ordering_operation"]["union_result"]["query_specifications"][1]["query_block"]["message"] = json!("unknown");
     assert!(!ordered_ranges(&pruned, true));
     for failure in ["mysql-sort", "mariadb-sort", "wrong-key", "missing-namespace", "missing-kind", "missing-status"] {
