@@ -194,6 +194,96 @@ for output in 'not found' 'ERROR: example/native:latest: not found' 'ERROR: ghcr
   if native_registry_subject_missing ghcr.io/example/native:latest "$output"; then fail "unbound/mixed absence diagnostic accepted."; fi
 done
 
+# Exercise the actual publisher with the product's canonical Docker Hub subject.
+(
+fail() { printf 'Native registry subject check failed: %s\n' "$1" >&2; exit 1; }
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir "$scratch/bin"
+cat > "$scratch/bin/docker" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$CALL_LOG"
+[[ "$1 $2" == 'buildx imagetools' ]] || exit 74
+ref=${!#}
+case "$3" in
+  create)
+    [[ $# == 7 && "$4" == --tag ]] || exit 74
+    touch "$STATE"
+    ;;
+  inspect)
+    case "$ref" in
+      ghcr.io/durable-workflow/server:3.2.0|durableworkflow/server:3.2.0) ;;
+      *) exit 74 ;;
+    esac
+    if [[ ! -e "$STATE" ]]; then
+      if [[ "$ref" == durableworkflow/server:* ]]; then
+        printf '%s\n' "${HUB_DIAGNOSTIC:-ERROR: docker.io/durableworkflow/server:3.2.0: not found}" >&2
+      else
+        printf 'ERROR: %s: not found\n' "$ref" >&2
+      fi
+      exit 1
+    fi
+    if [[ "$4" == --raw ]]; then
+      printf '{"manifests":[{"digest":"%s","platform":{"os":"linux","architecture":"amd64"}},{"digest":"%s","platform":{"os":"linux","architecture":"arm64"}}]}\n' "$DIGEST_AMD64" "$DIGEST_ARM64"
+    else
+      [[ "$4" == --format && "$5" == '{{.Manifest.Digest}}' ]] || exit 74
+      printf '%s\n' "$INDEX_DIGEST"
+    fi
+    ;;
+  *) exit 74 ;;
+esac
+FAKE
+chmod +x "$scratch/bin/docker"
+index=sha256:$(printf '%064d' 0 | tr 0 a)
+amd64=sha256:$(printf '%064d' 0 | tr 0 b)
+arm64=sha256:$(printf '%064d' 0 | tr 0 c)
+publish() {
+  : > "$scratch/calls"
+  rm -f "$scratch/written"
+  env -i PATH="$scratch/bin:$PATH" CALL_LOG="$scratch/calls" STATE="$scratch/written" \
+    INDEX_DIGEST="$index" DIGEST_AMD64="$amd64" DIGEST_ARM64="$arm64" \
+    GHCR_IMAGE=ghcr.io/durable-workflow/server DOCKERHUB_IMAGE=durableworkflow/server \
+    RELEASE_TAG=3.2.0 PUBLISH_DOCKERHUB=true GITHUB_OUTPUT="$scratch/output" \
+    "$@" bash scripts/ci/native-release-publish.sh > "$scratch/result" 2>&1
+}
+if ! publish; then
+  writes=$(grep -c 'imagetools create' "$scratch/calls" || true)
+  fail "canonical Docker Hub absence refused (simulated_writes=$writes)."
+fi
+[[ $(grep -c 'imagetools create' "$scratch/calls") == 2 ]] || fail 'expected exactly two version-index writes.'
+for image in ghcr.io/durable-workflow/server durableworkflow/server; do
+  grep -Fxq "buildx imagetools create --tag $image:3.2.0 $image@$amd64 $image@$arm64" "$scratch/calls" \
+    || fail 'version-index write changed its subject or children.'
+done
+grep -Fxq "digest=$index" "$scratch/output" || fail 'the verified two-registry index was not returned.'
+
+diagnostics=(
+  'ERROR: durableworkflow/server:3.2.0: not found'
+  'ERROR: docker.io/durableworkflow/server-other:3.2.0: not found'
+  'ERROR: docker.io/durableworkflow/server:3.2.1: not found'
+  'ERROR: unrelated.invalid/durableworkflow/server:3.2.0: not found'
+  'ERROR: docker.io/other/server:3.2.0: not found'
+  'ERROR: docker.io/durableworkflow/server:3.2.0: manifest unknown'
+  'HTTP 401 Unauthorized: authentication required'
+  'error getting credentials: credential helper not found'
+  $'ERROR: docker.io/durableworkflow/server:3.2.0: not found\nerror getting credentials: helper not found'
+  $'ERROR: docker.io/durableworkflow/server:3.2.0: not found\nERROR: unrelated.invalid/server:3.2.0: not found'
+  ' ERROR: docker.io/durableworkflow/server:3.2.0: not found'
+  'ERROR: docker.io/durableworkflow/server:3.2.0: not found '
+)
+for diagnostic in "${diagnostics[@]}"; do
+  if publish HUB_DIAGNOSTIC="$diagnostic"; then fail 'unbound absence reached publication.'; fi
+  grep -Fq 'could not establish exact version-tag absence.' "$scratch/result" \
+    || fail 'a negative control did not reach the absence predicate.'
+  if grep -q 'imagetools create' "$scratch/calls"; then fail 'refused lookup reached an index write.'; fi
+done
+source scripts/ci/native-registry-absence.sh
+native_registry_subject_missing docker.io/durableworkflow/server:3.2.0 \
+  'ERROR: docker.io/durableworkflow/server:3.2.0: not found' || fail 'fully qualified exact subject refused.'
+printf 'Native registry subjects: canonical official Docker Hub publication and %s zero-write refusals passed.\n' "${#diagnostics[@]}"
+)
+
 # The GitHub Release, from protected main (native-github-release.yml): it
 # verifies the tag, the run, both exact tags and the provenance, then marks
 # a final Latest only when the live latest alias names its index in both
