@@ -76,9 +76,9 @@ store_methods! {
         let started = self.start(json!({"workflow_id":"history-allocation", "workflow_type":"probe", "task_queue":"allocation",
             "input":{"codec":"avro","blob":blob}}), Default::default(), None, None).await.unwrap();
         let run_id = started["run_id"].as_str().unwrap();
-        let original = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+        let initial = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(run_id).fetch_one(&self.pool).await.unwrap();
-        let original = DB::number(&original, "last_history_sequence").unwrap();
+        let initial_sequence = DB::number(&initial, "last_history_sequence").unwrap();
         let maximum = match DB::NAME {
             "SQLite" => i64::MAX,
             "PostgreSQL" => i32::MAX as i64,
@@ -136,7 +136,7 @@ store_methods! {
             }
         }
         Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
-            .bind(original).bind(run_id).execute(&self.pool).await.unwrap();
+            .bind(initial_sequence).bind(run_id).execute(&self.pool).await.unwrap();
     }
 
     pub(super) async fn qualify_authored_sequence_reads(&self) {
