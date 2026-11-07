@@ -20,12 +20,12 @@ type Catalog = Vec<(String, String, Json<Value>)>;
 macro_rules! status_candidates {
     ($status:literal, $limit:literal) => {
         concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t ",
-            "JOIN LATERAL (SELECT r.workflow_type,r.compatibility FROM workflow_runs r ",
-            "WHERE r.id=t.workflow_run_id AND r.status IN ('pending','running','waiting') LIMIT 1) r ON true ",
+            "JOIN LATERAL (SELECT r.workflow_type FROM workflow_runs r ",
+            "WHERE r.id=t.workflow_run_id AND r.status IN ('pending','running','waiting') ",
+            "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) LIMIT 1) r ON true ",
             "WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status='", $status, "' ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",
             "AND (t.available_at IS NULL OR t.available_at<=$5) ",
-            "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ",
             "ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit, ")")
     };
 }
@@ -39,7 +39,9 @@ macro_rules! postgres_task_candidates_sql {
 }
 
 // The disjoint ranges keep their first 100 fully filtered candidates. LATERAL
-// keeps each run lookup correlated, including before the tables have statistics.
+// keeps each fully filtered run lookup correlated, including before the tables
+// have statistics. Keep compatibility under its LIMIT rather than estimating a
+// second filter on the joined relation.
 pub(super) const TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("100");
 pub(super) const FIRST_TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("10");
 
