@@ -46,7 +46,6 @@ macro_rules! postgres_task_candidates_sql {
 // default collation, through the dedicated C-collated index. Their collation
 // does not change the priority/availability/id ordering.
 pub(super) const TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("100");
-pub(super) const FIRST_TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("10");
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
@@ -744,8 +743,6 @@ mod tests {
         let db = Database::new().await;
         let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_workflow_poll_transactions().await;
-        store.qualify_first_candidate_batch().await;
-        store.qualify_claim_history_sequence().await;
         store.qualify_query_poll_transactions().await;
         store.close().await;
         db.remove().await;

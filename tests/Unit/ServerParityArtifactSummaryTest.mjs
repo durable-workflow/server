@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {markerPollDiagnostic, summarizeEvidence} from '../../scripts/conformance/server-parity/artifact-summary.mjs';
+import {summarizeEvidence} from '../../scripts/conformance/server-parity/artifact-summary.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'parity-summary-'));
@@ -226,81 +226,4 @@ test('a failure excerpt is derived output and is read in bounded chunks', t => {
   assert.deepEqual([summary.scanned_files, summary.retained.length, summary.omitted_files], [1, 2, 0],
     'derived output does not count against source omission');
   assert.equal(summary.retained.find(file => file.derived_from).failures, 1);
-});
-
-
-test('failed marker actors retain only closed poll outcomes from the original journal', t => {
-  const {source, output} = fixture(t);
-  const directory = join(source, 'corrected-marker/php');
-  mkdirSync(directory, {recursive: true});
-  const name = 'selected-http.jsonl';
-  const row = (status, reply) => ({method: 'POST', path: '/api/worker/workflow-tasks/poll', status,
-    request_body: JSON.stringify({worker_id: 'PRIVATE-IDENTITY:workflow:excluding', secret: 'PRIVATE-REQUEST'}),
-    response_body: JSON.stringify({...reply, secret: 'PRIVATE-RESPONSE'}), headers: {Authorization: 'PRIVATE-TOKEN'}});
-  const entries = [row(503, {reason: 'backend_lock_pressure', poll_status: 'PRIVATE-STATUS', task: null}),
-    row(200, {poll_status: 'empty', task: null}), row(200, {poll_status: 'leased', reason: 'PRIVATE-REASON', task: {payload: 'PRIVATE-PAYLOAD'}})];
-  const journal = entries.map(JSON.stringify).join('\n') + '\n';
-  writeFileSync(join(directory, name), journal);
-  writeFileSync(join(directory, 'selected-incompatible.stderr'), 'Original observation expired\n');
-  const summary = summarizeEvidence(source, output, {outcome: 'failure'});
-  const path = 'corrected-marker/php/selected-http.jsonl.diagnostic.json';
-  const text = readFileSync(join(output, path), 'utf8');
-  assert.equal(text.includes('PRIVATE'), false);
-  const diagnostic = JSON.parse(text);
-  assert.equal(diagnostic.complete, true);
-  assert.equal(diagnostic.poll_rows, 3);
-  assert.deepEqual(diagnostic.groups.map(group => [group.phase, group.status, group.poll_status, group.reason, group.task]),
-    [['excluding', 503, 'other', 'backend_lock_pressure', 'none'],
-      ['excluding', 200, 'empty', 'other', 'none'], ['excluding', 200, 'leased', 'other', 'present']]);
-  assert.equal(summary.retained.find(file => file.path === path).derived_from, 'corrected-marker/php/selected-http.jsonl');
-  assert.equal(existsSync(join(output, 'corrected-marker/php', name)), false);
-  assert.equal(readFileSync(join(directory, name), 'utf8'), journal);
-});
-
-test('successful marker summaries never read or derive excluded journals', t => {
-  const {source, output} = fixture(t);
-  const directory = join(source, 'corrected-marker/rust');
-  mkdirSync(directory, {recursive: true});
-  writeFileSync(join(directory, 'selected-http.jsonl'), 'malformed secret');
-  writeFileSync(join(directory, 'selected-incompatible.stderr'), 'fixture failed');
-  const summary = summarizeEvidence(source, output, {outcome: 'success'});
-  assert.equal(summary.retained.length, 0);
-});
-
-test('bounded marker diagnostics keep malformed, changing and oversized evidence incomplete', t => {
-  const {source} = fixture(t);
-  const path = join(source, 'journal');
-  for (const content of ['null\n', '{bad json}\n', 'x'.repeat(128 * 1024 + 1), '{}\n'.repeat(513)]) {
-    writeFileSync(path, content);
-    const result = markerPollDiagnostic(path, Buffer.byteLength(content));
-    assert.equal(result.complete, false);
-    assert.deepEqual(result.groups, []);
-  }
-  writeFileSync(path, Buffer.from([123, 34, 120, 34, 58, 34, 255, 34, 125, 10]));
-  assert.equal(markerPollDiagnostic(path, 10).complete, false);
-  writeFileSync(path, '{}\n');
-  assert.equal(markerPollDiagnostic(path, 2).complete, false);
-  truncateSync(path, 2 * 1024 * 1024 + 1);
-  assert.equal(markerPollDiagnostic(path, 2 * 1024 * 1024 + 1).complete, false);
-});
-
-test('marker transport failure keeps its phase while body and cardinality remain closed', t => {
-  const {source} = fixture(t);
-  const path = join(source, 'journal');
-  const row = {method: 'POST', path: '/api/worker/workflow-tasks/poll', status: 0,
-    request_body: '{"worker_id":"private:workflow:excluding"}', response_body: '', client_cancelled: true,
-    transport_error: 'PRIVATE-TRANSPORT'};
-  let content = JSON.stringify(row) + '\n';
-  writeFileSync(path, content);
-  let result = markerPollDiagnostic(path, Buffer.byteLength(content));
-  assert.equal(result.complete, true);
-  assert.equal(result.groups[0].phase, 'excluding');
-  assert.equal(result.groups[0].response_json_object, false);
-  assert.equal(result.groups[0].transport_error, true);
-  assert.equal(JSON.stringify(result).includes('PRIVATE'), false);
-  content = Array.from({length: 65}, (_, status) => JSON.stringify({...row, status})).join('\n');
-  writeFileSync(path, content);
-  result = markerPollDiagnostic(path, Buffer.byteLength(content));
-  assert.equal(result.complete, false);
-  assert.deepEqual(result.groups, []);
 });
