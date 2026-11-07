@@ -27,6 +27,7 @@ MANIFEST_SCHEMA = "durable-workflow.native-alias-promotion-evidence.v1"
 RECEIPT_SCHEMA = "durable-workflow.native-qualification-receipt.v1"
 MANIFEST_SCHEMA_V2 = "durable-workflow.native-alias-promotion-evidence.v2"
 RECEIPT_SCHEMA_V2 = "durable-workflow.native-qualification-receipt.v2"
+LOCAL_IMAGE_KEYS = {"local_image_id", "local_manifest_digest", "config_digest_source"}
 SUBJECT_PATH = "scripts/ci/native-qualification-subject.json"
 RUNNER_REF = "refs/heads/feat/server-native32-qualification-runner"
 RUNNER_PATHS = {
@@ -459,7 +460,7 @@ def bind_receipt(value: dict[str, Any], role: str, selected: dict[str, Any],
                  run: dict[str, Any], job: dict[str, Any], release: dict[str, Any],
                  platform: str, profile: str | None, subject: dict[str, Any],
                  runner: dict[str,str] | None = None, binding: dict[str,Any] | None = None) -> None:
-    extra = {"runner_ref", "subject_blob", "resource_scope", "dependencies"} if runner else set()
+    extra = {"runner_ref", "subject_blob", "resource_scope", "dependencies"} | LOCAL_IMAGE_KEYS if runner else set()
     value = closed(value, RECEIPT_KEYS | extra, "receipt_shape")
     require(value["schema"] == (RECEIPT_SCHEMA_V2 if runner else RECEIPT_SCHEMA) and value["kind"] == role
             and value["eligible"] is True, "receipt_not_eligible")
@@ -484,6 +485,7 @@ def bind_receipt(value: dict[str, Any], role: str, selected: dict[str, Any],
         require(binding is not None and binding["release"] == release, "receipt_binding_missing")
         observed_scope = resource_scope(role, run["id"], run["run_attempt"], platform, profile)
         require(value["resource_scope"] == observed_scope, "receipt_resource_scope")
+        bind_local_image(value, subject, release["index_digest"])
         bind_dependencies(value["dependencies"], role, platform, binding)
     cleanup = closed(value["cleanup"],
                      {"api_ok", "verified_absent", "container_count", "network_count", "volume_count"},
@@ -508,6 +510,18 @@ def resource_scope(role: str, run: int, attempt: int, platform: str, profile: st
             f"published-compose-{run}-{attempt}-smoke-{platform.split('/')[1]}-{profile}")
 
 
+def bind_local_image(value: dict[str, Any], subject: dict[str, Any], root_digest: str) -> None:
+    require(matching(value["local_image_id"], DIGEST), "receipt_local_image_identity")
+    if value["config_digest_source"] == "engine_id":
+        require(value["local_image_id"] == subject["image_config_digest"]
+                and value["local_manifest_digest"] is None, "receipt_local_image_identity")
+    else:
+        require(value["config_digest_source"] == "manifest_descriptor"
+                and value["local_image_id"] in {root_digest, subject["child_manifest_digest"]}
+                and value["local_manifest_digest"] == subject["child_manifest_digest"],
+                "receipt_local_image_identity")
+
+
 def bind_dependencies(value: Any, role: str, platform: str, subject: dict[str,Any]) -> None:
     if role == "corpus":
         closed(value, set(), "receipt_dependency_shape")
@@ -519,11 +533,12 @@ def bind_dependencies(value: Any, role: str, platform: str, subject: dict[str,An
             continue
         keys = {"requested_image", "child_manifest_digest", "image_config_digest",
                 "actual_image_config_digest", "container_image_architecture", "container_image_os"}
-        observed = closed(value[name], keys | ({"container_id"} if name == "mysql" else set()),
+        observed = closed(value[name], keys | LOCAL_IMAGE_KEYS | ({"container_id"} if name == "mysql" else set()),
                           "receipt_dependency_identity")
         expected = {**subject[name], "actual_image_config_digest": subject[name]["image_config_digest"],
                     "container_image_architecture": "amd64", "container_image_os": "linux"}
         require(all(literal(observed[key], item) for key,item in expected.items()), "receipt_dependency_binding")
+        bind_local_image(observed, subject[name], subject[name]["child_manifest_digest"])
         if name == "mysql":
             require(type(observed["container_id"]) is str and re.fullmatch(r"[0-9a-f]{64}", observed["container_id"]),
                     "receipt_database_container")

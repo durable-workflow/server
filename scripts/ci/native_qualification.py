@@ -17,7 +17,7 @@ from native_alias_evidence import (COMPOSE_OBSERVATIONS, CORPUS_JOB, CORPUS_OBSE
                                    DIGEST, FINAL_TAG, GHCR_IMAGE, JSON_LIMIT, PLATFORMS,
                                    RECEIPT_SCHEMA, RECEIPT_SCHEMA_V2, REPOSITORY, REPOSITORY_ID, SHA, WORKFLOWS,
                                    SUBJECT_PATH, RUNNER_REF, qualification_subject, runner_subject,
-                                   resource_scope, bind_dependencies,
+                                   resource_scope, bind_dependencies, LOCAL_IMAGE_KEYS,
                                    Refusal, canonical, closed, literal, matching, positive,
                                    require, strict_json)
 from native_alias_transport import Commands, GitHubRegistryProvider
@@ -100,43 +100,125 @@ def admit(provider: GitHubRegistryProvider, role: str, image: str) -> dict[str, 
     return {"runner": runner, "subject": subject}
 
 
-def dependency_image(commands: Commands, subject: dict[str,str], repositories: tuple[str,...]) -> dict[str,Any]:
-    config = inspect(commands, "image", subject["image_config_digest"])
-    require(config.get("Id") == subject["image_config_digest"] and config.get("Architecture") == "amd64"
-            and config.get("Os") == "linux" and type(config.get("RepoDigests")) is list
+MANIFEST_TYPES = {"application/vnd.oci.image.manifest.v1+json",
+                  "application/vnd.docker.distribution.manifest.v2+json"}
+DEPENDENCY_REPOSITORIES = {
+    "mysql": ("mysql:8.0", ("mysql", "docker.io/library/mysql")),
+    "qemu": ("docker.io/tonistiigi/binfmt", ("tonistiigi/binfmt", "docker.io/tonistiigi/binfmt")),
+}
+
+
+def require_manifest(value: Any, digest: str) -> None:
+    require(type(value) is dict and value.get("digest") == digest
+            and type(value.get("mediaType")) is str and value["mediaType"] in MANIFEST_TYPES,
+            "actual_platform_manifest")
+
+
+def image_manifest(provider: GitHubRegistryProvider, subject: dict[str, str], requested: str) -> Any:
+    repository = requested.split("@", 1)[0]
+    if repository == GHCR_IMAGE:
+        return provider.registry_json(repository, subject["child_manifest_digest"])
+    # The shared promotion transport remains Server-only. These two exact
+    # qualification dependencies use an independently closed read-only path.
+    require(repository in {item[0] for item in DEPENDENCY_REPOSITORIES.values()}
+            and matching(subject.get("child_manifest_digest"), DIGEST)
+            and requested == repository + "@" + subject["child_manifest_digest"], "dependency_registry_subject")
+    return strict_json(provider.commands.run(
+        ["docker", "buildx", "imagetools", "inspect", "--raw", requested]), JSON_LIMIT)
+
+
+def local_image(provider: GitHubRegistryProvider, subject: dict[str, str], requested: str,
+                platform: str, root_digest: str, container: dict[str, Any] | None = None
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep the engine target ID distinct from its manifest's config digest."""
+    commands = provider.commands
+    if container is None:
+        config = inspect(commands, "image", requested)
+        local_id = config.get("Id")
+    else:
+        local_id = container.get("Image")
+        require(matching(local_id, DIGEST), "actual_container_image")
+        require(local_id in {subject["image_config_digest"], root_digest, subject["child_manifest_digest"]},
+                "actual_container_image")
+        if local_id == subject["image_config_digest"]:
+            config = inspect(commands, "image", local_id)
+        else:
+            require_manifest(container.get("ImageManifestDescriptor"), subject["child_manifest_digest"])
+            config = inspect(commands, "image", local_id, platform=platform)
+    require(matching(local_id, DIGEST), "actual_local_image")
+    if local_id == subject["image_config_digest"]:
+        require(config.get("Id") == local_id, "actual_local_image")
+        identity = {"local_image_id": local_id, "local_manifest_digest": None,
+                    "config_digest_source": "engine_id"}
+    else:
+        require(local_id in {root_digest, subject["child_manifest_digest"]}
+                and config.get("Id") == subject["child_manifest_digest"], "actual_local_image")
+        require_manifest(config.get("Descriptor"), subject["child_manifest_digest"])
+        # The platform descriptor is engine-observed. Its immutable manifest
+        # supplies the config linkage; an engine target ID is never relabeled.
+        manifest = image_manifest(provider, subject, requested)
+        require(type(manifest) is dict and manifest.get("schemaVersion") == 2
+                and type(manifest.get("mediaType")) is str and manifest["mediaType"] in MANIFEST_TYPES
+                and type(manifest.get("config")) is dict
+                and manifest["config"].get("digest") == subject["image_config_digest"],
+                "actual_manifest_config")
+        identity = {"local_image_id": local_id, "local_manifest_digest": subject["child_manifest_digest"],
+                    "config_digest_source": "manifest_descriptor"}
+    require(config.get("Architecture") == platform.split("/")[1] and config.get("Os") == "linux",
+            "actual_container_platform")
+    return config, identity
+
+
+def dependency_image(provider: GitHubRegistryProvider, subject: dict[str,str], role: str,
+                     container: dict[str, Any] | None = None) -> dict[str,Any]:
+    require(type(role) is str and role in DEPENDENCY_REPOSITORIES, "dependency_registry_subject")
+    repository, repositories = DEPENDENCY_REPOSITORIES[role]
+    require(matching(subject.get("child_manifest_digest"), DIGEST)
+            and subject.get("requested_image") == repository + "@" + subject["child_manifest_digest"],
+            "dependency_registry_subject")
+    config, identity = local_image(provider, subject, subject["requested_image"], "linux/amd64",
+                                   subject["child_manifest_digest"], container)
+    require(type(config.get("RepoDigests")) is list
             and any(repository + "@" + subject["child_manifest_digest"] in config["RepoDigests"]
                     for repository in repositories), "actual_dependency_image")
-    return {**subject, "actual_image_config_digest": config["Id"],
+    return {**subject, **identity, "actual_image_config_digest": subject["image_config_digest"],
             "container_image_architecture": config["Architecture"], "container_image_os": config["Os"]}
 
 
-def observe_dependencies(commands: Commands, role: str, platform: str, scope: str, subject: dict[str,Any]) -> dict[str,Any]:
+def observe_dependencies(provider: GitHubRegistryProvider, role: str, platform: str, scope: str, subject: dict[str,Any]) -> dict[str,Any]:
     if role == "corpus":
         return {}
+    commands = provider.commands
     containers = lines(commands, ["container", "ls", "-aq", "--no-trunc", "--filter",
         LABEL_FILTER + COMPOSE_OWNER + "=" + scope, "--filter", "label=com.docker.compose.service=mysql"], OBJECT_ID)
     require(len(containers) == 1, "actual_database_inventory")
     identity = containers.pop()
     database = inspect(commands, "container", identity)
     labels = database.get("Config", {}).get("Labels", {})
-    require(database.get("Id") == identity and database.get("Image") == subject["mysql"]["image_config_digest"]
+    require(database.get("Id") == identity
+            and matching(database.get("Image"), DIGEST)
+            and database["Image"] in {subject["mysql"]["image_config_digest"], subject["mysql"]["child_manifest_digest"]}
             and database.get("Config", {}).get("Image") == subject["mysql"]["requested_image"]
             and labels.get(COMPOSE_OWNER) == scope and labels.get("com.docker.compose.service") == "mysql",
             "actual_database_subject")
-    mysql = {**dependency_image(commands, subject["mysql"], ("mysql", "docker.io/library/mysql")),
+    mysql = {**dependency_image(provider, subject["mysql"], "mysql", database),
              "container_id": identity}
-    qemu = (dependency_image(commands, subject["qemu"], ("tonistiigi/binfmt", "docker.io/tonistiigi/binfmt"))
+    qemu = (dependency_image(provider, subject["qemu"], "qemu")
             if platform == "linux/arm64" else None)
     return {"mysql": mysql, "qemu": qemu}
 
 
-def inspect(commands: Commands, resource: str, identity: str) -> dict[str, Any]:
+def inspect(commands: Commands, resource: str, identity: str, *, platform: str | None = None) -> dict[str, Any]:
     if resource not in ("container", "image", "network", "volume"):
         raise Refusal("docker_resource_kind")
     # Leading CLI options, whitespace, separators and paths are never identities.
-    if not re.fullmatch(r"(?:sha256:[0-9a-f]{64}|[A-Za-z0-9][A-Za-z0-9_.-]{0,180})", identity):
+    pinned_image = (resource == "image" and re.fullmatch(
+        r"(?:ghcr\.io/durable-workflow/server|mysql:8\.0|docker\.io/tonistiigi/binfmt)@sha256:[0-9a-f]{64}", identity))
+    if not pinned_image and not re.fullmatch(r"(?:sha256:[0-9a-f]{64}|[A-Za-z0-9][A-Za-z0-9_.-]{0,180})", identity):
         raise Refusal("docker_resource_identity")
-    value = strict_json(commands.run(["docker", resource, "inspect", identity]), JSON_LIMIT)
+    require(platform is None or resource == "image" and platform in PLATFORMS, "docker_inspect_platform")
+    args = ["docker", resource, "inspect"] + (["--platform", platform] if platform else []) + [identity]
+    value = strict_json(commands.run(args), JSON_LIMIT)
     require(type(value) is list and len(value) == 1 and type(value[0]) is dict,
             "docker_inspect_shape")
     return value[0]
@@ -156,12 +238,16 @@ def observe_image(provider: GitHubRegistryProvider, role: str, image: str,
     index = image.split("@", 1)[1]
     subject = provider.index_subjects(GHCR_IMAGE, index, source, tag)[platform]
     instance = inspect(provider.commands, "container", container)
-    require(instance.get("Image") == subject["image_config_digest"], "actual_container_image")
-    config = inspect(provider.commands, "image", subject["image_config_digest"])
-    require(config.get("Id") == subject["image_config_digest"]
-            and config.get("Architecture") == platform.split("/")[1]
-            and config.get("Os") == "linux" and type(config.get("Config")) is dict,
-            "actual_container_platform")
+    local = {}
+    if admission:
+        config, local = local_image(provider, subject, image, platform, index, instance)
+    else:
+        require(instance.get("Image") == subject["image_config_digest"], "actual_container_image")
+        config = inspect(provider.commands, "image", subject["image_config_digest"])
+        require(config.get("Id") == subject["image_config_digest"]
+                and config.get("Architecture") == platform.split("/")[1]
+                and config.get("Os") == "linux", "actual_container_platform")
+    require(type(config.get("Config")) is dict, "actual_container_platform")
     labels = config["Config"].get("Labels")
     require(type(labels) is dict and labels.get("org.opencontainers.image.revision") == source
             and labels.get("dev.durable-workflow.release.tag") == tag, "actual_container_source")
@@ -172,9 +258,10 @@ def observe_image(provider: GitHubRegistryProvider, role: str, image: str,
         require(os.environ.get("DW_PUBLISHED_COMPOSE_PROJECT" if role == "compose" else "RESOURCE_SCOPE") == observed_scope,
                 "qualification_resource_scope")
         extra = {"runner_ref": admission["runner"]["ref"], "subject_blob": admission["runner"]["subject_blob"],
-                 "resource_scope": observed_scope, "dependencies": observe_dependencies(provider.commands, role, platform, observed_scope, admission["subject"])}
+                 "resource_scope": observed_scope, **local,
+                 "dependencies": observe_dependencies(provider, role, platform, observed_scope, admission["subject"])}
     return {"eligible": True, "requested_image": image, "index_digest": index,
-            "platform": platform, **subject, "actual_image_config_digest": instance["Image"],
+            "platform": platform, **subject, "actual_image_config_digest": subject["image_config_digest"],
             "container_image_architecture": config["Architecture"], "container_image_os": config["Os"],
             "image_source_commit": source, "image_release_tag": tag, **extra}
 
@@ -330,7 +417,7 @@ def finalize(provider: GitHubRegistryProvider, role: str, image: str, platform: 
                   "actual_image_config_digest", "container_image_architecture", "container_image_os",
                   "image_source_commit", "image_release_tag"}
     if admission:
-        image_keys |= {"runner_ref", "subject_blob", "resource_scope", "dependencies"}
+        image_keys |= {"runner_ref", "subject_blob", "resource_scope", "dependencies"} | LOCAL_IMAGE_KEYS
         require(identity.get("runner_ref") == admission["runner"]["ref"]
                 and identity.get("subject_blob") == admission["runner"]["subject_blob"]
                 and identity.get("resource_scope") == resource_scope(role,run_id,attempt,platform,profile),

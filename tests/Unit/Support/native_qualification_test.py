@@ -280,11 +280,82 @@ class RunnerCommands:
             value = {"Id":identity,"Architecture":"amd64","Os":"linux","Config":{"Labels":{
                 "org.opencontainers.image.revision":SOURCE,"dev.durable-workflow.release.tag":"3.2.0"}}}
             for name, repo in (("mysql","mysql"),("qemu","tonistiigi/binfmt")):
-                if identity == self.provider.binding[name]["image_config_digest"]:
+                if identity in (self.provider.binding[name]["image_config_digest"],self.provider.binding[name]["requested_image"]):
+                    value["Id"] = self.provider.binding[name]["image_config_digest"]
                     value["RepoDigests"] = [repo+"@"+(INDEX if name == "qemu" and self.wrong_qemu_digest else self.provider.binding[name]["child_manifest_digest"])]
         else:
             raise AssertionError("unexpected command")
         return json.dumps([value]).encode()
+
+
+class ContainerdCommands(RunnerCommands):
+    """Docker 29 target IDs, with an independently identified platform manifest."""
+    platform = "linux/amd64"
+    server_id = INDEX
+    image_mutation = None
+    container_mutation = None
+
+    def run(self, args, *more, **kwargs):
+        identity = args[-1]
+        if args[:5] == ["docker", "buildx", "imagetools", "inspect", "--raw"]:
+            self.reads.append(args)
+            subject = next(value for name, value in self.provider.binding.items()
+                           if name in ("mysql", "qemu") and value["requested_image"] == identity)
+            return json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                               "config": {"digest": subject["image_config_digest"]}}).encode()
+        if args[:3] == ["docker", "container", "inspect"]:
+            self.reads.append(args)
+            if identity == CID:
+                subject = self.provider.subjects[self.platform]
+                value = {"Image": self.server_id, "ImageManifestDescriptor": {
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": subject["child_manifest_digest"]}}
+                if self.container_mutation:
+                    self.container_mutation(value)
+            else:
+                value = {"Id": "f" * 64, "Image": self.provider.binding["mysql"]["child_manifest_digest"],
+                    "Config": {"Image": self.provider.binding["mysql"]["requested_image"], "Labels": {
+                        Q.COMPOSE_OWNER: self.database_owner, "com.docker.compose.service": "mysql"}}}
+                value["ImageManifestDescriptor"] = {"mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": self.provider.binding["mysql"]["child_manifest_digest"]}
+            return json.dumps([value]).encode()
+        if args[:3] != ["docker", "image", "inspect"]:
+            return super().run(args, *more, **kwargs)
+        self.reads.append(args)
+        if identity == self.server_id:
+            subject = self.provider.subjects[self.platform]
+            architecture = self.platform.split("/")[1]
+            config = {"Labels": {"org.opencontainers.image.revision": SOURCE,
+                                  "dev.durable-workflow.release.tag": "3.2.0"}}
+            repository = E.GHCR_IMAGE
+        else:
+            name = next(name for name in ("mysql", "qemu") if identity in {
+                self.provider.binding[name]["child_manifest_digest"], self.provider.binding[name]["requested_image"]})
+            subject = self.provider.binding[name]
+            architecture, config = "amd64", {}
+            repository = "mysql" if name == "mysql" else "tonistiigi/binfmt"
+        value = {"Id": subject["child_manifest_digest"], "Descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": subject["child_manifest_digest"]},
+            "Architecture": architecture, "Os": "linux", "Config": config,
+            "RepoDigests": [repository + "@" + subject["child_manifest_digest"]]}
+        if self.image_mutation:
+            self.image_mutation(value)
+        return json.dumps([value]).encode()
+
+
+def containerd_provider():
+    provider = RunnerProvider()
+    provider.commands = ContainerdCommands(provider)
+    provider.index_subjects = lambda *args: copy.deepcopy(provider.subjects)
+
+    def registry_image(repository, digest):
+        subjects = list(provider.subjects.values()) + [provider.binding[name] for name in ("mysql", "qemu")]
+        subject = next(item for item in subjects if item["child_manifest_digest"] == digest)
+        return {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {"digest": subject["image_config_digest"]}}
+
+    provider.registry_json = registry_image
+    return provider
 
 
 class RunnerProducerTests(unittest.TestCase):
@@ -318,11 +389,11 @@ class RunnerProducerTests(unittest.TestCase):
                                provider.selected["runner"],provider.binding)
                 self.assertEqual(record["image_source_commit"],SOURCE)
                 self.assertEqual(record["runner_commit"],RUNNER)
-                dependencies=Q.observe_dependencies(provider.commands,"compose","linux/arm64",context["DW_PUBLISHED_COMPOSE_PROJECT"],provider.binding)
+                dependencies=Q.observe_dependencies(provider,"compose","linux/arm64",context["DW_PUBLISHED_COMPOSE_PROJECT"],provider.binding)
                 E.bind_dependencies(dependencies,"compose","linux/arm64",provider.binding)
                 provider.commands.wrong_qemu_digest=True
                 with self.assertRaisesRegex(E.Refusal,"actual_dependency_image"):
-                    Q.observe_dependencies(provider.commands,"compose","linux/arm64",context["DW_PUBLISHED_COMPOSE_PROJECT"],provider.binding)
+                    Q.observe_dependencies(provider,"compose","linux/arm64",context["DW_PUBLISHED_COMPOSE_PROJECT"],provider.binding)
                 provider.commands.wrong_qemu_digest=False
                 for attribute,value,reason in (("database_config",INDEX,"actual_database_subject"),
                     ("database_owner","foreign","actual_database_subject")):
@@ -345,6 +416,94 @@ class RunnerProducerTests(unittest.TestCase):
         binding=json.loads((ROOT/E.SUBJECT_PATH).read_text())
         self.assertIn(binding["mysql"]["requested_image"].removeprefix("mysql:"),compose)
         self.assertIn(binding["qemu"]["requested_image"],compose)
+
+    def test_containerd_index_and_child_ids_produce_consumable_platform_bound_receipts(self):
+        for platform in E.PLATFORMS:
+            for root_is_index in (True, False):
+                provider = containerd_provider()
+                provider.runs[303]["status"] = "in_progress"
+                for job in provider.job_sets[303]:
+                    job["status"] = "in_progress"
+                commands = provider.commands
+                commands.platform = platform
+                commands.server_id = INDEX if root_is_index else provider.subjects[platform]["child_manifest_digest"]
+                context = self.context(provider)
+                context["DW_PUBLISHED_COMPOSE_PROJECT"] = E.resource_scope("compose", 303, 1, platform, "local")
+                commands.database_owner = context["DW_PUBLISHED_COMPOSE_PROJECT"]
+                with self.subTest(platform=platform, root_is_index=root_is_index), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    path = root / E.SUBJECT_PATH
+                    path.parent.mkdir(parents=True)
+                    path.write_bytes(provider.binding_bytes)
+                    with patch.dict(os.environ, context, clear=True), patch.object(Q, "ROOT", root):
+                        image = E.GHCR_IMAGE + "@" + INDEX
+                        observed = Q.observe_image(provider, "compose", image, CID, platform)
+                        self.assertEqual(observed["local_image_id"], commands.server_id)
+                        self.assertEqual(observed["actual_image_config_digest"], provider.subjects[platform]["image_config_digest"])
+                        self.assertEqual(observed["config_digest_source"], "manifest_descriptor")
+                        self.assertIn(["docker", "image", "inspect", "--platform", platform, commands.server_id], commands.reads)
+                        observations = {key: True for key in E.COMPOSE_OBSERVATIONS}
+                        observations["production_default_token_refused"] = None
+                        clean = {"api_ok": True, "verified_absent": True, "container_count": 0, "network_count": 0, "volume_count": 0}
+                        record = Q.finalize(provider, "compose", image, platform, "local", observed, observations, clean, "success", "success")
+                        job = next(job for job in provider.job_sets[303] if job["name"] == platform + " local published image")
+                        E.bind_receipt(record, "compose", provider.selected["compose"], provider.runs[303], job,
+                            provider.binding["release"], platform, "local", provider.subjects[platform],
+                            provider.selected["runner"], provider.binding)
+                        for field, value in (("local_image_id", "sha256:" + "0" * 64),
+                                             ("local_manifest_digest", None), ("config_digest_source", "engine_id")):
+                            with self.subTest(field=field), self.assertRaises(E.Refusal):
+                                E.bind_receipt({**record, field: value}, "compose", provider.selected["compose"], provider.runs[303], job,
+                                    provider.binding["release"], platform, "local", provider.subjects[platform],
+                                    provider.selected["runner"], provider.binding)
+
+    def test_containerd_manifest_config_platform_and_local_id_conflicts_refuse(self):
+        mutations = [
+            ("container_mutation", lambda value: value.update(Image="sha256:" + "0" * 64)),
+            ("container_mutation", lambda value: value.pop("ImageManifestDescriptor")),
+            ("container_mutation", lambda value: value["ImageManifestDescriptor"].update(digest=INDEX)),
+            ("image_mutation", lambda value: value.update(Id=INDEX)),
+            ("image_mutation", lambda value: value["Descriptor"].update(digest=INDEX)),
+            ("image_mutation", lambda value: value.update(Architecture="arm64")),
+        ]
+        for attribute, mutation in mutations:
+            provider = containerd_provider()
+            setattr(provider.commands, attribute, mutation)
+            container = json.loads(provider.commands.run(["docker", "container", "inspect", CID]))[0]
+            with self.subTest(attribute=attribute, mutation=mutation), self.assertRaises(E.Refusal):
+                Q.local_image(provider, provider.subjects[E.AMD64], E.GHCR_IMAGE + "@" + INDEX,
+                              E.AMD64, INDEX, container)
+        provider = containerd_provider()
+        provider.registry_json = lambda *args: {"schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": {"digest": INDEX}}
+        container = json.loads(provider.commands.run(["docker", "container", "inspect", CID]))[0]
+        with self.assertRaisesRegex(E.Refusal, "actual_manifest_config"):
+            Q.local_image(provider, provider.subjects[E.AMD64], E.GHCR_IMAGE + "@" + INDEX,
+                          E.AMD64, INDEX, container)
+
+    def test_third_party_descriptors_use_the_real_provider_without_expanding_its_server_allowlist(self):
+        fixture = containerd_provider()
+        commands = fixture.commands
+        provider = T.GitHubRegistryProvider(commands)
+        for role in ("mysql", "qemu"):
+            subject = fixture.binding[role]
+            with self.subTest(role=role), self.assertRaisesRegex(E.Refusal, "registry_subject"):
+                provider.registry_json(subject["requested_image"].split("@", 1)[0], subject["child_manifest_digest"])
+        self.assertEqual(commands.reads, [])
+        for role in ("mysql", "qemu"):
+            subject = fixture.binding[role]
+            container = (json.loads(commands.run(["docker", "container", "inspect", "f" * 64]))[0]
+                         if role == "mysql" else None)
+            observed = Q.dependency_image(provider, subject, role, container)
+            self.assertEqual(observed["actual_image_config_digest"], subject["image_config_digest"])
+            self.assertIn(["docker", "buildx", "imagetools", "inspect", "--raw", subject["requested_image"]], commands.reads)
+        for role, repository in (("mysql", "evil.example/mysql"), ("mysql", E.GHCR_IMAGE),
+                                  ("mysql", "mysql:latest"), ("qemu", "mysql:8.0")):
+            subject = {**fixture.binding[role], "requested_image": repository + "@" + fixture.binding[role]["child_manifest_digest"]}
+            before = len(commands.reads)
+            with self.subTest(role=role, repository=repository), self.assertRaisesRegex(E.Refusal, "dependency_registry_subject"):
+                Q.dependency_image(provider, subject, role)
+            self.assertEqual(len(commands.reads), before)
 
 
 class ProducerTests(unittest.TestCase):

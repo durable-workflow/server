@@ -219,6 +219,8 @@ class RunnerProvider(FakeProvider):
             record.update(schema=E.RECEIPT_SCHEMA_V2,runner_commit=RUNNER,runner_ref=E.RUNNER_REF,
                           subject_blob=self.binding_blob,
                           resource_scope=E.resource_scope(record["kind"], record["run_id"],1,record["platform"],record["profile"]),
+                          local_image_id=record["image_config_digest"],local_manifest_digest=None,
+                          config_digest_source="engine_id",
                           dependencies=self.dependencies(record["kind"],record["platform"]))
             self.set_artifact(identity,record)
 
@@ -229,6 +231,8 @@ class RunnerProvider(FakeProvider):
         for name in ("mysql","qemu"):
             result[name] = ({**self.binding[name],
                 "actual_image_config_digest": self.binding[name]["image_config_digest"],
+                "local_image_id":self.binding[name]["image_config_digest"],"local_manifest_digest":None,
+                "config_digest_source":"engine_id",
                 "container_image_architecture":"amd64","container_image_os":"linux"}
                 if name == "mysql" or platform == "linux/arm64" else None)
         result["mysql"]["container_id"] = "f" * 64
@@ -259,6 +263,24 @@ class RunnerProvider(FakeProvider):
 
 
 class RunnerEvidenceTests(unittest.TestCase):
+    def test_containerd_receipts_bind_target_manifest_and_config_as_distinct_identities(self):
+        provider = RunnerProvider()
+        for identity in list(provider.archives):
+            record = E.archive_receipt(provider.archives[identity])
+            record.update(local_image_id=INDEX, local_manifest_digest=record["child_manifest_digest"],
+                          config_digest_source="manifest_descriptor")
+            for dependency in record["dependencies"].values():
+                if dependency is not None:
+                    dependency.update(local_image_id=dependency["child_manifest_digest"],
+                                      local_manifest_digest=dependency["child_manifest_digest"],
+                                      config_digest_source="manifest_descriptor")
+            provider.set_artifact(identity, record)
+        proof = E.verify(provider.selected, provider)
+        self.assertEqual(5, len(proof["qualified_artifact_ids"]))
+        provider.mutate_receipt(501, lambda record: record.update(local_manifest_digest=INDEX))
+        with self.assertRaisesRegex(E.Refusal, "receipt_local_image_identity"):
+            E.verify(provider.selected, provider)
+
     def test_reviewed_runner_can_qualify_the_unchanged_published_producer(self):
         provider = RunnerProvider()
         proof = E.verify(provider.selected,provider)
@@ -297,6 +319,8 @@ class RunnerEvidenceTests(unittest.TestCase):
             lambda p:p.mutate_receipt(504,lambda r:r["dependencies"].update(qemu=None)),
             lambda p:p.mutate_receipt(502,lambda r:r["dependencies"].update(qemu=p.dependencies("compose","linux/arm64")["qemu"])),
             lambda p:p.job_sets[302][0]["steps"].pop(),
+            lambda p:p.mutate_receipt(501,lambda r:r.update(local_image_id=[])),
+            lambda p:p.mutate_receipt(502,lambda r:r["dependencies"]["mysql"].update(config_digest_source="unknown")),
         ]
         for i,change in enumerate(mutations):
             provider=RunnerProvider();change(provider)
