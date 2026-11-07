@@ -1197,6 +1197,7 @@ mod tests {
     async fn qualification_poll_cache_single_statement_writes() {
         let db = Database::new().await;
         let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_transaction_run_tags().await;
         store.qualify_query_poll_cache_writes().await;
         store.qualify_workflow_poll_cache_writes().await;
         store.qualify_summary_projection_bytes().await;

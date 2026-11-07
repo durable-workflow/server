@@ -4,6 +4,70 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 store_methods! {
+    pub(super) async fn qualify_transaction_run_tags(&self) {
+        let input = crate::codec::ValueCodec::new().unwrap()
+            .encode(&crate::codec::Value::Array(vec![])).unwrap();
+        let run = self.start(json!({"workflow_id":"run-tags","workflow_type":"run-tags",
+            "task_queue":"run-tags","input":{"codec":"avro","blob":input}}),BTreeMap::new(),None,None).await.unwrap();
+        let foreign = self.start(json!({"workflow_id":"run-tags-other","workflow_type":"run-tags",
+            "task_queue":"run-tags","input":{"codec":"avro","blob":input}}),BTreeMap::new(),None,None).await.unwrap();
+        let run_id = run["run_id"].as_str().unwrap();
+        Self::query("UPDATE workflow_runs SET priority=7,fairness_key=' raw λ ',fairness_weight=3,compatibility=' build ' WHERE id=$1")
+            .bind(run_id).execute(&self.pool).await.unwrap();
+        let read = "SELECT namespace,priority,fairness_key,fairness_weight,compatibility FROM workflow_runs WHERE id=$1";
+        let mut tx = self.begin().await.unwrap();
+        Self::active_run(&mut tx,run_id).await.unwrap();
+        let (task,count) = super::sql_counts::measure(Self::create_task(&mut tx,run_id,"run-tags","workflow",json!({"own":"payload"}))).await;
+        let task = task.unwrap();
+        assert_eq!(count.count(read),0,"the authoritative active-run row supplies its tags");
+        assert_eq!(count.total(),1,"only the original INSERT remains");
+        let row = Self::query("SELECT namespace,priority,fairness_key,fairness_weight,compatibility,payload FROM workflow_tasks WHERE id=$1")
+            .bind(&task).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(DB::string(&row,"namespace").unwrap(),self.namespace.as_ref());
+        assert_eq!(DB::number(&row,"priority").unwrap(),7);
+        assert_eq!(DB::optional_string(&row,"fairness_key").unwrap().as_deref(),Some(" raw λ "));
+        assert_eq!(DB::number(&row,"fairness_weight").unwrap(),3);
+        assert_eq!(DB::optional_string(&row,"compatibility").unwrap().as_deref(),Some(" build "));
+        assert_eq!(DB::document_row(&row,"payload").unwrap(),json!({"own":"payload"}));
+        let saved = tx.poll_savepoint().await.unwrap();
+        Self::query("UPDATE workflow_runs SET priority=19 WHERE id=$1").bind(run_id).execute(&mut *tx).await.unwrap();
+        Self::active_run(&mut tx,run_id).await.unwrap();
+        assert_eq!(tx.run_tags[run_id].priority,19);
+        let discarded = Self::create_task(&mut tx,run_id,"run-tags","activity",json!({})).await.unwrap();
+        tx.rollback_poll_claim(saved).await.unwrap();
+        assert!(tx.run_tags.is_empty(),"a rolled-back view cannot remain cached");
+        assert!(Self::query("SELECT id FROM workflow_tasks WHERE id=$1").bind(discarded)
+            .fetch_optional(&mut *tx).await.unwrap().is_none());
+        let (task,count) = super::sql_counts::measure(Self::create_task(&mut tx,run_id,"run-tags","activity",json!({}))).await;
+        let task = task.unwrap();
+        assert_eq!(count.count(read),1,"rollback must force the original row read");
+        let row = Self::query("SELECT priority FROM workflow_tasks WHERE id=$1").bind(task)
+            .fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(DB::number(&row,"priority").unwrap(),7);
+        let (_,count) = super::sql_counts::measure(Self::create_task(&mut tx,foreign["run_id"].as_str().unwrap(),"run-tags","workflow",json!({}))).await;
+        assert_eq!(count.count(read),1,"another run cannot consume these tags");
+        tx.rollback().await.unwrap();
+        Self::query("UPDATE workflow_runs SET priority=13 WHERE id=$1").bind(run_id).execute(&self.pool).await.unwrap();
+        let mut tx = self.begin().await.unwrap();
+        let (task,count) = super::sql_counts::measure(Self::create_task(&mut tx,run_id,"run-tags","workflow",json!({}))).await;
+        let task = task.unwrap();
+        assert_eq!(count.count(read),1,"a fresh transaction starts with no cached view");
+        let row = Self::query("SELECT priority FROM workflow_tasks WHERE id=$1").bind(task)
+            .fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(DB::number(&row,"priority").unwrap(),13);
+        assert!(Self::create_task(&mut tx,"missing-run-tags","run-tags","workflow",json!({})).await.is_err());
+        tx.rollback().await.unwrap();
+        if DB::PHP_CONNECTION == "sqlite" {
+            let mut tx = self.begin().await.unwrap();
+            Self::active_run(&mut tx,run_id).await.unwrap();
+            Self::query("UPDATE workflow_runs SET priority='not-an-integer' WHERE id=$1")
+                .bind(run_id).execute(&mut *tx).await.unwrap();
+            Self::active_run(&mut tx,run_id).await.unwrap();
+            assert!(!tx.run_tags.contains_key(run_id),"a failed seed must remove an earlier cached value");
+            assert!(Self::create_task(&mut tx,run_id,"run-tags","workflow",json!({})).await.is_err());
+            tx.rollback().await.unwrap();
+        }
+    }
     pub(super) async fn qualify_summary_projection_bytes(&self) {
         let input = crate::codec::ValueCodec::new().unwrap()
             .encode(&crate::codec::Value::Array(vec![])).unwrap();
@@ -89,6 +153,7 @@ store_methods! {
 async fn sqlite_poll_cache_writes_use_one_statement_and_rollback() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::<sqlx::Sqlite>::new(super::sqlite::open(dir.path().join("writes.sqlite").to_str().unwrap()).await.unwrap());
+    store.qualify_transaction_run_tags().await;
     store.qualify_query_poll_cache_writes().await;
     store.qualify_workflow_poll_cache_writes().await;
     store.qualify_summary_projection_bytes().await;
