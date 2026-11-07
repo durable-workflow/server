@@ -146,10 +146,14 @@ store_methods! {
 
     async fn poll_work_candidates(&self, sql: &str, wake: bool) -> Vec<String> {
         let at = now();
-        let query = sqlx::query::<DB>(AssertSqlSafe(sql)).bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
-            .bind(DB::bind_time(at)).bind(DB::bind_time(at));
-        let rows = if wake { query.fetch_all(&self.pool).await.unwrap() }
-            else { query.bind(None::<&str>).fetch_all(&self.pool).await.unwrap() };
+        let sets = if !wake && sql == DB::statement(DB::TASK_CANDIDATES_SQL).as_ref() { DB::TASK_CANDIDATE_BIND_SETS } else { 1 };
+        let mut query = sqlx::query::<DB>(AssertSqlSafe(sql));
+        for _ in 0..sets {
+            query = query.bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
+                .bind(DB::bind_time(at)).bind(DB::bind_time(at));
+            if !wake { query = query.bind(None::<&str>); }
+        }
+        let rows = query.fetch_all(&self.pool).await.unwrap();
         rows.iter().map(|row| DB::string(row, "id").unwrap()).collect()
     }
 
@@ -159,11 +163,16 @@ store_methods! {
             "MySQL" => "EXPLAIN FORMAT=JSON ",
             _ => "EXPLAIN ",
         };
-        let query = sqlx::query::<DB>(AssertSqlSafe(format!("{explain}{}", DB::statement(sql))))
-            .bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
-            .bind(DB::bind_time(now())).bind(DB::bind_time(now()));
-        let rows = if wake { query.fetch_all(&self.pool).await.unwrap() }
-            else { query.bind(None::<&str>).fetch_all(&self.pool).await.unwrap() };
+        let mut query = sqlx::query::<DB>(AssertSqlSafe(format!("{explain}{}", DB::statement(sql))));
+        let lease_at = now();
+        let ready_at = now();
+        let sets = if wake { 1 } else { DB::TASK_CANDIDATE_BIND_SETS };
+        for _ in 0..sets {
+            query = query.bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
+                .bind(DB::bind_time(lease_at)).bind(DB::bind_time(ready_at));
+            if !wake { query = query.bind(None::<&str>); }
+        }
+        let rows = query.fetch_all(&self.pool).await.unwrap();
         let mut plan = Vec::new();
         for row in rows {
             let line = match DB::NAME {
@@ -192,7 +201,10 @@ store_methods! {
             }
             for (sql, wake) in [(DB::TASK_CANDIDATES_SQL, false),(DB::POLL_WAKE_TASKS_SQL,true)] {
                 let compiled = DB::statement(sql);
-                let predecessor = compiled.replace(" AND t.status IN ('ready','leased')", "")
+                let predecessor = if DB::NAME == "MySQL" && !wake {
+                    DB::statement(super::store::TASK_CANDIDATES_SQL)
+                } else { compiled.clone() };
+                let predecessor = predecessor.replace(" AND t.status IN ('ready','leased')", "")
                     .replace(" FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN ", " JOIN ");
                 let expected = self.poll_work_candidates(&predecessor, wake).await;
                 let actual = self.poll_work_candidates(&compiled, wake).await;

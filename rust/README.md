@@ -315,6 +315,10 @@ summary writes, when commit starts. The next writer still waits on the database
 lock. SQLite keeps the process queue until commit finishes. Ordinary history
 sequence allocation uses one update statement; missing, exhausted or
 noncanonical counters retain the original typed read/write path.
+
+MySQL candidate polls read ready and leased status ranges separately through
+the existing dispatch index. Each range applies the candidate filters before
+its 100-row limit. The final merge sorts at most 200 rows and returns 100.
 This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 
 Implemented paths cover health/schema readiness, limited capability discovery,

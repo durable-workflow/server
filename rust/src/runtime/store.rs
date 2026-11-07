@@ -98,6 +98,7 @@ macro_rules! task_candidates_sql {
         concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100")
     };
 }
+#[cfg(test)]
 pub(super) use task_candidates_sql;
 pub(super) const TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r");
 /// A signal record's place in `PendingMessageTask::signalFollows`: its
@@ -2144,16 +2145,22 @@ where
             return Ok(true);
         }
         let at = now();
-        Ok(Self::query(DB::TASK_CANDIDATES_SQL)
-            .bind(self.namespace.as_ref())
-            .bind(queue)
-            .bind(kind)
-            .bind(DB::bind_time(at))
-            .bind(DB::bind_time(at))
-            .bind(build.as_deref())
+        Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at)
             .fetch_optional(&self.pool)
             .await?
             .is_some())
+    }
+
+    pub(super) fn task_candidate_query(
+        &self, queue: &str, kind: &str, build: Option<&str>, lease_at: DateTime<Utc>, ready_at: DateTime<Utc>,
+    ) -> sqlx::query::Query<'static, DB, DB::Arguments> {
+        let mut query = Self::query(DB::TASK_CANDIDATES_SQL);
+        // MySQL's positional protocol needs the same values for both ranges.
+        for _ in 0..DB::TASK_CANDIDATE_BIND_SETS {
+            query = query.bind(self.namespace.as_ref()).bind(queue).bind(kind)
+                .bind(DB::bind_time(lease_at)).bind(DB::bind_time(ready_at)).bind(build);
+        }
+        query
     }
 
     /// Published PHP's poll order (`claimReadyTask`): its bridge returns the
@@ -2327,13 +2334,7 @@ where
             },
         )?;
         let build = worker_build::<DB>(&worker)?;
-        let candidates = Self::query(DB::TASK_CANDIDATES_SQL)
-            .bind(self.namespace.as_ref())
-            .bind(queue)
-            .bind(kind)
-            .bind(DB::bind_time(now()))
-            .bind(DB::bind_time(now()))
-            .bind(build.as_deref())
+        let candidates = self.task_candidate_query(queue, kind, build.as_deref(), now(), now())
             .fetch_all(&mut **tx)
             .await?;
         let candidates = Self::fairness_batches(candidates, kind, &types)?;

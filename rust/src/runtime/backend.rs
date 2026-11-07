@@ -73,6 +73,7 @@ pub(super) trait Backend: Database {
     const VISIBILITY_PAGE: &str = super::visibility::VISIBILITY_PAGE;
     const WORKER_REGISTRATION_SQL: &str = super::store::WORKER_REGISTRATION_SQL;
     const TASK_CANDIDATES_SQL: &str = super::store::TASK_CANDIDATES_SQL;
+    const TASK_CANDIDATE_BIND_SETS: usize = 1;
     const POLL_WAKE_TASKS_SQL: &str = super::cross_kind_poll::TASKS_SQL;
     const POLL_RECEIPT_CLEANUP_SQL: &str = super::store::POLL_RECEIPT_CLEANUP_SQL;
     const TIMER_TASK_SQL: &str;
@@ -521,6 +522,20 @@ impl Backend for Postgres {
     }
 }
 
+// Equality on the dispatch index's status prefix preserves each range's
+// order. The outer sort sees at most two bounded candidate pages.
+macro_rules! mysql_status_candidates {
+    ($status:literal) => {
+        concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t FORCE INDEX (workflow_tasks_dispatch_order_index) STRAIGHT_JOIN workflow_runs r ON r.id=t.workflow_run_id ",
+            "WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status='", $status, "' ",
+            "AND r.status IN ('pending','running','waiting') ",
+            "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",
+            "AND (t.available_at IS NULL OR t.available_at<=$5) ",
+            "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ",
+            "ORDER BY t.priority,t.available_at,t.id LIMIT 100)")
+    };
+}
+
 impl Backend for MySql {
     const COMMIT_HANDOFF: bool = true;
     const HISTORY_SEQUENCE_MAX: i64 = u32::MAX as i64;
@@ -529,11 +544,13 @@ impl Backend for MySql {
     fn advanced_history_sequence(result: &Self::QueryResult) -> Option<i64> {
         i64::try_from(result.last_insert_id()).ok()
     }
+    const TASK_CANDIDATES_SQL: &str = concat!("SELECT * FROM (", mysql_status_candidates!("ready"),
+        " UNION ALL ", mysql_status_candidates!("leased"), ") AS candidates ORDER BY priority,available_at,id LIMIT 100");
+    const TASK_CANDIDATE_BIND_SETS: usize = 2;
     // The wake query can otherwise start from a run and range-check every
     // task in its queue, even with the explicit live-status predicate. Keep
     // the task status range first, then look up each candidate's run by PK.
     // All filters, ordering, limits and bound values use the common templates.
-    const TASK_CANDIDATES_SQL: &str = super::store::task_candidates_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r");
     const POLL_WAKE_TASKS_SQL: &str = super::cross_kind_poll::poll_wake_tasks_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r");
     type EncodedInteger = Option<i64>;
     // MariaDB's Laravel driver may store the owner as its uuid type.

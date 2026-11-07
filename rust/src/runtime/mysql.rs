@@ -1207,6 +1207,18 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_mysql_candidates_use_ordered_status_ranges() {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let db = Database::new().await;
+            let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+            store.qualify_mysql_candidate_ranges().await;
+            store.close().await;
+            db.remove().await;
+        }).await.expect("bounded MySQL ordered candidate qualification");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
     async fn qualification_poll_query_plan_bounds() {
         let db = Database::new().await;
         let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
