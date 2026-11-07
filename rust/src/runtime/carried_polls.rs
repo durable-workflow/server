@@ -165,9 +165,10 @@ store_methods! {
         &self, tx: &mut super::transaction::Transaction<'_, DB>, poll: &ActivityPoll, completion_owner: &str,
     ) -> Result<Outcome> {
         let owner = super::text(&poll.body, "worker_id")?;
-        if owner != completion_owner || !self.worker_poll_fence_holds_in(tx, &poll.fence, owner).await? {
+        if owner != completion_owner { return Ok(Outcome::Declined); }
+        let Some(registration) = self.fenced_claim_registration(tx,&poll.fence,owner).await? else {
             return Ok(Outcome::Declined);
-        }
+        };
         // Validation work uses the workflow slot too. An unverifiable lease
         // deadline remains protected, rather than being treated as free.
         let at = super::store::now();
@@ -179,7 +180,7 @@ store_methods! {
             return Ok(Outcome::Declined);
         }
         let saved = tx.poll_savepoint().await?;
-        match self.claim_in(tx, &poll.body, "activity", &poll.protocol, None, None).await {
+        match self.claim_with_registration(tx, &poll.body, "activity", &poll.protocol, None, None, Some(registration)).await {
             Ok(task) => {
                 tx.release_poll_claim().await?;
                 Ok(task.map_or(Outcome::Empty, Outcome::Leased))
@@ -213,9 +214,10 @@ store_methods! {
         &self, tx: &mut super::transaction::Transaction<'_, DB>, poll: &WorkflowPoll, completion_owner: &str,
     ) -> Result<Outcome> {
         let owner = super::text(&poll.body, "worker_id")?;
-        if owner != completion_owner || !self.worker_poll_fence_holds_in(tx, &poll.fence, owner).await? {
+        if owner != completion_owner { return Ok(Outcome::Declined); }
+        let Some(registration) = self.fenced_claim_registration(tx,&poll.fence,owner).await? else {
             return Ok(Outcome::Declined);
-        }
+        };
         let occupied = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE namespace=$1 AND lease_owner=$2 AND task_type='activity' AND status='leased' AND (lease_expires_at IS NULL OR lease_expires_at>$3)")
             .bind(self.namespace.as_ref()).bind(owner).bind(DB::bind_time(super::store::now())).fetch_one(&mut **tx).await?;
         if occupied > 0 { return Ok(Outcome::Declined); }
@@ -226,7 +228,7 @@ store_methods! {
             if let Some(answer) = self.replay_workflow_poll_in(tx, &poll.request, owner, super::text(&poll.body, "task_queue")?).await? {
                 return Ok(if answer["task"].is_object() { Outcome::Leased(answer["task"].clone()) } else { Outcome::Empty });
             }
-            let task = self.claim_in(tx, &poll.body, "workflow", &poll.protocol, poll.page, Some(&poll.request)).await?;
+            let task = self.claim_with_registration(tx, &poll.body, "workflow", &poll.protocol, poll.page, Some(&poll.request), Some(registration)).await?;
             if let Some(task) = task {
                 Self::remember_workflow_poll(tx, &poll.request, &json!({"task":task,"poll_status":"leased"})).await?;
                 Ok(Outcome::Leased(task))
