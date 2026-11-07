@@ -2130,13 +2130,19 @@ store_methods! {
 
     /// `validateCancellationScopeMembership` inside the bridge's completion,
     /// over the batch's non-terminal commands.
-    pub(super) async fn cancellation_scope_completion_refusal(tx: &mut Transaction<'_, DB>, run_id: &str, commands: &[&Value])
-        -> Result<Option<&'static str>>
+    /// Return the same locked authored position for command application; a
+    /// checkpoint can supply the position it just read in this transition.
+    pub(super) async fn cancellation_scope_completion_refusal(
+        tx: &mut Transaction<'_, DB>, run_id: &str, commands: &[&Value], known_sequence: Option<i64>,
+    ) -> Result<(Option<&'static str>, i64)>
     {
         let events = Self::scope_events(tx, run_id).await?;
         let scopes = scopes(&events, run_id)?;
-        let next = Self::authored_sequence(tx, run_id).await? + 1;
-        membership_refusal(&events, &scopes, commands, next)
+        let sequence = match known_sequence {
+            Some(sequence) => sequence,
+            None => Self::authored_sequence(tx, run_id).await?,
+        };
+        Ok((membership_refusal(&events, &scopes, commands, sequence + 1)?, sequence))
     }
 }
 

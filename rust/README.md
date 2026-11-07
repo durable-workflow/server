@@ -310,6 +310,11 @@ acquisition. Its wait uses the existing five-second pool-acquisition budget;
 expiry returns the ordinary typed pool timeout without borrowing a connection.
 Read-only snapshots bypass this queue. Database locks continue to order
 independent runtimes and processes.
+PostgreSQL and MySQL hand the process queue to the next writer after derived
+summary writes, when commit starts. The next writer still waits on the database
+lock. SQLite keeps the process queue until commit finishes. Ordinary history
+sequence allocation uses one update statement; missing, exhausted or
+noncanonical counters retain the original typed read/write path.
 This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 
 Implemented paths cover health/schema readiness, limited capability discovery,

@@ -254,7 +254,8 @@ store_methods! {
             return refusal("cancellation_scope_checkpoint_sequence_mismatch");
         }
         let members: Vec<&Value> = commands.iter().collect();
-        if let Some(reason) = Self::cancellation_scope_completion_refusal(&mut tx, &run_id, &members).await? {
+        let (scope_refusal, _) = Self::cancellation_scope_completion_refusal(&mut tx, &run_id, &members, Some(sequence)).await?;
+        if let Some(reason) = scope_refusal {
             tx.rollback().await?;
             return refusal(reason);
         }

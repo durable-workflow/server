@@ -3313,7 +3313,8 @@ where
         // prepared scope admits no new member, and an undelivered preparation
         // reserves its boundary for every command.
         let non_terminal: Vec<&Value> = commands.iter().filter(|command| !is_terminal(command)).collect();
-        if let Some(reason) = Self::cancellation_scope_completion_refusal(&mut tx, &run_id, &non_terminal).await? {
+        let (scope_refusal, mut sequence) = Self::cancellation_scope_completion_refusal(&mut tx, &run_id, &non_terminal, None).await?;
+        if let Some(reason) = scope_refusal {
             return Err(super::RuntimeError::Protocol {
                 status: StatusCode::CONFLICT,
                 response: super::cancellation_scopes::enveloped(json!({"task_id": task_id,
@@ -3322,7 +3323,6 @@ where
             });
         }
         Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
-        let mut sequence = Self::authored_sequence(&mut tx, &run_id).await?;
         // The tasks this batch's commands create, in order, as PHP reports them.
         let mut created = Vec::new();
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, commands, signal).await?;
@@ -4617,19 +4617,32 @@ where
         Self::record(tx, run_id, event_type, payload, task_id, Some(command_id), None, false).await.map(|_| ())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn record(
-        tx: &mut Transaction<'_, DB>,
-        run_id: &str,
-        event_type: &str,
-        payload: Value,
-        task_id: Option<&str>,
-        command_id: Option<&str>,
-        recorded_at: Option<DateTime<Utc>>,
-        command_snapshot: bool,
-    ) -> Result<String> {
-        // The backend transition lock protects this read and write together.
-        // MySQL has no UPDATE RETURNING; all adapters use this same allocation.
+    pub(super) async fn allocate_history_sequence(
+        tx: &mut Transaction<'_, DB>, run_id: &str,
+    ) -> Result<i64> {
+        if DB::HISTORY_ADVANCE_RETURNS_ROW {
+            if let Some(row) = Self::query(DB::HISTORY_ADVANCE_SQL)
+                .bind(run_id).bind(DB::HISTORY_SEQUENCE_MAX).fetch_optional(&mut **tx).await?
+            {
+                return DB::number(&row, "last_history_sequence");
+            }
+        } else {
+            let result = Self::query(DB::HISTORY_ADVANCE_SQL)
+                .bind(run_id).bind(DB::HISTORY_SEQUENCE_MAX).execute(&mut **tx).await?;
+            let sequence = DB::advanced_history_sequence(&result);
+            if DB::affected(result) == 1 {
+                return sequence.filter(|sequence| *sequence > 0).ok_or_else(||
+                    refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_history_sequence"));
+            }
+        }
+        // Missing, exhausted or noncanonical stored counters take the original
+        // typed read/write path, preserving its refusal and overflow behavior.
+        Self::allocate_history_sequence_fallback(tx, run_id).await
+    }
+
+    pub(super) async fn allocate_history_sequence_fallback(
+        tx: &mut Transaction<'_, DB>, run_id: &str,
+    ) -> Result<i64> {
         let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
@@ -4642,6 +4655,21 @@ where
             .bind(run_id)
             .execute(&mut **tx)
             .await?;
+        Ok(sequence)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        event_type: &str,
+        payload: Value,
+        task_id: Option<&str>,
+        command_id: Option<&str>,
+        recorded_at: Option<DateTime<Utc>>,
+        command_snapshot: bool,
+    ) -> Result<String> {
+        let sequence = Self::allocate_history_sequence(tx, run_id).await?;
         let recorded_at = recorded_at.unwrap_or_else(now);
         let mut payload = payload;
         // `WorkflowHistoryEvent::record`: an event PHP records with its task

@@ -21,8 +21,10 @@ pub(super) struct Transaction<'a, DB: Backend> {
     pub(super) meter: Option<super::history_meter::Meter>,
     /// The run history the cancellation scope engine has read (`scope_events`).
     pub(super) scope_history: Option<super::cancellation_scopes::HistoryCache>,
-    // Drop the database transaction before releasing the process queue.
+    // An implicit failure drops the database transaction before this guard.
     _queue_guard: Option<OwnedMutexGuard<()>>,
+    #[cfg(test)]
+    pub(super) commit_gate: Option<std::sync::Arc<super::commit_handoff_tests::CommitGate>>,
 }
 
 impl<'a, DB: Backend> Transaction<'a, DB> {
@@ -39,6 +41,8 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             meter: None,
             scope_history: None,
             _queue_guard: queue_guard,
+            #[cfg(test)]
+            commit_gate: None,
         }
     }
 
@@ -133,6 +137,15 @@ where
         for run_id in std::mem::take(&mut self.summaries) {
             Store::<DB>::order_waits(&mut self, &run_id).await?;
             Store::<DB>::project_run_summary(&mut self, &run_id).await?;
+        }
+        // The next writer can now wait on the database lock while this commit
+        // finishes. SQLite keeps its process queue through the commit because
+        // its busy handler polls rather than handing the lock to a waiter.
+        if DB::COMMIT_HANDOFF { drop(self._queue_guard.take()); }
+        #[cfg(test)]
+        if let Some(gate) = self.commit_gate.as_ref() {
+            gate.entered.notify_one();
+            gate.resume.notified().await;
         }
         self.inner.commit().await?;
         Ok(())
