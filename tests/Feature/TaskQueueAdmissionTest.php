@@ -505,10 +505,19 @@ class TaskQueueAdmissionTest extends TestCase
         // fixed, then exercise the next bucket explicitly.
         $this->travel(1)->minutes();
 
+        // The worker heartbeat has its own shorter freshness window.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'php-workflow-budget-group-b',
+            ])
+            ->assertOk()
+            ->assertJsonPath('acknowledged', true);
+
         $this->withHeaders($this->apiHeaders())
             ->getJson('/api/task-queues/external-workflows-b')
             ->assertOk()
             ->assertJsonPath('admission.workflow_tasks.status', 'accepting')
+            ->assertJsonPath('admission.workflow_tasks.active_worker_count', 1)
             ->assertJsonPath('admission.workflow_tasks.server_budget_group_dispatch_count_this_minute', 0)
             ->assertJsonPath('admission.workflow_tasks.server_remaining_budget_group_dispatch_capacity', 1);
     }
