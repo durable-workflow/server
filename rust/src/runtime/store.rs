@@ -3494,15 +3494,18 @@ where
         Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {"request": body, "created_task_ids": created}})).await?;
         // PHP's executor leaves every run a completed task did not close
         // waiting, even when the task recorded only markers or side effects.
-        Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1 AND status IN ('pending','running')")
-            .bind(&run_id)
-            .execute(&mut *tx)
-            .await?;
         let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
             .await?;
-        let run_status = DB::string(&current, "status")?;
+        let mut run_status = DB::string(&current, "status")?;
+        if matches!(run_status.as_str(), "pending" | "running") {
+            Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1 AND status IN ('pending','running')")
+                .bind(&run_id)
+                .execute(&mut *tx)
+                .await?;
+            run_status = "waiting".into();
+        }
         if let Some(worker) = &worker {
             Self::attribute_worker_terminal(&mut tx, &run_id, task_id, worker).await?;
         }

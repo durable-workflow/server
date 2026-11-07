@@ -4,6 +4,47 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 store_methods! {
+    pub(super) async fn qualify_completion_waiting_status(&self) {
+        let input = crate::codec::ValueCodec::new().unwrap()
+            .encode(&crate::codec::Value::Array(vec![])).unwrap();
+        self.register(json!({"worker_id":"waiting-status-worker","task_queue":"waiting-status",
+            "runtime":"php","supported_workflow_types":["waiting-status"],"supported_activity_types":["waiting-status"]}),
+            &super::QueryTaskConfig::default(),Some("1.20")).await.unwrap();
+        let cases = [
+            ("terminal",vec![json!({"type":"complete_workflow","result":{"codec":"avro","blob":input}})],false,"completed",0_usize),
+            ("activity",vec![json!({"type":"schedule_activity","activity_type":"waiting-status",
+                "arguments":{"codec":"avro","blob":input}})],false,"waiting",0),
+            ("empty",vec![],false,"waiting",1),
+            ("already-waiting",vec![],true,"waiting",0),
+        ];
+        for (name,commands,waiting,expected,updates) in cases {
+            let run = self.start(json!({"workflow_id":format!("waiting-status-{name}"),
+                "workflow_type":"waiting-status","task_queue":"waiting-status","input":{"codec":"avro","blob":input}}),
+                BTreeMap::new(),None,None).await.unwrap();
+            let run_id = run["run_id"].as_str().unwrap();
+            let task = self.poll(json!({"worker_id":"waiting-status-worker","task_queue":"waiting-status","timeout_seconds":0}),
+                "workflow","1.20").await.unwrap()["task"].clone();
+            assert_eq!(task["run_id"],run_id);
+            if waiting {
+                Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1")
+                    .bind(run_id).execute(&self.pool).await.unwrap();
+            }
+            let (answer,count) = super::sql_counts::measure(self.complete_or_checkpoint(
+                task["task_id"].as_str().unwrap(),json!({"lease_owner":"waiting-status-worker",
+                    "workflow_task_attempt":task["workflow_task_attempt"],"commands":commands}),
+                std::sync::Arc::new(tokio::sync::Semaphore::new(1)),BTreeMap::new(),None,
+                super::carried_polls::Config {protocol:Some("1.20"),pages:Default::default(),default_wait:30},
+                Default::default(),None,None)).await;
+            let answer = answer.unwrap();
+            assert_eq!(answer["recorded"],true);
+            assert_eq!(answer["run_status"],expected);
+            assert_eq!(count.count("UPDATE workflow_runs SET status='waiting' WHERE id=$1 AND status IN ('pending','running')"),updates,
+                "only pending/running needs the final waiting write: {name}");
+            let row = Self::query("SELECT status FROM workflow_runs WHERE id=$1").bind(run_id)
+                .fetch_one(&self.pool).await.unwrap();
+            assert_eq!(DB::string(&row,"status").unwrap(),expected);
+        }
+    }
     pub(super) async fn qualify_summary_projection_bytes(&self) {
         let input = crate::codec::ValueCodec::new().unwrap()
             .encode(&crate::codec::Value::Array(vec![])).unwrap();
@@ -105,6 +146,7 @@ store_methods! {
 async fn sqlite_poll_cache_writes_use_one_statement_and_rollback() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::<sqlx::Sqlite>::new(super::sqlite::open(dir.path().join("writes.sqlite").to_str().unwrap()).await.unwrap());
+    store.qualify_completion_waiting_status().await;
     store.qualify_query_poll_cache_writes().await;
     store.qualify_workflow_poll_cache_writes().await;
     store.qualify_summary_projection_bytes().await;
