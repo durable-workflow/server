@@ -127,6 +127,7 @@ pub(super) trait Backend: Database {
     const QUERY_CACHE_SCAN: &str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND value::jsonb->>'namespace'=$1 ORDER BY \"key\" LIMIT 65";
     const QUERY_CACHE_GET: &str =
         "SELECT value,expiration FROM dw_query_cache WHERE \"key\"=$1";
+    const QUERY_CACHE_GET_PAIR: &str = "SELECT 0 AS cache_part,value,expiration FROM dw_query_cache WHERE \"key\"=$1 UNION ALL SELECT 1 AS cache_part,value,expiration FROM dw_query_cache WHERE \"key\"=$2";
     const QUERY_CACHE_INSERT: &str =
         "INSERT INTO dw_query_cache(\"key\",value,expiration) VALUES ($1,$2,$3)";
     const QUERY_CACHE_UPDATE: &str =
@@ -653,6 +654,7 @@ impl Backend for MySql {
     type EncodedDocument = Json<Value>;
     const QUERY_CACHE_GET: &str =
         "SELECT value,expiration FROM dw_query_cache WHERE `key`=$1";
+    const QUERY_CACHE_GET_PAIR: &str = "SELECT 0 AS cache_part,value,expiration FROM dw_query_cache WHERE `key`=$1 UNION ALL SELECT 1 AS cache_part,value,expiration FROM dw_query_cache WHERE `key`=$2";
     const QUERY_CACHE_INSERT: &str =
         "INSERT INTO dw_query_cache(`key`,value,expiration) VALUES ($1,$2,$3)";
     const QUERY_CACHE_UPDATE: &str =
