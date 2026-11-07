@@ -8,6 +8,7 @@ on:
       - scripts/ci/native_qualification.py
       - scripts/ci/native_alias_transport.py
       - scripts/ci/native_alias_evidence.py
+      - scripts/ci/native-qualification-subject.json
       - scripts/smoke-published-compose.sh
       - scripts/ci/select-published-compose-image.sh
       - .github/workflows/published-compose.yml
@@ -33,6 +34,8 @@ jobs:
     timeout-minutes: 35
     env:
       DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.shard }}
+      MYSQL_VERSION: 8.0@sha256:62fb722c78b24245ddff1796a0fcee4a49cc5b87e0aaaf20c92d1da9e0a2497b
+      QUALIFICATION_QEMU_IMAGE: docker.io/tonistiigi/binfmt@sha256:465d3fdd28d0f2b871ba4b4ec98bd183292e96167f00d9fd40bd249f8632d705
 
     strategy:
       fail-fast: false
@@ -55,9 +58,20 @@ jobs:
       - name: Checkout server
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
+      - name: Admit published qualification subject
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_IMAGE: ${{ inputs.server_image }}
+        run: >-
+          python3 scripts/ci/native_qualification.py admit --kind compose --image "$NATIVE_IMAGE"
+          --output qualification-state/admission.json
+
       - name: Set up QEMU
         if: matrix.platform == 'linux/arm64'
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4
+        with:
+          image: ${{ env.QUALIFICATION_QEMU_IMAGE }}
+          platforms: arm64
 
       - name: Set Compose image selector
         env:
@@ -65,12 +79,10 @@ jobs:
           INPUT_SERVER_IMAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.server_image || '' }}
         run: scripts/ci/select-published-compose-image.sh
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4
-
       - name: Smoke published Compose stack
         id: body
         env:
+          GH_TOKEN: ${{ github.token }}
           DW_SERVER_PLATFORM: ${{ matrix.platform }}
           DW_PUBLISHED_COMPOSE_PROFILE: ${{ matrix.profile }}
           SERVER_PORT: "0"

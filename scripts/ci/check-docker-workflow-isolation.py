@@ -16,8 +16,8 @@ from pathlib import Path
 # checks/CLI transport is bound to reviewed bytes. A source change requires an
 # explicit model update and countercontrol review before gaining coverage.
 QUALIFICATION_CLEANUP_SOURCES = {
-    "scripts/ci/native_qualification.py": "ea74b534004c04209843a0ca28bb5a338cd2f2bec56fde1e511da9ffc20a911e",
-    "scripts/ci/native_alias_evidence.py": "647d184c7a5e456410933a7188debc3fe23360d002ef6458ced742bb85f32c37",
+    "scripts/ci/native_qualification.py": "2b7309458989723e0635549a8a1c176a18297d4d057eda612474e10e311c5980",
+    "scripts/ci/native_alias_evidence.py": "a8a8e9112413545446277bec9e7c5c8d35c4b785352d9094b4be80a2e8ef4eec",
     "scripts/ci/native_alias_transport.py": "053af14689c7c69d6620860390801fc900a331126f32a4f68fac6eb0e6593fef",
 }
 

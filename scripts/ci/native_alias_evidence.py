@@ -8,6 +8,7 @@ contains no registry mutation and never executes archive contents.
 from __future__ import annotations
 
 import hashlib
+import base64
 import io
 import json
 import re
@@ -24,6 +25,18 @@ GHCR_IMAGE = "ghcr.io/durable-workflow/server"
 DOCKERHUB_IMAGE = "durableworkflow/server"
 MANIFEST_SCHEMA = "durable-workflow.native-alias-promotion-evidence.v1"
 RECEIPT_SCHEMA = "durable-workflow.native-qualification-receipt.v1"
+MANIFEST_SCHEMA_V2 = "durable-workflow.native-alias-promotion-evidence.v2"
+RECEIPT_SCHEMA_V2 = "durable-workflow.native-qualification-receipt.v2"
+SUBJECT_PATH = "scripts/ci/native-qualification-subject.json"
+RUNNER_REF = "refs/heads/feat/server-native32-qualification-runner"
+RUNNER_PATHS = {
+    ".github/workflows/native-image-parity.yml", ".github/workflows/published-compose.yml",
+    ".github/workflows/native-promotion-contracts.yml",
+    "scripts/ci/native_alias_evidence.py", "scripts/ci/native_qualification.py", SUBJECT_PATH,
+    "scripts/ci/check-docker-workflow-isolation.py",
+    "tests/Unit/Support/native_alias_evidence_test.py", "tests/Unit/Support/native_qualification_test.py",
+    "README.md",
+}
 MANIFEST_LIMIT = 8192
 RECEIPT_LIMIT = 32768
 ARCHIVE_LIMIT = 65536
@@ -145,10 +158,79 @@ def strict_json(data: bytes, limit: int) -> Any:
         raise Refusal("invalid_json") from None
 
 
+def qualification_subject(value: Any) -> dict[str, Any]:
+    value = closed(value, {"schema", "release", "mysql", "qemu"}, "qualification_subject_shape")
+    require(value["schema"] == "durable-workflow.native-qualification-subject.v1", "qualification_subject_schema")
+    release = closed(value["release"], {"tag", "source_commit", "index_digest", "run_id", "run_attempt"}, "release_shape")
+    require(matching(release["tag"], FINAL_TAG) and matching(release["source_commit"], SHA)
+            and matching(release["index_digest"], DIGEST) and positive(release["run_id"])
+            and positive(release["run_attempt"]), "qualification_release_subject")
+    for name, repository in (("mysql", "mysql:8.0"), ("qemu", "docker.io/tonistiigi/binfmt")):
+        dependency = closed(value[name], {"requested_image", "child_manifest_digest", "image_config_digest"},
+                            "qualification_dependency_shape")
+        require(matching(dependency["child_manifest_digest"], DIGEST)
+                and matching(dependency["image_config_digest"], DIGEST)
+                and dependency["image_config_digest"] != dependency["child_manifest_digest"]
+                and dependency["requested_image"] == repository + "@" + dependency["child_manifest_digest"],
+                "qualification_dependency_subject")
+    return value
+
+
+def runner_selection(value: Any) -> dict[str, str]:
+    value = closed(value, {"source_commit", "ref", "subject_blob"}, "qualification_runner_shape")
+    require(matching(value["source_commit"], SHA) and value["ref"] == RUNNER_REF
+            and matching(value["subject_blob"], SHA), "qualification_runner_identity")
+    return value
+
+
+def commit_is(value: Any, sha: str) -> bool:
+    return type(value) is dict and value.get("sha") == sha
+
+
+def runner_subject(provider: Provider, runner: dict[str, str], release: dict[str, Any]) -> dict[str, Any]:
+    """A reviewed runner may differ only in the bounded qualification source set."""
+    runner = runner_selection(runner)
+    source = runner["source_commit"]
+    record = provider.api(f"repos/{REPOSITORY}/contents/{SUBJECT_PATH}?ref={source}")
+    require(type(record) is dict and record.get("path") == SUBJECT_PATH and record.get("type") == "file"
+            and record.get("sha") == runner["subject_blob"] and record.get("encoding") == "base64"
+            and type(record.get("content")) is str and len(record["content"]) <= 12000,
+            "qualification_subject_blob")
+    try:
+        data = base64.b64decode(record["content"].replace("\n", ""), validate=True)
+    except ValueError:
+        raise Refusal("qualification_subject_encoding") from None
+    require(len(data) <= MANIFEST_LIMIT and literal(record.get("size"), len(data))
+            and hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest() == runner["subject_blob"],
+            "qualification_subject_digest")
+    subject = qualification_subject(strict_json(data, MANIFEST_LIMIT))
+    require(subject["release"] == release, "qualification_subject_release")
+    difference = provider.api(f"repos/{REPOSITORY}/compare/{release['source_commit']}...{source}?per_page=100")
+    require(type(difference) is dict and difference.get("status") == "ahead"
+            and commit_is(difference.get("base_commit"),release["source_commit"])
+            and commit_is(difference.get("merge_base_commit"),release["source_commit"])
+            and type(difference.get("total_commits")) is int and 1 <= difference["total_commits"] <= 32
+            and type(difference.get("commits")) is list
+            and len(difference["commits"]) == difference["total_commits"]
+            and commit_is(difference["commits"][-1],source), "qualification_runner_ancestry")
+    files = difference.get("files")
+    require(type(files) is list and 1 <= len(files) <= len(RUNNER_PATHS)
+            and all(type(item) is dict and item.get("filename") in RUNNER_PATHS
+                    and item.get("status") in ("added", "modified")
+                    and "previous_filename" not in item for item in files), "qualification_runner_frozen_source")
+    main = provider.api(f"repos/{REPOSITORY}/compare/{source}...main?per_page=1")
+    require(type(main) is dict and main.get("status") in ("ahead", "identical")
+            and commit_is(main.get("base_commit"),source)
+            and commit_is(main.get("merge_base_commit"),source), "qualification_runner_not_on_main")
+    return subject
+
+
 def manifest(data: bytes) -> dict[str, Any]:
-    value = closed(strict_json(data, MANIFEST_LIMIT),
-                   {"schema", "release", "corpus", "compose"}, "manifest_shape")
-    require(value["schema"] == MANIFEST_SCHEMA, "manifest_schema")
+    decoded = strict_json(data, MANIFEST_LIMIT)
+    v2 = type(decoded) is dict and decoded.get("schema") == MANIFEST_SCHEMA_V2
+    value = closed(decoded, {"schema", "release", "corpus", "compose"} | ({"runner"} if v2 else set()), "manifest_shape")
+    require(value["schema"] in (MANIFEST_SCHEMA, MANIFEST_SCHEMA_V2), "manifest_schema")
+    runner = runner_selection(value["runner"]) if v2 else None
     release = closed(value["release"],
                      {"tag", "source_commit", "index_digest", "run_id", "run_attempt"},
                      "release_shape")
@@ -164,7 +246,7 @@ def manifest(data: bytes) -> dict[str, Any]:
                      "compose_shape")
     for role, selected in (("corpus", corpus), ("compose", compose)):
         require(positive(selected["run_id"]) and positive(selected["run_attempt"]), role + "_run")
-        require(selected["runner_commit"] == release["source_commit"], role + "_runner_source")
+        require(selected["runner_commit"] == (runner["source_commit"] if runner else release["source_commit"]), role + "_runner_source")
         require(matching(selected["workflow_blob"], SHA), role + "_workflow_blob")
     require(len({release["run_id"], corpus["run_id"], compose["run_id"]}) == 3,
             "distinct_workflow_runs_required")
@@ -265,7 +347,7 @@ class Provider(Protocol):
 
 
 def workflow_run(provider: Provider, selected: dict[str, Any], role: str,
-                 release: dict[str, Any]) -> dict[str, Any]:
+                 release: dict[str, Any], runner: dict[str,str] | None = None) -> dict[str, Any]:
     run = provider.api(f"repos/{REPOSITORY}/actions/runs/{selected['run_id']}")
     require(type(run) is dict and literal(run.get("id"), selected["run_id"]), "provider_run_id")
     for field in ("repository", "head_repository"):
@@ -275,9 +357,10 @@ def workflow_run(provider: Provider, selected: dict[str, Any], role: str,
     require(literal(run.get("run_attempt"), selected["run_attempt"]), "provider_current_attempt")
     require(run.get("status") == "completed" and run.get("conclusion") == "success",
             "provider_run_not_successful")
+    qualifier = runner if role != "release" else None
     require(run.get("event") == "workflow_dispatch"
-            and run.get("head_sha") == release["source_commit"]
-            and run.get("head_branch") == release["tag"]
+            and run.get("head_sha") == (qualifier["source_commit"] if qualifier else release["source_commit"])
+            and run.get("head_branch") == (qualifier["ref"].removeprefix("refs/heads/") if qualifier else release["tag"])
             and run.get("path") == WORKFLOWS[role], "provider_run_source")
     workflow = provider.api(f"repos/{REPOSITORY}/actions/workflows/{WORKFLOWS[role].split('/')[-1]}")
     require(type(workflow) is dict and positive(workflow.get("id"))
@@ -370,14 +453,16 @@ COMPOSE_OBSERVATIONS = {"health_serving", "ready", "cluster_version_matches_rele
 
 def bind_receipt(value: dict[str, Any], role: str, selected: dict[str, Any],
                  run: dict[str, Any], job: dict[str, Any], release: dict[str, Any],
-                 platform: str, profile: str | None, subject: dict[str, Any]) -> None:
-    value = closed(value, RECEIPT_KEYS, "receipt_shape")
-    require(value["schema"] == RECEIPT_SCHEMA and value["kind"] == role
+                 platform: str, profile: str | None, subject: dict[str, Any],
+                 runner: dict[str,str] | None = None, binding: dict[str,Any] | None = None) -> None:
+    extra = {"runner_ref", "subject_blob", "resource_scope", "dependencies"} if runner else set()
+    value = closed(value, RECEIPT_KEYS | extra, "receipt_shape")
+    require(value["schema"] == (RECEIPT_SCHEMA_V2 if runner else RECEIPT_SCHEMA) and value["kind"] == role
             and value["eligible"] is True, "receipt_not_eligible")
     expected = {
         "repository": REPOSITORY, "repository_id": REPOSITORY_ID,
         "run_id": run["id"], "run_attempt": run["run_attempt"], "job_id": job["id"],
-        "runner_commit": release["source_commit"], "workflow_path": WORKFLOWS[role],
+        "runner_commit": runner["source_commit"] if runner else release["source_commit"], "workflow_path": WORKFLOWS[role],
         "workflow_blob": selected["workflow_blob"],
         "requested_image": GHCR_IMAGE + "@" + release["index_digest"],
         "index_digest": release["index_digest"], "platform": platform, "profile": profile,
@@ -389,6 +474,13 @@ def bind_receipt(value: dict[str, Any], role: str, selected: dict[str, Any],
     }
     require(all(literal(value[key], expected_value) for key, expected_value in expected.items()),
             "receipt_source_or_subject_binding")
+    if runner:
+        require(value["runner_ref"] == runner["ref"] and value["subject_blob"] == runner["subject_blob"],
+                "receipt_runner_binding")
+        require(binding is not None and binding["release"] == release, "receipt_binding_missing")
+        observed_scope = resource_scope(role, run["id"], run["run_attempt"], platform, profile)
+        require(value["resource_scope"] == observed_scope, "receipt_resource_scope")
+        bind_dependencies(value["dependencies"], role, platform, binding)
     cleanup = closed(value["cleanup"],
                      {"api_ok", "verified_absent", "container_count", "network_count", "volume_count"},
                      "receipt_cleanup_shape")
@@ -407,11 +499,39 @@ def bind_receipt(value: dict[str, Any], role: str, selected: dict[str, Any],
                             True if profile == "production" else None), "receipt_compose_failed")
 
 
+def resource_scope(role: str, run: int, attempt: int, platform: str, profile: str | None) -> str:
+    return (f"dw-parity-{run}-{attempt}-corpus" if role == "corpus" else
+            f"published-compose-{run}-{attempt}-smoke-{platform.split('/')[1]}-{profile}")
+
+
+def bind_dependencies(value: Any, role: str, platform: str, subject: dict[str,Any]) -> None:
+    if role == "corpus":
+        closed(value, set(), "receipt_dependency_shape")
+        return
+    value = closed(value, {"mysql", "qemu"}, "receipt_dependency_shape")
+    for name in ("mysql", "qemu"):
+        if name == "qemu" and platform == AMD64:
+            require(value[name] is None, "receipt_unexpected_qemu")
+            continue
+        keys = {"requested_image", "child_manifest_digest", "image_config_digest",
+                "actual_image_config_digest", "container_image_architecture", "container_image_os"}
+        observed = closed(value[name], keys | ({"container_id"} if name == "mysql" else set()),
+                          "receipt_dependency_identity")
+        expected = {**subject[name], "actual_image_config_digest": subject[name]["image_config_digest"],
+                    "container_image_architecture": "amd64", "container_image_os": "linux"}
+        require(all(literal(observed[key], item) for key,item in expected.items()), "receipt_dependency_binding")
+        if name == "mysql":
+            require(type(observed["container_id"]) is str and re.fullmatch(r"[0-9a-f]{64}", observed["container_id"]),
+                    "receipt_database_container")
+
+
 def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
     """Verify once. Re-read mutable run/artifact authority before returning."""
     # Revalidate programmatic callers exactly as CLI manifest bytes.
     value = manifest(canonical(value))
     release = value["release"]
+    runner = value.get("runner")
+    binding = runner_subject(provider, runner, release) if runner else None
     publication = workflow_run(provider, release, "release", release)
     publication_jobs = jobs(provider, publication, RELEASE_JOBS)
     completed = max([timestamp(publication["updated_at"])] +
@@ -430,13 +550,17 @@ def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
     snapshots, artifact_ids, artifact_checks = [("release", release)], [], []
     for role in ("corpus", "compose"):
         selected = value[role]
-        require(provider.workflow_blob(release["source_commit"], WORKFLOWS[role]) == selected["workflow_blob"],
+        require(provider.workflow_blob(selected["runner_commit"], WORKFLOWS[role]) == selected["workflow_blob"],
                 "qualifier_workflow_source")
-        run = workflow_run(provider, selected, role, release)
+        run = workflow_run(provider, selected, role, release, runner)
         require(timestamp(run["run_started_at"]) >= completed, "qualification_precedes_publication")
         required = ({CORPUS_JOB: QUALIFICATION_STEPS[role]} if role == "corpus" else {
             platform + " " + profile + " published image": QUALIFICATION_STEPS[role]
             for platform in PLATFORMS for profile in PROFILES})
+        if runner:
+            required = {name: ("Admit published qualification subject",) + steps
+                        + (("Set up QEMU",) if name.startswith("linux/arm64") else ())
+                        for name, steps in required.items()}
         current_jobs = jobs(provider, run, required)
         if role == "corpus":
             job = current_jobs[CORPUS_JOB]
@@ -444,7 +568,7 @@ def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
                                     "native-corpus-promotion-receipt", run, job))
             record = receipt(provider, *artifact_checks[-1])
             bind_receipt(record, role, selected, run, job, release, AMD64, None,
-                         subjects[AMD64])
+                         subjects[AMD64], runner, binding)
             artifact_ids.append(selected["artifact_id"])
         else:
             for cell in selected["cells"]:
@@ -454,15 +578,18 @@ def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
                 name = "native-compose-promotion-receipt-" + platform.split("/")[1] + "-" + profile
                 artifact_checks.append((cell["artifact_id"], cell["artifact_digest"], name, run, job))
                 record = receipt(provider, *artifact_checks[-1])
-                bind_receipt(record, role, selected, run, job, release, platform, profile, subjects[platform])
+                bind_receipt(record, role, selected, run, job, release, platform, profile, subjects[platform], runner, binding)
                 artifact_ids.append(cell["artifact_id"])
         snapshots.append((role, selected))
     for role, selected in snapshots:
-        workflow_run(provider, selected, role, release)
+        workflow_run(provider, selected, role, release, runner)
+    if runner:
+        runner_subject(provider, runner, release)
     for selected_artifact in artifact_checks:
         artifact_metadata(provider, *selected_artifact)
-    return {"schema": "durable-workflow.native-alias-verification.v1",
-            "release": release, "subjects": subjects, "qualified_artifact_ids": artifact_ids}
+    return {"schema": "durable-workflow.native-alias-verification.v2" if runner else "durable-workflow.native-alias-verification.v1",
+            "release": release, "subjects": subjects, "qualified_artifact_ids": artifact_ids,
+            **({"runner":runner,"qualification_subject":binding} if runner else {})}
 
 
 if __name__ == "__main__":

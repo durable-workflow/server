@@ -19,7 +19,7 @@ import native_alias_evidence as E
 import native_alias_promote as P
 import native_alias_transport as T
 import native_qualification as Q
-from native_alias_evidence_test import FakeProvider
+from native_alias_evidence_test import FakeProvider, RunnerProvider, RUNNER
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -252,6 +252,99 @@ class ProducerProvider:
 
     def api(self, path):
         return {"jobs": [self.job], "total_count": 1} if "/jobs?" in path else self.run
+
+
+class RunnerCommands:
+    def __init__(self, provider):
+        self.provider = provider
+        self.reads = []
+        self.database_config = provider.binding["mysql"]["image_config_digest"]
+        self.database_owner = SCOPE
+        self.wrong_qemu_digest = False
+
+    def run(self, args, *unused, **kwargs):
+        self.reads.append(args)
+        if args[:2] == ["git","rev-parse"]:
+            return (RUNNER if args[2] == "HEAD" else self.provider.binding_blob if args[2].endswith(E.SUBJECT_PATH) else "3"*40).encode()+b"\n"
+        if args[:3] == ["docker","container","ls"]:
+            return ("f"*64+"\n").encode()
+        identity = args[-1]
+        if args[:3] == ["docker","container","inspect"]:
+            if identity == CID:
+                value = {"Image":self.provider.subjects["linux/amd64"]["image_config_digest"]}
+            else:
+                value = {"Id":"f"*64,"Image":self.database_config,"Config":{
+                    "Image":self.provider.binding["mysql"]["requested_image"],"Labels":{
+                    Q.COMPOSE_OWNER:self.database_owner,"com.docker.compose.service":"mysql"}}}
+        elif args[:3] == ["docker","image","inspect"]:
+            value = {"Id":identity,"Architecture":"amd64","Os":"linux","Config":{"Labels":{
+                "org.opencontainers.image.revision":SOURCE,"dev.durable-workflow.release.tag":"3.2.0"}}}
+            for name, repo in (("mysql","mysql"),("qemu","tonistiigi/binfmt")):
+                if identity == self.provider.binding[name]["image_config_digest"]:
+                    value["RepoDigests"] = [repo+"@"+(INDEX if name == "qemu" and self.wrong_qemu_digest else self.provider.binding[name]["child_manifest_digest"])]
+        else:
+            raise AssertionError("unexpected command")
+        return json.dumps([value]).encode()
+
+
+class RunnerProducerTests(unittest.TestCase):
+    def context(self, provider):
+        return {**CONTEXT,"GITHUB_SHA":RUNNER,"GITHUB_REF":E.RUNNER_REF,
+            "GITHUB_REF_NAME":E.RUNNER_REF.removeprefix("refs/heads/"),
+            "GITHUB_WORKFLOW_REF":E.REPOSITORY+"/"+E.WORKFLOWS["compose"]+"@"+E.RUNNER_REF,
+            "DW_PUBLISHED_COMPOSE_PROJECT":SCOPE,"DW_PUBLISHED_COMPOSE_PROFILE":"local",
+            "MYSQL_VERSION":provider.binding["mysql"]["requested_image"].removeprefix("mysql:"),
+            "QUALIFICATION_QEMU_IMAGE":provider.binding["qemu"]["requested_image"]}
+
+    def test_actual_producer_v2_receipt_is_consumable_without_restamping_the_image_source(self):
+        provider=RunnerProvider();provider.commands=RunnerCommands(provider)
+        provider.index_subjects=lambda *args:copy.deepcopy(provider.subjects)
+        provider.runs[303]["status"]="in_progress"
+        provider.job_sets[303][0]["status"]="in_progress"
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);path=root/E.SUBJECT_PATH;path.parent.mkdir(parents=True);path.write_bytes(provider.binding_bytes)
+            context=self.context(provider)
+            context["DW_PUBLISHED_COMPOSE_PROJECT"]=E.resource_scope("compose",303,1,"linux/amd64","local")
+            provider.commands.database_owner=context["DW_PUBLISHED_COMPOSE_PROJECT"]
+            with patch.dict(os.environ,context,clear=True),patch.object(Q,"ROOT",root):
+                image=E.GHCR_IMAGE+"@"+INDEX
+                observed=Q.observe_image(provider,"compose",image,CID,"linux/amd64")
+                observations={key:True for key in E.COMPOSE_OBSERVATIONS}
+                observations["production_default_token_refused"]=None
+                clean={"api_ok":True,"verified_absent":True,"container_count":0,"network_count":0,"volume_count":0}
+                record=Q.finalize(provider,"compose",image,"linux/amd64","local",observed,observations,clean,"success","success")
+                E.bind_receipt(record,"compose",provider.selected["compose"],provider.runs[303],provider.job_sets[303][0],
+                               provider.binding["release"],"linux/amd64","local",provider.subjects["linux/amd64"],
+                               provider.selected["runner"],provider.binding)
+                self.assertEqual(record["image_source_commit"],SOURCE)
+                self.assertEqual(record["runner_commit"],RUNNER)
+                dependencies=Q.observe_dependencies(provider.commands,"compose","linux/arm64",context["DW_PUBLISHED_COMPOSE_PROJECT"],provider.binding)
+                E.bind_dependencies(dependencies,"compose","linux/arm64",provider.binding)
+                provider.commands.wrong_qemu_digest=True
+                with self.assertRaisesRegex(E.Refusal,"actual_dependency_image"):
+                    Q.observe_dependencies(provider.commands,"compose","linux/arm64",context["DW_PUBLISHED_COMPOSE_PROJECT"],provider.binding)
+                provider.commands.wrong_qemu_digest=False
+                for attribute,value,reason in (("database_config",INDEX,"actual_database_subject"),
+                    ("database_owner","foreign","actual_database_subject")):
+                    old=getattr(provider.commands,attribute);setattr(provider.commands,attribute,value)
+                    with self.subTest(attribute=attribute),self.assertRaisesRegex(E.Refusal,reason):
+                        Q.observe_image(provider,"compose",image,CID,"linux/amd64")
+                    setattr(provider.commands,attribute,old)
+                for field,value in (("MYSQL_VERSION","8.0"),("QUALIFICATION_QEMU_IMAGE","tonistiigi/binfmt:latest")):
+                    with self.subTest(field=field),patch.dict(os.environ,{field:value}),self.assertRaisesRegex(E.Refusal,"qualification_dependency_configuration"):
+                        Q.admit(provider,"compose",image)
+
+    def test_manual_runner_has_no_builder_and_admits_before_dependency_steps(self):
+        corpus=(ROOT/E.WORKFLOWS["corpus"]).read_text()
+        builder=corpus.split("      - name: Set up Docker Buildx\n",1)[1].split("      - name:",1)[0]
+        self.assertIn("if: github.event_name == 'pull_request'",builder)
+        self.assertLess(corpus.index("name: Admit published qualification subject"),corpus.index("name: Pull the pinned images"))
+        compose=(ROOT/E.WORKFLOWS["compose"]).read_text()
+        self.assertNotIn("docker/setup-buildx-action@",compose)
+        self.assertLess(compose.index("name: Admit published qualification subject"),compose.index("name: Set up QEMU"))
+        binding=json.loads((ROOT/E.SUBJECT_PATH).read_text())
+        self.assertIn(binding["mysql"]["requested_image"].removeprefix("mysql:"),compose)
+        self.assertIn(binding["qemu"]["requested_image"],compose)
 
 
 class ProducerTests(unittest.TestCase):
