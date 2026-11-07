@@ -203,7 +203,7 @@ store_methods! {
                 .execute(&mut *transaction).await.unwrap();
         }
         transaction.commit().await.unwrap();
-        let predecessor = super::store::task_candidates_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r");
+        let predecessor = super::store::task_candidates_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r", "100");
         for statistics in ["before", "after"] {
             if statistics == "after" {
                 Self::query("ANALYZE TABLE workflow_tasks,workflow_runs").execute(&self.pool).await.unwrap();
