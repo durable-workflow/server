@@ -305,6 +305,11 @@ only the required features enabled and no build-time database or SQL macro
 generation. Four connections and `BEGIN IMMEDIATE` serialize durable state
 changes; SQLite runs on SQLx's connection workers. HTTP uses two Tokio executor
 threads. WAL with full synchronous writes retains acknowledged state.
+Namespaces within one runtime share a FIFO transition queue before pool
+acquisition. Its wait uses the existing five-second pool-acquisition budget;
+expiry returns the ordinary typed pool timeout without borrowing a connection.
+Read-only snapshots bypass this queue. Database locks continue to order
+independent runtimes and processes.
 This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 
 Implemented paths cover health/schema readiness, limited capability discovery,

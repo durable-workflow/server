@@ -5,6 +5,7 @@ use std::{
     collections::BTreeSet,
     ops::{Deref, DerefMut},
 };
+use tokio::sync::OwnedMutexGuard;
 
 pub(super) struct PollSavepoint {
     summaries: BTreeSet<String>,
@@ -20,12 +21,15 @@ pub(super) struct Transaction<'a, DB: Backend> {
     pub(super) meter: Option<super::history_meter::Meter>,
     /// The run history the cancellation scope engine has read (`scope_events`).
     pub(super) scope_history: Option<super::cancellation_scopes::HistoryCache>,
+    // Drop the database transaction before releasing the process queue.
+    _queue_guard: Option<OwnedMutexGuard<()>>,
 }
 
 impl<'a, DB: Backend> Transaction<'a, DB> {
     pub(super) fn new(
         inner: sqlx::Transaction<'a, DB>,
         history_budget: super::history_budget::Config,
+        queue_guard: Option<OwnedMutexGuard<()>>,
     ) -> Self {
         Self {
             inner,
@@ -34,6 +38,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             history_budget,
             meter: None,
             scope_history: None,
+            _queue_guard: queue_guard,
         }
     }
 
