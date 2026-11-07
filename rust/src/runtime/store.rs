@@ -9,6 +9,11 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{Mutex, Notify, Semaphore};
 use ulid::Ulid;
 
+// Each subquery keeps its original ordered lookup. The run and three
+// physical authored counters share one statement; history-based scope,
+// wait and redrive authority is still read by authored_sequence.
+pub(super) const AUTHORED_RUN_SQL: &str = "SELECT r.cancellation_delivery_sequence,r.run_number,COALESCE((SELECT sequence FROM activity_executions WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1),0) AS authored_activity_sequence,COALESCE((SELECT sequence FROM workflow_run_timers WHERE workflow_run_id=$2 ORDER BY sequence DESC LIMIT 1),0) AS authored_timer_sequence,COALESCE((SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$3 ORDER BY sequence DESC LIMIT 1),0) AS authored_child_sequence FROM workflow_runs r WHERE r.id=$4";
+
 pub(super) struct PreparedControlArguments {
     pub(super) arguments: String,
     pub(super) values: Vec<crate::codec::Value>,
@@ -1298,6 +1303,62 @@ where
     }
 
     pub(super) async fn authored_sequence(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+    ) -> Result<i64> {
+        // Public control command order and deterministic authored call order
+        // are different counters in PHP. Signals must never shift a replayed
+        // activity/timer/wait's authored position.
+        let run = Self::query(AUTHORED_RUN_SQL)
+            .bind(run_id).bind(run_id).bind(run_id).bind(run_id)
+            .fetch_one(&mut **tx).await?;
+        let activities = DB::number(&run, "authored_activity_sequence")?;
+        let timers = DB::number(&run, "authored_timer_sequence")?;
+        let children = DB::number(&run, "authored_child_sequence")?;
+        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded','MemoUpserted','SideEffectRecorded','SearchAttributesUpserted') ORDER BY sequence DESC LIMIT 1")
+            .bind(run_id).fetch_optional(&mut **tx).await?;
+        let wait_sequence = wait
+            .map(|row| DB::document_row(&row, "payload"))
+            .transpose()?
+            .and_then(|value| value["sequence"].as_i64())
+            .unwrap_or(0);
+        // `nextDurableCommandSequence`: a scope opening consumes its sequence,
+        // and a delivered scope boundary its whole span, as a delivered run
+        // request does.
+        let mut scoped = 0;
+        for row in Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('CancellationScopeOpened','CancellationScopeDelivered')")
+            .bind(run_id).fetch_all(&mut **tx).await?
+        {
+            let payload = DB::document_row(&row, "payload")?;
+            if let Some(sequence) = payload["sequence"].as_i64() {
+                let span = payload["sequence_span"].as_i64().filter(|span| *span > 1 && DB::string(&row, "event_type").is_ok_and(|kind| kind == "CancellationScopeDelivered"));
+                scoped = scoped.max(span.and_then(|span| sequence.checked_add(span - 1)).unwrap_or(sequence));
+            }
+        }
+        // A redriven run replays the activities before its resume step from
+        // reused completions, which have no execution rows.
+        let mut reused = 0;
+        if DB::number(&run, "run_number")? > 1 {
+            let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+                .bind(run_id).fetch_optional(&mut **tx).await?;
+            if let Some(started) = started {
+                let payload = DB::document_row(&started, "payload")?;
+                if payload["recovery_kind"] == "redrive" {
+                    reused = payload["resume_step_sequence"].as_i64().unwrap_or(1) - 1;
+                }
+            }
+        }
+        Ok(activities
+            .max(timers)
+            .max(wait_sequence)
+            .max(children)
+            .max(scoped)
+            .max(reused)
+            .max(DB::optional_number(&run, "cancellation_delivery_sequence")?.unwrap_or(0)))
+    }
+
+    #[cfg(test)]
+    pub(super) async fn authored_sequence_reference(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
     ) -> Result<i64> {
