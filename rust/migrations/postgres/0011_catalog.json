@@ -13571,17 +13571,6 @@
   ],
   [
     "index",
-    "dw_workflow_tasks_scoped_dispatch",
-    {
-      "ready": true,
-      "valid": true,
-      "unique": false,
-      "primary": false,
-      "definition": "CREATE INDEX dw_workflow_tasks_scoped_dispatch ON public.workflow_tasks USING btree (namespace, queue, task_type, status, priority, available_at, id)"
-    }
-  ],
-  [
-    "index",
     "failed_jobs_pkey",
     {
       "ready": true,
@@ -17086,7 +17075,7 @@
       "valid": true,
       "unique": false,
       "primary": false,
-      "definition": "CREATE INDEX workflow_tasks_dispatch_order_index ON public.workflow_tasks USING btree (queue, status, priority, available_at)"
+      "definition": "CREATE INDEX workflow_tasks_dispatch_order_index ON public.workflow_tasks USING btree (namespace, queue, task_type, status, priority, available_at, id)"
     }
   ],
   [

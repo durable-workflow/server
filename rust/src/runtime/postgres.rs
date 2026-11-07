@@ -1829,7 +1829,7 @@ mod tests {
         let mut connection = db.connection().await;
         let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
         assert_eq!(kept,"seeded at version 10");
-        sqlx::query("DROP INDEX dw_workflow_tasks_scoped_dispatch").execute(&mut connection).await.unwrap();
+        sqlx::query("DROP INDEX workflow_tasks_dispatch_order_index").execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
         refused(PostgresStorage::open(db.options.clone()).await,"native_schema_catalog_mismatch");
         db.remove().await;
@@ -1841,7 +1841,8 @@ mod tests {
         let db = Database::new().await;
         version_database(&db, 10).await;
         let mut connection = db.connection().await;
-        sqlx::query("CREATE INDEX dw_workflow_tasks_scoped_dispatch ON workflow_tasks(queue,status,priority,available_at,id)")
+        sqlx::query("DROP INDEX workflow_tasks_dispatch_order_index").execute(&mut connection).await.unwrap();
+        sqlx::query("CREATE INDEX workflow_tasks_dispatch_order_index ON workflow_tasks(queue,status,priority,available_at,id)")
             .execute(&mut connection).await.unwrap();
         let before = catalog(&mut connection).await.unwrap();
         connection.close().await.unwrap();

@@ -24,7 +24,7 @@ fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize, in_ra
     match node["Relation Name"].as_str() {
         Some("workflow_tasks") => {
             assert!(matches!(node["Node Type"].as_str(),Some("Index Scan" | "Index Only Scan")),"{node}");
-            assert_eq!(node["Index Name"],"dw_workflow_tasks_scoped_dispatch","the status range must use dispatch order: {node}");
+            assert_eq!(node["Index Name"],"workflow_tasks_dispatch_order_index","the status range must use complete scoped dispatch order: {node}");
             assert!(node["Index Cond"].as_str().is_some_and(|condition| ["namespace","queue","task_type","status"].iter().all(|key| condition.contains(key))),"{node}");
             *tasks += 1;
         }
