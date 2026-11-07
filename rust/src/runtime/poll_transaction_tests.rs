@@ -44,8 +44,11 @@ store_methods! {
             let name = format!("counted-workflow-{multiplexed}");
             self.count_start(&name).await;
             self.count_reset();
-            let claimed = self.count_poll(&name, multiplexed).await;
+            let (claimed, reads) = super::sql_counts::measure(self.count_poll(&name, multiplexed)).await;
             assert!(claimed["task"].is_object());
+            assert_eq!(reads.count(super::worker_poll_fence::FENCE_REGISTRATION),1);
+            assert_eq!(reads.count("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2"),0,
+                "the claim must reuse the registration its in-transaction fence validated");
             assert_eq!(self.count_get(), 1, "one replay/claim probe, multiplexed={multiplexed}");
             self.count_reset();
             let replayed = self.count_poll(&name, multiplexed).await;
@@ -227,6 +230,37 @@ store_methods! {
             .bind(run_id).execute(&self.pool).await.unwrap();
     }
 
+    pub(super) async fn qualify_fenced_registration_reuse(&self) {
+        let registration = json!({"worker_id":"fence-reuse","task_queue":"fence-reuse","runtime":"php",
+            "supported_workflow_types":["fence-reuse"],"supported_activity_types":["fence-reuse"]});
+        self.register(registration.clone(),&QueryTaskConfig::default(),Some("1.20")).await.unwrap();
+        let super::worker_poll_fence::PollAdmission::Fenced(fence) = self.admit_worker_poll("fence-reuse","fence-reuse").await.unwrap()
+            else { panic!("fresh registration must admit its original poll"); };
+        let mut tx = self.begin().await.unwrap();
+        let (row,reads) = super::sql_counts::measure(self.fenced_claim_registration(&mut tx,&fence,"fence-reuse")).await;
+        let row = row.unwrap().unwrap();
+        assert_eq!(DB::string(&row,"worker_id").unwrap(),"fence-reuse");
+        assert_eq!(DB::string(&row,"namespace").unwrap(),self.namespace.as_ref());
+        assert_eq!(reads.total(),1);
+        assert_eq!(reads.count(super::worker_poll_fence::FENCE_REGISTRATION),1);
+        tx.rollback().await.unwrap();
+        // No process or clock change is needed: native re-registration rotates
+        // the authority token even inside the same stored second.
+        self.register(registration,&QueryTaskConfig::default(),Some("1.20")).await.unwrap();
+        let mut tx = self.begin().await.unwrap();
+        assert!(self.fenced_claim_registration(&mut tx,&fence,"fence-reuse").await.unwrap().is_none());
+        tx.rollback().await.unwrap();
+        // An unfenced internal claim still performs its original registration
+        // read. The optional optimization cannot bypass that fallback.
+        let body = json!({"worker_id":"fence-reuse","task_queue":"fence-reuse"});
+        let mut tx = self.begin().await.unwrap();
+        let (claimed,reads) = super::sql_counts::measure(self.claim_in(&mut tx,&body,"activity","1.20",None,None)).await;
+        assert!(claimed.unwrap().is_none());
+        assert_eq!(reads.count("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2"),1);
+        assert_eq!(reads.count(super::worker_poll_fence::FENCE_REGISTRATION),0);
+        tx.rollback().await.unwrap();
+    }
+
     pub(super) async fn qualify_query_poll_transactions(&self) {
         self.count_worker().await;
         let workflow_id = "counted-query-workflow";
@@ -294,6 +328,7 @@ async fn sqlite_workflow_and_query_poll_transaction_counts() {
     store.qualify_workflow_poll_transactions().await;
     store.qualify_first_candidate_batch().await;
     store.qualify_claim_history_sequence().await;
+    store.qualify_fenced_registration_reuse().await;
     store.qualify_query_poll_transactions().await;
     store.close().await;
 }

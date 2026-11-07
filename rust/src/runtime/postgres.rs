@@ -748,6 +748,7 @@ mod tests {
         store.qualify_workflow_poll_transactions().await;
         store.qualify_first_candidate_batch().await;
         store.qualify_claim_history_sequence().await;
+        store.qualify_fenced_registration_reuse().await;
         store.qualify_query_poll_transactions().await;
         store.close().await;
         db.remove().await;
