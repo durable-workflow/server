@@ -1,6 +1,6 @@
 //! Canonical history accounting shared with the published PHP reference.
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
-use serde_json::Number;
+use serde_json::{Number, Value};
 use std::fmt;
 
 const SETTINGS: [(&str, i64); 6] = [
@@ -127,6 +127,39 @@ pub(super) fn event_size(event_type: &str, payload: &str) -> Result<usize, serde
     Ok(event_type.len() + if payload.null { 2 } else { payload.len })
 }
 
+/// Account for the exact text that the caller has already parsed. RawValue
+/// markers can change serde_json::Value's interpretation of an object. Keep
+/// the text visitor for them and every Unicode escape, including escaped keys.
+pub(super) fn parsed_event_size(
+    event_type: &str,
+    payload: &str,
+    parsed: &Value,
+) -> Result<usize, serde_json::Error> {
+    if payload.contains("RawValue") || payload.contains("\\u") {
+        return event_size(event_type, payload);
+    }
+    Ok(event_type.len() + if parsed.is_null() { 2 } else { value_size(parsed) })
+}
+
+fn value_size(value: &Value) -> usize {
+    match value {
+        Value::Null | Value::Bool(true) => 4,
+        Value::Bool(false) => 5,
+        Value::Number(value) => number(value).len(),
+        Value::String(value) => string_len(value),
+        Value::Array(values) => {
+            2 + values.len().saturating_sub(1) + values.iter().map(value_size).sum::<usize>()
+        }
+        Value::Object(values) => {
+            let list = values.keys().enumerate().all(|(index, key)| *key == index.to_string());
+            2 + values.len().saturating_sub(1)
+                + values.iter().map(|(key, value)| {
+                    value_size(value) + if list { 0 } else { string_len(key) + 1 }
+                }).sum::<usize>()
+        }
+    }
+}
+
 struct Encoded {
     len: usize,
     null: bool,
@@ -208,12 +241,11 @@ impl<'de> Visitor<'de> for EncodedVisitor {
 fn string_len(value: &str) -> usize {
     // JSON_UNESCAPED_UNICODE still escapes the two Unicode line separators
     // unless PHP's separate JSON_UNESCAPED_LINE_TERMINATORS flag is enabled.
-    serde_json::to_string(value).expect("JSON string").len()
-        + value
-            .chars()
-            .filter(|c| matches!(c, '\u{2028}' | '\u{2029}'))
-            .count()
-            * 3
+    2 + value.chars().map(|character| match character {
+        '"' | '\\' | '\u{8}' | '\t' | '\n' | '\u{c}' | '\r' => 2,
+        '\u{0}'..='\u{1f}' | '\u{2028}' | '\u{2029}' => 6,
+        _ => character.len_utf8(),
+    }).sum::<usize>()
 }
 
 fn number(value: &Number) -> String {
@@ -306,6 +338,14 @@ mod tests {
         ))
         .unwrap();
         for case in cases {
+            let raw = case["payload_json"].as_str().unwrap();
+            let parsed: Value = serde_json::from_str(raw).unwrap();
+            assert_eq!(
+                parsed_event_size(case["event_type"].as_str().unwrap(), raw, &parsed).unwrap(),
+                case["history_size_bytes"].as_u64().unwrap() as usize,
+                "parsed {}",
+                case["name"]
+            );
             assert_eq!(
                 event_size(
                     case["event_type"].as_str().unwrap(),
@@ -316,6 +356,53 @@ mod tests {
                 "{}",
                 case["name"]
             );
+        }
+    }
+
+    fn same_size(raw: &str) {
+        let parsed: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            parsed_event_size("ActivityCompleted", raw, &parsed).unwrap(),
+            event_size("ActivityCompleted", raw).unwrap(),
+            "{raw}"
+        );
+    }
+
+    #[test]
+    fn parsed_accounting_preserves_duplicate_keys_numeric_limits_and_raw_markers() {
+        for raw in [
+            r#"{"a":1,"b":2,"a":null}"#,
+            r#"{"0":1,"1":2,"0":[null,{}]}"#,
+            r#"{"1":1,"0":2}"#,
+            r#"{"00":1,"+0":2,"-0":3}"#,
+            r#"{"0":{"0":null},"1":[],"2":{}}"#,
+            r#"[null,true,false,{},[],"",17]"#,
+            r#"[-9223372036854775808,9223372036854775807,9223372036854775808,18446744073709551615]"#,
+            r#"[-9223372036854775809,18446744073709551616,1.234567890123456789e300,-1e-7,-0,-0.0,0.0,1e17,1e-4]"#,
+            r#"{"$serde_json::private::RawValue":"[1,2]"}"#,
+            r#"{"\u0024serde_json::private::Raw\u0056alue":"[1,2]"}"#,
+            r#"{"outer":{"$serde_json::private::RawValue":"{\"0\":null}"}}"#,
+            r#""quote \" slash \/ backslash \\ tab \t newline \n""#,
+            r#""\ud83d\ude00\udbff\udfff""#,
+            "null", "true", "false", "17",
+        ] {
+            same_size(raw);
+        }
+    }
+
+    #[test]
+    fn every_bmp_scalar_and_ascii_escape_keeps_the_published_size_unit() {
+        for code in 0..=u16::MAX {
+            let Some(character) = char::from_u32(u32::from(code)) else { continue };
+            let value = character.to_string();
+            let expected = serde_json::to_string(&value).unwrap().len()
+                + usize::from(matches!(character, '\u{2028}' | '\u{2029}')) * 3;
+            assert_eq!(string_len(&value), expected, "U+{code:04X}");
+            same_size(&serde_json::to_string(&value).unwrap());
+            same_size(&format!("\"\\u{code:04x}\""));
+        }
+        for character in ['\u{10000}', '😀', '\u{10ffff}'] {
+            same_size(&serde_json::to_string(&character.to_string()).unwrap());
         }
     }
 }

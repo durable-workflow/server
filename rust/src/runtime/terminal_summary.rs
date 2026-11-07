@@ -353,8 +353,8 @@ struct SummaryHistory {
 
 impl SummaryHistory {
     fn record(&mut self, id: &str, kind: &str, raw: &str, closed: bool) -> Result<()> {
-        self.bytes += history_budget::event_size(kind, raw)? as i64;
         let payload: Value = serde_json::from_str(raw)?;
+        self.bytes += history_budget::parsed_event_size(kind, raw, &payload)? as i64;
         if !closed {
             self.active_history_supported &= self.barriers.apply(kind, &payload);
             self.active_history_supported &= self.selections.apply(id, kind, &payload);
