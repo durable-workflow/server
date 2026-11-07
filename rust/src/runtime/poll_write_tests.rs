@@ -1,4 +1,4 @@
-//! The actual cache writers prepare and execute exactly one statement per row.
+//! Compare stored projections and count the actual cache/projection writes.
 use super::store::Store;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -18,6 +18,21 @@ store_methods! {
         let (fast, old) = Self::compare_projection_bytes(&mut tx, run_id).await.unwrap();
         assert!(fast < old, "an ordinary ready run must issue fewer statements: {fast}/{old}");
         tx.rollback().await.unwrap();
+        // Both insert and conflict paths compare every stored column with the
+        // exact predecessor. Poison old nullable fields to prove they clear.
+        for remove in [false,true] {
+            let mut tx = self.begin().await.unwrap();
+            if remove {
+                Self::query("DELETE FROM workflow_run_summaries WHERE id=$1")
+                    .bind(run_id).execute(&mut *tx).await.unwrap();
+            } else {
+                Self::query("UPDATE workflow_run_summaries SET wait_kind='stale',wait_reason='stale',open_wait_id='stale',resume_source_kind='stale',resume_source_id='stale',next_task_id='stale',next_task_type='stale',next_task_status='stale',next_task_at='2000-01-01 00:00:00',next_task_lease_expires_at='2000-01-01 00:00:00' WHERE id=$1")
+                    .bind(run_id).execute(&mut *tx).await.unwrap();
+            }
+            Self::compare_projection_bytes(&mut tx, run_id).await.unwrap();
+            tx.rollback().await.unwrap();
+        }
+        self.qualify_summary_projection_absence(run_id,run["workflow_id"].as_str().unwrap()).await;
         // Every column is compared on the same database/transaction. These
         // are stored-row classifier controls, not producer/admission claims.
         for sql in [
