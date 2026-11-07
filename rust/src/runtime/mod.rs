@@ -152,6 +152,8 @@ mod poll_sweeps_tests;
 #[cfg(test)]
 mod poll_transaction_tests;
 #[cfg(test)]
+mod transition_queue_tests;
+#[cfg(test)]
 mod sql_counts;
 #[cfg(test)]
 mod poll_write_tests;

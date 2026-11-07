@@ -706,6 +706,18 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_transition_queue_preserves_reads_fifo_and_timeout_admission() {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let db = Database::new().await;
+            let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+            store.qualify_transition_queue().await;
+            store.close().await;
+            db.remove().await;
+        }).await.expect("bounded PostgreSQL transition queue qualification");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_sweep_expiry_and_batch_bounds() {
         let db = Database::new().await;
         let mut store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());

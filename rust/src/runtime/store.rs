@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Pool, Type};
 use std::{sync::Arc, time::Duration};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Mutex, Notify, Semaphore};
 use ulid::Ulid;
 
 pub(super) struct PreparedControlArguments {
@@ -156,6 +156,7 @@ enum FirstProbe {
 
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
+    transitions: Arc<Mutex<()>>,
     pub(super) wake: Arc<Notify>,
     pub(super) namespace: Arc<str>,
     pub(super) memo_codec: Arc<Semaphore>,
@@ -324,6 +325,7 @@ where
     pub(super) fn new(pool: Pool<DB>) -> Self {
         Self {
             pool,
+            transitions: Arc::default(),
             wake: Arc::new(Notify::new()),
             namespace: "default".into(),
             memo_codec: Arc::new(Semaphore::new(1)),
@@ -348,6 +350,7 @@ where
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
         Self {
             pool: self.pool.clone(),
+            transitions: self.transitions.clone(),
             wake: self.wake.clone(),
             namespace: namespace.into(),
             memo_codec: self.memo_codec.clone(),
@@ -408,11 +411,20 @@ where
         self.pool.close().await;
     }
     pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
+        // Queue before borrowing a connection so readers keep the other pool
+        // slots. A timed-out waiter returns the existing typed pool refusal;
+        // it never abandons FIFO and continues to the database anyway.
+        let queued = tokio::time::timeout(
+            self.pool.options().get_acquire_timeout(),
+            self.transitions.clone().lock_owned(),
+        )
+        .await
+        .map_err(|_| sqlx::Error::PoolTimedOut)?;
         #[cfg(test)]
         self.test_transitions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         DB::begin(&self.pool)
             .await
-            .map(|inner| Transaction::new(inner, self.history_budget))
+            .map(|inner| Transaction::new(inner, self.history_budget, Some(queued)))
     }
     // Reads that change nothing use one consistent read-only snapshot instead
     // of the transition lock, so they neither wait for nor delay transitions.
@@ -420,6 +432,7 @@ where
         Ok(Transaction::new(
             self.pool.begin_with(DB::READ_SNAPSHOT_BEGIN).await?,
             self.history_budget,
+            None,
         ))
     }
     pub(crate) async fn start(
