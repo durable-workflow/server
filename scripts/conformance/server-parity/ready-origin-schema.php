@@ -84,3 +84,27 @@ function projectPostgresReadyOrigin(array $rows): array
 
     return $result;
 }
+
+function projectPostgresScopedDispatch(array $rows): array
+{
+    $definition = ['index', 'dw_workflow_tasks_scoped_dispatch', ['ready' => true, 'valid' => true,
+        'unique' => false, 'primary' => false,
+        'definition' => 'CREATE INDEX dw_workflow_tasks_scoped_dispatch ON public.workflow_tasks USING btree (namespace, queue, task_type, status, priority, available_at, id)']];
+    $found = 0;
+    $result = [];
+    foreach ($rows as $row) {
+        if ($row[0] === 'index' && $row[1] === 'dw_workflow_tasks_scoped_dispatch') {
+            if ($row !== $definition) {
+                throw new RuntimeException('Native scoped dispatch definition mismatch.');
+            }
+            $found++;
+        } else {
+            $result[] = $row;
+        }
+    }
+    if ($found !== 1) {
+        throw new RuntimeException('Native scoped dispatch index missing or duplicated.');
+    }
+
+    return $result;
+}
