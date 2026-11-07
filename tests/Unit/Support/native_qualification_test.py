@@ -695,9 +695,9 @@ class TransportTests(unittest.TestCase):
                            'RELEASE_TAG':'3.2.0', 'RELEASE_RUN_ID':'41', 'RELEASE_RUN_ATTEMPT':'1'}
             result = subprocess.run(['bash',str(ROOT / 'scripts/ci/native-release-verify-publication.sh')],
                                     env=environment, capture_output=True, text=True, timeout=5, check=False)
-            self.assertEqual(result.returncode,0,result.stderr)
-            self.assertEqual(json.loads(result.stdout), {'tag':'3.2.0','source_commit':SOURCE,
-                                                         'index_digest':INDEX,'run_id':41,'run_attempt':1})
+            self.assertEqual(0,result.returncode,result.stderr)
+            self.assertEqual({'tag':'3.2.0','source_commit':SOURCE,
+                              'index_digest':INDEX,'run_id':41,'run_attempt':1}, json.loads(result.stdout))
 
     def test_git_comparisons_only_allow_the_exact_source_and_main_read_shapes(self):
         commands = ReadCommands(b"{}")
@@ -706,10 +706,9 @@ class TransportTests(unittest.TestCase):
         allowed = [prefix + SOURCE + "..." + RUNNER + "?per_page=100",
                    prefix + RUNNER + "...main?per_page=1", prefix + SOURCE + "...main"]
         for path in allowed:
-            self.assertEqual(provider.api(path), {})
-        self.assertEqual([call[0] for call in commands.calls],
-                         [["gh", "api", "--hostname", "github.com", "--method", "GET", path]
-                          for path in allowed])
+            self.assertEqual({}, provider.api(path))
+        self.assertEqual([["gh", "api", "--hostname", "github.com", "--method", "GET", path]
+                          for path in allowed], [call[0] for call in commands.calls])
         refused = [prefix + SOURCE + suffix for suffix in (
             ".." + RUNNER, "...." + RUNNER, "...main/../secrets", "...main?per_page=2",
             "...main?per_page=100", "...main&per_page=1", "...main?per_page=1&page=2",
@@ -721,7 +720,7 @@ class TransportTests(unittest.TestCase):
         for path in refused:
             with self.subTest(path=path), self.assertRaisesRegex(E.Refusal, "provider_api_path"):
                 provider.api(path)
-        self.assertEqual(len(commands.calls), len(allowed), "refused paths never reach the command transport")
+        self.assertEqual(len(allowed), len(commands.calls), "refused paths never reach the command transport")
 
     def test_runner_ancestry_uses_the_actual_provider_path_guard(self):
         fixture = RunnerProvider()
@@ -731,8 +730,8 @@ class TransportTests(unittest.TestCase):
                 self.paths = []
 
             def run(self, argv, limit=E.JSON_LIMIT, env=None, accepted=(0,)):
-                self_test.assertEqual(argv[:6], ["gh", "api", "--hostname", "github.com", "--method", "GET"])
-                self_test.assertEqual(len(argv), 7)
+                self_test.assertEqual(["gh", "api", "--hostname", "github.com", "--method", "GET"], argv[:6])
+                self_test.assertEqual(7, len(argv))
                 self.paths.append(argv[6])
                 return E.canonical(fixture.api(argv[6]))
 
@@ -740,12 +739,12 @@ class TransportTests(unittest.TestCase):
         commands = ApiCommands()
         provider = T.GitHubRegistryProvider(commands)
         selected = fixture.selected
-        self.assertEqual(E.runner_subject(provider, selected["runner"], selected["release"]), fixture.binding)
-        self.assertEqual(commands.paths, [
+        self.assertEqual(fixture.binding, E.runner_subject(provider, selected["runner"], selected["release"]))
+        self.assertEqual([
             f"repos/{E.REPOSITORY}/contents/{E.SUBJECT_PATH}?ref={RUNNER}",
             f"repos/{E.REPOSITORY}/compare/{SOURCE}...{RUNNER}?per_page=100",
             f"repos/{E.REPOSITORY}/compare/{RUNNER}...main?per_page=1",
-        ])
+        ], commands.paths)
         fixture.on_main = False
         with self.assertRaisesRegex(E.Refusal, "qualification_runner_not_on_main"):
             E.runner_subject(provider, selected["runner"], selected["release"])
