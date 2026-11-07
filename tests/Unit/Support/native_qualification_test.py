@@ -297,6 +297,12 @@ class ContainerdCommands(RunnerCommands):
 
     def run(self, args, *more, **kwargs):
         identity = args[-1]
+        if args[:5] == ["docker", "buildx", "imagetools", "inspect", "--raw"]:
+            self.reads.append(args)
+            subject = next(value for name, value in self.provider.binding.items()
+                           if name in ("mysql", "qemu") and value["requested_image"] == identity)
+            return json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                               "config": {"digest": subject["image_config_digest"]}}).encode()
         if args[:3] == ["docker", "container", "inspect"]:
             self.reads.append(args)
             if identity == CID:
@@ -468,11 +474,36 @@ class RunnerProducerTests(unittest.TestCase):
                 Q.local_image(provider, provider.subjects[E.AMD64], E.GHCR_IMAGE + "@" + INDEX,
                               E.AMD64, INDEX, container)
         provider = containerd_provider()
-        provider.registry_json = lambda *args: {"config": {"digest": INDEX}}
+        provider.registry_json = lambda *args: {"schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": {"digest": INDEX}}
         container = json.loads(provider.commands.run(["docker", "container", "inspect", CID]))[0]
         with self.assertRaisesRegex(E.Refusal, "actual_manifest_config"):
             Q.local_image(provider, provider.subjects[E.AMD64], E.GHCR_IMAGE + "@" + INDEX,
                           E.AMD64, INDEX, container)
+
+    def test_third_party_descriptors_use_the_real_provider_without_expanding_its_server_allowlist(self):
+        fixture = containerd_provider()
+        commands = fixture.commands
+        provider = T.GitHubRegistryProvider(commands)
+        for role in ("mysql", "qemu"):
+            subject = fixture.binding[role]
+            with self.subTest(role=role), self.assertRaisesRegex(E.Refusal, "registry_subject"):
+                provider.registry_json(subject["requested_image"].split("@", 1)[0], subject["child_manifest_digest"])
+        self.assertEqual(commands.reads, [])
+        for role in ("mysql", "qemu"):
+            subject = fixture.binding[role]
+            container = (json.loads(commands.run(["docker", "container", "inspect", "f" * 64]))[0]
+                         if role == "mysql" else None)
+            observed = Q.dependency_image(provider, subject, role, container)
+            self.assertEqual(observed["actual_image_config_digest"], subject["image_config_digest"])
+            self.assertIn(["docker", "buildx", "imagetools", "inspect", "--raw", subject["requested_image"]], commands.reads)
+        for role, repository in (("mysql", "evil.example/mysql"), ("mysql", E.GHCR_IMAGE),
+                                  ("mysql", "mysql:latest"), ("qemu", "mysql:8.0")):
+            subject = {**fixture.binding[role], "requested_image": repository + "@" + fixture.binding[role]["child_manifest_digest"]}
+            before = len(commands.reads)
+            with self.subTest(role=role, repository=repository), self.assertRaisesRegex(E.Refusal, "dependency_registry_subject"):
+                Q.dependency_image(provider, subject, role)
+            self.assertEqual(len(commands.reads), before)
 
 
 class ProducerTests(unittest.TestCase):

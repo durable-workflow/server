@@ -102,12 +102,29 @@ def admit(provider: GitHubRegistryProvider, role: str, image: str) -> dict[str, 
 
 MANIFEST_TYPES = {"application/vnd.oci.image.manifest.v1+json",
                   "application/vnd.docker.distribution.manifest.v2+json"}
+DEPENDENCY_REPOSITORIES = {
+    "mysql": ("mysql:8.0", ("mysql", "docker.io/library/mysql")),
+    "qemu": ("docker.io/tonistiigi/binfmt", ("tonistiigi/binfmt", "docker.io/tonistiigi/binfmt")),
+}
 
 
 def require_manifest(value: Any, digest: str) -> None:
     require(type(value) is dict and value.get("digest") == digest
             and type(value.get("mediaType")) is str and value["mediaType"] in MANIFEST_TYPES,
             "actual_platform_manifest")
+
+
+def image_manifest(provider: GitHubRegistryProvider, subject: dict[str, str], requested: str) -> Any:
+    repository = requested.split("@", 1)[0]
+    if repository == GHCR_IMAGE:
+        return provider.registry_json(repository, subject["child_manifest_digest"])
+    # The shared promotion transport remains Server-only. These two exact
+    # qualification dependencies use an independently closed read-only path.
+    require(repository in {item[0] for item in DEPENDENCY_REPOSITORIES.values()}
+            and matching(subject.get("child_manifest_digest"), DIGEST)
+            and requested == repository + "@" + subject["child_manifest_digest"], "dependency_registry_subject")
+    return strict_json(provider.commands.run(
+        ["docker", "buildx", "imagetools", "inspect", "--raw", requested]), JSON_LIMIT)
 
 
 def local_image(provider: GitHubRegistryProvider, subject: dict[str, str], requested: str,
@@ -139,7 +156,7 @@ def local_image(provider: GitHubRegistryProvider, subject: dict[str, str], reque
         require_manifest(config.get("Descriptor"), subject["child_manifest_digest"])
         # The platform descriptor is engine-observed. Its immutable manifest
         # supplies the config linkage; an engine target ID is never relabeled.
-        manifest = provider.registry_json(requested.split("@", 1)[0], subject["child_manifest_digest"])
+        manifest = image_manifest(provider, subject, requested)
         require(type(manifest) is dict and manifest.get("schemaVersion") == 2
                 and type(manifest.get("mediaType")) is str and manifest["mediaType"] in MANIFEST_TYPES
                 and type(manifest.get("config")) is dict
@@ -152,8 +169,13 @@ def local_image(provider: GitHubRegistryProvider, subject: dict[str, str], reque
     return config, identity
 
 
-def dependency_image(provider: GitHubRegistryProvider, subject: dict[str,str], repositories: tuple[str,...],
+def dependency_image(provider: GitHubRegistryProvider, subject: dict[str,str], role: str,
                      container: dict[str, Any] | None = None) -> dict[str,Any]:
+    require(type(role) is str and role in DEPENDENCY_REPOSITORIES, "dependency_registry_subject")
+    repository, repositories = DEPENDENCY_REPOSITORIES[role]
+    require(matching(subject.get("child_manifest_digest"), DIGEST)
+            and subject.get("requested_image") == repository + "@" + subject["child_manifest_digest"],
+            "dependency_registry_subject")
     config, identity = local_image(provider, subject, subject["requested_image"], "linux/amd64",
                                    subject["child_manifest_digest"], container)
     require(type(config.get("RepoDigests")) is list
@@ -179,9 +201,9 @@ def observe_dependencies(provider: GitHubRegistryProvider, role: str, platform: 
             and database.get("Config", {}).get("Image") == subject["mysql"]["requested_image"]
             and labels.get(COMPOSE_OWNER) == scope and labels.get("com.docker.compose.service") == "mysql",
             "actual_database_subject")
-    mysql = {**dependency_image(provider, subject["mysql"], ("mysql", "docker.io/library/mysql"), database),
+    mysql = {**dependency_image(provider, subject["mysql"], "mysql", database),
              "container_id": identity}
-    qemu = (dependency_image(provider, subject["qemu"], ("tonistiigi/binfmt", "docker.io/tonistiigi/binfmt"))
+    qemu = (dependency_image(provider, subject["qemu"], "qemu")
             if platform == "linux/arm64" else None)
     return {"mysql": mysql, "qemu": qemu}
 
