@@ -154,6 +154,17 @@ Repository checks and focused test commands are documented in
 [native publication and alias-promotion runbook](docs/native-release-promotion.md)
 describes the separate qualification and protected release phases.
 
+Published-image qualification can use a separately reviewed runner without
+moving the producer tag. The v2 qualification subject binds the exact published
+source/index/run and pinned MySQL and QEMU image subjects. The runner must be on
+main and differ from the producer only in the closed qualification-source set.
+The existing v1 model still requires runner and producer to be the same commit.
+V2 receipts retain both identities, each actual dependency image, the owned
+resource scope, body observations and verified cleanup. The four Compose cells
+run on amd64 hosts; their arm64 server cells use the pinned QEMU helper. These
+receipts do not select alias promotion or a GitHub Release.
+
+
 ## License
 
 Durable Workflow Server is released under the [MIT License](LICENSE).
