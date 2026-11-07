@@ -249,7 +249,7 @@ store_methods! {
         if request.keys.binding.starts_with(PREFIX)
             && Self::query(DB::WORKFLOW_POLL_LEGACY_ACTIVE).bind(epoch()).fetch_optional(&mut **tx).await?.is_some()
         {
-            return Err(super::refuse(StatusCode::CONFLICT, "workflow_poll_normalization_pending"));
+            return Err(normalization_pending(&request.id));
         }
         Ok(())
     }
@@ -516,6 +516,16 @@ store_methods! {
             Self::query(DB::QUERY_CACHE_DELETE).bind(DB::string(&row, "key")?).execute(&mut **tx).await?;
         }
         Ok(())
+    }
+}
+
+pub(super) fn normalization_pending(request_id: &str) -> RuntimeError {
+    RuntimeError::Protocol {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        response: json!({"task":null,"poll_status":"workflow_poll_normalization_pending",
+            "reason":"workflow_poll_normalization_pending","message":"workflow_poll_normalization_pending",
+            "retryable":true,"retry_after_seconds":1,"poll_request_id":request_id,
+            "retry_same_poll_request_id":true,"claim_admitted":false}),
     }
 }
 

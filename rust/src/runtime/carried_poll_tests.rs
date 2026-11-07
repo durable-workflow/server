@@ -526,13 +526,17 @@ store_methods! {
                         let result = store.poll(retry.clone(), "workflow", "1.20").await;
                         if pending {
                             let error = result.unwrap_err();
-                            assert!(matches!(&error, super::RuntimeError::Refused {
-                                status: axum::http::StatusCode::CONFLICT, reason: "workflow_poll_normalization_pending" }));
+                            assert!(matches!(&error, super::RuntimeError::Protocol {
+                                status: axum::http::StatusCode::SERVICE_UNAVAILABLE, response }
+                                if response["reason"] == "workflow_poll_normalization_pending"));
                             let response = axum::response::IntoResponse::into_response(error);
-                            assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+                            assert_eq!(response.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
                             let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
                             assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),
-                                json!({"reason":"workflow_poll_normalization_pending","message":"workflow_poll_normalization_pending"}));
+                                json!({"task":null,"poll_status":"workflow_poll_normalization_pending",
+                                    "reason":"workflow_poll_normalization_pending","message":"workflow_poll_normalization_pending",
+                                    "retryable":true,"retry_after_seconds":1,"poll_request_id":super::workflow_poll_requests::request_id(&retry).unwrap(),
+                                    "retry_same_poll_request_id":true,"claim_admitted":false}));
                         } else {
                             assert_eq!(result.unwrap()["task"], leased);
                         }

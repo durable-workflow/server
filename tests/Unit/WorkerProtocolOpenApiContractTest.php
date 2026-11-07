@@ -61,17 +61,20 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->assertNotContains('workflow_task_completion_activity_poll', $caps['required']);
     }
 
-    public function test_workflow_poll_normalization_pending_is_a_closed_conflict(): void
+    public function test_workflow_poll_normalization_pending_is_a_closed_retryable_refusal(): void
     {
         $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
-        $valid = (object) ['reason' => 'workflow_poll_normalization_pending', 'message' => 'workflow_poll_normalization_pending'];
+        $valid = (object) ['task' => null, 'poll_status' => 'workflow_poll_normalization_pending',
+            'reason' => 'workflow_poll_normalization_pending', 'message' => 'workflow_poll_normalization_pending',
+            'retryable' => true, 'retry_after_seconds' => 1, 'poll_request_id' => 'original-id',
+            'retry_same_poll_request_id' => true, 'claim_admitted' => false];
         $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', $valid);
         $this->assertContains(
             ['$ref' => '#/components/schemas/WorkflowPollNormalizationPending'],
-            $this->spec['components']['responses']['WorkflowTaskPollConflict']['content']['application/json']['schema']['oneOf'],
+            $this->spec['components']['responses']['WorkerServiceUnavailable']['content']['application/json']['schema']['anyOf'],
         );
         $this->expectException(AssertionFailedError::class);
-        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', (object) [...(array) $valid, 'task' => null]);
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', (object) [...(array) $valid, 'claim_admitted' => true]);
     }
 
     public static function invalidCarriedActivityPoll(): iterable
@@ -632,7 +635,6 @@ class WorkerProtocolOpenApiContractTest extends TestCase
             ['$ref' => '#/components/schemas/PollRequestTaskKindsConflict'],
             ['$ref' => '#/components/schemas/CachedPollTaskKindConflict'],
             ['$ref' => '#/components/schemas/UpdateValidationCapabilityConflict'],
-            ['$ref' => '#/components/schemas/WorkflowPollNormalizationPending'],
         ], $response['content']['application/json']['schema']['oneOf']);
 
         $capabilityProperties = $this->spec['components']['schemas']['UpdateValidationCapabilityConflict']['allOf'][1]['properties'];

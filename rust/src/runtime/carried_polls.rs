@@ -72,7 +72,11 @@ pub(super) fn workflow_answer(mut answer: Value) -> Value {
 fn soft_refusal(error: &RuntimeError) -> bool {
     match error {
         RuntimeError::Refused { status: StatusCode::CONFLICT,
-            reason: "worker_not_registered" | "task_queue_mismatch" | "poll_cached_task_expired" | "workflow_poll_normalization_pending", .. } => true,
+            reason: "worker_not_registered" | "task_queue_mismatch" | "poll_cached_task_expired", .. } => true,
+        RuntimeError::Protocol { status: StatusCode::SERVICE_UNAVAILABLE, response } =>
+            response["reason"] == "workflow_poll_normalization_pending"
+                && response["poll_status"] == "workflow_poll_normalization_pending"
+                && response["retryable"] == true && response["claim_admitted"] == false,
         RuntimeError::Protocol { status: StatusCode::CONFLICT, response } =>
             matches!(response["reason"].as_str(), Some("worker_draining" | "poll_request_task_kinds_conflict")),
         _ => false,
@@ -275,8 +279,11 @@ mod tests {
             assert!(!soft_refusal(&super::super::refuse(StatusCode::CONFLICT, reason)));
         }
         assert!(soft_refusal(&super::super::refuse(StatusCode::CONFLICT, "poll_cached_task_expired")));
-        assert!(soft_refusal(&super::super::refuse(StatusCode::CONFLICT, "workflow_poll_normalization_pending")));
+        assert!(soft_refusal(&super::super::workflow_poll_requests::normalization_pending("original-id")));
+        assert!(!soft_refusal(&super::super::refuse(StatusCode::CONFLICT, "workflow_poll_normalization_pending")));
         assert!(!soft_refusal(&super::super::refuse(StatusCode::INTERNAL_SERVER_ERROR, "workflow_poll_normalization_pending")));
+        assert!(!soft_refusal(&RuntimeError::Protocol { status: StatusCode::SERVICE_UNAVAILABLE,
+            response: json!({"reason":"workflow_poll_normalization_pending"}) }));
         assert!(!soft_refusal(&super::super::refuse(StatusCode::INTERNAL_SERVER_ERROR, "poll_cached_task_expired")));
     }
 }

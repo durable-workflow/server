@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "61"
+  version: "62"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -65,7 +65,7 @@ x-durable-workflow-carried-workflow-poll:
     cache_key_family: normalized_v2_separate_from_predecessor_digests
     known_predecessor: replay_original_raw_or_normalized_key_without_new_lease
     unknown_predecessor: no_new_canonical_claim_while_any_unexpired_predecessor_cache_row_remains
-    ordinary_refusal: { status: 409, reason: workflow_poll_normalization_pending }
+    ordinary_refusal: { status: 503, reason: workflow_poll_normalization_pending, retryable: true, retry_same_poll_request_id: true, claim_admitted: false }
     carried_refusal: omit_workflow_poll_and_preserve_valid_completion
     scope: conservative_database_wide_drain_because_predecessor_keys_are_opaque
     expiry: original_predecessor_result_and_binding_expiry_not_process_restart_or_a_new_wait_window
@@ -1448,6 +1448,9 @@ components:
         storage admission returns storage_pressure or storage_admission_unavailable
         before admitting a request or a new poll claim. Retain the poll ID on
         retry: refusal of this attempt does not describe an earlier outcome.
+        Identity-normalization cutover likewise returns an explicit retryable
+        workflow_poll_normalization_pending response before a new claim. It
+        does not settle a predecessor request's outcome; retain the original ID.
       headers:
         X-Durable-Workflow-Protocol-Version:
           schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
@@ -1459,6 +1462,7 @@ components:
             anyOf:
               - $ref: "#/components/schemas/WorkerBackendUnavailable"
               - $ref: "#/components/schemas/WorkerStorageAdmissionRefusal"
+              - $ref: "#/components/schemas/WorkflowPollNormalizationPending"
               - $ref: "#/components/schemas/WorkerError"
     WorkerPollBackpressure:
       description: The node has no capacity for another held long poll; retry after the advertised delay.
@@ -1520,7 +1524,7 @@ components:
               - $ref: "#/components/schemas/PortableWorkerAffinityFailure"
               - $ref: "#/components/schemas/WorkerError"
     WorkflowTaskPollConflict:
-      description: The poll request is unsupported, its identity conflicts with a bound task-kind set, a cached task has another kind, or predecessor identity normalization is still draining.
+      description: The poll request is unsupported, its idempotency identity conflicts with a previously bound task-kind set, or a cached task cannot be replayed within the requested task-kind set.
       headers:
         X-Durable-Workflow-Protocol-Version:
           schema: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
@@ -1531,7 +1535,6 @@ components:
               - $ref: "#/components/schemas/PollRequestTaskKindsConflict"
               - $ref: "#/components/schemas/CachedPollTaskKindConflict"
               - $ref: "#/components/schemas/UpdateValidationCapabilityConflict"
-              - $ref: "#/components/schemas/WorkflowPollNormalizationPending"
     UpdateValidationTaskCompletion:
       description: A fenced update-validation task approval or rejection result.
       headers:
@@ -3030,11 +3033,19 @@ components:
         lease_expires_at: { type: string, format: date-time }
     WorkflowPollNormalizationPending:
       type: object
+      description: Temporary cutover refusal for this attempt only. Retained predecessor answers remain authoritative; retry with the original poll identity.
       additionalProperties: false
-      required: [reason, message]
+      required: [task, poll_status, reason, message, retryable, retry_after_seconds, poll_request_id, retry_same_poll_request_id, claim_admitted]
       properties:
+        task: { type: "null" }
+        poll_status: { type: string, const: workflow_poll_normalization_pending }
         reason: { type: string, const: workflow_poll_normalization_pending }
         message: { type: string, const: workflow_poll_normalization_pending }
+        retryable: { type: boolean, const: true }
+        retry_after_seconds: { type: integer, const: 1 }
+        poll_request_id: { type: string, minLength: 1, maxLength: 255 }
+        retry_same_poll_request_id: { type: boolean, const: true }
+        claim_admitted: { type: boolean, const: false }
     PollRequestTaskKindsConflict:
       allOf:
         - $ref: "#/components/schemas/WorkerError"
