@@ -4,6 +4,8 @@ use crate::codec::{Value as Payload, ValueCodec};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::{Arc, atomic::Ordering}, time::Duration};
 use tokio::sync::Semaphore;
+#[cfg(debug_assertions)]
+use futures_util::FutureExt;
 
 fn input() -> Value {
     json!({"codec":"avro","blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()})
@@ -184,6 +186,47 @@ store_methods! {
         }
     }
 
+    pub(super) async fn qualify_claim_history_sequence(&self) {
+        let started = self.count_start("claimed-history-total").await;
+        let run_id = started["run_id"].as_str().unwrap();
+        let mut tx = self.begin().await.unwrap();
+        for sequence in 1..=2 {
+            Self::append(&mut tx,run_id,"SideEffectRecorded",json!({"sequence":sequence,"result":null}),None,None)
+                .await.unwrap();
+        }
+        let run = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(run_id).fetch_one(&mut *tx).await.unwrap();
+        let last = DB::number(&run,"last_history_sequence").unwrap();
+        assert_eq!(last,4);
+        for (after,size) in [(0,1),(1,2),(0,1000),(last,1)] {
+            let (reference, reference_count) = super::sql_counts::measure(
+                Self::history_page_connection(&mut *tx,run_id,after,size),
+            ).await;
+            let (known, known_count) = super::sql_counts::measure(
+                Self::history_page_connection_with_total(&mut *tx,run_id,after,size,Some(last)),
+            ).await;
+            assert_eq!(known.unwrap(),reference.unwrap(),"after={after}, size={size}");
+            let query = "SELECT last_history_sequence FROM workflow_runs WHERE id=$1";
+            assert_eq!(reference_count.count(query),1);
+            assert_eq!(known_count.count(query),usize::from(cfg!(debug_assertions)),
+                "only debug builds re-read the claimed history total");
+        }
+        #[cfg(debug_assertions)]
+        {
+            Self::append(&mut tx,run_id,"SideEffectRecorded",json!({"sequence":3,"result":null}),None,None)
+                .await.unwrap();
+            let refused = std::panic::AssertUnwindSafe(
+                Self::history_page_connection_with_total(&mut *tx,run_id,0,1,Some(last)),
+            ).catch_unwind().await.expect_err("an intervening history write must trip the debug assertion");
+            let message = refused.downcast_ref::<String>().map(String::as_str)
+                .or_else(|| refused.downcast_ref::<&str>().copied()).unwrap_or("");
+            assert!(message.contains("claimed run history sequence changed before its first page"),"{message}");
+        }
+        tx.rollback().await.unwrap();
+        Self::query("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1")
+            .bind(run_id).execute(&self.pool).await.unwrap();
+    }
+
     pub(super) async fn qualify_query_poll_transactions(&self) {
         self.count_worker().await;
         let workflow_id = "counted-query-workflow";
@@ -250,6 +293,7 @@ async fn sqlite_workflow_and_query_poll_transaction_counts() {
     let store = Store::<sqlx::Sqlite>::new(super::sqlite::open(dir.path().join("counts.sqlite").to_str().unwrap()).await.unwrap());
     store.qualify_workflow_poll_transactions().await;
     store.qualify_first_candidate_batch().await;
+    store.qualify_claim_history_sequence().await;
     store.qualify_query_poll_transactions().await;
     store.close().await;
 }
