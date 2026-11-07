@@ -326,7 +326,7 @@ This index advances MySQL/MariaDB to schema 11. Stop the native nodes, back up
 the database and run the existing explicit `schema-upgrade` command before
 starting this binary on schema 10. Startup does not add the index. The retained
 schema-10 checksum and exact old/new table definitions govern interrupted DDL
-resumption. SQLite and PostgreSQL remain on schema 10 in this change.
+resumption. SQLite remains on schema 10.
 
 PostgreSQL candidate polls read separate status ranges and retain a correlated
 run lookup. The source controls compare complete candidate rows and actual
