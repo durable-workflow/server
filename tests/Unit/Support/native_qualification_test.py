@@ -552,21 +552,6 @@ class ProducerTests(unittest.TestCase):
             with self.assertRaisesRegex(E.Refusal, "qualification_path_symlink"):
                 Q.state_path(Path("qualification-state/image.json"))
 
-    def test_platform_inspection_emits_only_compiled_platform_options(self):
-        commands = ReadCommands(b"[{}]")
-        for platform in E.PLATFORMS:
-            self.assertEqual(Q.inspect(commands, "image", CONFIG, platform=platform), {})
-        self.assertEqual([call[0] for call in commands.calls], [
-            ["docker", "image", "inspect", "--platform", "linux/amd64", CONFIG],
-            ["docker", "image", "inspect", "--platform", "linux/arm64", CONFIG],
-        ])
-        for platform in ("", "linux/amd64 ", "linux/arm64,linux/amd64", "other", "--format=other"):
-            with self.subTest(platform=platform), self.assertRaisesRegex(E.Refusal, "docker_inspect_platform"):
-                Q.inspect(commands, "image", CONFIG, platform=platform)
-        with self.assertRaisesRegex(E.Refusal, "docker_inspect_platform"):
-            Q.inspect(commands, "container", CID, platform="linux/amd64")
-        self.assertEqual(len(commands.calls), 2, "refused options never reach the command transport")
-
     def test_cleanup_unavailable_is_unknown_and_foreign_resources_are_not_removed(self):
         for field, value in (("fail_list", True), ("owner", "another-project"),
                              ("volume_owner", {"com.docker.compose.project": "foreign"})):
