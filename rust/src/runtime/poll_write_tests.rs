@@ -10,6 +10,7 @@ store_methods! {
         let run = self.start(json!({"workflow_id":"projection-bytes","workflow_type":"projection",
             "task_queue":"projection","input":{"codec":"avro","blob":input}}), BTreeMap::new(), None, None).await.unwrap();
         let run_id = run["run_id"].as_str().unwrap();
+        self.qualify_projection_census_passes(run_id,run["workflow_id"].as_str().unwrap()).await;
         // Keep transport classification far from a live clock boundary while
         // the two reference paths run one after another.
         Self::query("UPDATE workflow_tasks SET available_at='2035-01-01 00:00:00' WHERE workflow_run_id=$1")
