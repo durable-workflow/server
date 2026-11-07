@@ -21,6 +21,51 @@ fn assert_granted(result: &Value) -> &Value {
 }
 
 #[tokio::test]
+async fn normalization_pending_http_refusal_has_the_closed_worker_envelope() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registered = request(&app, "POST", "/api/worker/register", registration("owner", "normalization-http")).await;
+    assert_eq!(registered.0, StatusCode::CREATED);
+    let started = request(&app, "POST", "/api/workflows", json!({"workflow_id":"normalization-http-ready",
+        "workflow_type":"echo","task_queue":"normalization-http","input":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(started.0, StatusCode::CREATED);
+    // A still-live opaque predecessor binding forces the real ordinary
+    // route through its pre-claim refusal and worker-response wrapper.
+    let expires = chrono::Utc::now().timestamp() + 60;
+    let key_column = if matches!(&database, TestDatabase::MySql { .. }) { "`key`" } else { "\"key\"" };
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO dw_query_cache ({key_column},value,expiration) VALUES ('dw-native-workflow-poll:http-predecessor','{{\"task_kinds\":[\"workflow\"]}}',{expires})"
+    ))).await;
+    let poll = json!({"worker_id":"owner","task_queue":"normalization-http","poll_request_id":"original-id","timeout_seconds":0});
+    let refused = request(&app, "POST", "/api/worker/workflow-tasks/poll", poll.clone()).await;
+    let vectors: Value = serde_json::from_str(include_str!("../../../resources/platform-protocol-specs/carried-poll-v1-vectors.json")).unwrap();
+    assert_eq!(refused.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(u64::from(refused.0.as_u16()), vectors["normalization_refusal_contract"]["http_status"].as_u64().unwrap());
+    let expected_keys: std::collections::BTreeSet<_> = vectors["normalization_refusal_contract"]["http_keys"].as_array().unwrap()
+        .iter().map(|value| value.as_str().unwrap()).collect();
+    let actual_keys: std::collections::BTreeSet<_> = refused.1.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(actual_keys, expected_keys, "test the actual route envelope, not a naked runtime error");
+    let mut expected = vectors["normalization_refusal_contract"]["http_example"].clone();
+    assert!(refused.1["server_capabilities"].is_object());
+    for (capability, value) in expected["server_capabilities"].as_object().unwrap() {
+        assert_eq!(refused.1["server_capabilities"][capability], *value);
+    }
+    // The schema permits unrelated capability members. Bind their actual
+    // map to the normal registration while comparing every closed field to
+    // the same wire example the PHP schema validator consumes.
+    expected["server_capabilities"] = registered.1["server_capabilities"].clone();
+    assert_eq!(refused.1, expected);
+    database.execute(sqlx::AssertSqlSafe(format!("DELETE FROM dw_query_cache WHERE {key_column}='dw-native-workflow-poll:http-predecessor'"))).await;
+    let claimed = request(&app, "POST", "/api/worker/workflow-tasks/poll", poll).await;
+    assert_eq!(claimed.0, StatusCode::OK);
+    assert_eq!(claimed.1["task"]["run_id"], started.1["run_id"]);
+    assert_eq!(claimed.1["task"]["workflow_task_attempt"], 1, "the refused route did not take an earlier lease");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn carried_activity_vectors_and_lost_completion_ack_preserve_the_original_lease() {
     let vectors: Value = serde_json::from_str(include_str!(
         "../../../resources/platform-protocol-specs/carried-poll-v1-vectors.json"

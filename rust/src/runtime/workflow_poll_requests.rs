@@ -522,11 +522,22 @@ store_methods! {
 pub(super) fn normalization_pending(request_id: &str) -> RuntimeError {
     RuntimeError::Protocol {
         status: StatusCode::SERVICE_UNAVAILABLE,
-        response: json!({"task":null,"poll_status":"workflow_poll_normalization_pending",
-            "reason":"workflow_poll_normalization_pending","message":"workflow_poll_normalization_pending",
-            "retryable":true,"retry_after_seconds":1,"poll_request_id":request_id,
-            "retry_same_poll_request_id":true,"claim_admitted":false}),
+        response: normalization_pending_body(request_id),
     }
+}
+
+fn normalization_pending_body(request_id: &str) -> Value {
+    json!({"task":null,"poll_status":"workflow_poll_normalization_pending",
+        "reason":"workflow_poll_normalization_pending","message":"workflow_poll_normalization_pending",
+        "retryable":true,"retry_after_seconds":1,"poll_request_id":request_id,
+        "retry_same_poll_request_id":true,"claim_admitted":false})
+}
+
+pub(super) fn is_normalization_pending_response(response: &Value) -> bool {
+    let Some(id) = response["poll_request_id"].as_str() else { return false; };
+    !id.is_empty() && id.chars().count() <= 255
+        && request_id(&json!({"poll_request_id":id})).as_deref() == Some(id)
+        && *response == normalization_pending_body(id)
 }
 
 #[cfg(test)]

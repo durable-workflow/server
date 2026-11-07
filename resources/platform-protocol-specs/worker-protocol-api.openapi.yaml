@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "62"
+  version: "63"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -63,6 +63,7 @@ x-durable-workflow-carried-workflow-poll:
   history: configured_normal_poll_projection_page_maximum_and_budget
   normalization_cutover:
     cache_key_family: normalized_v2_separate_from_predecessor_digests
+    deployment_condition: all_predecessor_writers_stopped_before_cutover_no_mixed_version_guarantee
     known_predecessor: replay_original_raw_or_normalized_key_without_new_lease
     unknown_predecessor: no_new_canonical_claim_while_any_unexpired_predecessor_cache_row_remains
     ordinary_refusal: { status: 503, reason: workflow_poll_normalization_pending, retryable: true, retry_same_poll_request_id: true, claim_admitted: false }
@@ -3035,7 +3036,7 @@ components:
       type: object
       description: Temporary cutover refusal for this attempt only. Retained predecessor answers remain authoritative; retry with the original poll identity.
       additionalProperties: false
-      required: [task, poll_status, reason, message, retryable, retry_after_seconds, poll_request_id, retry_same_poll_request_id, claim_admitted]
+      required: [task, poll_status, reason, message, retryable, retry_after_seconds, poll_request_id, retry_same_poll_request_id, claim_admitted, protocol_version, server_capabilities]
       properties:
         task: { type: "null" }
         poll_status: { type: string, const: workflow_poll_normalization_pending }
@@ -3043,9 +3044,11 @@ components:
         message: { type: string, const: workflow_poll_normalization_pending }
         retryable: { type: boolean, const: true }
         retry_after_seconds: { type: integer, const: 1 }
-        poll_request_id: { type: string, minLength: 1, maxLength: 255 }
+        poll_request_id: { $ref: "#/components/schemas/CarriedWorkflowPollRequest/properties/poll_request_id" }
         retry_same_poll_request_id: { type: boolean, const: true }
         claim_admitted: { type: boolean, const: false }
+        protocol_version: { $ref: "#/components/schemas/AdvertisedWorkerProtocolVersion" }
+        server_capabilities: { $ref: "#/components/schemas/CarriedPollAnswerEnvelope/properties/server_capabilities" }
     PollRequestTaskKindsConflict:
       allOf:
         - $ref: "#/components/schemas/WorkerError"

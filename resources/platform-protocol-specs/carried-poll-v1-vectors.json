@@ -332,6 +332,27 @@
     { "id": "200e-padded-to-normalized", "original_request_id": "\u200ecutover-id\u200e", "retry_request_id": "cutover-id", "expected": "normalization_pending" },
     { "id": "200e-normalized-to-padded", "original_request_id": "cutover-id", "retry_request_id": "\u200ecutover-id\u200e", "expected": "replay" }
   ],
+  "normalization_refusal_contract": {
+    "http_status": 503,
+    "http_keys": ["task", "poll_status", "reason", "message", "retryable", "retry_after_seconds", "poll_request_id", "retry_same_poll_request_id", "claim_admitted", "protocol_version", "server_capabilities"],
+    "http_example": {
+      "task": null,
+      "poll_status": "workflow_poll_normalization_pending",
+      "reason": "workflow_poll_normalization_pending",
+      "message": "workflow_poll_normalization_pending",
+      "retryable": true,
+      "retry_after_seconds": 1,
+      "poll_request_id": "original-id",
+      "retry_same_poll_request_id": true,
+      "claim_admitted": false,
+      "protocol_version": "1.20",
+      "server_capabilities": {
+        "workflow_task_completion_activity_poll": true,
+        "activity_completion_workflow_poll": true,
+        "workflow_task_completion_workflow_poll": true
+      }
+    }
+  },
   "answer_contract": {
     "keys": [
       "poll_status",

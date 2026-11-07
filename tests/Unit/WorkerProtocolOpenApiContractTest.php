@@ -64,10 +64,7 @@ class WorkerProtocolOpenApiContractTest extends TestCase
     public function test_workflow_poll_normalization_pending_is_a_closed_retryable_refusal(): void
     {
         $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
-        $valid = (object) ['task' => null, 'poll_status' => 'workflow_poll_normalization_pending',
-            'reason' => 'workflow_poll_normalization_pending', 'message' => 'workflow_poll_normalization_pending',
-            'retryable' => true, 'retry_after_seconds' => 1, 'poll_request_id' => 'original-id',
-            'retry_same_poll_request_id' => true, 'claim_admitted' => false];
+        $valid = self::normalizationPendingHttpExample();
         $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', $valid);
         $this->assertContains(
             ['$ref' => '#/components/schemas/WorkflowPollNormalizationPending'],
@@ -75,6 +72,40 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         );
         $this->expectException(AssertionFailedError::class);
         $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', (object) [...(array) $valid, 'claim_admitted' => true]);
+    }
+
+    public static function invalidNormalizationPendingEnvelope(): iterable
+    {
+        $valid = (array) self::normalizationPendingHttpExample();
+        foreach (['protocol_version', 'server_capabilities'] as $key) {
+            $missing = $valid;
+            unset($missing[$key]);
+            yield 'missing '.$key => [$missing];
+        }
+        yield 'unknown field' => [$valid + ['unknown' => true]];
+        yield 'wrong protocol' => [array_replace($valid, ['protocol_version' => 'v1.20'])];
+        yield 'wrong capabilities' => [array_replace($valid, ['server_capabilities' => true])];
+    }
+
+    #[DataProvider('invalidNormalizationPendingEnvelope')]
+    public function test_normalization_pending_wire_envelope_rejects_missing_or_unrelated_fields(array $value): void
+    {
+        $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', self::normalizationPendingHttpExample());
+        $this->expectException(AssertionFailedError::class);
+        $schema->assertReferenceMatches('#/components/schemas/WorkflowPollNormalizationPending', (object) $value);
+    }
+
+    private static function normalizationPendingHttpExample(): \stdClass
+    {
+        $vectors = json_decode((string) file_get_contents(dirname(__DIR__, 2).'/resources/platform-protocol-specs/carried-poll-v1-vectors.json'), flags: JSON_THROW_ON_ERROR);
+        if (!$vectors instanceof \stdClass
+            || !$vectors->normalization_refusal_contract instanceof \stdClass
+            || !$vectors->normalization_refusal_contract->http_example instanceof \stdClass) {
+            throw new \UnexpectedValueException('Invalid normalization refusal wire fixture.');
+        }
+
+        return $vectors->normalization_refusal_contract->http_example;
     }
 
     public static function invalidCarriedActivityPoll(): iterable

@@ -74,9 +74,7 @@ fn soft_refusal(error: &RuntimeError) -> bool {
         RuntimeError::Refused { status: StatusCode::CONFLICT,
             reason: "worker_not_registered" | "task_queue_mismatch" | "poll_cached_task_expired", .. } => true,
         RuntimeError::Protocol { status: StatusCode::SERVICE_UNAVAILABLE, response } =>
-            response["reason"] == "workflow_poll_normalization_pending"
-                && response["poll_status"] == "workflow_poll_normalization_pending"
-                && response["retryable"] == true && response["claim_admitted"] == false,
+            super::workflow_poll_requests::is_normalization_pending_response(response),
         RuntimeError::Protocol { status: StatusCode::CONFLICT, response } =>
             matches!(response["reason"].as_str(), Some("worker_draining" | "poll_request_task_kinds_conflict")),
         _ => false,
@@ -251,6 +249,31 @@ store_methods! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_normalization_pending_faults_are_not_soft() {
+        let RuntimeError::Protocol { response: valid, .. } = super::super::workflow_poll_requests::normalization_pending("original-id") else { unreachable!() };
+        let admitted = |response| soft_refusal(&RuntimeError::Protocol { status: StatusCode::SERVICE_UNAVAILABLE, response });
+        assert!(admitted(valid.clone()));
+        for key in valid.as_object().unwrap().keys() {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(!admitted(missing), "missing {key} must propagate as a fault");
+        }
+        for (key, value) in [
+            ("task", json!({"task_id":"unrelated-grant"})), ("message", json!("different")),
+            ("retry_after_seconds", json!(0)), ("retry_after_seconds", json!(2)),
+            ("retry_after_seconds", json!(1.0)), ("poll_request_id", json!("")),
+            ("poll_request_id", json!(" \t")), ("poll_request_id", json!(" padded ")),
+            ("poll_request_id", json!("x".repeat(256))), ("poll_request_id", json!(true)),
+            ("retry_same_poll_request_id", json!(false)), ("retryable", json!(false)),
+            ("claim_admitted", json!(true)), ("protocol_version", json!("1.20")),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[key] = value;
+            assert!(!admitted(malformed), "malformed {key} must not become a successful decline");
+        }
+    }
 
     #[test]
     fn request_mismatch_is_declined_and_internal_claim_errors_are_not_soft() {
