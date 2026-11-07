@@ -17,6 +17,24 @@ pub const VERSION: i64 = 10;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
+macro_rules! status_candidates {
+    ($status:literal) => {
+        concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t ",
+            "JOIN LATERAL (SELECT r.workflow_type,r.compatibility FROM workflow_runs r ",
+            "WHERE r.id=t.workflow_run_id AND r.status IN ('pending','running','waiting') LIMIT 1) r ON true ",
+            "WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status='", $status, "' ",
+            "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",
+            "AND (t.available_at IS NULL OR t.available_at<=$5) ",
+            "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ",
+            "ORDER BY t.priority,t.available_at,t.id LIMIT 100)")
+    };
+}
+
+// The disjoint ranges keep their first 100 fully filtered candidates. LATERAL
+// keeps each run lookup correlated, including before the tables have statistics.
+pub(super) const TASK_CANDIDATES_SQL: &str = concat!("SELECT * FROM (", status_candidates!("ready"),
+    " UNION ALL ", status_candidates!("leased"), ") AS candidates ORDER BY priority,available_at,id LIMIT 100");
+
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
@@ -738,6 +756,18 @@ mod tests {
         store.qualify_poll_sweeps().await;
         store.close().await;
         db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_candidates_keep_index_order_without_run_scans() {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let db = Database::new().await;
+            let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+            store.qualify_postgres_candidate_ranges().await;
+            store.close().await;
+            db.remove().await;
+        }).await.expect("bounded PostgreSQL ordered candidate qualification");
     }
 
     #[tokio::test]

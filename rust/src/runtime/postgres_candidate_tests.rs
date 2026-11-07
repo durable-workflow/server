@@ -1,0 +1,96 @@
+//! Compare the complete candidate rows and physical plans with fresh statistics.
+use super::{backend::Backend, store::{StartMetadata, Store, id}, transaction::Transaction};
+use crate::codec::{Value as Payload, ValueCodec};
+use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
+use sqlx::{AssertSqlSafe, Postgres, Row, types::Json};
+
+async fn candidates(tx: &mut Transaction<'_, Postgres>, sql: &str, at: DateTime<Utc>, kind: &str, build: Option<&str>) -> Vec<Value> {
+    sqlx::query(AssertSqlSafe(format!("SELECT row_to_json(candidate) AS candidate FROM ({sql}) candidate")))
+        .bind("default").bind("ordered").bind(kind).bind(Postgres::bind_time(at)).bind(Postgres::bind_time(at)).bind(build)
+        .fetch_all(&mut **tx).await.unwrap().into_iter().map(|row| row.get::<Json<Value>, _>("candidate").0).collect()
+}
+
+async fn explain(tx: &mut Transaction<'_, Postgres>, sql: &str, at: DateTime<Utc>) -> Value {
+    let row = sqlx::query(AssertSqlSafe(format!("EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON) {sql}")))
+        .bind("default").bind("ordered").bind("workflow").bind(Postgres::bind_time(at))
+        .bind(Postgres::bind_time(at)).bind(None::<&str>).fetch_one(&mut **tx).await.unwrap();
+    row.get::<Json<Value>, _>("QUERY PLAN").0
+}
+
+fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize) {
+    match node["Relation Name"].as_str() {
+        Some("workflow_tasks") => {
+            assert!(matches!(node["Node Type"].as_str(),Some("Index Scan" | "Index Only Scan")),"{node}");
+            assert_eq!(node["Index Name"],"workflow_tasks_dispatch_order_index","the status range must use dispatch order: {node}");
+            assert!(node["Index Cond"].as_str().is_some_and(|condition| condition.contains("status")),"{node}");
+            *tasks += 1;
+        }
+        Some("workflow_runs") => {
+            assert_eq!(node["Index Name"],"workflow_runs_pkey","each correlated run lookup must use its primary key: {node}");
+            assert!(node["Index Cond"].as_str().is_some_and(|condition| condition.contains("workflow_run_id")),"{node}");
+            *runs += 1;
+        }
+        _ => {}
+    }
+    if let Some(children) = node["Plans"].as_array() {
+        for child in children { require_index_ranges(child,tasks,runs); }
+    }
+}
+
+impl Store<Postgres> {
+    pub(super) async fn qualify_postgres_candidate_ranges(&self) {
+        let at = "2035-01-02T03:04:05.123456Z".parse::<DateTime<Utc>>().unwrap();
+        let input = json!({"codec":"avro","blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()});
+        // Uncommitted fixture rows cannot be analyzed by autovacuum between
+        // the first plan and the explicit refresh inside this transaction.
+        let mut transaction = self.begin().await.unwrap();
+        let mut runs = Vec::new();
+        for index in 0..100 {
+            let started = Self::start_in(&mut transaction, &json!({"workflow_id":format!("ordered-{index}"),
+                "workflow_type":"ordered","task_queue":"ordered","input":input}), "default",
+                StartMetadata {memo:None,search_attributes:None}, None,None,120).await.unwrap();
+            let run = started["run_id"].as_str().unwrap().to_owned();
+            Self::query("UPDATE workflow_runs SET compatibility=$1,status=$2 WHERE id=$3")
+                .bind(if index % 3 == 0 {Some("build")} else {None})
+                .bind(if index % 11 == 0 {"completed"} else {"pending"}).bind(&run)
+                .execute(&mut *transaction).await.unwrap();
+            runs.push(run);
+        }
+        for index in 0..7200 {
+            let status = if index < 250 {"ready"} else if index < 500 {"leased"} else {"completed"};
+            let available = if index % 7 == 0 {None} else {Some(at + chrono::TimeDelta::seconds(if index % 13 == 0 {1} else {-1}))};
+            let lease = if index % 23 == 0 {None} else {Some(at + chrono::TimeDelta::seconds(if index % 17 == 0 {1} else {-1}))};
+            Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at,lease_expires_at,compatibility) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+                .bind(id()).bind(&runs[index % runs.len()]).bind(if index % 31 == 0 {"other"} else {"default"})
+                .bind(if index % 29 == 0 {"elsewhere"} else {"ordered"})
+                .bind(if index % 19 == 0 {"activity"} else {"workflow"}).bind(status).bind((index % 4) as i64)
+                .bind(Postgres::optional_time(available)).bind(Postgres::optional_time(lease))
+                .bind(match index % 5 {0=>Some("other"),1=>Some(""),_=>None})
+                .execute(&mut *transaction).await.unwrap();
+        }
+        let statistics:i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pg_stats WHERE schemaname='public' AND tablename IN ('workflow_tasks','workflow_runs')")
+            .fetch_one(&mut *transaction).await.unwrap();
+        assert_eq!(statistics,0,"the first plan must precede actual table analysis");
+        let old = super::store::TASK_CANDIDATES_SQL;
+        let new = Postgres::TASK_CANDIDATES_SQL;
+        for analyzed in [false,true] {
+            if analyzed { Self::query("ANALYZE workflow_tasks,workflow_runs").execute(&mut *transaction).await.unwrap(); }
+            for kind in ["workflow","activity"] {
+                for build in [None,Some("build"),Some("other")] {
+                    let expected = candidates(&mut transaction,old,at,kind,build).await;
+                    let actual = candidates(&mut transaction,new,at,kind,build).await;
+                    assert_eq!(actual,expected,"analyzed={analyzed} / kind={kind} / build={build:?}");
+                    if kind=="workflow" && build.is_none() { assert_eq!(actual.len(),100); }
+                }
+            }
+            let before = explain(&mut transaction,old,at).await;
+            let after = explain(&mut transaction,new,at).await;
+            println!("postgres_status_candidate_plan analyzed={analyzed} old={before} new={after}");
+            let (mut tasks,mut run_lookups) = (0,0);
+            require_index_ranges(&after[0]["Plan"],&mut tasks,&mut run_lookups);
+            assert_eq!((tasks,run_lookups),(2,2),"{after}");
+        }
+        transaction.rollback().await.unwrap();
+    }
+}
