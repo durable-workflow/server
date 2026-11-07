@@ -89,7 +89,7 @@ function projectPostgresScopedDispatch(array $rows): array
 {
     $definition = ['index', 'dw_workflow_tasks_scoped_dispatch', ['ready' => true, 'valid' => true,
         'unique' => false, 'primary' => false,
-        'definition' => 'CREATE INDEX dw_workflow_tasks_scoped_dispatch ON public.workflow_tasks USING btree (namespace, queue, task_type, status, priority, available_at, id)']];
+        'definition' => 'CREATE INDEX dw_workflow_tasks_scoped_dispatch ON public.workflow_tasks USING btree (namespace COLLATE "C", queue COLLATE "C", task_type COLLATE "C", status COLLATE "C", priority, available_at, id)']];
     $found = 0;
     $result = [];
     foreach ($rows as $row) {

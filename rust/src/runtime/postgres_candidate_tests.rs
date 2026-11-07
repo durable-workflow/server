@@ -43,25 +43,43 @@ fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize, in_ra
     }
 }
 
+async fn require_scope_equality(tx: &mut Transaction<'_, Postgres>) {
+    let columns = sqlx::query("SELECT c.collname,c.collisdeterministic FROM pg_attribute a JOIN pg_collation c ON c.oid=a.attcollation WHERE a.attrelid='workflow_tasks'::regclass AND a.attname IN ('namespace','queue','task_type','status')")
+        .fetch_all(&mut **tx).await.unwrap();
+    assert_eq!(columns.len(),4);
+    for column in columns {
+        assert_eq!(column.get::<String,_>("collname"),"default");
+        assert!(column.get::<bool,_>("collisdeterministic"));
+    }
+    for (left,right) in [("",""),("default","default"),("default","Default"),
+        ("ordered","ordered "),("é","e\u{301}"),("workflow","workflow\u{200b}"),
+        ("ready","READY"),("é","é")] {
+        let row = sqlx::query("SELECT $1::text = $2::text AS retained, $1::text COLLATE \"C\" = $2::text AS scoped")
+            .bind(left).bind(right).fetch_one(&mut **tx).await.unwrap();
+        assert_eq!(row.get::<bool,_>("retained"),left==right);
+        assert_eq!(row.get::<bool,_>("scoped"),left==right);
+    }
+}
+
 impl Store<Postgres> {
-    pub(super) async fn qualify_postgres_candidate_ranges(&self) {
-        let at = "2035-01-02T03:04:05.123456Z".parse::<DateTime<Utc>>().unwrap();
-        let input = json!({"codec":"avro","blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()});
-        // Uncommitted fixture rows cannot be analyzed by autovacuum between
-        // the first plan and the explicit refresh inside this transaction.
-        let mut transaction = self.begin().await.unwrap();
+    async fn candidate_runs(transaction: &mut Transaction<'_,Postgres>, input: &Value) -> Vec<String> {
         let mut runs = Vec::new();
         for index in 0..100 {
-            let started = Self::start_in(&mut transaction, &json!({"workflow_id":format!("ordered-{index}"),
+            let started = Self::start_in(transaction, &json!({"workflow_id":format!("ordered-{index}"),
                 "workflow_type":"ordered","task_queue":"ordered","input":input}), "default",
                 StartMetadata {memo:None,search_attributes:None}, None,None,120).await.unwrap();
             let run = started["run_id"].as_str().unwrap().to_owned();
             Self::query("UPDATE workflow_runs SET compatibility=$1,status=$2 WHERE id=$3")
                 .bind(if index % 3 == 0 {Some("build")} else {None})
                 .bind(if index % 11 == 0 {"completed"} else {"pending"}).bind(&run)
-                .execute(&mut *transaction).await.unwrap();
+                .execute(&mut **transaction).await.unwrap();
             runs.push(run);
         }
+        runs
+    }
+
+    async fn candidate_fixture(transaction: &mut Transaction<'_,Postgres>, at: DateTime<Utc>, input: &Value) {
+        let runs = Self::candidate_runs(transaction,input).await;
         for index in 0..7200 {
             let status = if index < 250 {"ready"} else if index < 500 {"leased"} else {"completed"};
             let available = if index % 7 == 0 {None} else {Some(at + chrono::TimeDelta::seconds(if index % 13 == 0 {1} else {-1}))};
@@ -72,8 +90,12 @@ impl Store<Postgres> {
                 .bind(if index % 19 == 0 {"activity"} else {"workflow"}).bind(status).bind((index % 4) as i64)
                 .bind(Postgres::optional_time(available)).bind(Postgres::optional_time(lease))
                 .bind(match index % 5 {0=>Some("other"),1=>Some(""),_=>None})
-                .execute(&mut *transaction).await.unwrap();
+                .execute(&mut **transaction).await.unwrap();
         }
+        Self::candidate_foreign_rows(transaction,&runs).await;
+    }
+
+    async fn candidate_foreign_rows(transaction: &mut Transaction<'_,Postgres>, runs: &[String]) {
         // A global queue/status index encounters these earlier rows first.
         // The scoped equality range must exclude each foreign dimension.
         for index in 0..6000 {
@@ -82,8 +104,31 @@ impl Store<Postgres> {
                 .bind(if index < 2400 {"foreign"} else {"default"})
                 .bind(if index >= 4800 {"elsewhere"} else {"ordered"})
                 .bind(if (2400..4800).contains(&index) {"activity"} else {"workflow"})
-                .bind(Postgres::optional_time(None)).execute(&mut *transaction).await.unwrap();
+                .bind(Postgres::optional_time(None)).execute(&mut **transaction).await.unwrap();
         }
+    }
+
+    async fn require_candidate_parity(transaction: &mut Transaction<'_,Postgres>, at: DateTime<Utc>, old: &str, new: &str, analyzed: bool) {
+        for kind in ["workflow","activity"] {
+            for build in [None,Some("build"),Some("other")] {
+                let expected = candidates(transaction,old,at,kind,build).await;
+                let actual = candidates(transaction,new,at,kind,build).await;
+                assert_eq!(actual,expected,"analyzed={analyzed} / kind={kind} / build={build:?}");
+                let first = candidates(transaction,Postgres::FIRST_TASK_CANDIDATES_SQL,at,kind,build).await;
+                assert_eq!(first,expected[..expected.len().min(super::priority_fairness::FAIRNESS_BATCH)]);
+                if kind=="workflow" && build.is_none() { assert_eq!(actual.len(),100); }
+            }
+        }
+    }
+
+    pub(super) async fn qualify_postgres_candidate_ranges(&self) {
+        let at = "2035-01-02T03:04:05.123456Z".parse::<DateTime<Utc>>().unwrap();
+        let input = json!({"codec":"avro","blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()});
+        // Uncommitted fixture rows cannot be analyzed by autovacuum between
+        // the first plan and the explicit refresh inside this transaction.
+        let mut transaction = self.begin().await.unwrap();
+        require_scope_equality(&mut transaction).await;
+        Self::candidate_fixture(&mut transaction,at,&input).await;
         let statistics:i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pg_stats WHERE schemaname='public' AND tablename IN ('workflow_tasks','workflow_runs')")
             .fetch_one(&mut *transaction).await.unwrap();
         assert_eq!(statistics,0,"the first plan must precede actual table analysis");
@@ -91,16 +136,7 @@ impl Store<Postgres> {
         let new = Postgres::TASK_CANDIDATES_SQL;
         for analyzed in [false,true] {
             if analyzed { Self::query("ANALYZE workflow_tasks,workflow_runs").execute(&mut *transaction).await.unwrap(); }
-            for kind in ["workflow","activity"] {
-                for build in [None,Some("build"),Some("other")] {
-                    let expected = candidates(&mut transaction,old,at,kind,build).await;
-                    let actual = candidates(&mut transaction,new,at,kind,build).await;
-                    assert_eq!(actual,expected,"analyzed={analyzed} / kind={kind} / build={build:?}");
-                    let first = candidates(&mut transaction,Postgres::FIRST_TASK_CANDIDATES_SQL,at,kind,build).await;
-                    assert_eq!(first,expected[..expected.len().min(super::priority_fairness::FAIRNESS_BATCH)]);
-                    if kind=="workflow" && build.is_none() { assert_eq!(actual.len(),100); }
-                }
-            }
+            Self::require_candidate_parity(&mut transaction,at,old,new,analyzed).await;
             let before = explain(&mut transaction,old,at).await;
             for (first, sql) in [(false,new),(true,Postgres::FIRST_TASK_CANDIDATES_SQL)] {
                 let after = explain(&mut transaction,sql,at).await;

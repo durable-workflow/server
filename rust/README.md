@@ -331,7 +331,10 @@ resumption. SQLite remains on schema 10.
 PostgreSQL candidate polls read separate status ranges and retain a correlated
 run lookup. The source controls compare complete candidate rows and actual
 scoped-dispatch-index/primary-key plans before and after fixture statistics
-refresh. Native schema 11 adds a scoped ordered index with namespace, queue,
+refresh. The four opaque scope predicates and index keys use the built-in C
+collation. Equality matches the retained deterministic default collation, while
+priority/availability/id ordering stays unchanged. Native schema 11 adds a
+scoped ordered index with namespace, queue,
 task type and status before priority, availability and ID. Legacy dispatch
 and availability indexes remain intact. An existing schema-10 database needs the
 documented stopped-node backup and explicit `schema-upgrade`; startup does not

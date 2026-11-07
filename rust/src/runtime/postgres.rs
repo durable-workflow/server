@@ -23,10 +23,10 @@ macro_rules! status_candidates {
             "JOIN LATERAL (SELECT r.workflow_type FROM workflow_runs r ",
             "WHERE r.id=t.workflow_run_id AND r.status IN ('pending','running','waiting') ",
             "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) LIMIT 1) r ON true ",
-            "WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status='", $status, "' ",
+            "WHERE t.namespace COLLATE \"C\"=$1 AND t.queue COLLATE \"C\"=$2 AND t.task_type COLLATE \"C\"=$3 AND t.status COLLATE \"C\"='", $status, "' ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",
             "AND (t.available_at IS NULL OR t.available_at<=$5) ",
-            "ORDER BY t.priority,t.available_at,t.id LIMIT (SELECT ", $limit, "))")
+            "ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit, ")")
     };
 }
 
@@ -42,8 +42,9 @@ macro_rules! postgres_task_candidates_sql {
 // keeps each fully filtered run lookup correlated, including before the tables
 // have statistics. Keep compatibility under its LIMIT rather than estimating a
 // second filter on the joined relation.
-// The scalar constant preserves the exact bound while keeping a one-row fresh
-// estimate from turning the range into an all-rows bitmap/sort plan.
+// Opaque scope keys use byte equality, matching the retained deterministic
+// default collation, through the dedicated C-collated index. Their collation
+// does not change the priority/availability/id ordering.
 pub(super) const TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("100");
 pub(super) const FIRST_TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("10");
 

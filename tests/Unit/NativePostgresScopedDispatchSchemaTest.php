@@ -23,7 +23,7 @@ class NativePostgresScopedDispatchSchemaTest extends TestCase
                         continue;
                     }
                     if ($mutation === 'definition') {
-                        $row[2]['definition'] = str_replace('namespace, queue, task_type, status', 'queue, status', $row[2]['definition']);
+                        $row[2]['definition'] = str_replace('USING btree', 'USING hash', $row[2]['definition']);
                     } elseif (in_array($mutation, ['valid', 'ready'], true)) {
                         $row[2][$mutation] = false;
                     } elseif (in_array($mutation, ['unique', 'primary'], true)) {
