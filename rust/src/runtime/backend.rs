@@ -26,6 +26,25 @@ macro_rules! stream_references {
 /// `STREAM_REFERENCES` for backends that store JSON as text.
 const PLAIN_STREAM_REFERENCES: &str = stream_references!("payload", "metadata");
 
+/// SQLx 0.9 checks connections before returning them to the idle queue.
+/// Recheck after one second idle instead of repeating that check immediately.
+/// A connection lost during the shorter window can fail its first statement;
+/// this hook never retries a statement or an uncertain commit.
+pub(super) fn test_idle_connections<DB: Database>(
+    options: sqlx::pool::PoolOptions<DB>,
+) -> sqlx::pool::PoolOptions<DB> {
+    options
+        .test_before_acquire(false)
+        .before_acquire(|connection, metadata| {
+            Box::pin(async move {
+                if metadata.idle_for >= std::time::Duration::from_secs(1) {
+                    sqlx::Connection::ping(connection).await?;
+                }
+                Ok(true)
+            })
+        })
+}
+
 pub(super) trait Backend: Database {
     const PHP_CONNECTION: &str;
     type EncodedTime: for<'q> Encode<'q, Self> + Type<Self> + Send + Sync + 'static;

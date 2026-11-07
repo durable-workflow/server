@@ -904,7 +904,7 @@ pub struct MySqlStorage {
 }
 
 fn runtime_pool_options() -> MySqlPoolOptions {
-    MySqlPoolOptions::new()
+    super::backend::test_idle_connections(MySqlPoolOptions::new())
         .max_connections(4)
         .acquire_timeout(Duration::from_secs(5))
         .after_connect(|connection, _| {
