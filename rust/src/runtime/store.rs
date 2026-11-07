@@ -94,13 +94,14 @@ pub(super) struct SignalWrite<'a> {
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
 macro_rules! task_candidates_sql {
-    ($tables:literal) => {
-        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT 100")
+    ($tables:literal, $limit:literal) => {
+        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit)
     };
 }
 #[cfg(test)]
 pub(super) use task_candidates_sql;
-pub(super) const TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r");
+pub(super) const TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r", "100");
+pub(super) const FIRST_TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r", "10");
 /// A signal record's place in `PendingMessageTask::signalFollows`: its
 /// command sequence (unsequenced last), receipt and creation times, id.
 struct SignalOrder {
@@ -2145,16 +2146,16 @@ where
             return Ok(true);
         }
         let at = now();
-        Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at)
+        Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
             .fetch_optional(&self.pool)
             .await?
             .is_some())
     }
 
     pub(super) fn task_candidate_query(
-        &self, queue: &str, kind: &str, build: Option<&str>, lease_at: DateTime<Utc>, ready_at: DateTime<Utc>,
+        &self, queue: &str, kind: &str, build: Option<&str>, lease_at: DateTime<Utc>, ready_at: DateTime<Utc>, first: bool,
     ) -> sqlx::query::Query<'static, DB, DB::Arguments> {
-        let mut query = Self::query(DB::TASK_CANDIDATES_SQL);
+        let mut query = Self::query(if first { DB::FIRST_TASK_CANDIDATES_SQL } else { DB::TASK_CANDIDATES_SQL });
         // MySQL's positional protocol needs the same values for both ranges.
         for _ in 0..DB::TASK_CANDIDATE_BIND_SETS {
             query = query.bind(self.namespace.as_ref()).bind(queue).bind(kind)
@@ -2334,11 +2335,41 @@ where
             },
         )?;
         let build = worker_build::<DB>(&worker)?;
-        let candidates = self.task_candidate_query(queue, kind, build.as_deref(), now(), now())
-            .fetch_all(&mut **tx)
-            .await?;
-        let candidates = Self::fairness_batches(candidates, kind, &types)?;
-        for task in candidates {
+        let lease_at = now();
+        let ready_at = now();
+        let first = self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, true)
+            .fetch_all(&mut **tx).await?;
+        let first_is_full = first.len() == super::priority_fairness::FAIRNESS_BATCH;
+        let mut candidates = Self::fairness_batches(first, kind, &types)?;
+        // Unsupported workflow types are removed before fairness batching.
+        // A short eligible prefix cannot decide the first complete batch.
+        let mut full_read = first_is_full && candidates.len() < super::priority_fairness::FAIRNESS_BATCH;
+        if full_read {
+            let full = self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, false)
+                .fetch_all(&mut **tx).await?;
+            candidates = Self::fairness_batches(full, kind, &types)?;
+        }
+        let mut candidates = candidates.into_iter();
+        let mut tried = std::collections::HashSet::new();
+        loop {
+            let task = match candidates.next() {
+                Some(task) => task,
+                None if first_is_full && !full_read => {
+                    full_read = true;
+                    let full = self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, false)
+                        .fetch_all(&mut **tx).await?;
+                    // Reorder the original full page before dropping tried IDs,
+                    // so later fairness batches retain their original boundaries.
+                    let mut remaining = Vec::new();
+                    for task in Self::fairness_batches(full, kind, &types)? {
+                        if !tried.contains(&DB::string(&task, "id")?) { remaining.push(task); }
+                    }
+                    candidates = remaining.into_iter();
+                    continue;
+                }
+                None => break,
+            };
+            tried.insert(DB::string(&task, "id")?);
             // Unsupported stored timestamp shapes fail before leasing work.
             // Takeover preflight must validate all records, including rows
             // that are not eligible for this poll's queue/type/deadline.

@@ -18,7 +18,7 @@ pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
 macro_rules! status_candidates {
-    ($status:literal) => {
+    ($status:literal, $limit:literal) => {
         concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t ",
             "JOIN LATERAL (SELECT r.workflow_type,r.compatibility FROM workflow_runs r ",
             "WHERE r.id=t.workflow_run_id AND r.status IN ('pending','running','waiting') LIMIT 1) r ON true ",
@@ -26,14 +26,22 @@ macro_rules! status_candidates {
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",
             "AND (t.available_at IS NULL OR t.available_at<=$5) ",
             "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ",
-            "ORDER BY t.priority,t.available_at,t.id LIMIT 100)")
+            "ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit, ")")
+    };
+}
+
+macro_rules! postgres_task_candidates_sql {
+    ($limit:literal) => {
+        concat!("SELECT * FROM (", status_candidates!("ready", $limit),
+            " UNION ALL ", status_candidates!("leased", $limit),
+            ") AS candidates ORDER BY priority,available_at,id LIMIT ", $limit)
     };
 }
 
 // The disjoint ranges keep their first 100 fully filtered candidates. LATERAL
 // keeps each run lookup correlated, including before the tables have statistics.
-pub(super) const TASK_CANDIDATES_SQL: &str = concat!("SELECT * FROM (", status_candidates!("ready"),
-    " UNION ALL ", status_candidates!("leased"), ") AS candidates ORDER BY priority,available_at,id LIMIT 100");
+pub(super) const TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("100");
+pub(super) const FIRST_TASK_CANDIDATES_SQL: &str = postgres_task_candidates_sql!("10");
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
@@ -731,6 +739,7 @@ mod tests {
         let db = Database::new().await;
         let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_workflow_poll_transactions().await;
+        store.qualify_first_candidate_batch().await;
         store.qualify_query_poll_transactions().await;
         store.close().await;
         db.remove().await;
