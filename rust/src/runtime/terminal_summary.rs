@@ -12,11 +12,26 @@ use serde_json::Value;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::collections::BTreeSet;
 
+// MySQL's summary table has only the id primary key as a unique key.
+// Every projected column is supplied; replacing/updating a row clears stale
+// nullable wait and next-task fields just as the old DELETE + INSERT did.
+macro_rules! summary_projection_sql {
+    ($verb:literal, $suffix:literal) => {
+        concat!($verb, " INTO workflow_run_summaries(id,workflow_instance_id,run_number,is_current_run,engine_source,projection_schema_version,class,workflow_type,namespace,compatibility,declared_entry_mode,declared_contract_source,business_key,visibility_labels,status,status_bucket,closed_reason,connection,queue,started_at,sort_timestamp,sort_key,closed_at,archived_at,archive_command_id,archive_reason,duration_ms,liveness_state,liveness_reason,repair_blocked_reason,repair_attention,task_problem,exception_count,history_event_count,history_size_bytes,history_fan_out,continue_as_new_recommended,history_budget_pressure,created_at,updated_at,wait_kind,wait_reason,wait_started_at,wait_deadline_at,open_wait_id,resume_source_kind,resume_source_id,next_task_at,next_task_id,next_task_type,next_task_status,next_task_lease_expires_at) SELECT r.id,r.workflow_instance_id,r.run_number,CASE WHEN i.current_run_id=r.id THEN TRUE ELSE FALSE END,'v2',2,r.workflow_class,r.workflow_type,COALESCE(r.namespace,i.namespace),r.compatibility,$1,$2,COALESCE(r.business_key,i.business_key),COALESCE(r.visibility_labels,i.visibility_labels),r.status,CASE WHEN r.status='completed' THEN 'completed' WHEN r.status IN ('failed','cancelled','terminated') THEN 'failed' ELSE 'running' END,r.closed_reason,r.connection,r.queue,r.started_at,$3,$4,r.closed_at,r.archived_at,r.archive_command_id,r.archive_reason,CASE WHEN r.started_at IS NULL OR r.closed_at IS NULL THEN NULL ELSE $5 END,$6,$7,CASE WHEN i.current_run_id=r.id THEN $8 ELSE 'selected_run_not_current' END,CASE WHEN $9=1 THEN TRUE ELSE FALSE END,CASE WHEN $10=1 THEN TRUE ELSE FALSE END,$11,$12,$13,$14,CASE WHEN $15='continue_as_new_recommended' THEN TRUE ELSE FALSE END,$16,r.created_at,COALESCE(r.closed_at,r.last_progress_at,r.updated_at),$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28 FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$29", $suffix)
+    };
+}
+pub(super) use summary_projection_sql;
+pub(super) const SUMMARY_UPSERT_SQL: &str = summary_projection_sql!("INSERT", " ON CONFLICT(id) DO UPDATE SET workflow_instance_id=excluded.workflow_instance_id,run_number=excluded.run_number,is_current_run=excluded.is_current_run,engine_source=excluded.engine_source,projection_schema_version=excluded.projection_schema_version,class=excluded.class,workflow_type=excluded.workflow_type,namespace=excluded.namespace,compatibility=excluded.compatibility,declared_entry_mode=excluded.declared_entry_mode,declared_contract_source=excluded.declared_contract_source,business_key=excluded.business_key,visibility_labels=excluded.visibility_labels,status=excluded.status,status_bucket=excluded.status_bucket,closed_reason=excluded.closed_reason,connection=excluded.connection,queue=excluded.queue,started_at=excluded.started_at,sort_timestamp=excluded.sort_timestamp,sort_key=excluded.sort_key,closed_at=excluded.closed_at,archived_at=excluded.archived_at,archive_command_id=excluded.archive_command_id,archive_reason=excluded.archive_reason,duration_ms=excluded.duration_ms,liveness_state=excluded.liveness_state,liveness_reason=excluded.liveness_reason,repair_blocked_reason=excluded.repair_blocked_reason,repair_attention=excluded.repair_attention,task_problem=excluded.task_problem,exception_count=excluded.exception_count,history_event_count=excluded.history_event_count,history_size_bytes=excluded.history_size_bytes,history_fan_out=excluded.history_fan_out,continue_as_new_recommended=excluded.continue_as_new_recommended,history_budget_pressure=excluded.history_budget_pressure,created_at=excluded.created_at,updated_at=excluded.updated_at,wait_kind=excluded.wait_kind,wait_reason=excluded.wait_reason,wait_started_at=excluded.wait_started_at,wait_deadline_at=excluded.wait_deadline_at,open_wait_id=excluded.open_wait_id,resume_source_kind=excluded.resume_source_kind,resume_source_id=excluded.resume_source_id,next_task_at=excluded.next_task_at,next_task_id=excluded.next_task_id,next_task_type=excluded.next_task_type,next_task_status=excluded.next_task_status,next_task_lease_expires_at=excluded.next_task_lease_expires_at");
+#[cfg(test)]
+const SUMMARY_INSERT_SQL: &str = summary_projection_sql!("INSERT", "");
+
 #[derive(Clone, Copy)]
 enum ProjectionMode {
     Current,
     #[cfg(test)]
     Reference,
+    #[cfg(test)]
+    DeleteInsert,
 }
 
 impl<DB: Backend> Store<DB>
@@ -45,8 +60,11 @@ where
     ) -> Result<()> {
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
             .bind(run_id)
-            .fetch_one(&mut **tx)
+            .fetch_optional(&mut **tx)
             .await?;
+        let Some(run) = run else {
+            return Self::delete_run_summary(tx, run_id).await;
+        };
         let status = DB::string(&run, "status")?;
         let closed = terminal(&status);
         // Retention and v1 projections need their separately qualified
@@ -58,14 +76,15 @@ where
         if DB::optional_instant(&run, "details_pruned_at")?.is_some() || (import_source.is_some() && !embedded_import) {
             return Ok(());
         }
-        // A state outside the qualified producer must not retain an earlier
-        // healthy snapshot. Reads still never create or repair this row.
-        Self::query("DELETE FROM workflow_run_summaries WHERE id=$1")
-            .bind(run_id)
-            .execute(&mut **tx)
-            .await?;
+        // Test-only predecessors retain their original delete-before-read.
+        // Production deletes only a missing/unqualified projection.
+        let upsert = matches!(mode, ProjectionMode::Current);
+        if !upsert {
+            Self::delete_run_summary(tx, run_id).await?;
+        }
         let last = DB::number(&run, "last_history_sequence")?;
         let Some(history) = Self::summary_history(tx, run_id, closed, last).await? else {
+            if upsert { Self::delete_run_summary(tx, run_id).await?; }
             return Ok(());
         };
         let SummaryHistory {
@@ -86,11 +105,14 @@ where
             ProjectionMode::Current => Self::projection_census(tx, run_id).await?,
             #[cfg(test)]
             ProjectionMode::Reference => Self::projection_census_reference(tx, run_id).await?,
+            #[cfg(test)]
+            ProjectionMode::DeleteInsert => Self::projection_census(tx, run_id).await?,
         }) };
         let active = if closed {
             None
         } else {
             if !active_history_supported {
+                if upsert { Self::delete_run_summary(tx, run_id).await?; }
                 return Ok(());
             }
             match Self::active_task_summary(
@@ -106,7 +128,10 @@ where
             .await?
             {
                 Some(summary) => Some(summary),
-                None => return Ok(()),
+                None => {
+                    if upsert { Self::delete_run_summary(tx, run_id).await?; }
+                    return Ok(());
+                }
             }
         };
         let mut after = String::new();
@@ -161,9 +186,12 @@ where
                     Self::write_active_summary_fields(tx, run_id, &active).await?;
                 }
             }
-            ProjectionMode::Current => {
+            _ => {
                 let wait = active.as_ref().and_then(|summary| summary.wait.as_ref());
-                Self::query("INSERT INTO workflow_run_summaries(id,workflow_instance_id,run_number,is_current_run,engine_source,projection_schema_version,class,workflow_type,namespace,compatibility,declared_entry_mode,declared_contract_source,business_key,visibility_labels,status,status_bucket,closed_reason,connection,queue,started_at,sort_timestamp,sort_key,closed_at,archived_at,archive_command_id,archive_reason,duration_ms,liveness_state,liveness_reason,repair_blocked_reason,repair_attention,task_problem,exception_count,history_event_count,history_size_bytes,history_fan_out,continue_as_new_recommended,history_budget_pressure,created_at,updated_at,wait_kind,wait_reason,wait_started_at,wait_deadline_at,open_wait_id,resume_source_kind,resume_source_id,next_task_at,next_task_id,next_task_type,next_task_status,next_task_lease_expires_at) SELECT r.id,r.workflow_instance_id,r.run_number,CASE WHEN i.current_run_id=r.id THEN TRUE ELSE FALSE END,'v2',2,r.workflow_class,r.workflow_type,COALESCE(r.namespace,i.namespace),r.compatibility,$1,$2,COALESCE(r.business_key,i.business_key),COALESCE(r.visibility_labels,i.visibility_labels),r.status,CASE WHEN r.status='completed' THEN 'completed' WHEN r.status IN ('failed','cancelled','terminated') THEN 'failed' ELSE 'running' END,r.closed_reason,r.connection,r.queue,r.started_at,$3,$4,r.closed_at,r.archived_at,r.archive_command_id,r.archive_reason,CASE WHEN r.started_at IS NULL OR r.closed_at IS NULL THEN NULL ELSE $5 END,$6,$7,CASE WHEN i.current_run_id=r.id THEN $8 ELSE 'selected_run_not_current' END,CASE WHEN $9=1 THEN TRUE ELSE FALSE END,CASE WHEN $10=1 THEN TRUE ELSE FALSE END,$11,$12,$13,$14,CASE WHEN $15='continue_as_new_recommended' THEN TRUE ELSE FALSE END,$16,r.created_at,COALESCE(r.closed_at,r.last_progress_at,r.updated_at),$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28 FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$29")
+                let sql = DB::SUMMARY_UPSERT_SQL;
+                #[cfg(test)]
+                let sql = if upsert { sql } else { SUMMARY_INSERT_SQL };
+                let written = Self::query(sql)
                     .bind(contract["entry_mode"].as_str()).bind(contract["source"].as_str()).bind(DB::optional_time(sort_time)).bind(sort_key.as_deref()).bind(duration).bind(state).bind(reason).bind(repair_blocked)
                     .bind(i64::from(active.as_ref().is_some_and(|summary| summary.repair_blocked == Some("unsupported_history"))))
                     .bind(i64::from(active.as_ref().is_some_and(|summary| summary.problem)))
@@ -177,6 +205,11 @@ where
                     .bind(active.as_ref().and_then(|summary| summary.task_status.as_deref()))
                     .bind(DB::optional_time(active.as_ref().and_then(|summary| summary.lease_expires_at)))
                     .bind(run_id).execute(&mut **tx).await?;
+                if upsert && DB::affected(written) == 0 {
+                    // The joined instance disappeared or is missing. Do not
+                    // retain an older snapshot when INSERT ... SELECT is empty.
+                    Self::delete_run_summary(tx, run_id).await?;
+                }
             }
         }
         if embedded_import {
@@ -188,6 +221,12 @@ where
         }
         Ok(())
     }
+    async fn delete_run_summary(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<()> {
+        Self::query("DELETE FROM workflow_run_summaries WHERE id=$1")
+            .bind(run_id).execute(&mut **tx).await?;
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn projection_snapshot(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<Option<String>> {
         let row = Self::query("SELECT * FROM workflow_run_summaries WHERE id=$1")
@@ -216,11 +255,79 @@ where
         let (fast, fast_count) = super::sql_counts::measure(Self::project_run_summary(tx, run_id)).await;
         fast?;
         let expected = Self::projection_snapshot(tx, run_id).await?;
+        let (replaced, replaced_count) = super::sql_counts::measure(
+            Self::project_run_summary_mode(tx, run_id, ProjectionMode::DeleteInsert),
+        ).await;
+        replaced?;
+        assert_eq!(Self::projection_snapshot(tx, run_id).await?, expected,
+            "upsert and the exact DELETE + INSERT writer must store every column identically");
+        if fast_count.count(DB::SUMMARY_UPSERT_SQL) == 1 && expected.is_some() {
+            assert_eq!(fast_count.count("DELETE FROM workflow_run_summaries WHERE id=$1"), 0);
+            assert_eq!(replaced_count.count("DELETE FROM workflow_run_summaries WHERE id=$1"), 1);
+            assert_eq!(replaced_count.total(), fast_count.total() + 1,
+                "the writer alone must save exactly one statement");
+        }
         let (old, old_count) = super::sql_counts::measure(Self::project_run_summary_mode(tx, run_id, ProjectionMode::Reference)).await;
         old?;
         let actual = Self::projection_snapshot(tx, run_id).await?;
         assert_eq!(actual, expected, "complete stored row, backend={}", DB::NAME);
         Ok((fast_count.total(),old_count.total()))
+    }
+
+    #[cfg(test)]
+    pub(super) async fn qualify_summary_projection_absence(&self, run_id: &str, workflow_id: &str) {
+        let delete = "DELETE FROM workflow_run_summaries WHERE id=$1";
+        // Retention and unqualified imports keep their previous projection.
+        // They must not pass through either the writer or invalid-state delete.
+        for sql in [
+            "UPDATE workflow_runs SET details_pruned_at='2035-01-01 00:00:00' WHERE id=$1",
+            "UPDATE workflow_runs SET import_source='unqualified' WHERE id=$1",
+        ] {
+            let mut tx = self.begin().await.unwrap();
+            let before = Self::projection_snapshot(&mut tx,run_id).await.unwrap();
+            assert!(before.is_some());
+            Self::query(sql).bind(run_id).execute(&mut *tx).await.unwrap();
+            let (result,counts) = super::sql_counts::measure(Self::project_run_summary(&mut tx,run_id)).await;
+            result.unwrap();
+            assert_eq!(Self::projection_snapshot(&mut tx,run_id).await.unwrap(),before);
+            assert_eq!(counts.count(delete),0);
+            assert_eq!(counts.count(DB::SUMMARY_UPSERT_SQL),0);
+            tx.rollback().await.unwrap();
+        }
+        for missing in ["history","instance","run"] {
+            let mut tx = self.begin().await.unwrap();
+            let before = Self::projection_snapshot(&mut tx,run_id).await.unwrap();
+            assert!(before.is_some(),"seed a real stored row before {missing} removal");
+            match missing {
+                "history" => {
+                    Self::query("DELETE FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence=1")
+                        .bind(run_id).execute(&mut *tx).await.unwrap();
+                }
+                "instance" => {
+                    Self::query("DELETE FROM workflow_instances WHERE id=$1")
+                        .bind(workflow_id).execute(&mut *tx).await.unwrap();
+                    assert_eq!(Self::scalar("SELECT COUNT(*) FROM workflow_runs WHERE id=$1")
+                        .bind(run_id).fetch_one(&mut *tx).await.unwrap(),1);
+                }
+                "run" => {
+                    Self::query("DELETE FROM workflow_runs WHERE id=$1")
+                        .bind(run_id).execute(&mut *tx).await.unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(Self::projection_snapshot(&mut tx,run_id).await.unwrap(),before,
+                "the fixture must leave a stale row for the writer to remove");
+            let (result,counts) = super::sql_counts::measure(Self::project_run_summary(&mut tx,run_id)).await;
+            result.unwrap();
+            assert!(Self::projection_snapshot(&mut tx,run_id).await.unwrap().is_none(),"{missing}");
+            assert_eq!(counts.count(delete),1,"{missing}");
+            assert_eq!(counts.count(DB::SUMMARY_UPSERT_SQL),usize::from(missing=="instance"),"{missing}");
+            tx.rollback().await.unwrap();
+            let mut restored = self.begin().await.unwrap();
+            assert_eq!(Self::projection_snapshot(&mut restored,run_id).await.unwrap(),before,
+                "rolling back {missing} cleanup must restore the entire previous row");
+            restored.rollback().await.unwrap();
+        }
     }
 
     #[cfg(test)]
