@@ -33,7 +33,15 @@ use std::collections::BTreeMap;
 pub(super) const STALE: &str = "stale_worker_registration";
 
 /// The registration a fence reads.
-const FENCE_ROW: &str = "SELECT status,task_queue,build_id,supported_workflow_types,workflow_definition_fingerprints,workflow_command_contracts,supported_activity_types,capabilities,process_metrics,updated_at,last_heartbeat_at,(SELECT dw_worker_registration_incarnations.token FROM dw_worker_registration_incarnations WHERE dw_worker_registration_incarnations.namespace=workflow_worker_registrations.namespace AND dw_worker_registration_incarnations.worker_id=workflow_worker_registrations.worker_id AND dw_worker_registration_incarnations.status='active' ORDER BY dw_worker_registration_incarnations.created_at DESC LIMIT 1) AS incarnation_token FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2";
+macro_rules! fence_registration_sql {
+    ($fields:literal) => {
+        concat!("SELECT ", $fields, ",(SELECT dw_worker_registration_incarnations.token FROM dw_worker_registration_incarnations WHERE dw_worker_registration_incarnations.namespace=workflow_worker_registrations.namespace AND dw_worker_registration_incarnations.worker_id=workflow_worker_registrations.worker_id AND dw_worker_registration_incarnations.status='active' ORDER BY dw_worker_registration_incarnations.created_at DESC LIMIT 1) AS incarnation_token FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+    };
+}
+const FENCE_ROW: &str = fence_registration_sql!("status,task_queue,build_id,supported_workflow_types,workflow_definition_fingerprints,workflow_command_contracts,supported_activity_types,capabilities,process_metrics,updated_at,last_heartbeat_at");
+// Only a claim's in-transaction check reads all registration columns. Idle
+// probes and admission keep their original narrower snapshot query.
+pub(super) const FENCE_REGISTRATION: &str = fence_registration_sql!("workflow_worker_registrations.*");
 
 /// How a poll is admitted.
 pub(super) enum PollAdmission {
@@ -233,6 +241,19 @@ store_methods! {
     pub(super) async fn worker_poll_fence_holds(&self, fence: &WorkerPollFence, worker_id: &str) -> Result<bool> {
         let row = Self::query(FENCE_ROW).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&self.pool).await?;
         fence.holds::<DB>(row.as_ref(), self.worker_stale_after_seconds)
+    }
+
+    /// Return only the current row checked inside this transaction. An
+    /// admission snapshot from outside the transaction is never a claim row.
+    pub(super) async fn fenced_claim_registration(
+        &self,
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        fence: &WorkerPollFence,
+        worker_id: &str,
+    ) -> Result<Option<DB::Row>> {
+        let row = Self::query(FENCE_REGISTRATION).bind(self.namespace.as_ref()).bind(worker_id)
+            .fetch_optional(&mut **tx).await?;
+        if fence.holds::<DB>(row.as_ref(),self.worker_stale_after_seconds)? { Ok(row) } else { Ok(None) }
     }
 
     /// `isCurrentForUpdate` inside a claim transaction, which transitions
