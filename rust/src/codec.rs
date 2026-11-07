@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
+use std::sync::OnceLock;
 mod ordered;
 mod validation;
 mod wire_order;
@@ -39,6 +40,17 @@ pub(crate) fn php_base64(blob: &str) -> Result<Vec<u8>, base64::DecodeError> {
 }
 
 pub const VALUE_SCHEMA: &str = include_str!("../schema/durable_workflow.protocol.Value.v1.avsc");
+
+fn protocol_schema() -> Result<&'static Schema, CodecError> {
+    static SCHEMA: OnceLock<Schema> = OnceLock::new();
+    if let Some(schema) = SCHEMA.get() {
+        return Ok(schema);
+    }
+    // Cache only a successful parse of the compiled schema. Concurrent cold
+    // callers may parse it too, but all retain the first successful value.
+    let parsed = Schema::parse_str(VALUE_SCHEMA)?;
+    Ok(SCHEMA.get_or_init(|| parsed))
+}
 
 /// Logical values retain bytes/text, list/map and signed 64-bit distinctions.
 /// Map key order is not a wire identity; every key remains a string.
@@ -141,23 +153,29 @@ fn looks_like_json(blob: &str) -> bool {
 }
 
 pub struct ValueCodec {
-    schema: Schema,
-    reader: GenericSingleObjectReader,
+    schema: &'static Schema,
+    reader: &'static GenericSingleObjectReader,
 }
 
 impl ValueCodec {
     pub fn new() -> Result<Self, CodecError> {
-        let schema = Schema::parse_str(VALUE_SCHEMA)?;
-        let reader = GenericSingleObjectReader::builder()
-            .schema(schema.clone())
-            .build()?;
+        static READER: OnceLock<GenericSingleObjectReader> = OnceLock::new();
+        let schema = protocol_schema()?;
+        let reader = if let Some(reader) = READER.get() {
+            reader
+        } else {
+            let parsed = GenericSingleObjectReader::builder()
+                .schema(schema.clone())
+                .build()?;
+            READER.get_or_init(|| parsed)
+        };
         Ok(Self { schema, reader })
     }
 
     pub fn encode(&self, value: &Value) -> Result<String, CodecError> {
         let datum = to_datum(value)?;
         let mut bytes = Vec::new();
-        GenericSingleObjectWriter::new_with_capacity(&self.schema, 0)?
+        GenericSingleObjectWriter::new_with_capacity(self.schema, 0)?
             .write_value_ref(&datum, &mut bytes)?;
         Ok(STANDARD.encode(bytes))
     }
@@ -285,6 +303,29 @@ fn from_datum(datum: Datum) -> Result<Value, CodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_reader_keeps_parallel_datums_and_ordered_writers_independent() {
+        std::thread::scope(|threads| {
+            let handles: Vec<_> = (0..8).map(|worker| threads.spawn(move || {
+                for sequence in 0..16 {
+                    let value = Value::Map(BTreeMap::from([
+                        ("identity".into(), Value::Long(worker * 16 + sequence)),
+                        ("bytes".into(), Value::Bytes(vec![worker as u8, sequence as u8])),
+                        ("text".into(), Value::String("日本語 λ \u{2028}".into())),
+                    ]));
+                    let codec = ValueCodec::new().unwrap();
+                    let ordinary = codec.encode(&value).unwrap();
+                    let ordered = codec.encode_ordered(&value).unwrap();
+                    assert_eq!(codec.decode(&ordinary).unwrap(), value);
+                    assert_eq!(codec.decode(&ordered).unwrap(), value);
+                }
+            })).collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+    }
 
     #[test]
     fn existing_shared_golden_fixture_selects_the_same_schema_and_wire() {

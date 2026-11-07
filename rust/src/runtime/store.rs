@@ -2052,10 +2052,9 @@ where
                 // Compressed after the claim commits; a replayed receipt keeps
                 // the plain events and takes this request's encoding.
                 super::history_pages::compress(&mut task, encoding)?;
-                return Ok(activity_server_time(
-                    kind,
-                    json!({"task": task, "poll_status": "leased", "server_capabilities": capabilities()}),
-                ));
+                let mut answer = leased_answer(task);
+                answer["server_capabilities"] = capabilities();
+                return Ok(activity_server_time(kind, answer));
             }
             if tokio::time::Instant::now() >= deadline {
                 return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await
@@ -2668,7 +2667,7 @@ where
                 )
                 .await?;
                 budget.write_task(&mut claim);
-                claim["history_events"] = json!(events);
+                claim["history_events"] = Value::Array(events);
                 claim["next_history_page_token"] = json!(next);
             }
             if let Some(request_id) = request_id {
@@ -2676,7 +2675,9 @@ where
                     .bind(worker_id).bind(kind).bind(request_id).bind(&task_id).bind(attempt).bind(DB::document(&claim)).bind(DB::bind_time(after(120))).bind(self.namespace.as_ref()).execute(&mut **tx).await?;
             }
             if let Some(request) = poll_request {
-                Self::remember_workflow_poll(tx, request, &json!({"task": claim, "poll_status": "leased"})).await?;
+                let mut answer = leased_answer(claim);
+                Self::remember_workflow_poll(tx, request, &answer).await?;
+                claim = answer["task"].take();
             }
             return Ok(Some(claim));
         }
@@ -5359,6 +5360,13 @@ pub(super) fn reject_fields(body: &Value, allowed: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn leased_answer(task: Value) -> Value {
+    let mut answer = Map::new();
+    answer.insert("task".into(), task);
+    answer.insert("poll_status".into(), json!("leased"));
+    Value::Object(answer)
+}
+
 /// A replayed answer as a workflow poll delivers it: a lease takes this
 /// request's history encoding.
 pub(super) fn replayed_poll(mut replay: Value, encoding: Option<&'static str>) -> Result<Value> {
@@ -5370,6 +5378,15 @@ pub(super) fn replayed_poll(mut replay: Value, encoding: Option<&'static str>) -
 }
 
 pub(crate) fn capabilities() -> Value {
+    static TEMPLATE: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let mut value = TEMPLATE.get_or_init(capabilities_template).clone();
+    // Keep the transport's existing configuration lookup and fallback on
+    // every call. Only its position, not its configured value, is cached.
+    value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
+    value
+}
+
+fn capabilities_template() -> Value {
     // Prepared local activities are not served yet: like a PHP server whose
     // bridge lacks the prepared role, no groups and no cancellation policies.
     let mut value = json!({"supported_workflow_task_commands": ["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait", "record_version_marker", "record_side_effect", "record_local_activity", "complete_workflow", "fail_workflow", "continue_as_new", "complete_update", "fail_update"],
@@ -5383,7 +5400,7 @@ pub(crate) fn capabilities() -> Value {
         "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
         "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
-    value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();
+    value["runtime_external_payload_transport"] = Value::Null;
     value["supported_workflow_task_commands"]
         .as_array_mut()
         .expect("commands")
