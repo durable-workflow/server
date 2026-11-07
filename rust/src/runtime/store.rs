@@ -2279,12 +2279,12 @@ where
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
     ) -> Result<Option<Value>> {
         let mut tx = self.begin().await?;
-        if let Some(fence) = fence
-            && !self.worker_poll_fence_holds_in(&mut tx, fence, text(body, "worker_id")?).await?
-        {
-            return Err(super::worker_poll_fence::stale_claim());
-        }
-        let claimed = self.claim_in(&mut tx, body, kind, protocol_version, page, poll_request).await?;
+        let registration = match fence {
+            Some(fence) => Some(self.fenced_claim_registration(&mut tx,fence,text(body,"worker_id")?).await?
+                .ok_or_else(super::worker_poll_fence::stale_claim)?),
+            None => None,
+        };
+        let claimed = self.claim_with_registration(&mut tx, body, kind, protocol_version, page, poll_request, registration).await?;
         tx.commit().await?;
         Ok(claimed)
     }
@@ -2308,14 +2308,15 @@ where
             tx.commit().await?;
             return Ok(FirstProbe::Replayed(answer));
         }
-        if let Some(fence) = fence
-            && !self.worker_poll_fence_holds_in(&mut tx, fence, worker_id).await?
-        {
-            tx.commit().await?;
-            return Ok(FirstProbe::Claimed(Err(super::worker_poll_fence::stale_claim())));
-        }
+        let registration = if let Some(fence) = fence {
+            let Some(row) = self.fenced_claim_registration(&mut tx,fence,worker_id).await? else {
+                tx.commit().await?;
+                return Ok(FirstProbe::Claimed(Err(super::worker_poll_fence::stale_claim())));
+            };
+            Some(row)
+        } else { None };
         let saved = tx.poll_savepoint().await?;
-        let claimed = match self.claim_in(&mut tx, body, kind, protocol_version, page, Some(request)).await {
+        let claimed = match self.claim_with_registration(&mut tx, body, kind, protocol_version, page, Some(request), registration).await {
             Ok(claimed) => {
                 tx.release_poll_claim().await?;
                 Ok(claimed)
@@ -2341,16 +2342,33 @@ where
         page: Option<i64>,
         poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
     ) -> Result<Option<Value>> {
+        self.claim_with_registration(tx,body,kind,protocol_version,page,poll_request,None).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn claim_with_registration(
+        &self,
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        body: &Value,
+        kind: &str,
+        protocol_version: &str,
+        page: Option<i64>,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+        registration: Option<DB::Row>,
+    ) -> Result<Option<Value>> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
-        let worker = Self::query(
-            "SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
-        )
-        .bind(worker_id)
-        .bind(self.namespace.as_ref())
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
+        let worker = match registration {
+            Some(row) => row,
+            None => Self::query(
+                "SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
+            )
+            .bind(worker_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?,
+        };
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
