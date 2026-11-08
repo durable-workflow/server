@@ -753,6 +753,16 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_empty_query_poll_is_lock_free_only_when_proven() {
+        let db = Database::new().await;
+        let mut store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_empty_query_poll().await;
+        store.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_transition_queue_preserves_reads_fifo_and_timeout_admission() {
         tokio::time::timeout(Duration::from_secs(30), async {
             let db = Database::new().await;

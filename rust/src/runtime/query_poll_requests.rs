@@ -448,7 +448,8 @@ where
         if self.poll_sweeps.is_due(Kind::Query, interval) {
             return Ok(false);
         }
-        let mut read = self.begin_read().await?;
+        // One fixed snapshot whatever the server's configured isolation.
+        let mut read = self.begin_repeatable_read().await?;
         let proven = self.peek_empty_poll_in(&mut read, body, config, proof, fence, keys, snapshot_taken).await?;
         read.commit().await?;
         Ok(proven && !self.poll_sweeps.is_due(Kind::Query, interval))

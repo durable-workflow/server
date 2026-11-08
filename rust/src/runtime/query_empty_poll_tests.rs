@@ -269,6 +269,24 @@ store_methods! {
         }
     }
 
+    /// Every #1057 control on a fresh store of any backend: SQLite here, and
+    /// the MySQL/MariaDB and PostgreSQL qualification suites.
+    pub(in crate::runtime) async fn qualify_empty_query_poll(&mut self) {
+        // The poll-row sweep stays reserved for the test once warmed.
+        self.poll_sweep_config.interval = Duration::from_secs(3600);
+        self.empty_fixture().await;
+        self.qualify_lock_free_empty_answer().await;
+        self.qualify_bookkeeping_forces_lock().await;
+        self.qualify_request_rows_force_lock().await;
+        self.qualify_waiting_request_is_superseded().await;
+        self.qualify_registration_mismatch_keeps_its_refusal().await;
+        self.qualify_query_arrival_race().await;
+        // A due poll-row sweep is left to the locked path, which takes it.
+        self.poll_sweeps = Arc::default();
+        self.assert_forced_lock("sweep-due", "poll-row sweep due").await;
+        self.assert_lock_free_empty("after-sweep", "sweep reserved again").await;
+    }
+
     /// The race the issue requires, in both commit orders, ordered by
     /// barriers rather than sleeps.
     async fn qualify_query_arrival_race(&self) {
@@ -328,18 +346,6 @@ store_methods! {
 async fn sqlite_empty_query_poll_takes_no_lock_only_when_proven() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::<sqlx::Sqlite>::new(crate::runtime::sqlite::open(dir.path().join("empty.sqlite").to_str().unwrap()).await.unwrap());
-    // The poll-row sweep stays reserved for the test once warmed.
-    store.poll_sweep_config.interval = Duration::from_secs(3600);
-    store.empty_fixture().await;
-    store.qualify_lock_free_empty_answer().await;
-    store.qualify_bookkeeping_forces_lock().await;
-    store.qualify_request_rows_force_lock().await;
-    store.qualify_waiting_request_is_superseded().await;
-    store.qualify_registration_mismatch_keeps_its_refusal().await;
-    store.qualify_query_arrival_race().await;
-    // A due poll-row sweep is left to the locked path, which takes it.
-    store.poll_sweeps = Arc::default();
-    store.assert_forced_lock("sweep-due", "poll-row sweep due").await;
-    store.assert_lock_free_empty("after-sweep", "sweep reserved again").await;
+    store.qualify_empty_query_poll().await;
     store.close().await;
 }

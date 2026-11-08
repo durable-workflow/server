@@ -1392,6 +1392,64 @@ mod tests {
         database.remove().await;
     }
 
+    /// Server #1057: a session below REPEATABLE READ. The ordinary snapshot
+    /// begin keeps that level, so a later commit becomes visible inside it;
+    /// the lock-free poll's begin fixes one snapshot for its transaction only.
+    #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_repeatable_snapshot_is_fixed_under_a_read_committed_session() {
+        use super::super::backend::Backend;
+        let database = Database::new().await;
+        let mut writer = database.connection().await;
+        sqlx::query("CREATE TABLE snapshot_probe (id BIGINT PRIMARY KEY)")
+            .execute(&mut writer)
+            .await
+            .unwrap();
+        let mut reader = database.connection().await;
+        sqlx::query("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            .execute(&mut reader)
+            .await
+            .unwrap();
+        let count = "SELECT COUNT(*) FROM snapshot_probe";
+        // Returns (first read, read after a concurrent commit) inside one
+        // transaction begun with `begin`.
+        async fn reads(reader: &mut MySqlConnection, writer: &mut MySqlConnection, begin: &'static str, id: i64) -> (i64, i64) {
+            let mut read = reader.begin_with(begin).await.unwrap();
+            let count = "SELECT COUNT(*) FROM snapshot_probe";
+            let before: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
+            sqlx::query("INSERT INTO snapshot_probe VALUES (?)").bind(id).execute(&mut *writer).await.unwrap();
+            let during: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
+            read.rollback().await.unwrap();
+            (before, during)
+        }
+        // The predecessor's premise fails on this session: no fixed snapshot.
+        assert_eq!(reads(&mut reader, &mut writer, MySql::READ_SNAPSHOT_BEGIN, 1).await, (0, 1));
+        // The successor's begin fixes one, and it stays read-only.
+        let mut read = reader.begin_with(MySql::REPEATABLE_READ_SNAPSHOT_BEGIN).await.unwrap();
+        let before: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
+        sqlx::query("INSERT INTO snapshot_probe VALUES (2)").execute(&mut writer).await.unwrap();
+        let during: i64 = sqlx::query_scalar(count).fetch_one(&mut *read).await.unwrap();
+        assert_eq!((before, during), (1, 1), "the later commit stays invisible to the fixed snapshot");
+        assert!(sqlx::query("INSERT INTO snapshot_probe VALUES (3)").execute(&mut *read).await.is_err());
+        read.rollback().await.unwrap();
+        // The level was for that transaction only: the session is still
+        // READ COMMITTED, so the ordinary begin sees later commits again.
+        // (Rows 1 and 2 exist; the refused read-only insert added nothing.)
+        assert_eq!(reads(&mut reader, &mut writer, MySql::READ_SNAPSHOT_BEGIN, 4).await, (2, 3));
+        drop((reader, writer));
+        database.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_empty_query_poll_is_lock_free_only_when_proven() {
+        let db = Database::new().await;
+        let mut store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_empty_query_poll().await;
+        store.close().await;
+        db.remove().await;
+    }
+
     #[tokio::test]
     #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
     async fn qualification_concurrent_bootstrap_and_reopen() {
