@@ -32,6 +32,7 @@ yarn-error.log
 /rust/target/
 /corrected-marker-adapters/
 /parity-corrected-state/
+/parity-composer-cache-*
 /parity-external-consumers-state/
 /parity-upgrade-source-state/
 /scripts/conformance/server-parity/corrected-markers/php/vendor/

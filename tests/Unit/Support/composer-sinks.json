@@ -1532,6 +1532,28 @@
           "distance": 8
         }
       ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/sdk-composer-cache.sh",
+      "line": "bash scripts/ci/run-composer.sh --rm -v \"$work/project:/sdk\" \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint. This warm run is the job-scoped cache's one authenticated locked install; its dist cache is recorded by SHA-256 and made read-only.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
+    },
+    {
+      "path": "scripts/conformance/server-parity/sdk-composer-cache.sh",
+      "line": "if ! bash scripts/ci/run-composer.sh --rm \"$@\" --network none -v \"$lock_dir:/sdk\" \\",
+      "count": 1,
+      "confinement": "scripts/ci/run-composer.sh runs Composer in the pinned image after Alpine's fixed Brotli decoder (brotli-safe-composer.sh), never in the image under test. It sets COMPOSER_CAFILE to the checked store and COMPOSER_CAPATH to an empty directory after the caller's options, which may not name either or an entrypoint. This cache-backed install runs with no network from the verified read-only cache and must reproduce the recorded vendor tree.",
+      "guards": [
+        {
+          "type": "composer-wrapper"
+        }
+      ]
     }
   ]
 }
