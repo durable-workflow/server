@@ -279,7 +279,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p parity-cli
-          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 --retry-max-time 180 \
+          curl --fail --proto '=https' --proto-redir '=https' --location --retry 5 --retry-all-errors --retry-delay 5 --retry-max-time 180 \
             --output parity-cli/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
           printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-cli/dw.phar | sha256sum -c
       - name: Share the verified parity CLI with the corpus jobs
