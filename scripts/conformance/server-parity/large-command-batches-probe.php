@@ -6,6 +6,26 @@ use DurableWorkflow\Client;
 use GuzzleHttp\Client as LargeCommandBatchesHttp;
 use GuzzleHttp\HandlerStack;
 
+/** Keep the original claim predicate and retain a bounded refusal without payloads or headers. */
+function largeCommandBatchesClaim(array $poll, string $case, int $pollRetries): array
+{
+    $response = $poll['response'] ?? null;
+    $task = is_array($response) ? ($response['task'] ?? null) : null;
+    if (is_array($task)) {
+        return $task;
+    }
+    $summary = ['http_status' => $poll['status'] ?? null, 'response_type' => get_debug_type($response),
+        'task_present' => is_array($response) && array_key_exists('task', $response), 'task_type' => get_debug_type($task),
+        'poll_retries' => $pollRetries];
+    foreach (['poll_status', 'reason', 'outcome', 'retryable', 'retry_after_seconds'] as $key) {
+        $value = is_array($response) ? ($response[$key] ?? null) : null;
+        $summary[$key] = is_string($value) ? substr($value, 0, 96) : (is_scalar($value) ? $value : null);
+    }
+
+    throw new RuntimeException('Large command batches: no workflow task for '.$case.' '
+        .json_encode($summary, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE));
+}
+
 // Workflow task completions with more than 100 commands, over raw worker
 // HTTP on protocol 1.20 in a fresh namespace (published Server
 // WorkerController::completeWorkflowTask, Workflow WorkflowCommandNormalizer
@@ -60,11 +80,10 @@ function finishHttpLargeCommandBatches(Client $admin, array $fixture, string $wo
         if ($registered['status'] !== 201 || $started['status'] !== 201) {
             throw new RuntimeException('Large command batches setup: '.json_encode([$registered, $started]));
         }
-        $task = $raw('POST', 'worker/workflow-tasks/poll', ['worker_id' => $worker, 'task_queue' => $queue,
-            'timeout_seconds' => 5])['response']['task'] ?? null;
-        if (! is_array($task)) {
-            throw new RuntimeException('Large command batches: no workflow task for '.$case);
-        }
+        $beforeRetries = count(LockPressurePollRetries::$retries);
+        $poll = $raw('POST', 'worker/workflow-tasks/poll', ['worker_id' => $worker, 'task_queue' => $queue,
+            'timeout_seconds' => 5]);
+        $task = largeCommandBatchesClaim($poll, $case, count(LockPressurePollRetries::$retries) - $beforeRetries);
         $commands = [];
         for ($index = 0; $index < $shape['commands']; $index++) {
             $commands[] = $shape['kind'] === 'timers'

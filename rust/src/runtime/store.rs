@@ -4156,6 +4156,11 @@ where
             if fire_at > fired_at {
                 continue;
             }
+            // Debug builds: a test may hold this timer pending (`timer_holds`).
+            #[cfg(debug_assertions)]
+            if super::timer_holds::held(&DB::string(&timer, "id")?) {
+                continue;
+            }
             let run_id = DB::string(&timer, "workflow_run_id")?;
             match Self::active_run(&mut tx, &run_id).await {
                 Ok(_) => {}

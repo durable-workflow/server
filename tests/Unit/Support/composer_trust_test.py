@@ -411,12 +411,54 @@ echo installed
         result, runs = self.retrying(3, rate_limited, "--rm", "--", "install")
         self.assertEqual((100, 3), (result.returncode, runs), "three attempts at most, then Composer's own status")
 
+    # Composer 2.10 reports a transport failure as `curl error N while
+    # downloading URL`, not as `could not be downloaded (...)`. These lines are
+    # verbatim from the Shared Server fixtures runs of #1104 (Server #1103).
+    CURL_56 = ("Failed to download psr/http-message from dist: curl error 56 while downloading "
+               "https://api.github.com/repos/php-fig/http-message/zipball/402d35bcb92c70c026d1a6a9883f06b2ead23d71: "
+               "Connection died, tried 5 times before giving up")
+    CURL_28 = ("Failed to download psr/container from dist: curl error 28 while downloading "
+               "https://api.github.com/repos/php-fig/container/zipball/c71ecc56dfe541dbd90c5360474fbc405f8d5963: "
+               "Operation timed out after 12877 milliseconds with 0 bytes received")
+
+    def test_a_locked_install_retries_curl_transport_failures(self) -> None:
+        for failure in (self.CURL_56, self.CURL_28):
+            with self.subTest(failure[:60]):
+                result, runs = self.retrying(2, failure, "--rm", "--", "install", "--no-dev")
+                self.assertEqual((0, 3), (result.returncode, runs), result.stderr)
+                self.assertEqual(2, result.stderr.count("transient download failure"))
+
+                result, runs = self.retrying(3, failure, "--rm", "--", "install")
+                self.assertEqual((100, 3), (result.returncode, runs), "three attempts at most")
+
+    def test_http_429_and_5xx_retry_with_or_without_a_reason_phrase(self) -> None:
+        for status in ("HTTP/2 429 ", "HTTP/2 500 ", "HTTP/2 504 ", "HTTP/1.1 503 Service Unavailable",
+                       "HTTP/1.1 504 Gateway Timeout", "HTTP/1.1 429 Too Many Requests"):
+            with self.subTest(status):
+                failure = f'The "https://api.github.com/repos/a/b/zipball/c" file could not be downloaded ({status})'
+                result, runs = self.retrying(1, failure, "--rm", "--", "install")
+                self.assertEqual((0, 2), (result.returncode, runs), result.stderr)
+
+    def test_tls_and_other_statuses_are_not_retried(self) -> None:
+        for failure in (
+                "Failed to download a/b from dist: curl error 60 while downloading https://api.github.com/x: "
+                "SSL certificate problem: unable to get local issuer certificate",
+                "Failed to download a/b from dist: curl error 22 while downloading https://api.github.com/x: "
+                "The requested URL returned error: 404",
+                'The "https://api.github.com/x" file could not be downloaded (HTTP/2 404 )',
+                'The "https://api.github.com/x" file could not be downloaded (HTTP/1.1 403 Forbidden)'):
+            with self.subTest(failure[:70]):
+                result, runs = self.retrying(1, failure, "--rm", "--", "install")
+                self.assertEqual((100, 1), (result.returncode, runs), result.stderr)
+
     def test_other_failures_commands_and_kept_containers_are_not_retried(self) -> None:
         rate_limited = 'The "https://codeload.github.com/a" file could not be downloaded (HTTP/2 429 )'
         for failure, arguments in (
                 ("Your lock file does not contain a compatible set of packages.", ("--rm", "--", "install")),
                 (rate_limited, ("--rm", "--", "update")),
-                (rate_limited, ("--name", "kept-sdk", "--", "install"))):
+                (rate_limited, ("--name", "kept-sdk", "--", "install")),
+                (self.CURL_56, ("--rm", "--", "update")),
+                (self.CURL_56, ("--name", "kept-sdk", "--", "install"))):
             with self.subTest(arguments):
                 result, runs = self.retrying(1, failure, *arguments)
                 self.assertEqual((100, 1), (result.returncode, runs), result.stderr)

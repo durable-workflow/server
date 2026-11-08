@@ -41,12 +41,12 @@ trap 'rm -rf -- "$ca" "$errors"' EXIT
 sh "$here/checked-ca.sh" "$ca"
 chmod 0755 "$ca"
 
-# A locked install only downloads pinned dists, so it is safe to repeat. Retry
-# it, at most three attempts in all, only when Composer reports a transient
-# download failure such as GitHub codeload's HTTP 429 rate limit. Any other
-# failure, every other Composer command and every kept (named, not --rm)
-# container fails on its first attempt.
-transient='could not be downloaded \((HTTP/[0-9.]+ (429|5[0-9][0-9])|curl error (6|7|28|35|52|56))'
+# A locked --rm install retries downloads at most three times. Match HTTP
+# 429/5xx errors and Composer's "curl error N while downloading" transport
+# errors. The space after N excludes curl 60 (TLS). Other failures, commands
+# and kept containers fail on the first attempt. Keep the existing 20/40s
+# backoff, checked CA pair and pinned Composer image.
+transient='could not be downloaded \(HTTP/[0-9.]+ (429|5[0-9][0-9])[^0-9]|curl error (6|7|28|35|52|56) while downloading https://'
 attempts=1
 if [[ $1 == install ]] && [[ " ${options[*]} " == *" --rm "* ]]; then attempts=3; fi
 for attempt in $(seq "$attempts"); do

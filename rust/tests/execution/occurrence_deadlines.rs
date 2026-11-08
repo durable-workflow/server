@@ -153,16 +153,32 @@ async fn false_wakes_keep_the_first_open_deadline_exactly() {
 
 /// A already passed when the reopen commits (the chain's own timer had not
 /// fired): the reopened timer keeps fire_at = A, is due at once and fires;
-/// no fresh positive budget is invented.
+/// no fresh positive budget is invented. Moving A into the past makes the
+/// first wait's timer due, so a maintenance tick (every 250 ms) inside the
+/// wake turn would fire it and the reopen would be refused, as the control
+/// below pins (#1105). Debug builds hold that one timer, and the wake turn
+/// starts only after a tick has found it due and left it.
+#[cfg(debug_assertions)]
 #[tokio::test]
 async fn a_reopen_after_the_anchor_is_due_immediately_at_the_anchor() {
+    use durable_workflow_server::runtime::timer_holds::hold_timer;
     let (database, runtime, app) = setup("default").await;
     let (run, _) = open(&app, "default", "deadline-expired", "php:condition-wait:0", 60).await;
-    // Move A into the past on the first wait's durable timer only; its timer
-    // task stays far in the future, so the engine does not fire it first.
+    let first = payloads(&history(&app, "default", &run).await, "TimerScheduled")[0]["timer_id"]
+        .as_str().unwrap().to_owned();
+    let mut hold = hold_timer(&first);
+    // Move A into the past on the first wait's durable timer only. The timer
+    // is due from here on; the hold keeps it pending.
     database.execute("UPDATE workflow_run_timers SET fire_at=(SELECT started_at FROM workflow_runs WHERE workflow_runs.id=workflow_run_timers.workflow_run_id) WHERE sequence=1").await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), &mut hold.skipped).await
+        .expect("a maintenance tick found the moved timer due").unwrap();
     let done = false_wake(&app, "default", &run, "php:condition-wait:0", 59, 60, std::time::Duration::ZERO).await;
     assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    // The reopen's commit cancelled the first timer unfired, so releasing the
+    // hold cannot fire it.
+    drop(hold);
+    assert_eq!(task_retry::rows(&database,
+        "SELECT COUNT(*) FROM workflow_run_timers WHERE sequence=1 AND status='cancelled' AND fired_at IS NULL").await, 1);
     let events = history(&app, "default", &run).await;
     let opened = payloads(&events, "ConditionWaitOpened");
     let timers = payloads(&events, "TimerScheduled");
