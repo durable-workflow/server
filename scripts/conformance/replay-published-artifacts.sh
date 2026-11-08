@@ -6,6 +6,10 @@ usage() {
 Usage: replay-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root[=1|true]]
 
 Runs deterministic replay conformance against published artifacts only.
+Use --focus php for the complete PHP replay matrix against Native Server,
+using a separate digest-pinned published tooling image (DW_REPLAY_PHP_RUNNER_IMAGE).
+That focus requires --result-dir and emits php-replay-shard.json plus the
+original PHP runtime evidence, without claiming a three-SDK aggregate result.
 
 The runner writes these files to the result directory:
   pins.json
@@ -33,14 +37,24 @@ Environment overrides:
   DW_REPLAY_SERVER_PORT          Host port for the published server. Defaults to a free port.
   DW_REPLAY_AUTH_TOKEN           Token used against the published server. Defaults to replay-token.
   DW_REPLAY_NAMESPACE            Namespace used by replay runtime cells. Defaults to replay-conformance.
+  DW_REPLAY_PHP_RUNNER_IMAGE     ghcr.io/durable-workflow/sample-app-devcontainer@sha256:... for --focus php.
 USAGE
 }
 
 result_dir="${DW_REPLAY_RESULT_DIR:-}"
 keep_run_root="${DW_REPLAY_KEEP_RUN_ROOT:-0}"
+focus=all
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --focus)
+      focus="${2:?--focus requires a value}"
+      shift 2
+      ;;
+    --focus=*)
+      focus="${1#--focus=}"
+      shift
+      ;;
     --result-dir)
       result_dir="${2:?--result-dir requires a value}"
       shift 2
@@ -78,6 +92,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "$focus" in
+  all) ;;
+  php)
+    exec bash "$(dirname "${BASH_SOURCE[0]}")/php-sdk-replay-host-published-artifacts.sh" \
+      --result-dir "${result_dir:?--result-dir is required for --focus php}"
+    ;;
+  *) printf 'unsupported replay focus: %s\n' "$focus" >&2; exit 2 ;;
+esac
 
 timestamp() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
