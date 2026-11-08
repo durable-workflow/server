@@ -51,8 +51,24 @@ case "$backend" in
     database=(-e DB_CONNECTION=sqlite -v "$state:/range-state") ;;
   *) echo 'Choose mysql, pgsql or sqlite' >&2; exit 2 ;;
 esac
+# Install from this job's verified read-only dist cache (sdk-composer-cache.sh);
+# when no verified cache exists, run the unchanged authenticated install.
+set +e
+bash scripts/conformance/server-parity/sdk-composer-cache.sh install "$state/sdk" "${limits[@]}" \
+  > "$evidence/sdk-install.txt" 2>&1
+cached=$?
+set -e
+case "$cached" in
+  0) ;;
+  3)
+    rm -rf "$state/sdk/vendor"
 bash scripts/ci/run-composer.sh --name "$resource-sdk" "${limits[@]}" -v "$state/sdk:/sdk" -w /sdk -- \
   install --no-interaction --no-progress --no-cache > "$evidence/sdk-install.txt" 2>&1
+    ;;
+  *) echo "Refusing the cache-backed SDK install (exit $cached); see $evidence/sdk-install.txt" >&2; exit 1 ;;
+esac
+# The job log records which install produced this profile's SDK.
+if test "$cached" = 0; then echo "SDK install ($tag): verified job cache, offline"; else echo "SDK install ($tag): authenticated install (no verified cache)"; fi
 printf '%s  %s\n' "$(jq -r '.sdk_php_composer_lock_sha256' "$manifest")" "$state/sdk/composer.lock" \
   | sha256sum -c > "$evidence/sdk-lock.txt"
 reader_tests=(tests/Unit/ServerParityRangeRepairContractTest.mjs)
