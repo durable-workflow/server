@@ -224,13 +224,15 @@ async fn new_calls_continued_runs_and_other_scopes_get_fresh_deadlines() {
     let timers = payloads(&history(&app, "default", &continued).await, "TimerScheduled");
     assert_eq!(timers.len(), 1);
     assert!(instant(&timers[0]["fire_at"]) > instant(&first), "a continued run never inherits A");
-    // Another run with the same occurrence ID, and the same in another
-    // namespace, each set their own A.
+    // Another run with the same occurrence ID, and a run in another
+    // namespace with the same occurrence ID, each set their own A. (A
+    // workflow ID is reserved across namespaces, so the tenant run has its
+    // own ID; the occurrence ID is what is shared.)
     let (_, other) = open(&app, "default", "deadline-other-run", "php:condition-wait:0", 60).await;
     assert_ne!(other, first);
     namespaces::create(&app, "deadline-tenant").await;
     author(&app, "deadline-tenant", "deadline-worker").await;
-    let (_, tenant) = open(&app, "deadline-tenant", "deadline-calls", "php:condition-wait:0", 60).await;
+    let (_, tenant) = open(&app, "deadline-tenant", "deadline-tenant-run", "php:condition-wait:0", 60).await;
     assert_ne!(tenant, first);
     runtime.close().await;
     database.remove().await;
