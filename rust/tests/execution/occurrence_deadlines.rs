@@ -322,3 +322,58 @@ async fn legacy_chains_keep_per_open_behavior_and_refuse_a_late_opt_in() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// The two #269 review paths. An opted-in repeat of a still-open wait is
+/// checked before #1015 keeps that wait, and an anchored chain never takes a
+/// legacy fresh budget when the policy is omitted. Each refusal writes
+/// nothing and leaves the attempt usable; a valid duplicate stays idempotent.
+#[tokio::test]
+async fn anchored_chains_check_still_open_repeats_and_refuse_policy_omission() {
+    let (database, runtime, app) = setup("default").await;
+    let run = namespaces::start_scoped(&app, "default", "deadline-still-open").await;
+    let task = claim(&app, "default").await;
+    let valid = anchored("php:condition-wait:0", 60, 60);
+    let without_policy = |remaining: i64| {
+        let mut command = anchored("php:condition-wait:0", remaining, 60);
+        command.as_object_mut().unwrap().remove("deadline_policy");
+        command.as_object_mut().unwrap().remove("condition_wait_timeout_budget_seconds");
+        command
+    };
+    let mut wrong_key = valid.clone();
+    wrong_key["condition_key"] = json!("other");
+    let mut wrong_fingerprint = valid.clone();
+    wrong_fingerprint["condition_definition_fingerprint"] = json!(format!("sha256:{}", "b".repeat(64)));
+    // Still open: the first command opens the chain, the second repeats the
+    // same occurrence in the same transaction, so #1015 would keep it.
+    for (repeat, why) in [
+        (wrong_key, "key"),
+        (wrong_fingerprint, "fingerprint"),
+        (anchored("php:condition-wait:0", 60, 61), "budget"),
+        (without_policy(60), "policy omitted"),
+    ] {
+        let done = finish(&app, "default", &task, json!([valid.clone(), repeat])).await;
+        assert_eq!((done.0, done.1["reason"].clone()), (StatusCode::CONFLICT, json!("condition_wait_occurrence_mismatch")),
+            "{why}: {}", done.1);
+        assert!(payloads(&history(&app, "default", &run).await, "ConditionWaitOpened").is_empty(), "{why}: nothing written");
+    }
+    // The same attempt then commits; a valid duplicate keeps one wait.
+    let done = finish(&app, "default", &task, json!([valid.clone(), valid.clone()])).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    let events = history(&app, "default", &run).await;
+    assert_eq!((payloads(&events, "ConditionWaitOpened").len(), payloads(&events, "TimerScheduled").len()), (1, 1));
+    let anchor = payloads(&events, "TimerScheduled")[0]["fire_at"].clone();
+    // Resolved: after a false wake, omitting the policy is a mismatch, not
+    // a fresh legacy budget; the attempt still completes the valid reopen.
+    signal(&app, "default", &run).await;
+    let task = claim(&app, "default").await;
+    let before = history(&app, "default", &run).await;
+    let done = finish(&app, "default", &task, json!([without_policy(59)])).await;
+    assert_eq!((done.0, done.1["reason"].clone()), (StatusCode::CONFLICT, json!("condition_wait_occurrence_mismatch")), "{}", done.1);
+    assert_eq!(history(&app, "default", &run).await, before, "nothing written");
+    let done = finish(&app, "default", &task, json!([anchored("php:condition-wait:0", 59, 60)])).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    let timers = payloads(&history(&app, "default", &run).await, "TimerScheduled");
+    assert_eq!(timers[1]["fire_at"], anchor);
+    runtime.close().await;
+    database.remove().await;
+}

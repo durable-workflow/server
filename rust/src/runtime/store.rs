@@ -3757,22 +3757,23 @@ where
             || command["type"] == "open_signal_wait"
         {
             let direct = command["type"] == "open_signal_wait";
+            // Server #269: decide the occurrence chain first, so an opted-in
+            // repeat of a still-open wait is checked like any reopen, and an
+            // anchored chain never takes a legacy fresh budget. Refusals
+            // write nothing.
+            let anchor = if direct {
+                super::wait_timeouts::OccurrenceAnchor::Legacy { open: false }
+            } else {
+                Self::occurrence_anchor(tx, &run_id, command).await?
+            };
             // A queued task can replay an occurrence another task already
             // opened. Keep that unresolved wait and its original deadline.
             // Keys and fingerprints can name distinct concurrent waits.
-            if !direct
-                && let Some(occurrence) = command["condition_wait_occurrence_id"]
-                    .as_str()
-                    .filter(|value| !value.is_empty())
-                && Self::waits(tx, &run_id).await?.conditions.iter().any(|wait| {
-                    wait.advanceable() && wait.occurrence() == Some(occurrence)
-                })
+            if matches!(anchor, super::wait_timeouts::OccurrenceAnchor::StillOpen
+                | super::wait_timeouts::OccurrenceAnchor::Legacy { open: true })
             {
                 return Ok(());
             }
-            // Server #269: an opted-in occurrence keeps its first-open wall
-            // deadline across false-wake reopens. Refusals write nothing.
-            let anchor = if direct { None } else { Self::occurrence_anchor(tx, &run_id, command).await? };
             // Legacy opens and resolved occurrences keep PHP's per-open
             // behavior, including several waits with the same key.
             sequence += 1;
@@ -3818,10 +3819,10 @@ where
             }] = json!(wait_id);
             payload["sequence"] = json!(sequence);
             let deadline = match anchor {
-                None => None,
-                Some(super::wait_timeouts::OccurrenceAnchor::Reopen(at)) => Some(at),
-                Some(super::wait_timeouts::OccurrenceAnchor::First) => super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?
+                super::wait_timeouts::OccurrenceAnchor::Reopen(at) => Some(at),
+                super::wait_timeouts::OccurrenceAnchor::First => super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?
                     .map(|(_, fire_at)| fire_at),
+                _ => None,
             };
             if let Some(at) = deadline {
                 payload["occurrence_deadline_at"] = json!(super::cancellation_scopes::iso(at));

@@ -58,11 +58,17 @@ pub(super) fn occurrence_deadline(command: &Value) -> Result<Option<i64>> {
     }
 }
 
-/// An anchored open's deadline: the chain's first open sets it from its own
-/// commit clock; a same-chain reopen reuses the first wait's durable fire_at.
+/// What an `open_condition_wait` does with its occurrence chain.
 #[derive(Clone, Copy)]
 pub(super) enum OccurrenceAnchor {
+    /// No policy, on a chain that never had one: per-open behavior. `open`
+    /// says whether the occurrence is still open (#1015 keeps that wait).
+    Legacy { open: bool },
+    /// An opted-in repeat of the chain's still-open wait: keep it.
+    StillOpen,
+    /// The chain's first open: A = its commit + T.
     First,
+    /// A same-chain reopen: reuse the first wait's durable fire_at.
     Reopen(DateTime<Utc>),
 }
 
@@ -187,24 +193,25 @@ where
         Ok(())
     }
 
-    /// Server #269: the deadline an anchored `open_condition_wait` must use,
-    /// or `None` for a command without the policy. The chain is this run's
-    /// physical waits of this occurrence ID; every one must carry the same
-    /// policy, original budget, key and definition fingerprint. A is the
-    /// first wait's durable timer `fire_at`, read by its timer ID, so it is
-    /// never recomputed from a later clock or a rounded history timestamp.
+    /// Server #269: what an `open_condition_wait` does with its occurrence,
+    /// decided before #1015's still-open shortcut so an opted-in repeat is
+    /// checked too. The chain is this run's physical waits of this
+    /// occurrence ID; every one must carry the same policy, original budget,
+    /// key and definition fingerprint. Once a chain is anchored, an open
+    /// without the policy is a mismatch, never a legacy fresh budget. A is
+    /// the first wait's durable timer `fire_at`, read by its timer ID, so it
+    /// is never recomputed from a later clock or a rounded history timestamp.
     /// Each refusal is a nothing-written conflict inside the completion's
-    /// existing transaction and ownership guard; an opted-in reopen never
-    /// falls back to a fresh budget.
+    /// existing transaction and ownership guard.
     pub(super) async fn occurrence_anchor(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         command: &Value,
-    ) -> Result<Option<OccurrenceAnchor>> {
-        let Some(budget) = occurrence_deadline(command)? else {
-            return Ok(None);
+    ) -> Result<OccurrenceAnchor> {
+        let budget = occurrence_deadline(command)?;
+        let Some(occurrence) = command["condition_wait_occurrence_id"].as_str().filter(|value| !value.is_empty()) else {
+            return Ok(OccurrenceAnchor::Legacy { open: false });
         };
-        let occurrence = command["condition_wait_occurrence_id"].as_str().unwrap_or_default();
         // The opening payload keeps these trimmed, and drops them when empty.
         let normalized = |field: &str| {
             command[field].as_str().map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
@@ -215,11 +222,19 @@ where
         chain.sort_by_key(|wait| wait.sequence.unwrap_or(i64::MAX));
         let mismatch = || refuse(StatusCode::CONFLICT, "condition_wait_occurrence_mismatch");
         let unavailable = || refuse(StatusCode::CONFLICT, "condition_wait_anchor_unavailable");
+        let Some(budget) = budget else {
+            // Omitting the policy on an anchored chain is a mismatch.
+            return if chain.iter().any(|wait| wait.policy().is_some() || wait.budget().is_some()) {
+                Err(mismatch())
+            } else {
+                Ok(OccurrenceAnchor::Legacy { open: chain.iter().any(|wait| wait.advanceable()) })
+            };
+        };
         let Some(first) = chain.first() else {
             // The first open sets A from its own commit, so the remaining
             // budget it authors is the whole original budget (A = O + T).
             return if command["timeout_seconds"].as_i64() == Some(budget) {
-                Ok(Some(OccurrenceAnchor::First))
+                Ok(OccurrenceAnchor::First)
             } else {
                 Err(mismatch())
             };
@@ -240,6 +255,10 @@ where
                 return Err(refuse(StatusCode::CONFLICT, "condition_wait_occurrence_timed_out"));
             }
         }
+        // A checked repeat of the still-open wait keeps it and its deadline.
+        if chain.iter().any(|wait| wait.advanceable()) {
+            return Ok(OccurrenceAnchor::StillOpen);
+        }
         let timer = match first.timer_id() {
             Some(timer) => Self::query("SELECT fire_at,sequence FROM workflow_run_timers WHERE id=$1 AND workflow_run_id=$2")
                 .bind(timer).bind(run_id).fetch_optional(&mut **tx).await?,
@@ -248,7 +267,7 @@ where
         let Some(timer) = timer.filter(|row| DB::number(row, "sequence").ok() == first.sequence) else {
             return Err(unavailable());
         };
-        Ok(Some(OccurrenceAnchor::Reopen(DB::instant(&timer, "fire_at")?)))
+        Ok(OccurrenceAnchor::Reopen(DB::instant(&timer, "fire_at")?))
     }
 
     /// `anchor` is an occurrence deadline (Server #269): the timer then fires
