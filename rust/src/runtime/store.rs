@@ -437,6 +437,16 @@ where
             None,
         ))
     }
+    /// A read-only snapshot that is fixed even on a MySQL server configured
+    /// below REPEATABLE READ, for a lock-free answer that is only correct if
+    /// every read shares one committed state (Server #1057).
+    pub(super) async fn begin_repeatable_read(&self) -> Result<Transaction<'static, DB>> {
+        Ok(Transaction::new(
+            self.pool.begin_with(DB::REPEATABLE_READ_SNAPSHOT_BEGIN).await?,
+            self.history_budget,
+            None,
+        ))
+    }
     pub(crate) async fn start(
         &self,
         body: Value,

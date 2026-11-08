@@ -80,6 +80,10 @@ pub(super) trait Backend: Database {
     // Multi-statement reads that must observe one committed state. SQLite's
     // deferred read transaction already keeps one WAL snapshot.
     const READ_SNAPSHOT_BEGIN: &str = "BEGIN";
+    // A read whose correctness needs one fixed snapshot whatever the server's
+    // configured isolation (Server #1057). SQLite and PostgreSQL's ordinary
+    // snapshot already is one; MySQL overrides it.
+    const REPEATABLE_READ_SNAPSHOT_BEGIN: &str = Self::READ_SNAPSHOT_BEGIN;
     const COMMIT_HANDOFF: bool = false;
     const HISTORY_SEQUENCE_MAX: i64 = i64::MAX;
     const HISTORY_ADVANCE_RETURNS_ROW: bool = true;
@@ -607,6 +611,12 @@ impl Backend for MySql {
         "+(SELECT COUNT(*) FROM workflow_inbound_stream_items WHERE namespace=$3 AND ", super::retention::reference!("payload_blob"), ")"
     );
     const READ_SNAPSHOT_BEGIN: &str = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY";
+    // WITH CONSISTENT SNAPSHOT keeps the session's isolation and is ignored
+    // outside REPEATABLE READ. SET TRANSACTION without SESSION or GLOBAL
+    // applies to the next transaction only (MySQL and MariaDB), so this one
+    // snapshot is fixed and the pooled session keeps its own level.
+    const REPEATABLE_READ_SNAPSHOT_BEGIN: &str =
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY";
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT h.sequence,h.event_type,CASE WHEN page.projection_bytes<=8388608 THEN h.payload ELSE NULL END AS payload,h.workflow_task_id,h.recorded_at,page.projection_count FROM (SELECT id,sequence,COUNT(*) OVER () AS projection_count,SUM(payload_bytes) OVER (ORDER BY sequence) AS projection_bytes FROM (SELECT id,sequence,octet_length(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled')) AS sizes ORDER BY sequence LIMIT 10001) AS page JOIN workflow_history_events h ON h.id=page.id ORDER BY page.sequence";
     const PHP_CONNECTION: &str = "mysql";
     const WAIT_POSITION_MOVES: &str = "WITH clocks AS (SELECT id,wait_id,position,opened_at,TIMESTAMPDIFF(MICROSECOND,'1970-01-01 00:00:00',opened_at) AS micros FROM workflow_run_waits WHERE workflow_run_id=?), ordinals AS (SELECT id,position,CAST(ROW_NUMBER() OVER (ORDER BY CASE WHEN opened_at IS NULL THEN 1 ELSE 0 END,ROUND((CASE WHEN micros<0 THEN 2*FLOOR(micros/1000000)*1000000-micros ELSE micros END)/1000),wait_id) AS SIGNED)-1 AS ordinal FROM clocks) SELECT id,ordinal FROM ordinals WHERE NOT (position <=> ordinal) ORDER BY ordinal LIMIT 100";
@@ -793,6 +803,20 @@ mod timestamp_tests {
     use super::*;
     use chrono::SecondsFormat;
     use serde_json::json;
+
+    /// Server #1057: the lock-free empty query poll needs one fixed snapshot.
+    /// SQLite and PostgreSQL's ordinary snapshot is one; MySQL's is one only
+    /// at REPEATABLE READ, so its begin sets that level for the next
+    /// transaction alone, never the session or the server.
+    #[test]
+    fn repeatable_snapshot_begins_fix_one_snapshot_per_backend() {
+        assert_eq!(<sqlx::Sqlite as Backend>::REPEATABLE_READ_SNAPSHOT_BEGIN, <sqlx::Sqlite as Backend>::READ_SNAPSHOT_BEGIN);
+        assert_eq!(<sqlx::Postgres as Backend>::REPEATABLE_READ_SNAPSHOT_BEGIN, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+        let mysql = <sqlx::MySql as Backend>::REPEATABLE_READ_SNAPSHOT_BEGIN;
+        assert_eq!(mysql, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY");
+        assert!(!mysql.contains("SESSION") && !mysql.contains("GLOBAL"));
+        assert!(mysql.ends_with(<sqlx::MySql as Backend>::READ_SNAPSHOT_BEGIN));
+    }
 
     #[test]
     fn mysql_statement_converts_numbered_positions_and_keeps_json_paths() {
