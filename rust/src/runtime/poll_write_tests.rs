@@ -14,8 +14,10 @@ store_methods! {
             ("terminal",vec![json!({"type":"complete_workflow","result":{"codec":"avro","blob":input}})],false,"completed",0_usize),
             ("activity",vec![json!({"type":"schedule_activity","activity_type":"waiting-status",
                 "arguments":{"codec":"avro","blob":input}})],false,"waiting",0),
-            ("empty",vec![],false,"waiting",1),
-            ("already-waiting",vec![],true,"waiting",0),
+            // A completion needs at least one command. A side effect changes
+            // no run status itself, so only the final write can settle it.
+            ("side-effect",vec![json!({"type":"record_side_effect","result":{"codec":"avro","blob":input}})],false,"waiting",1),
+            ("already-waiting",vec![json!({"type":"record_side_effect","result":{"codec":"avro","blob":input}})],true,"waiting",0),
         ];
         for (name,commands,waiting,expected,updates) in cases {
             let run = self.start(json!({"workflow_id":format!("waiting-status-{name}"),
