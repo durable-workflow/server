@@ -1,5 +1,5 @@
 //! One durable execution state machine for typed database adapters.
-use super::transaction::Transaction;
+use super::transaction::{RunTags, Transaction};
 use super::{Result, backend::Backend, envelope, refuse, side_effect_result, text, wire};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
@@ -8,6 +8,11 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Pool, Type};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{Mutex, Notify, Semaphore};
 use ulid::Ulid;
+
+// Each subquery keeps its original ordered lookup. The run and three
+// physical authored counters share one statement; history-based scope,
+// wait and redrive authority is still read by authored_sequence.
+pub(super) const AUTHORED_RUN_SQL: &str = "SELECT r.cancellation_delivery_sequence,r.run_number,(SELECT sequence FROM activity_executions WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1) AS authored_activity_sequence,(SELECT sequence FROM workflow_run_timers WHERE workflow_run_id=$2 ORDER BY sequence DESC LIMIT 1) AS authored_timer_sequence,(SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$3 ORDER BY sequence DESC LIMIT 1) AS authored_child_sequence FROM workflow_runs r WHERE r.id=$4";
 
 pub(super) struct PreparedControlArguments {
     pub(super) arguments: String,
@@ -1315,6 +1320,64 @@ where
         // Public control command order and deterministic authored call order
         // are different counters in PHP. Signals must never shift a replayed
         // activity/timer/wait's authored position.
+        let run = Self::query(AUTHORED_RUN_SQL)
+            .bind(run_id).bind(run_id).bind(run_id).bind(run_id)
+            .fetch_one(&mut **tx).await?;
+        // Each counter is its column's own nullable integer, not a COALESCE
+        // that MariaDB would type as DECIMAL; no row counts as zero.
+        let activities = DB::optional_number(&run, "authored_activity_sequence")?.unwrap_or(0);
+        let timers = DB::optional_number(&run, "authored_timer_sequence")?.unwrap_or(0);
+        let children = DB::optional_number(&run, "authored_child_sequence")?.unwrap_or(0);
+        let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded','MemoUpserted','SideEffectRecorded','SearchAttributesUpserted') ORDER BY sequence DESC LIMIT 1")
+            .bind(run_id).fetch_optional(&mut **tx).await?;
+        let wait_sequence = wait
+            .map(|row| DB::document_row(&row, "payload"))
+            .transpose()?
+            .and_then(|value| value["sequence"].as_i64())
+            .unwrap_or(0);
+        // `nextDurableCommandSequence`: a scope opening consumes its sequence,
+        // and a delivered scope boundary its whole span, as a delivered run
+        // request does.
+        let mut scoped = 0;
+        for row in Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('CancellationScopeOpened','CancellationScopeDelivered')")
+            .bind(run_id).fetch_all(&mut **tx).await?
+        {
+            let payload = DB::document_row(&row, "payload")?;
+            if let Some(sequence) = payload["sequence"].as_i64() {
+                let span = payload["sequence_span"].as_i64().filter(|span| *span > 1 && DB::string(&row, "event_type").is_ok_and(|kind| kind == "CancellationScopeDelivered"));
+                scoped = scoped.max(span.and_then(|span| sequence.checked_add(span - 1)).unwrap_or(sequence));
+            }
+        }
+        // A redriven run replays the activities before its resume step from
+        // reused completions, which have no execution rows.
+        let mut reused = 0;
+        if DB::number(&run, "run_number")? > 1 {
+            let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+                .bind(run_id).fetch_optional(&mut **tx).await?;
+            if let Some(started) = started {
+                let payload = DB::document_row(&started, "payload")?;
+                if payload["recovery_kind"] == "redrive" {
+                    reused = payload["resume_step_sequence"].as_i64().unwrap_or(1) - 1;
+                }
+            }
+        }
+        Ok(activities
+            .max(timers)
+            .max(wait_sequence)
+            .max(children)
+            .max(scoped)
+            .max(reused)
+            .max(DB::optional_number(&run, "cancellation_delivery_sequence")?.unwrap_or(0)))
+    }
+
+    #[cfg(test)]
+    pub(super) async fn authored_sequence_reference(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+    ) -> Result<i64> {
+        // Public control command order and deterministic authored call order
+        // are different counters in PHP. Signals must never shift a replayed
+        // activity/timer/wait's authored position.
         let activities = Self::query(
             "SELECT sequence FROM activity_executions WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1",
         )
@@ -2218,12 +2281,12 @@ where
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
     ) -> Result<Option<Value>> {
         let mut tx = self.begin().await?;
-        if let Some(fence) = fence
-            && !self.worker_poll_fence_holds_in(&mut tx, fence, text(body, "worker_id")?).await?
-        {
-            return Err(super::worker_poll_fence::stale_claim());
-        }
-        let claimed = self.claim_in(&mut tx, body, kind, protocol_version, page, poll_request).await?;
+        let registration = match fence {
+            Some(fence) => Some(self.fenced_claim_registration(&mut tx,fence,text(body,"worker_id")?).await?
+                .ok_or_else(super::worker_poll_fence::stale_claim)?),
+            None => None,
+        };
+        let claimed = self.claim_with_registration(&mut tx, body, kind, protocol_version, page, poll_request, registration).await?;
         tx.commit().await?;
         Ok(claimed)
     }
@@ -2247,14 +2310,15 @@ where
             tx.commit().await?;
             return Ok(FirstProbe::Replayed(answer));
         }
-        if let Some(fence) = fence
-            && !self.worker_poll_fence_holds_in(&mut tx, fence, worker_id).await?
-        {
-            tx.commit().await?;
-            return Ok(FirstProbe::Claimed(Err(super::worker_poll_fence::stale_claim())));
-        }
+        let registration = if let Some(fence) = fence {
+            let Some(row) = self.fenced_claim_registration(&mut tx,fence,worker_id).await? else {
+                tx.commit().await?;
+                return Ok(FirstProbe::Claimed(Err(super::worker_poll_fence::stale_claim())));
+            };
+            Some(row)
+        } else { None };
         let saved = tx.poll_savepoint().await?;
-        let claimed = match self.claim_in(&mut tx, body, kind, protocol_version, page, Some(request)).await {
+        let claimed = match self.claim_with_registration(&mut tx, body, kind, protocol_version, page, Some(request), registration).await {
             Ok(claimed) => {
                 tx.release_poll_claim().await?;
                 Ok(claimed)
@@ -2280,16 +2344,33 @@ where
         page: Option<i64>,
         poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
     ) -> Result<Option<Value>> {
+        self.claim_with_registration(tx,body,kind,protocol_version,page,poll_request,None).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn claim_with_registration(
+        &self,
+        tx: &mut super::transaction::Transaction<'_, DB>,
+        body: &Value,
+        kind: &str,
+        protocol_version: &str,
+        page: Option<i64>,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+        registration: Option<DB::Row>,
+    ) -> Result<Option<Value>> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
-        let worker = Self::query(
-            "SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
-        )
-        .bind(worker_id)
-        .bind(self.namespace.as_ref())
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
+        let worker = match registration {
+            Some(row) => row,
+            None => Self::query(
+                "SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2",
+            )
+            .bind(worker_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?,
+        };
         if DB::string(&worker, "task_queue")? != queue {
             return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
         }
@@ -2301,8 +2382,8 @@ where
         if let Some(request) = poll_request
             && !request.replayed_in(tx)
         {
-            Self::bind_workflow_poll(tx, request).await?;
-            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, queue).await?
+            let cached = Self::bind_workflow_poll(tx, request).await?;
+            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, queue, cached).await?
                 && answer["task"]["task_kind"] != "update_validation"
             {
                 return Ok(Some(answer["task"].clone()));
@@ -2423,6 +2504,7 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+            tx.remember_run_tags(&run_id,&run);
             let cancellation = Self::cancellation_request(&run)?;
             if cancellation.is_some()
                 && (DB::optional_instant(&run, "cancellation_deadline_at")?
@@ -3494,15 +3576,18 @@ where
         Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {"request": body, "created_task_ids": created}})).await?;
         // PHP's executor leaves every run a completed task did not close
         // waiting, even when the task recorded only markers or side effects.
-        Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1 AND status IN ('pending','running')")
-            .bind(&run_id)
-            .execute(&mut *tx)
-            .await?;
         let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *tx)
             .await?;
-        let run_status = DB::string(&current, "status")?;
+        let mut run_status = DB::string(&current, "status")?;
+        if matches!(run_status.as_str(), "pending" | "running") {
+            Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1 AND status IN ('pending','running')")
+                .bind(&run_id)
+                .execute(&mut *tx)
+                .await?;
+            run_status = "waiting".into();
+        }
         if let Some(worker) = &worker {
             Self::attribute_worker_terminal(&mut tx, &run_id, task_id, worker).await?;
         }
@@ -4587,7 +4672,17 @@ where
                 "cancellation_deadline_expired",
             ));
         }
+        tx.remember_run_tags(run_id,&run);
         Ok(run)
+    }
+
+    async fn run_tags(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<RunTags> {
+        if let Some(tags) = tx.run_tags.get(run_id) { return Ok(tags.clone()); }
+        let row = Self::query("SELECT namespace,priority,fairness_key,fairness_weight,compatibility FROM workflow_runs WHERE id=$1")
+            .bind(run_id).fetch_one(&mut **tx).await?;
+        let tags = RunTags::from_row::<DB>(&row)?;
+        tx.run_tags.insert(run_id.to_owned(),tags.clone());
+        Ok(tags)
     }
 
     pub(super) async fn create_task(
@@ -4613,19 +4708,16 @@ where
         tx.summary_changed(run_id);
         let task_id = id();
         // A task carries its run's priority and fairness tags, as in PHP.
-        let run = Self::query("SELECT namespace,priority,fairness_key,fairness_weight,compatibility FROM workflow_runs WHERE id=$1")
-            .bind(run_id)
-            .fetch_one(&mut **tx)
-            .await?;
-        let namespace = DB::string(&run, "namespace")?;
+        let tags = Self::run_tags(tx,run_id).await?;
+        let namespace = &tags.namespace;
         let created = now();
         let dispatched_at = dispatched.then_some(created);
-        let fairness_key = DB::optional_string(&run, "fairness_key")?;
+        let fairness_key = tags.fairness_key.as_deref();
         Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,payload,queue,available_at,namespace,created_at,updated_at,last_dispatched_at,last_dispatch_attempt_at,priority,fairness_key,fairness_weight,compatibility,ready_origin_at) VALUES ($1,$2,$3,'ready',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
-        .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(&namespace)
+        .bind(&task_id).bind(run_id).bind(kind).bind(DB::document(&payload)).bind(queue).bind(DB::bind_time(created)).bind(namespace)
         .bind(DB::bind_time(created)).bind(DB::bind_time(created)).bind(DB::optional_time(dispatched_at)).bind(DB::optional_time(dispatched_at))
-        .bind(DB::number(&run, "priority")?).bind(fairness_key.as_deref()).bind(DB::number(&run, "fairness_weight")?)
-        .bind(DB::optional_string(&run, "compatibility")?.as_deref())
+        .bind(tags.priority).bind(fairness_key).bind(tags.fairness_weight)
+        .bind(tags.compatibility.as_deref())
         .bind(DB::optional_time(matches!(kind, "workflow" | "activity").then_some(created)))
         .execute(&mut **tx).await?;
         Ok(task_id)

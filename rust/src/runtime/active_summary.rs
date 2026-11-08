@@ -13,6 +13,11 @@ use super::{
 use chrono::{DateTime, Utc};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
+// One aggregate scan for each source table, including the empty-table case.
+const PROJECTION_CENSUS_SQL: &str = "SELECT waits.*,tasks.*,(SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received') AS received_signals,(SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=$2) AS failures FROM (SELECT COUNT(CASE WHEN status='open' AND kind NOT IN ('condition','signal','timer','activity','child','update') THEN 1 END) AS other_waits,COUNT(CASE WHEN (status='open' OR (status='resolved' AND source_status='timed_out')) AND kind IN ('condition','signal') THEN 1 END) AS external_waits,COUNT(CASE WHEN kind='timer' AND status='open' THEN 1 END) AS timers,COUNT(CASE WHEN kind='activity' AND status='open' THEN 1 END) AS activities,COUNT(CASE WHEN kind='child' THEN 1 END) AS children,COUNT(CASE WHEN kind='update' THEN 1 END) AS updates FROM workflow_run_waits WHERE workflow_run_id=$3) waits CROSS JOIN (SELECT COUNT(CASE WHEN task_type='workflow' AND repair_count>0 THEN 1 END) AS repairs,COUNT(CASE WHEN task_type='workflow' AND status='failed' THEN 1 END) AS failed_tasks FROM workflow_tasks WHERE workflow_run_id=$4) tasks";
+#[cfg(test)]
+const PREVIOUS_CENSUS_SQL: &str = "SELECT (SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child','update')) AS other_waits,(SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$2 AND task_type='workflow' AND repair_count>0) AS repairs,(SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$3 AND task_type='workflow' AND status='failed') AS failed_tasks,(SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$4 AND status='received') AS received_signals,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$5 AND (w.status='open' OR (w.status='resolved' AND w.source_status='timed_out')) AND w.kind IN ('condition','signal')) AS external_waits,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$6 AND w.kind='timer' AND w.status='open') AS timers,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$7 AND w.kind='activity' AND w.status='open') AS activities,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$8 AND w.kind='child') AS children,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$9 AND w.kind='update') AS updates,(SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=$10) AS failures";
+
 pub(super) struct ActiveSummary {
     pub(super) state: String,
     pub(super) reason: String,
@@ -27,6 +32,7 @@ pub(super) struct ActiveSummary {
 }
 
 /// Each zero count skips only the corresponding read, never its validation.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub(super) struct ProjectionCensus {
     other_waits: i64,
     repairs: i64,
@@ -63,9 +69,8 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) async fn projection_census(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<ProjectionCensus> {
-        let row = Self::query("SELECT (SELECT COUNT(*) FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind NOT IN ('condition','signal','timer','activity','child','update')) AS other_waits,(SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$2 AND task_type='workflow' AND repair_count>0) AS repairs,(SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id=$3 AND task_type='workflow' AND status='failed') AS failed_tasks,(SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$4 AND status='received') AS received_signals,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$5 AND (w.status='open' OR (w.status='resolved' AND w.source_status='timed_out')) AND w.kind IN ('condition','signal')) AS external_waits,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$6 AND w.kind='timer' AND w.status='open') AS timers,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$7 AND w.kind='activity' AND w.status='open') AS activities,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$8 AND w.kind='child') AS children,(SELECT COUNT(*) FROM workflow_run_waits w WHERE w.workflow_run_id=$9 AND w.kind='update') AS updates,(SELECT COUNT(*) FROM workflow_failures WHERE workflow_run_id=$10) AS failures")
-            .bind(run_id).bind(run_id).bind(run_id).bind(run_id).bind(run_id)
-            .bind(run_id).bind(run_id).bind(run_id).bind(run_id).bind(run_id)
+        let row = Self::query(PROJECTION_CENSUS_SQL)
+            .bind(run_id).bind(run_id).bind(run_id).bind(run_id)
             .fetch_one(&mut **tx).await?;
         Ok(ProjectionCensus {
             other_waits: DB::number(&row,"other_waits")?, repairs: DB::number(&row,"repairs")?,
@@ -74,6 +79,90 @@ where
             activities: DB::number(&row,"activities")?, children: DB::number(&row,"children")?,
             updates: DB::number(&row,"updates")?, failures: DB::number(&row,"failures")?,
         })
+    }
+
+    #[cfg(test)]
+    async fn census_values(tx: &mut Transaction<'_,DB>, run_id: &str, sql: &'static str, binds: usize) -> [i64;10] {
+        let mut query = Self::query(sql);
+        for _ in 0..binds { query = query.bind(run_id); }
+        let row = query.fetch_one(&mut **tx).await.unwrap();
+        ["other_waits","repairs","failed_tasks","received_signals","external_waits","timers","activities","children","updates","failures"]
+            .map(|name| DB::number(&row,name).unwrap())
+    }
+
+    #[cfg(test)]
+    async fn census_scans(tx: &mut Transaction<'_,DB>, run_id: &str, sql: &'static str, binds: usize) -> (usize,usize) {
+        let prefix = match DB::NAME {"PostgreSQL"=>"EXPLAIN (FORMAT JSON) ","SQLite"=>"EXPLAIN QUERY PLAN ",_=>"EXPLAIN "};
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(format!("{prefix}{}",DB::statement(sql))));
+        for _ in 0..binds { query = query.bind(run_id); }
+        let rows = query.fetch_all(&mut **tx).await.unwrap();
+        if DB::NAME == "PostgreSQL" {
+            fn visit(value: &serde_json::Value, counts: &mut (usize,usize)) {
+                if value["Relation Name"] == "workflow_run_waits" { counts.0 += 1; }
+                if value["Relation Name"] == "workflow_tasks" { counts.1 += 1; }
+                match value {
+                    serde_json::Value::Object(map) => { for child in map.values() { visit(child,counts); } }
+                    serde_json::Value::Array(items) => { for child in items { visit(child,counts); } }
+                    _ => {}
+                }
+            }
+            let mut counts = (0,0);
+            visit(&DB::document_row(&rows[0],"QUERY PLAN").unwrap(),&mut counts);
+            return counts;
+        }
+        let mut counts = (0,0);
+        for row in rows {
+            let table = if DB::NAME == "SQLite" {
+                let detail = DB::string(&row,"detail").unwrap();
+                let mut parts = detail.split_whitespace();
+                match parts.next() {
+                    Some("SCAN" | "SEARCH") => parts.next().map(str::to_owned),
+                    _ => None,
+                }
+            } else { DB::optional_string(&row,"table").unwrap() };
+            match table.as_deref() {
+                Some("workflow_run_waits" | "w") => counts.0 += 1,
+                Some("workflow_tasks") => counts.1 += 1,
+                _ => {}
+            }
+        }
+        counts
+    }
+
+    #[cfg(test)]
+    pub(super) async fn qualify_projection_census_passes(&self, run_id: &str, instance_id: &str) {
+        let mut tx = self.begin().await.unwrap();
+        for absent in [run_id,"missing-census-run"] {
+            assert_eq!(Self::census_values(&mut tx,absent,PROJECTION_CENSUS_SQL,4).await,
+                       Self::census_values(&mut tx,absent,PREVIOUS_CENSUS_SQL,10).await);
+        }
+        let mut position = 0_i64;
+        for kind in ["other","condition","signal","timer","activity","child","update"] {
+            for status in ["open","resolved","cancelled"] {
+                for source in [None,Some("timed_out"),Some("completed")] {
+                    Self::query("INSERT INTO workflow_run_waits(id,workflow_run_id,workflow_instance_id,wait_id,position,kind,status,source_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
+                        .bind(super::store::id()).bind(run_id).bind(instance_id).bind(format!("census-{position}"))
+                        .bind(position).bind(kind).bind(status).bind(source).execute(&mut *tx).await.unwrap();
+                    position += 1;
+                }
+            }
+        }
+        assert_eq!(Self::census_values(&mut tx,run_id,PROJECTION_CENSUS_SQL,4).await,
+                   Self::census_values(&mut tx,run_id,PREVIOUS_CENSUS_SQL,10).await);
+        for kind in ["workflow","activity"] {
+            for status in ["ready","leased","failed","completed"] {
+                for repairs in [0_i64,1,2] {
+                    Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,repair_count) VALUES ($1,$2,'default','census',$3,$4,$5)")
+                        .bind(super::store::id()).bind(run_id).bind(kind).bind(status).bind(repairs)
+                        .execute(&mut *tx).await.unwrap();
+                }
+            }
+        }
+        assert_eq!(Self::census_values(&mut tx,run_id,PROJECTION_CENSUS_SQL,4).await,
+                   Self::census_values(&mut tx,run_id,PREVIOUS_CENSUS_SQL,10).await);
+        assert_eq!(Self::census_scans(&mut tx,run_id,PREVIOUS_CENSUS_SQL,10).await,(6,2));
+        assert_eq!(Self::census_scans(&mut tx,run_id,PROJECTION_CENSUS_SQL,4).await,(1,1));
+        tx.rollback().await.unwrap();
     }
 
     #[cfg(test)]

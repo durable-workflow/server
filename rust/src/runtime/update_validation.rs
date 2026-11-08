@@ -1067,18 +1067,22 @@ where
     ) -> Result<Option<Probe>> {
         let worker_id = text(body, "worker_id")?;
         let task_queue = text(body, "task_queue")?;
-        if let Some(fence) = fence
-            && !self.worker_poll_fence_holds_in(tx, fence, worker_id).await?
-        {
-            return Ok(Some(Probe::Stale));
+        let mut registration = None;
+        if let Some(fence) = fence {
+            if kinds.contains(&"workflow") {
+                registration = self.fenced_claim_registration(tx,fence,worker_id).await?;
+                if registration.is_none() { return Ok(Some(Probe::Stale)); }
+            } else if !self.worker_poll_fence_holds_in(tx,fence,worker_id).await? {
+                return Ok(Some(Probe::Stale));
+            }
         }
         // A concurrent duplicate may have leased since this poll began: the
         // binding row, locked first, makes it wait for that one's answer.
         if let Some(request) = request
             && !request.replayed_in(tx)
         {
-            Self::bind_workflow_poll(tx, request).await?;
-            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, task_queue).await? {
+            let cached = Self::bind_workflow_poll(tx, request).await?;
+            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, task_queue, cached).await? {
                 return Ok(Some(Probe::Replayed(answer)));
             }
         }
@@ -1088,7 +1092,7 @@ where
         order.sort_by_key(|kind| *kind != first);
         for kind in order {
             let leased = if kind == "workflow" {
-                self.claim_in(tx, body, "workflow", protocol_version, page, request).await?.map(|task| {
+                self.claim_with_registration(tx, body, "workflow", protocol_version, page, request, registration.take()).await?.map(|task| {
                     Leased::Workflow(json!({"task":task,"poll_status":"leased","server_capabilities":super::store::capabilities()}))
                 })
             } else if let Some(claim) = self.claim_update_validation_in(tx, worker_id, task_queue).await? {
