@@ -30,13 +30,24 @@ json_sha=$(sha256sum < "$lock_dir/composer.json" | cut -d' ' -f1)
 # Keyed by the full lock and manifest, so a different lock never reuses it.
 root="$PWD/parity-composer-cache-$lock_sha-$json_sha"
 home_config='{"config":{"cache-read-only":true,"cache-dir":"/composer-cache"}}'
+# The job that built a root. A root from any other job, restored or left in a
+# reused workspace, does not verify and is never used.
+job="${GITHUB_RUN_ID:-local}.${GITHUB_RUN_ATTEMPT:-0}.${GITHUB_JOB:-local}.${RUNNER_NAME:-$(hostname)}"
 
-# The cached files, as sha256sum lists them, in byte order.
-listing() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum); }
+# A tree's identity: every entry's type and mode, then each regular file's
+# SHA-256, in byte order. Ownership and times are deliberately excluded.
+listing() {
+    (cd "$1" && find . -mindepth 1 -printf '%y %m %P\n' | LC_ALL=C sort \
+        && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum)
+}
+# Only regular files and directories: no symlink, device, socket or pipe.
+plain() { test -z "$(find "$1" -mindepth 1 ! -type f ! -type d -print -quit)"; }
 
 verified() {
     test -d "$root" && ! test -L "$root" || return 1
     test "$(cat "$root/manifest/lock" 2>/dev/null)" = "$lock_sha $json_sha" || return 1
+    test "$(cat "$root/manifest/job" 2>/dev/null)" = "$job" || return 1
+    plain "$root/cache" && plain "$root/home" || return 1
     test "$(cat "$root/home/config.json" 2>/dev/null)" = "$home_config" || return 1
     test -s "$root/manifest/files" && test -s "$root/manifest/vendor" || return 1
     listing "$root/cache" | cmp -s - "$root/manifest/files"
@@ -61,12 +72,16 @@ case "$command" in
         bash scripts/ci/run-composer.sh --rm -v "$work/project:/sdk" \
             -v "$work/cache:/composer-cache" -e COMPOSER_CACHE_DIR=/composer-cache -w /sdk -- \
             install --no-interaction --no-progress
+        plain "$work/cache" && plain "$work/project/vendor" || exit 3
         printf '%s\n' "$home_config" > "$work/home/config.json"
         printf '%s %s\n' "$lock_sha" "$json_sha" > "$work/manifest/lock"
-        listing "$work/cache" > "$work/manifest/files"
+        printf '%s\n' "$job" > "$work/manifest/job"
         listing "$work/project/vendor" > "$work/manifest/vendor"
         rm -rf "$work/project"
-        chmod -R a-w "$work/cache" "$work/home" "$work/manifest"
+        # Record the cache's identity after it becomes read-only.
+        chmod -R a-w "$work/cache" "$work/home"
+        listing "$work/cache" > "$work/manifest/files"
+        chmod -R a-w "$work/manifest"
         mv "$work" "$root"
         trap - EXIT
         verified
@@ -85,7 +100,7 @@ case "$command" in
             echo "sdk-composer-cache: cache-backed install failed; use the authenticated install" >&2
             exit 3
         fi
-        if ! listing "$lock_dir/vendor" | cmp -s - "$root/manifest/vendor"; then
+        if ! plain "$lock_dir/vendor" || ! listing "$lock_dir/vendor" | cmp -s - "$root/manifest/vendor"; then
             echo "sdk-composer-cache: installed vendor tree differs from the recorded authenticated install" >&2
             exit 4
         fi

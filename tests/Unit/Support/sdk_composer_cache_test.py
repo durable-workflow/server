@@ -42,6 +42,7 @@ if [[ -z $ro ]]; then
   printf 'dist-lib\n' > "$cache/files/acme/lib/1.zip"
   printf 'code-lib\n' > "$sdk/vendor/acme/lib/Lib.php"
   printf '{"packages":["acme/lib"]}\n' > "$sdk/vendor/composer/installed.json"
+  [[ -z ${FAKE_WARM_LINK:-} ]] || ln -s 1.zip "$cache/files/acme/lib/alias.zip"
   exit 0
 fi
 [[ -n $offline ]] || { echo "cache-backed install must be offline" >&2; exit 9; }
@@ -51,6 +52,8 @@ mkdir -p "$sdk/vendor/acme/lib" "$sdk/vendor/composer"
 sed 's/dist-/code-/' "$cache/files/acme/lib/1.zip" > "$sdk/vendor/acme/lib/Lib.php"
 printf '{"packages":["acme/lib"]}\n' > "$sdk/vendor/composer/installed.json"
 [[ -z ${FAKE_DRIFT:-} ]] || printf 'extra\n' > "$sdk/vendor/acme/lib/Extra.php"
+[[ -z ${FAKE_EXEC:-} ]] || chmod 0755 "$sdk/vendor/acme/lib/Lib.php"
+[[ -z ${FAKE_LINK:-} ]] || ln -s Lib.php "$sdk/vendor/acme/lib/Alias.php"
 '''
 
 
@@ -155,6 +158,38 @@ class SdkComposerCacheTest(unittest.TestCase):
     def test_a_drifting_install_is_refused_not_fallen_back(self):
         result = self.run_helper("install", self.lock, FAKE_DRIFT="1")
         self.assertEqual(result.returncode, 4, result.stderr)
+
+    def test_a_cache_built_by_another_job_is_refused(self):
+        other_job = {"GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": "a", "RUNNER_NAME": "r1"}
+        self.assertEqual(self.run_helper("warm", self.lock, **other_job).returncode, 0)
+        this_job = {**other_job, "GITHUB_RUN_ID": "2"}
+        before = len(self.calls())
+        result = self.run_helper("install", self.lock, **this_job)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(len(self.calls()), before, "a restored root is neither used nor rebuilt in place")
+        self.assertEqual(self.run_helper("install", self.lock, **other_job).returncode, 0)
+
+    def test_a_symlink_or_mode_change_in_the_cache_is_refused(self):
+        self.assertEqual(self.run_helper("warm", self.lock).returncode, 0)
+        root, = self.roots()
+        files = root / "cache/files/acme/lib"
+        files.chmod(0o755)
+        (files / "2.zip").symlink_to("1.zip")
+        self.assertEqual(self.run_helper("install", self.lock).returncode, 3)
+        (files / "2.zip").unlink()
+        (files / "1.zip").chmod(0o555)  # mode only; bytes unchanged
+        files.chmod(0o555)
+        self.assertEqual(self.run_helper("install", self.lock).returncode, 3)
+
+    def test_a_symlink_present_at_warm_is_never_recorded_as_trusted(self):
+        result = self.run_helper("install", self.lock, FAKE_WARM_LINK="1")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(self.roots(), [])
+
+    def test_an_installed_mode_drift_or_symlink_is_refused(self):
+        self.assertEqual(self.run_helper("install", self.lock, FAKE_EXEC="1").returncode, 4)
+        other = self.lock_dir("link")
+        self.assertEqual(self.run_helper("install", other, FAKE_LINK="1").returncode, 4)
 
     def test_profiles_keep_the_unchanged_authenticated_install_as_fallback(self):
         for profile in PROFILES:
