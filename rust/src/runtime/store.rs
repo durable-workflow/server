@@ -12,7 +12,7 @@ use ulid::Ulid;
 // Each subquery keeps its original ordered lookup. The run and three
 // physical authored counters share one statement; history-based scope,
 // wait and redrive authority is still read by authored_sequence.
-pub(super) const AUTHORED_RUN_SQL: &str = "SELECT r.cancellation_delivery_sequence,r.run_number,COALESCE((SELECT sequence FROM activity_executions WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1),0) AS authored_activity_sequence,COALESCE((SELECT sequence FROM workflow_run_timers WHERE workflow_run_id=$2 ORDER BY sequence DESC LIMIT 1),0) AS authored_timer_sequence,COALESCE((SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$3 ORDER BY sequence DESC LIMIT 1),0) AS authored_child_sequence FROM workflow_runs r WHERE r.id=$4";
+pub(super) const AUTHORED_RUN_SQL: &str = "SELECT r.cancellation_delivery_sequence,r.run_number,(SELECT sequence FROM activity_executions WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1) AS authored_activity_sequence,(SELECT sequence FROM workflow_run_timers WHERE workflow_run_id=$2 ORDER BY sequence DESC LIMIT 1) AS authored_timer_sequence,(SELECT sequence FROM workflow_child_calls WHERE parent_workflow_run_id=$3 ORDER BY sequence DESC LIMIT 1) AS authored_child_sequence FROM workflow_runs r WHERE r.id=$4";
 
 pub(super) struct PreparedControlArguments {
     pub(super) arguments: String,
@@ -1323,9 +1323,11 @@ where
         let run = Self::query(AUTHORED_RUN_SQL)
             .bind(run_id).bind(run_id).bind(run_id).bind(run_id)
             .fetch_one(&mut **tx).await?;
-        let activities = DB::number(&run, "authored_activity_sequence")?;
-        let timers = DB::number(&run, "authored_timer_sequence")?;
-        let children = DB::number(&run, "authored_child_sequence")?;
+        // Each counter is its column's own nullable integer, not a COALESCE
+        // that MariaDB would type as DECIMAL; no row counts as zero.
+        let activities = DB::optional_number(&run, "authored_activity_sequence")?.unwrap_or(0);
+        let timers = DB::optional_number(&run, "authored_timer_sequence")?.unwrap_or(0);
+        let children = DB::optional_number(&run, "authored_child_sequence")?.unwrap_or(0);
         let wait = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('SignalWaitOpened','ConditionWaitOpened','VersionMarkerRecorded','MemoUpserted','SideEffectRecorded','SearchAttributesUpserted') ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_optional(&mut **tx).await?;
         let wait_sequence = wait

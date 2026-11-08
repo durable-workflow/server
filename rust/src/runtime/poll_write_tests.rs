@@ -105,8 +105,9 @@ store_methods! {
             }
             // These are stored-reader controls, not admission examples for
             // the wait/scope writers or their independent projections.
-            let first = Self::scalar("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
-                .bind(run_id).fetch_one(&mut *tx).await.unwrap();
+            // The physical column width differs by backend (INT4 on PostgreSQL).
+            let first = DB::number(&Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+                .bind(run_id).fetch_one(&mut *tx).await.unwrap(),"last_history_sequence").unwrap();
             let count = i64::try_from(events.len()).unwrap();
             for (index,(kind,payload)) in events.into_iter().enumerate() {
                 Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,recorded_at) VALUES ($1,$2,$3,$4,$5,$6)")
