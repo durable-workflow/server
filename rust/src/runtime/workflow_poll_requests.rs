@@ -425,11 +425,9 @@ store_methods! {
     /// binding replays for the whole live lease.
     pub(super) async fn remember_workflow_poll(tx: &mut Transaction<'_, DB>, request: &WorkflowPollRequest, response: &Value) -> Result<()> {
         let ttl = result_ttl(response, request.pending_ttl);
-        let binding_expiration = epoch() + ttl;
+        Self::put_workflow_poll_row(tx, &request.keys.binding, &json!({"task_kinds": request.kinds}), ttl).await?;
         let kept = if response["task"].is_object() && task_kind(response) == "workflow" { 3600 } else { ttl };
-        let result_expiration = epoch() + kept;
-        Self::put_workflow_poll_pair_until(tx, &request.keys, &json!({"task_kinds": request.kinds}),
-            binding_expiration, response, result_expiration).await
+        Self::put_workflow_poll_row(tx, &request.keys.result, response, kept).await
     }
 
     /// Whether a concurrent duplicate already left an answer to replay.
@@ -492,19 +490,6 @@ store_methods! {
         Ok(())
     }
 
-    async fn put_workflow_poll_pair_until(
-        tx: &mut Transaction<'_, DB>, keys: &WorkflowPollKeys, binding: &Value, binding_expiration: i64,
-        result: &Value, result_expiration: i64,
-    ) -> Result<()> {
-        // Keep both JSON values, independent expirations and original keys.
-        // This changes only the two writes after the existing locked claim.
-        Self::query(DB::QUERY_CACHE_PUT_PAIR)
-            .bind(&keys.binding).bind(binding.to_string()).bind(binding_expiration)
-            .bind(&keys.result).bind(result.to_string()).bind(result_expiration)
-            .execute(&mut **tx).await?;
-        Ok(())
-    }
-
     #[cfg(test)]
     pub(super) async fn expire_workflow_poll_binding_for_test(&self, request: &WorkflowPollRequest) {
         Self::query(DB::QUERY_CACHE_PUT).bind(&request.keys.binding)
@@ -550,73 +535,7 @@ store_methods! {
         }
         tx.rollback().await.unwrap();
         assert!(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&self.pool).await.unwrap().is_none());
-        self.qualify_workflow_poll_pair_writes().await;
         self.qualify_workflow_poll_pair_reads().await;
-    }
-
-    #[cfg(test)]
-    async fn qualify_workflow_poll_pair_writes(&self) {
-        let keys = WorkflowPollKeys {binding:"dw-native-workflow-poll:pair-binding".into(),
-            result:"dw-native-workflow-poll:pair-result".into()};
-        let binding = json!({"task_kinds":["workflow"]});
-        for existing in [0,1,2] {
-            let mut tx = self.begin().await.unwrap();
-            for key in [&keys.binding,&keys.result].into_iter().take(existing) {
-                Self::put_workflow_poll_row_until(&mut tx,key,&json!({"old":true}),1).await.unwrap();
-            }
-            for result in [json!({"task":null,"poll_status":"empty"}),json!({"task":{"text":"escaped \\\" λ"},"poll_status":"leased"})] {
-                let (written,counts) = super::sql_counts::measure(
-                    Self::put_workflow_poll_pair_until(&mut tx,&keys,&binding,1,&result,4_102_444_800),
-                ).await;
-                written.unwrap();
-                assert_eq!(counts.total(),1);
-                assert_eq!(counts.count(DB::QUERY_CACHE_PUT_PAIR),1);
-                let mut actual = Vec::new();
-                for key in [&keys.binding,&keys.result] {
-                    let row = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&mut *tx).await.unwrap();
-                    actual.push((DB::string(&row,"value").unwrap(),DB::number(&row,"expiration").unwrap()));
-                }
-                let (old,counts) = super::sql_counts::measure(async {
-                    Self::put_workflow_poll_row_until(&mut tx,&keys.binding,&binding,1).await?;
-                    Self::put_workflow_poll_row_until(&mut tx,&keys.result,&result,4_102_444_800).await
-                }).await;
-                old.unwrap();
-                assert_eq!(counts.total(),2);
-                assert_eq!(counts.count(DB::QUERY_CACHE_PUT),2);
-                for (key,expected) in [&keys.binding,&keys.result].into_iter().zip(actual) {
-                    let row = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&mut *tx).await.unwrap();
-                    assert_eq!((DB::string(&row,"value").unwrap(),DB::number(&row,"expiration").unwrap()),expected);
-                }
-            }
-            tx.rollback().await.unwrap();
-            for key in [&keys.binding,&keys.result] {
-                assert!(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&self.pool).await.unwrap().is_none());
-            }
-        }
-        let request = WorkflowPollRequest {id:"pair-writer".into(),keys:keys.clone(),pending_ttl:35,
-            kinds:normalized(&["workflow","update_validation"]),legacy_keys:vec![],expiration_cap:None};
-        // Exercise the actual caller as well as the writer, including the
-        // different retention of a workflow answer whose lease has elapsed.
-        // These are cache-writer vectors, not admitted protocol deliveries.
-        for (response,ttl,kept) in [
-            (json!({"task":null,"poll_status":"empty"}),35,35),
-            (json!({"task":{"task_id":"workflow","lease_expires_at":"2000-01-01T00:00:00Z"},"poll_status":"leased"}),35,3600),
-            (json!({"task":{"task_kind":"update_validation","update_validation_task_id":"validation","lease_expires_at":"2000-01-01T00:00:00Z"},"poll_status":"leased"}),35,35),
-        ] {
-            let mut tx = self.begin().await.unwrap();
-            let before = epoch();
-            let (result,counts) = super::sql_counts::measure(Self::remember_workflow_poll(&mut tx,&request,&response)).await;
-            result.unwrap();
-            let after = epoch();
-            assert_eq!(counts.total(),1);
-            assert_eq!(counts.count(DB::QUERY_CACHE_PUT_PAIR),1);
-            for (key,value,retained) in [(&keys.binding,json!({"task_kinds":request.kinds}),ttl),(&keys.result,response,kept)] {
-                let row = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&mut *tx).await.unwrap();
-                assert_eq!(DB::string(&row,"value").unwrap(),value.to_string());
-                assert!((before+retained..=after+retained).contains(&DB::number(&row,"expiration").unwrap()));
-            }
-            tx.rollback().await.unwrap();
-        }
     }
 
     #[cfg(test)]
