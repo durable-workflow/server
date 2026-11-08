@@ -16,6 +16,28 @@ pub(super) struct PollKeys {
     pending: String,
     result: String,
     current: String,
+    /// The namespace, queue, build ID and worker these keys cover.
+    scope: Value,
+}
+
+impl PollKeys {
+    // MySQL and MariaDB keys are varchar(64): keep 128 bits of the digest.
+    fn key(scope: &Value, kind: &str, id: Option<&str>) -> String {
+        let material = json!([kind, scope[0], scope[1], scope[2], scope[3], id]);
+        let digest: String = Sha256::digest(material.to_string().as_bytes())[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        format!("{POLL_PREFIX}{digest}")
+    }
+}
+
+/// A poll row as a lock-free reader sees it. Only a live row it can parse
+/// counts as present; an expired or unreadable one proves nothing.
+enum Peek {
+    Absent,
+    Live(Value),
+    Unproven,
 }
 
 fn pending_ttl(config: &QueryTaskConfig) -> i64 {
@@ -53,20 +75,13 @@ where
         .map(|row| DB::optional_string(&row, "build_id"))
         .transpose()?
         .flatten();
-        // MySQL and MariaDB keys are varchar(64): keep 128 bits of the digest.
-        let key = |kind: &str, id: Option<&str>| {
-            let material = json!([kind, self.namespace.as_ref(), queue, build, owner, id]);
-            let digest: String = Sha256::digest(material.to_string().as_bytes())[..16]
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect();
-            format!("{POLL_PREFIX}{digest}")
-        };
+        let scope = json!([self.namespace.as_ref(), queue, build, owner]);
         Ok(PollKeys {
             request_id: request_id.to_owned(),
-            pending: key("pending", Some(request_id)),
-            result: key("result", Some(request_id)),
-            current: key("current", None),
+            pending: PollKeys::key(&scope, "pending", Some(request_id)),
+            result: PollKeys::key(&scope, "result", Some(request_id)),
+            current: PollKeys::key(&scope, "current", None),
+            scope,
         })
     }
 
@@ -97,6 +112,23 @@ where
         Self::query(DB::QUERY_CACHE_PUT).bind(key).bind(value.to_string())
             .bind(now() + ttl).execute(&mut **tx).await?;
         Ok(())
+    }
+
+    /// Writes one poll row of this worker's scope exactly as given, for
+    /// controls that need a row the maintained paths would not write.
+    #[cfg(test)]
+    pub(super) async fn put_test_poll_row(&self, keys: &PollKeys, kind: &str, request: Option<&str>, raw: &str, ttl: i64) {
+        let mut tx = self.begin().await.unwrap();
+        Self::query(DB::QUERY_CACHE_PUT).bind(PollKeys::key(&keys.scope, kind, request)).bind(raw.to_owned())
+            .bind(now() + ttl).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    #[cfg(test)]
+    pub(super) async fn test_poll_row(&self, keys: &PollKeys, kind: &str, request: Option<&str>) -> Option<Value> {
+        let row = Self::query(DB::QUERY_CACHE_GET).bind(PollKeys::key(&keys.scope, kind, request))
+            .fetch_optional(&self.pool).await.unwrap()?;
+        Some(serde_json::from_str(&DB::string(&row, "value").unwrap()).unwrap())
     }
 
     #[cfg(test)]
@@ -365,6 +397,125 @@ where
         Ok(Some(response))
     }
 
+    /// A poll row as `peek_empty_poll` reads it: never deleted, and only a
+    /// live row that parses is present. Storage faults are returned.
+    async fn peek_poll_row(tx: &mut Transaction<'_, DB>, key: &str) -> Result<Peek> {
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET)
+            .bind(key)
+            .fetch_optional(&mut **tx)
+            .await?
+        else {
+            return Ok(Peek::Absent);
+        };
+        if DB::number(&row, "expiration")? <= now() {
+            return Ok(Peek::Unproven);
+        }
+        Ok(serde_json::from_str(&DB::string(&row, "value")?).map_or(Peek::Unproven, Peek::Live))
+    }
+
+    /// Server #1057: whether a new non-waiting poll would claim nothing and
+    /// write nothing a later answer depends on, proven from one read
+    /// snapshot without the transition lock. The locked path would make this
+    /// request current, find no task and remember "empty". Without those rows
+    /// a retry of this request polls again, as a poll a moment later would.
+    ///
+    /// Every fact holds at the snapshot's one instant:
+    /// - nothing is pending or remembered under this request ID;
+    /// - the worker's current request, if any, is another request that has
+    ///   already answered, so no waiting request of this worker is one this
+    ///   request would end by becoming current;
+    /// - the claim would accept the registration: the same live proof and
+    ///   poll fence, on this queue;
+    /// - the namespace has no open query task and no query bookkeeping due
+    ///   (`query_bookkeeping_idle`).
+    ///
+    /// A poll-row sweep due before or after the reads is left to the locked
+    /// path, which reserves and runs it. So is every fact this cannot prove
+    /// exactly; the locked path then keeps its own answers and refusals.
+    /// `snapshot_taken` runs once the snapshot has read its first row; only
+    /// tests use it, to order a racing commit against the snapshot.
+    pub(super) async fn peek_empty_poll(
+        &self,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+        fence: Option<&crate::runtime::worker_poll_fence::WorkerPollFence>,
+        keys: &PollKeys,
+        snapshot_taken: impl std::future::Future<Output = ()>,
+    ) -> Result<bool> {
+        use crate::runtime::poll_sweeps::Kind;
+        let interval = self.poll_sweep_config.interval;
+        if self.poll_sweeps.is_due(Kind::Query, interval) {
+            return Ok(false);
+        }
+        let mut read = self.begin_read().await?;
+        let proven = self.peek_empty_poll_in(&mut read, body, config, proof, fence, keys, snapshot_taken).await?;
+        read.commit().await?;
+        Ok(proven && !self.poll_sweeps.is_due(Kind::Query, interval))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn peek_empty_poll_in(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+        fence: Option<&crate::runtime::worker_poll_fence::WorkerPollFence>,
+        keys: &PollKeys,
+        snapshot_taken: impl std::future::Future<Output = ()>,
+    ) -> Result<bool> {
+        let owner = text(body, "worker_id")?;
+        let queue = text(body, "task_queue")?;
+        let pending = Self::peek_poll_row(tx, &keys.pending).await?;
+        snapshot_taken.await;
+        if !matches!(pending, Peek::Absent) || !matches!(Self::peek_poll_row(tx, &keys.result).await?, Peek::Absent) {
+            return Ok(false);
+        }
+        match Self::peek_poll_row(tx, &keys.current).await? {
+            Peek::Absent => {}
+            Peek::Unproven => return Ok(false),
+            Peek::Live(current) => {
+                // Exactly the row `mark_current_if_fresh` and the immediate
+                // path write, naming another request.
+                let Some(other) = current
+                    .as_object()
+                    .filter(|fields| fields.len() == 1)
+                    .and_then(|fields| fields.get("poll_request_id"))
+                    .and_then(Value::as_str)
+                    .filter(|other| *other != keys.request_id)
+                else {
+                    return Ok(false);
+                };
+                // A waiting request has a pending row. Between becoming
+                // current and starting to wait it has neither row, so only
+                // a remembered answer shows it has finished.
+                if !matches!(Self::peek_poll_row(tx, &PollKeys::key(&keys.scope, "pending", Some(other))).await?, Peek::Absent)
+                    || !matches!(Self::peek_poll_row(tx, &PollKeys::key(&keys.scope, "result", Some(other))).await?, Peek::Live(_))
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        let workers = Self::query("SELECT task_queue FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND status='active'")
+            .bind(self.namespace.as_ref())
+            .bind(owner)
+            .fetch_all(&mut **tx)
+            .await?;
+        if workers.len() != 1 || DB::string(&workers[0], "task_queue")? != queue {
+            return Ok(false);
+        }
+        if Self::query_worker_proof(&mut **tx, self.namespace.as_ref(), owner, config).await?.as_deref() != Some(proof) {
+            return Ok(false);
+        }
+        if let Some(fence) = fence
+            && !self.worker_poll_fence_holds_in(tx, fence, owner).await?
+        {
+            return Ok(false);
+        }
+        Self::query_bookkeeping_idle(tx, self.namespace.as_ref()).await
+    }
+
     pub(super) async fn coordinated_query_poll(
         &self,
         body: &Value,
@@ -376,6 +527,9 @@ where
         keys: &PollKeys,
     ) -> Result<Value> {
         if timeout == 0 {
+            if self.peek_empty_poll(body, config, proof, fence, keys, std::future::ready(())).await? {
+                return Ok(poll_result(None, "empty"));
+            }
             if let Some(response) = self.immediate_query_poll(body, config, proof, fence, keys).await? {
                 return Ok(response);
             }

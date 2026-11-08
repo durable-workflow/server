@@ -54,9 +54,23 @@ impl Sweeps {
         self.due_at(kind, interval, Instant::now())
     }
 
+    /// Whether `due` would run the sweep now, without reserving it. A
+    /// lock-free reader uses this to leave a due sweep to the locked path.
+    pub(super) fn is_due(&self, kind: Kind, interval: Duration) -> bool {
+        self.is_due_at(kind, interval, Instant::now())
+    }
+
+    fn is_due_at(&self, kind: Kind, interval: Duration, at: Instant) -> bool {
+        let last = self.slot(kind).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        last.is_none_or(|last| at.saturating_duration_since(last) >= interval)
+    }
+
+    fn slot(&self, kind: Kind) -> &Mutex<Option<Instant>> {
+        match kind { Kind::Workflow => &self.workflow, Kind::Query => &self.query, Kind::Receipts => &self.receipts }
+    }
+
     fn due_at(&self, kind: Kind, interval: Duration, at: Instant) -> bool {
-        let slot = match kind { Kind::Workflow => &self.workflow, Kind::Query => &self.query, Kind::Receipts => &self.receipts };
-        let mut last = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = self.slot(kind).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if last.is_some_and(|last| at.saturating_duration_since(last) < interval) { return false; }
         *last = Some(at);
         true
@@ -107,5 +121,22 @@ mod tests {
         assert!(sweeps.due_at(Kind::Workflow, interval, start + interval));
         assert!(!sweeps.due_at(Kind::Query, interval, start + Duration::from_millis(72)));
         assert!(sweeps.due_at(Kind::Query, interval, start + interval));
+    }
+
+    #[test]
+    fn a_due_peek_never_reserves_or_postpones_the_sweep() {
+        let sweeps = Sweeps::default();
+        let interval = Duration::from_millis(73);
+        let start = Instant::now();
+        // Never run: due, and peeking any number of times leaves it due.
+        for _ in 0..3 {
+            assert!(sweeps.is_due_at(Kind::Query, interval, start));
+        }
+        assert!(sweeps.due_at(Kind::Query, interval, start), "the locked caller still takes it");
+        assert!(!sweeps.is_due_at(Kind::Query, interval, start + Duration::from_millis(72)));
+        assert!(sweeps.is_due_at(Kind::Query, interval, start + interval));
+        assert!(sweeps.is_due_at(Kind::Query, interval, start + interval));
+        assert!(sweeps.due_at(Kind::Query, interval, start + interval), "a peek did not move the reservation");
+        assert!(sweeps.is_due_at(Kind::Workflow, interval, start), "kinds stay independent");
     }
 }

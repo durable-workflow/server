@@ -37,6 +37,9 @@ pub(super) const RESULT_BYTES: usize = 256 * 1024;
 
 #[path = "query_poll_requests.rs"]
 mod poll_requests;
+#[cfg(test)]
+#[path = "query_empty_poll_tests.rs"]
+mod empty_poll_tests;
 
 enum QueryClaim {
     Task(Value),
@@ -406,6 +409,43 @@ where
         use sha2::{Digest, Sha256};
         let digest: String = Sha256::digest(namespace.as_bytes()).iter().take(16).map(|byte| format!("{byte:02x}")).collect();
         format!("{OPEN_PREFIX}{digest}")
+    }
+
+    /// Whether, read in `tx`, a locked claim in this namespace would find no
+    /// open query task and write no query bookkeeping (Server #1057): the
+    /// 3.0.1 cutover is done, the receipt sweep has no minute to retire, and
+    /// the namespace's open set is absent or exactly empty. A task joins the
+    /// open set in the transaction that writes it, so a snapshot that cannot
+    /// see the membership cannot see the task either. A row this reader does
+    /// not recognize exactly is not evidence of an empty namespace; the
+    /// caller then takes the locked path, which keeps its own handling.
+    pub(super) async fn query_bookkeeping_idle(tx: &mut Transaction<'_, DB>, namespace: &str) -> Result<bool> {
+        let Some(Some(cutover)) = Self::cache_row(tx, CUTOVER_MARK).await? else {
+            return Ok(false);
+        };
+        if cutover["done"] != true {
+            return Ok(false);
+        }
+        // `sweep_query_receipts` writes when its mark is missing or a whole
+        // minute after the mark has passed.
+        let Some(Some(mark)) = Self::cache_row(tx, EXPIRY_MARK).await? else {
+            return Ok(false);
+        };
+        if mark["minute"].as_i64().and_then(|minute| minute.checked_add(1)).is_none_or(|next| next < now().div_euclid(60)) {
+            return Ok(false);
+        }
+        Ok(match Self::cache_row(tx, &Self::open_set_key(namespace)).await? {
+            None => true,
+            Some(set) => set == Some(json!({"namespace": namespace, "ids": []})),
+        })
+    }
+
+    /// A bookkeeping row as stored: absent, or its value if it parses.
+    async fn cache_row(tx: &mut Transaction<'_, DB>, key: &str) -> Result<Option<Option<Value>>> {
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&mut **tx).await? else {
+            return Ok(None);
+        };
+        Ok(Some(serde_json::from_str(&DB::string(&row, "value")?).ok()))
     }
 
     /// The namespace's listed open task ids: unique canonical ULIDs, at most
