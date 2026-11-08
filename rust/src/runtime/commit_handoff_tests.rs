@@ -159,7 +159,7 @@ store_methods! {
             Default::default(), None, None,
         )).await;
         assert_eq!(result.unwrap()["recorded"], true);
-        assert_eq!(statements.count("SELECT sequence FROM activity_executions WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1"), 1,
+        assert_eq!(statements.count(super::store::AUTHORED_RUN_SQL), 1,
             "scope validation and command application share one authored-sequence scan");
         let rows = Self::query("SELECT sequence,event_type FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence")
             .bind(started["run_id"].as_str().unwrap()).fetch_all(&self.pool).await.unwrap();

@@ -47,8 +47,11 @@ store_methods! {
             let (claimed, reads) = super::sql_counts::measure(self.count_poll(&name, multiplexed)).await;
             assert!(claimed["task"].is_object());
             assert_eq!(reads.count(super::worker_poll_fence::FENCE_REGISTRATION),1);
-            assert_eq!(reads.count("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2"),0,
-                "the claim must reuse the registration its in-transaction fence validated");
+            // The workflow claim reuses the row its in-transaction fence read.
+            // A multiplexed probe tries the validation kind first here, and
+            // claim_update_validation_in keeps its own registration read.
+            assert_eq!(reads.count("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2"),usize::from(multiplexed),
+                "the workflow claim must reuse the registration its in-transaction fence validated");
             assert_eq!(self.count_get(), 1, "one replay/claim probe, multiplexed={multiplexed}");
             self.count_reset();
             let replayed = self.count_poll(&name, multiplexed).await;
