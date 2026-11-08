@@ -778,7 +778,8 @@ const READS: &[(&str, &[&str])] = &[
     ("record_version_marker", &["change_id", "version", "min_supported", "max_supported"]),
     ("upsert_search_attributes", &["attributes", "attribute_types"]),
     ("upsert_memo", &["entries"]),
-    ("open_condition_wait", &["condition_key", "condition_definition_fingerprint", "condition_wait_occurrence_id", "timeout_seconds"]),
+    ("open_condition_wait", &["condition_key", "condition_definition_fingerprint", "condition_wait_occurrence_id", "timeout_seconds",
+        "deadline_policy", "condition_wait_timeout_budget_seconds"]),
     ("open_signal_wait", &["signal_name", "timeout_seconds"]),
 ];
 

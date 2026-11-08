@@ -61,9 +61,38 @@ pub(super) struct ConditionWait {
     key: Option<String>,
     fingerprint: Option<String>,
     occurrence: Option<String>,
+    /// The opening's `deadline_policy` and original authored budget
+    /// (`condition_wait_timeout_budget_seconds`), Server #269.
+    policy: Option<String>,
+    budget: Option<i64>,
 }
 
 impl ConditionWait {
+    pub(super) fn key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
+
+    pub(super) fn fingerprint(&self) -> Option<&str> {
+        self.fingerprint.as_deref()
+    }
+
+    pub(super) fn timer_id(&self) -> Option<&str> {
+        self.timer_id.as_deref()
+    }
+
+    pub(super) fn policy(&self) -> Option<&str> {
+        self.policy.as_deref()
+    }
+
+    pub(super) fn budget(&self) -> Option<i64> {
+        self.budget
+    }
+
+    /// The authored timeout its opening recorded, if any.
+    pub(super) fn timeout_seconds(&self) -> Option<i64> {
+        self.timeout_seconds
+    }
+
     pub(super) fn is_open(&self) -> bool {
         self.status == ConditionStatus::Open
     }
@@ -315,6 +344,8 @@ impl Waits {
             key: string(&payload["condition_key"]),
             fingerprint: string(&payload["condition_definition_fingerprint"]),
             occurrence: string(&payload["condition_wait_occurrence_id"]),
+            policy: string(&payload["deadline_policy"]),
+            budget: int(&payload["condition_wait_timeout_budget_seconds"]),
         }
     }
 

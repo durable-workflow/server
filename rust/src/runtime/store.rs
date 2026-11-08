@@ -3154,6 +3154,8 @@ where
                             "condition_definition_fingerprint",
                             "condition_wait_occurrence_id",
                             "timeout_seconds",
+                            "deadline_policy",
+                            "condition_wait_timeout_budget_seconds",
                         ],
                     )?;
                     if command
@@ -3165,6 +3167,7 @@ where
                     // `normalizeOpenConditionWaitCommand`: the key and the
                     // definition fingerprint are optional strings, of any form.
                     super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?;
+                    super::wait_timeouts::occurrence_deadline(command)?;
                 }
                 "open_signal_wait" => {
                     reject_fields(command, &["type", "signal_name", "timeout_seconds"])?;
@@ -3754,16 +3757,20 @@ where
             || command["type"] == "open_signal_wait"
         {
             let direct = command["type"] == "open_signal_wait";
+            // Server #269: decide the occurrence chain first, so an opted-in
+            // repeat of a still-open wait is checked like any reopen, and an
+            // anchored chain never takes a legacy fresh budget. Refusals
+            // write nothing.
+            let anchor = if direct {
+                super::wait_timeouts::OccurrenceAnchor::Legacy { open: false }
+            } else {
+                Self::occurrence_anchor(tx, &run_id, command).await?
+            };
             // A queued task can replay an occurrence another task already
             // opened. Keep that unresolved wait and its original deadline.
             // Keys and fingerprints can name distinct concurrent waits.
-            if !direct
-                && let Some(occurrence) = command["condition_wait_occurrence_id"]
-                    .as_str()
-                    .filter(|value| !value.is_empty())
-                && Self::waits(tx, &run_id).await?.conditions.iter().any(|wait| {
-                    wait.advanceable() && wait.occurrence() == Some(occurrence)
-                })
+            if matches!(anchor, super::wait_timeouts::OccurrenceAnchor::StillOpen
+                | super::wait_timeouts::OccurrenceAnchor::Legacy { open: true })
             {
                 return Ok(());
             }
@@ -3811,6 +3818,15 @@ where
                 "condition_wait_id"
             }] = json!(wait_id);
             payload["sequence"] = json!(sequence);
+            let deadline = match anchor {
+                super::wait_timeouts::OccurrenceAnchor::Reopen(at) => Some(at),
+                super::wait_timeouts::OccurrenceAnchor::First => super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?
+                    .map(|(_, fire_at)| fire_at),
+                _ => None,
+            };
+            if let Some(at) = deadline {
+                payload["occurrence_deadline_at"] = json!(super::cancellation_scopes::iso(at));
+            }
             Self::append(
                 tx,
                 &run_id,
@@ -3825,7 +3841,7 @@ where
             )
             .await?;
             if (!direct || pending_wait_id.is_none())
-                && let Some(timeout_task) = Self::schedule_wait_timeout(tx, &run, &payload, task_id).await?
+                && let Some(timeout_task) = Self::schedule_wait_timeout(tx, &run, &payload, task_id, deadline).await?
             {
                 created.push(timeout_task);
             }
@@ -5504,6 +5520,7 @@ fn capabilities_template() -> Value {
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
         "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true,
+        "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
     value["runtime_external_payload_transport"] = Value::Null;
     value["supported_workflow_task_commands"]

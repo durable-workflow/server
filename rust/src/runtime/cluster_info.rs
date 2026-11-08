@@ -63,6 +63,7 @@ pub(super) fn capabilities() -> Value {
         "child_workflow_timeouts",
         "child_workflow_start_turn",
         "condition_wait_idempotent_reopen",
+        "condition_wait_occurrence_deadline",
         "parent_close_policy",
         "non_retryable_failures",
         "worker_sessions",
@@ -210,10 +211,12 @@ mod tests {
             "workflow_update_runtime_contract", "waterline_v1_projection", "embedded_v2_import"] {
             assert!(caps.get(name).is_some(), "{name}");
         }
-        // PHP's names plus native's child turn and occurrence-id reopen.
-        assert_eq!(caps.as_object().unwrap().len(), 58);
+        // PHP's names plus native's child turn, occurrence-id reopen and
+        // occurrence deadline.
+        assert_eq!(caps.as_object().unwrap().len(), 59);
         assert_eq!(caps["child_workflow_start_turn"], json!(true));
         assert_eq!(caps["condition_wait_idempotent_reopen"], json!(true));
+        assert_eq!(caps["condition_wait_occurrence_deadline"], json!(true));
         assert_eq!(caps["response_compression"], json!([]));
         assert_eq!(caps["timer_runtime_contract"], json!(false));
         assert_eq!(caps["principal_attribution_contract"], json!(true));
