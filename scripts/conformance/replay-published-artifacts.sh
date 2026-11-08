@@ -224,7 +224,7 @@ fi
 mkdir -p "$run_root"
 run_root="$(cd "$run_root" && pwd)"
 run_label="$(printf '%s' "$(basename "$run_root")" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
-compose_project="dw-replay-${run_label}"
+compose_project="${COMPOSE_PROJECT_NAME:-dw-replay-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-$run_label}}"
 compose_cleanup_needed=0
 
 if [[ -z "$result_dir" ]]; then
@@ -658,7 +658,7 @@ from pathlib import Path
 from typing import Any
 
 result_dir = Path(sys.argv[1])
-compose_project = sys.argv[2]
+diagnostic_project = sys.argv[2]
 compose_file = sys.argv[3]
 prefix = sys.argv[4]
 
@@ -715,7 +715,7 @@ for name in ["bootstrap", "server", "mysql", "redis", "worker", "scheduler"]:
 
 diagnostics = {
     "schema": "durable-workflow.v2.replay-conformance.compose-startup-diagnostics",
-    "compose_project": compose_project,
+    "compose_project": diagnostic_project,
     "compose_file": Path(compose_file).name,
     "files": {
         "compose_up": f"{prefix}-up.log",
@@ -762,7 +762,7 @@ reason = sys.argv[3]
 phase = sys.argv[4]
 server_image = sys.argv[5]
 server_base_url = sys.argv[6]
-compose_project = sys.argv[7]
+diagnostic_project = sys.argv[7]
 
 REQUIRED = [
     "published_artifact_install_only",
@@ -838,7 +838,7 @@ finding = {
         "phase": phase,
         "server_image": server_image,
         "server_url": server_base_url,
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
         "diagnostics": diagnostics,
     },
     "expected_behavior": "the published server compose topology starts from the resolved Docker image before replay scenarios run",
@@ -910,7 +910,7 @@ metadata = {
         "reason": reason,
         "server_image": server_image,
         "server_url": server_base_url,
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
         "diagnostics_file": "compose-startup-diagnostics.json",
     },
     "result_files": [
@@ -965,7 +965,7 @@ started_at = sys.argv[2]
 reason = sys.argv[3]
 previous_exit_code = int(sys.argv[4])
 run_root = sys.argv[5]
-compose_project = sys.argv[6]
+diagnostic_project = sys.argv[6]
 required_scenarios = sys.argv[7].split()
 
 
@@ -1017,7 +1017,7 @@ finding = {
         "previous_exit_code": previous_exit_code,
         "previous_outcome": previous_outcome or None,
         "run_root": run_root,
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
         "logs": {
             "docker_compose_cleanup": "docker-compose-cleanup.log",
             "run_root_cleanup": "run-root-cleanup.log",
@@ -1102,7 +1102,7 @@ metadata.update({
         "reason": reason,
         "previous_exit_code": previous_exit_code,
         "run_root": run_root,
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
     },
 })
 
@@ -1523,7 +1523,7 @@ base_url = sys.argv[1].rstrip("/")
 token = sys.argv[2]
 replay_namespace = sys.argv[3]
 output = Path(sys.argv[4])
-compose_project = sys.argv[5]
+diagnostic_project = sys.argv[5]
 selected_namespaces = list(dict.fromkeys(["default", replay_namespace]))
 
 
@@ -1618,7 +1618,7 @@ evidence = {
     },
     "server_url": base_url,
     "isolation": {
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
         "fresh_published_server_topology": True,
     },
     "requests": requests,

@@ -63,7 +63,11 @@ cleanup() {
       if ! owner="$(query container inspect --format '{{ index .Config.Labels "dw.conformance.php-replay" }}' "$name")"; then residue=1; continue; fi
       if [[ "$owner" == "$scope" ]]; then
         docker logs "$name" >"$result_dir/${name}.log" 2>&1 || residue=1
-        docker rm -fv "$name" >/dev/null || residue=1
+        if [[ "$name" == "$probe" ]]; then
+          docker rm -fv "$probe" >/dev/null || residue=1
+        else
+          docker rm -fv "$server" >/dev/null || residue=1
+        fi
       else
         residue=1
       fi
