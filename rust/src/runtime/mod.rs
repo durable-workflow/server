@@ -185,6 +185,9 @@ mod task_repair;
 mod task_repair_http;
 mod terminal_summary;
 mod terminal_updates;
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub mod timer_holds;
 mod timer_summary;
 mod transaction;
 mod update_summary;
