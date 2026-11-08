@@ -285,6 +285,9 @@ mod timed_signal_waits;
 #[path = "execution/timed_condition_waits.rs"]
 mod timed_condition_waits;
 
+#[path = "execution/occurrence_deadlines.rs"]
+mod occurrence_deadlines;
+
 #[path = "execution/closed_wait_timeouts.rs"]
 mod closed_wait_timeouts;
 

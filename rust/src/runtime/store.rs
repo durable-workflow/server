@@ -3154,6 +3154,8 @@ where
                             "condition_definition_fingerprint",
                             "condition_wait_occurrence_id",
                             "timeout_seconds",
+                            "deadline_policy",
+                            "condition_wait_timeout_budget_seconds",
                         ],
                     )?;
                     if command
@@ -3165,6 +3167,7 @@ where
                     // `normalizeOpenConditionWaitCommand`: the key and the
                     // definition fingerprint are optional strings, of any form.
                     super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?;
+                    super::wait_timeouts::occurrence_deadline(command)?;
                 }
                 "open_signal_wait" => {
                     reject_fields(command, &["type", "signal_name", "timeout_seconds"])?;
@@ -3767,6 +3770,9 @@ where
             {
                 return Ok(());
             }
+            // Server #269: an opted-in occurrence keeps its first-open wall
+            // deadline across false-wake reopens. Refusals write nothing.
+            let anchor = if direct { None } else { Self::occurrence_anchor(tx, &run_id, command).await? };
             // Legacy opens and resolved occurrences keep PHP's per-open
             // behavior, including several waits with the same key.
             sequence += 1;
@@ -3811,6 +3817,15 @@ where
                 "condition_wait_id"
             }] = json!(wait_id);
             payload["sequence"] = json!(sequence);
+            let deadline = match anchor {
+                None => None,
+                Some(super::wait_timeouts::OccurrenceAnchor::Reopen(at)) => Some(at),
+                Some(super::wait_timeouts::OccurrenceAnchor::First) => super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?
+                    .map(|(_, fire_at)| fire_at),
+            };
+            if let Some(at) = deadline {
+                payload["occurrence_deadline_at"] = json!(super::cancellation_scopes::iso(at));
+            }
             Self::append(
                 tx,
                 &run_id,
@@ -3825,7 +3840,7 @@ where
             )
             .await?;
             if (!direct || pending_wait_id.is_none())
-                && let Some(timeout_task) = Self::schedule_wait_timeout(tx, &run, &payload, task_id).await?
+                && let Some(timeout_task) = Self::schedule_wait_timeout(tx, &run, &payload, task_id, deadline).await?
             {
                 created.push(timeout_task);
             }
@@ -5504,6 +5519,7 @@ fn capabilities_template() -> Value {
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
         "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true,
+        "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
     value["runtime_external_payload_transport"] = Value::Null;
     value["supported_workflow_task_commands"]

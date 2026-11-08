@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "63"
+  version: "64"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1783,6 +1783,16 @@ components:
       additionalProperties: true
       required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
+        condition_wait_occurrence_deadline:
+          type: boolean
+          description: >
+            Literal true accepts open_condition_wait deadline_policy "occurrence"
+            with condition_wait_timeout_budget_seconds. The server then keeps the
+            occurrence's first physical wait deadline (its timer fire_at) for every
+            same-chain reopen after a false wake. The chain is the run, occurrence
+            id, condition key, definition fingerprint and original budget; a new
+            occurrence or run gets a fresh budget. Without this capability a producer
+            must not send the policy, and per-open deadlines apply.
         workflow_task_completion_workflow_poll:
           type: boolean
           description: Literal true supports workflow_poll on workflow-task completion. If activity_poll delivers a lease, workflow_poll is not attempted and its response member is omitted. Omission delivers no workflow lease and releases its reservation without assuming queue emptiness or disabling this capability. Both supplied carriers must name the completing owner.
@@ -3521,6 +3531,28 @@ components:
                 type: [string, "null"]
                 x-durable-workflow-minimum-protocol-version: "1.17"
                 description: SDK-authored stable identity for one logical condition-wait occurrence.
+              deadline_policy:
+                type: [string, "null"]
+                enum: [occurrence, null]
+                x-durable-workflow-server-capability: condition_wait_occurrence_deadline
+                description: >
+                  "occurrence" keeps this occurrence's first-open wall deadline across
+                  false-wake reopens. It requires a nonempty condition_wait_occurrence_id,
+                  condition_wait_timeout_budget_seconds and an integer timeout_seconds no
+                  greater than that budget; the first open's timeout_seconds equals it.
+                  Reopens record occurrence_deadline_at and fire exactly then, already due
+                  if it has passed. Conflicts refuse with nothing written:
+                  condition_wait_occurrence_mismatch (identity or budget differs),
+                  condition_wait_occurrence_timed_out (the chain's timeout already fired),
+                  condition_wait_anchor_unavailable (no provable first anchor). Invalid
+                  shapes refuse 422 invalid_condition_deadline_policy.
+              condition_wait_timeout_budget_seconds:
+                type: [integer, "null"]
+                minimum: 0
+                x-durable-workflow-server-capability: condition_wait_occurrence_deadline
+                description: >
+                  The original authored timeout T of the occurrence, distinct from
+                  timeout_seconds, which is the worker's remaining replay budget.
         - if:
             properties:
               type: { const: record_local_activity }
