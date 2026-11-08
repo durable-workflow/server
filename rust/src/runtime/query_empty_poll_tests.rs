@@ -1,9 +1,10 @@
 //! Server #1057: a new non-waiting query poll is answered "empty" from one
 //! read snapshot, without the transition lock, only while every fact of that
 //! answer holds at once. Each other state takes the maintained locked path.
-use super::{CUTOVER_MARK, EXPIRY_MARK, read_arguments};
+// `now` is the query cache's clock: epoch seconds, as the bookkeeping rows use.
+use super::{CUTOVER_MARK, EXPIRY_MARK, now, read_arguments};
 use crate::codec::{Value as Payload, ValueCodec};
-use crate::runtime::{QueryTaskConfig, RuntimeError, store::{Store, now}, worker_poll_fence::PollAdmission};
+use crate::runtime::{QueryTaskConfig, RuntimeError, store::Store, worker_poll_fence::PollAdmission};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::{Arc, atomic::Ordering}, time::{Duration, Instant}};
 use tokio::sync::{Semaphore, oneshot};
@@ -81,8 +82,9 @@ store_methods! {
             for row in &page {
                 rows.push((DB::string(row, "key").unwrap(), DB::string(row, "value").unwrap(), DB::number(row, "expiration").unwrap()));
             }
-            match rows.last() {
-                Some((key, ..)) if page.len() == 64 => after.clone_from(key),
+            let last = rows.last().map(|(key, ..)| key.clone());
+            match last {
+                Some(key) if page.len() == 64 => after = key,
                 _ => return rows,
             }
         }
