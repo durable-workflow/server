@@ -136,6 +136,8 @@ bash scripts/ci/run-composer.sh --name "$resource-sdk" "${limits[@]}" -v "$state
     ;;
   *) echo "Refusing the cache-backed SDK install (exit $cached); see $evidence/sdk-install.txt" >&2; exit 1 ;;
 esac
+# The job log records which install produced this profile's SDK.
+if test "$cached" = 0; then echo "SDK install ($tag): verified job cache, offline"; else echo "SDK install ($tag): authenticated install (no verified cache)"; fi
 printf '%s  %s\n' "$(jq -r '.sdk_php_composer_lock_sha256' "$manifest")" "$state/sdk/composer.lock" \
   | sha256sum -c > "$evidence/sdk-lock.txt"
 docker run --name "$resource-tests" "${limits[@]}" --network none --entrypoint node "${shared[@]}" "$image" \
