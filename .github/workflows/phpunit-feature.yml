@@ -189,6 +189,9 @@ jobs:
       - name: Check published failover image identity and recovery result gates
         run: python3 -m unittest discover -s tests/Unit/Support -p 'single_region_failover*test.py'
 
+      - name: Require all PHP replay runtime cells and exact artifact identity
+        run: python3 -m unittest tests/Unit/Support/php_replay_published_test.py
+
   feature:
     name: PHPUnit feature suite
     needs: action-policy

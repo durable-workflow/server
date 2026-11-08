@@ -6,6 +6,11 @@ usage() {
 Usage: replay-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root[=1|true]]
 
 Runs deterministic replay conformance against published artifacts only.
+Use --focus php for the complete PHP replay matrix against Native Server,
+using a separate digest-pinned published tooling image (DW_REPLAY_PHP_RUNNER_IMAGE).
+The focused path retains MySQL, pinned by DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE.
+That focus requires --result-dir and emits php-replay-shard.json plus the
+original PHP runtime evidence, without claiming a three-SDK aggregate result.
 
 The runner writes these files to the result directory:
   pins.json
@@ -33,14 +38,24 @@ Environment overrides:
   DW_REPLAY_SERVER_PORT          Host port for the published server. Defaults to a free port.
   DW_REPLAY_AUTH_TOKEN           Token used against the published server. Defaults to replay-token.
   DW_REPLAY_NAMESPACE            Namespace used by replay runtime cells. Defaults to replay-conformance.
+  DW_REPLAY_PHP_RUNNER_IMAGE     ghcr.io/durable-workflow/sample-app-devcontainer@sha256:... for --focus php.
 USAGE
 }
 
 result_dir="${DW_REPLAY_RESULT_DIR:-}"
 keep_run_root="${DW_REPLAY_KEEP_RUN_ROOT:-0}"
+focus=all
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --focus)
+      focus="${2:?--focus requires a value}"
+      shift 2
+      ;;
+    --focus=*)
+      focus="${1#--focus=}"
+      shift
+      ;;
     --result-dir)
       result_dir="${2:?--result-dir requires a value}"
       shift 2
@@ -78,6 +93,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "$focus" in
+  all) ;;
+  php)
+    exec bash "$(dirname "${BASH_SOURCE[0]}")/php-sdk-replay-host-published-artifacts.sh" \
+      --result-dir "${result_dir:?--result-dir is required for --focus php}"
+    ;;
+  *) printf 'unsupported replay focus: %s\n' "$focus" >&2; exit 2 ;;
+esac
 
 timestamp() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
@@ -201,7 +225,7 @@ fi
 mkdir -p "$run_root"
 run_root="$(cd "$run_root" && pwd)"
 run_label="$(printf '%s' "$(basename "$run_root")" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
-compose_project="dw-replay-${run_label}"
+compose_project="${COMPOSE_PROJECT_NAME:-dw-replay-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-$run_label}}"
 compose_cleanup_needed=0
 
 if [[ -z "$result_dir" ]]; then
@@ -635,7 +659,7 @@ from pathlib import Path
 from typing import Any
 
 result_dir = Path(sys.argv[1])
-compose_project = sys.argv[2]
+diagnostic_project = sys.argv[2]
 compose_file = sys.argv[3]
 prefix = sys.argv[4]
 
@@ -692,7 +716,7 @@ for name in ["bootstrap", "server", "mysql", "redis", "worker", "scheduler"]:
 
 diagnostics = {
     "schema": "durable-workflow.v2.replay-conformance.compose-startup-diagnostics",
-    "compose_project": compose_project,
+    "compose_project": diagnostic_project,
     "compose_file": Path(compose_file).name,
     "files": {
         "compose_up": f"{prefix}-up.log",
@@ -739,7 +763,7 @@ reason = sys.argv[3]
 phase = sys.argv[4]
 server_image = sys.argv[5]
 server_base_url = sys.argv[6]
-compose_project = sys.argv[7]
+diagnostic_project = sys.argv[7]
 
 REQUIRED = [
     "published_artifact_install_only",
@@ -815,7 +839,7 @@ finding = {
         "phase": phase,
         "server_image": server_image,
         "server_url": server_base_url,
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
         "diagnostics": diagnostics,
     },
     "expected_behavior": "the published server compose topology starts from the resolved Docker image before replay scenarios run",
@@ -887,7 +911,7 @@ metadata = {
         "reason": reason,
         "server_image": server_image,
         "server_url": server_base_url,
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
         "diagnostics_file": "compose-startup-diagnostics.json",
     },
     "result_files": [
@@ -942,7 +966,7 @@ started_at = sys.argv[2]
 reason = sys.argv[3]
 previous_exit_code = int(sys.argv[4])
 run_root = sys.argv[5]
-compose_project = sys.argv[6]
+diagnostic_project = sys.argv[6]
 required_scenarios = sys.argv[7].split()
 
 
@@ -994,7 +1018,7 @@ finding = {
         "previous_exit_code": previous_exit_code,
         "previous_outcome": previous_outcome or None,
         "run_root": run_root,
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
         "logs": {
             "docker_compose_cleanup": "docker-compose-cleanup.log",
             "run_root_cleanup": "run-root-cleanup.log",
@@ -1079,7 +1103,7 @@ metadata.update({
         "reason": reason,
         "previous_exit_code": previous_exit_code,
         "run_root": run_root,
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
     },
 })
 
@@ -1500,7 +1524,7 @@ base_url = sys.argv[1].rstrip("/")
 token = sys.argv[2]
 replay_namespace = sys.argv[3]
 output = Path(sys.argv[4])
-compose_project = sys.argv[5]
+diagnostic_project = sys.argv[5]
 selected_namespaces = list(dict.fromkeys(["default", replay_namespace]))
 
 
@@ -1595,7 +1619,7 @@ evidence = {
     },
     "server_url": base_url,
     "isolation": {
-        "compose_project": compose_project,
+        "compose_project": diagnostic_project,
         "fresh_published_server_topology": True,
     },
     "requests": requests,
