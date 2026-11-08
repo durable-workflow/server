@@ -143,7 +143,7 @@ docker start "$server" >/dev/null
 creating="$probe"
 docker create --name "$probe" --label "$label" --network "$network" \
   --user "$(id -u):$(id -g)" --cpus=2 --memory=2g --pids-limit=512 \
-  --cap-drop=ALL --security-opt=no-new-privileges --read-only --tmpfs /tmp:rw,mode=1777 \
+  --cap-drop=ALL --security-opt=no-new-privileges --read-only --tmpfs /tmp:rw,exec,mode=1777 \
   --mount "type=bind,src=$script_dir,dst=/runner,readonly" \
   --mount "type=bind,src=$result_dir,dst=/result" \
   -e HOME=/tmp/php-replay-home \
@@ -154,7 +154,18 @@ docker create --name "$probe" --label "$label" --network "$network" \
   -e DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN=php-replay-worker \
   -e DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1 \
   --entrypoint bash "$runner_image" -euc '
-    mkdir -p "$HOME"
+    mkdir -p -m 0700 "$HOME/bin"
+    # The image PHP has a low-port file capability, which cannot execute with
+    # our empty bounding set. Use the same bytes without extended attributes.
+    original_php="$(readlink -f "$(command -v php)")"
+    cp --no-preserve=all "$original_php" "$HOME/bin/php"
+    chmod 0755 "$HOME/bin/php"
+    cmp "$original_php" "$HOME/bin/php"
+    test -z "$(getcap "$HOME/bin/php")"
+    getcap "$original_php" > /result/php-replay-interpreter.txt
+    sha256sum "$original_php" "$HOME/bin/php" >> /result/php-replay-interpreter.txt
+    awk "/^(CapBnd|CapEff|NoNewPrivs):/" /proc/self/status >> /result/php-replay-interpreter.txt
+    export PATH="$HOME/bin:$PATH"
     for command in php composer node python3 curl; do command -v "$command"; done > /result/php-replay-tools.txt
     php --version >> /result/php-replay-tools.txt
     composer --version >> /result/php-replay-tools.txt
