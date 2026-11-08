@@ -272,6 +272,23 @@ jobs:
             mirror.gcr.io/library/rust@sha256:300ec56abce8cc9448ddea2172747d048ed902a3090e6b57babb2bf19f754081 \
             mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c \
             "$(baseline php-2.11.8)"
+      # Every corpus job replays CLI 2.2.0. Fetch it once for the whole run,
+      # bound to its committed digest, instead of once per corpus job; each
+      # consumer verifies the same digest again before use.
+      - name: Fetch the parity CLI once, bound to its committed digest
+        run: |
+          set -euo pipefail
+          mkdir -p parity-cli
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 --retry-max-time 180 \
+            --output parity-cli/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+          printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-cli/dw.phar | sha256sum -c
+      - name: Share the verified parity CLI with the corpus jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: parity-cli-2.2.0
+          path: parity-cli
+          retention-days: 1
+          if-no-files-found: error
       # The adapters' pinned, --locked dependencies build the same way every
       # run. Restore their public Cargo registry data and build tree, keyed
       # by the toolchain image, the runner and every tracked adapter input.
@@ -582,6 +599,12 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
+      - name: Fetch this run's verified parity CLI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: parity-cli-2.2.0
+          path: parity-cli
+          digest-mismatch: error
       - name: Create TLS fixture certificates
         run: |
           set -euo pipefail
@@ -826,7 +849,7 @@ jobs:
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.8.json)
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
           mkdir -p parity-consumers
-          curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+          cp parity-cli/dw.phar parity-consumers/dw.phar
           printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c > parity-evidence/cli-artifact.txt
           export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
@@ -1360,6 +1383,12 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
+      - name: Fetch this run's verified parity CLI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: parity-cli-2.2.0
+          path: parity-cli
+          digest-mismatch: error
       # Exact dependency keys include the actual compiler pin, Cargo configuration
       # and vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
@@ -1582,7 +1611,7 @@ jobs:
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.8.json)
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
           mkdir -p parity-consumers
-          curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+          cp parity-cli/dw.phar parity-consumers/dw.phar
           printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c > parity-evidence/cli-artifact.txt
           export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
@@ -2144,6 +2173,12 @@ jobs:
           name: corrected-marker-adapters
           path: corrected-marker-adapters
           digest-mismatch: error
+      - name: Fetch this run's verified parity CLI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: parity-cli-2.2.0
+          path: parity-cli
+          digest-mismatch: error
       # Exact dependency keys include the actual compiler pin, Cargo configuration
       # and vendored crates. Server outputs are discarded before rebuilding.
       - name: Restore native Cargo dependencies from trusted main
@@ -2410,7 +2445,7 @@ jobs:
           image=$(jq -r '.server.images["linux/amd64"] | sub("^durableworkflow/server@"; "ghcr.io/durable-workflow/server@")' tests/Fixtures/ServerParityBaselines/php-2.11.8.json)
           export DW_PARITY_RUNNER_REVISION=$(git rev-parse HEAD)
           mkdir -p parity-consumers
-          curl --fail --location --retry 3 --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+          cp parity-cli/dw.phar parity-consumers/dw.phar
           printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-consumers/dw.phar | sha256sum -c > parity-evidence/cli-artifact.txt
           export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar
           docker run --rm --user=1000:1000 --entrypoint node --network "$RESOURCE_SCOPE" \
