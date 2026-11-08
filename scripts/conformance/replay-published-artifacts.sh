@@ -8,6 +8,7 @@ Usage: replay-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep
 Runs deterministic replay conformance against published artifacts only.
 Use --focus php for the complete PHP replay matrix against Native Server,
 using a separate digest-pinned published tooling image (DW_REPLAY_PHP_RUNNER_IMAGE).
+The focused path retains MySQL, pinned by DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE.
 That focus requires --result-dir and emits php-replay-shard.json plus the
 original PHP runtime evidence, without claiming a three-SDK aggregate result.
 

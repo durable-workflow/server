@@ -86,11 +86,13 @@ class PublishedPhpReplayTest(unittest.TestCase):
             base = dict(os.environ, PATH=str(root) + ':' + os.defpath,
                         CALLS=str(root / 'calls'), DW_SERVER_VERSION='3.3.0',
                         DW_PHP_SDK_VERSION='3.11.0', DW_SERVER_IMAGE=IMAGE,
+                        DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE='mysql@sha256:' + 'c' * 64,
                         DW_REPLAY_PHP_RUNNER_IMAGE='ghcr.io/durable-workflow/sample-app-devcontainer@sha256:' + 'b' * 64)
             for key, value in [('DW_SERVER_VERSION', 'latest'),
                                ('DW_PHP_SDK_VERSION', '^3.11'),
                                ('DW_SERVER_IMAGE', 'durableworkflow/server:3.3.0'),
                                ('DW_REPLAY_PHP_RUNNER_IMAGE', 'ghcr.io/foreign/tool@sha256:' + 'b' * 64),
+                               ('DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE', 'mysql:latest'),
                                ('DW_JOB_RESOURCE_PREFIX', 'bad/name')]:
                 with self.subTest(key=key):
                     env = dict(base); env[key] = value

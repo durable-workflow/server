@@ -9,11 +9,13 @@ if [[ $# != 2 || "$1" != --result-dir || -z "$2" ]]; then
 fi
 server_image="${DW_SERVER_IMAGE:-}"
 runner_image="${DW_REPLAY_PHP_RUNNER_IMAGE:-}"
+mysql_image="${DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE:-}"
 if [[ ! "${DW_SERVER_VERSION:-}" =~ ^3\.[0-9]+\.[0-9]+$ \
   || ! "${DW_PHP_SDK_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ \
   || ! "$server_image" =~ ^(docker.io/)?durableworkflow/server@sha256:[0-9a-f]{64}$ \
-  || ! "$runner_image" =~ ^ghcr.io/durable-workflow/sample-app-devcontainer@sha256:[0-9a-f]{64}$ ]]; then
-  echo 'PHP replay requires exact Native/SDK versions and digest-pinned Server and published tooling images.' >&2
+  || ! "$runner_image" =~ ^ghcr.io/durable-workflow/sample-app-devcontainer@sha256:[0-9a-f]{64}$ \
+  || ! "$mysql_image" =~ ^(docker.io/library/)?mysql@sha256:[0-9a-f]{64}$ ]]; then
+  echo 'PHP replay requires exact Native/SDK versions and digest-pinned Server, MySQL and published tooling images.' >&2
   exit 2
 fi
 scope="${DW_JOB_RESOURCE_PREFIX:-php-replay-$$}"
@@ -31,6 +33,7 @@ fi
 network="dw-php-replay-$scope"
 server="dw-php-replay-server-$scope"
 probe="dw-php-replay-probe-$scope"
+mysql="dw-php-replay-mysql-$scope"
 label="dw.conformance.php-replay=$scope"
 creating=''
 query() {
@@ -40,7 +43,7 @@ query() {
   printf '%s' "$value"
 }
 # A failed create must not make an existing foreign object eligible for cleanup.
-for name in "$server" "$probe"; do
+for name in "$server" "$probe" "$mysql"; do
   existing="$(query container ls -aq --filter "name=^/${name}$")"
   if [[ -n "$existing" ]]; then
     echo "Container name is already in use: $name" >&2; exit 2
@@ -57,7 +60,7 @@ cleanup() {
   # A timed-out create may still commit in the daemon. Do not report clean
   # custody from an immediate empty list after an unproved create.
   if [[ -n "$creating" ]]; then sleep 12; residue=1; fi
-  for name in "$probe" "$server"; do
+  for name in "$probe" "$server" "$mysql"; do
     if ! remaining="$(query container ls -aq --filter "name=^/${name}$")"; then residue=1; continue; fi
     if [[ -n "$remaining" ]]; then
       if ! owner="$(query container inspect --format '{{ index .Config.Labels "dw.conformance.php-replay" }}' "$name")"; then residue=1; continue; fi
@@ -65,8 +68,10 @@ cleanup() {
         docker logs "$name" >"$result_dir/${name}.log" 2>&1 || residue=1
         if [[ "$name" == "$probe" ]]; then
           docker rm -fv "$probe" >/dev/null || residue=1
-        else
+        elif [[ "$name" == "$server" ]]; then
           docker rm -fv "$server" >/dev/null || residue=1
+        else
+          docker rm -fv "$mysql" >/dev/null || residue=1
         fi
       else
         residue=1
@@ -88,19 +93,46 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+printf '{"server_version":"%s","server_image":"%s","php_sdk_version":"%s","tooling_image":"%s","mysql_image":"%s","backend":"mysql"}\n' \
+  "$DW_SERVER_VERSION" "$server_image" "$DW_PHP_SDK_VERSION" "$runner_image" "$mysql_image" \
+  >"$result_dir/php-replay-pins.json"
 docker pull "$server_image"
 docker pull "$runner_image"
+docker pull "$mysql_image"
 docker image inspect "$server_image" >"$result_dir/php-replay-server-image.json"
 docker image inspect "$runner_image" >"$result_dir/php-replay-tooling-image.json"
+docker image inspect "$mysql_image" >"$result_dir/php-replay-mysql-image.json"
 docker network create --label "$label" "$network" >/dev/null
+creating="$mysql"
+docker create --name "$mysql" --label "$label" --network "$network" \
+  --cpus=1 --memory=2g --pids-limit=512 \
+  --tmpfs /var/lib/mysql:rw \
+  -e MYSQL_DATABASE=durable_workflow -e MYSQL_USER=workflow \
+  -e MYSQL_PASSWORD=workflow -e MYSQL_ROOT_PASSWORD=php-replay-root \
+  "$mysql_image" >"$result_dir/php-replay-mysql-id.txt"
+grep -Ex '[0-9a-f]{64}' "$result_dir/php-replay-mysql-id.txt" >/dev/null
+creating=''
+docker start "$mysql" >/dev/null
+ready=0
+deadline=$((SECONDS + 120))
+while (( SECONDS < deadline )); do
+  # The entrypoint's temporary init server does not listen on TCP.
+  if timeout 5 docker exec "$mysql" mysqladmin --protocol=TCP -h127.0.0.1 \
+    -uroot -pphp-replay-root ping --silent >"$result_dir/php-replay-mysql-ready.log" 2>&1; then
+    ready=1; break
+  fi
+  sleep 1
+done
+test "$ready" = 1
 creating="$server"
 docker create --name "$server" --label "$label" --network "$network" \
-  --cpus=2 --memory=2g --pids-limit=512 --cap-drop=ALL \
+  --cpus=1 --memory=2g --pids-limit=512 --cap-drop=ALL \
   --security-opt=no-new-privileges --read-only \
   --tmpfs /app/database:rw,uid=1000,gid=1000,mode=0700 \
   --tmpfs /app/storage:rw,uid=1000,gid=1000,mode=0700 \
   --tmpfs /tmp:rw,mode=1777 \
-  -e DB_CONNECTION=sqlite -e DB_DATABASE=/app/database/replay.sqlite \
+  -e DB_CONNECTION=mysql -e DB_HOST="$mysql" -e DB_PORT=3306 \
+  -e DB_DATABASE=durable_workflow -e DB_USERNAME=workflow -e DB_PASSWORD=workflow \
   -e DW_BIND_ADDRESS=0.0.0.0:8080 -e DW_AUTH_DRIVER=token \
   -e DW_AUTH_TOKEN=php-replay-control -e DW_WORKER_TOKEN=php-replay-worker \
   "$server_image" >"$result_dir/php-replay-server-id.txt"
