@@ -273,15 +273,15 @@ jobs:
             mirror.gcr.io/library/python@sha256:bf44cdfcb76cd3b41e879bc058fc37ec5872002ccfde7fcb765e218cde0cd79c \
             "$(baseline php-2.11.8)"
       # Every corpus job replays CLI 2.2.0. Fetch it once for the whole run,
-      # bound to its committed digest, instead of once per corpus job; each
-      # consumer verifies the same digest again before use.
+      # bound to its committed digest and size, instead of once per corpus
+      # job: the release download URL, then the release-asset API URL only if
+      # that transfer fails (#1103). Each consumer verifies the digest again.
       - name: Fetch the parity CLI once, bound to its committed digest
+        timeout-minutes: 9
         run: |
           set -euo pipefail
-          mkdir -p parity-cli
-          curl --fail --proto '=https' --proto-redir '=https' --location --retry 5 --retry-all-errors --retry-delay 5 --retry-max-time 180 \
-            --output parity-cli/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
-          printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-cli/dw.phar | sha256sum -c
+          bash scripts/ci/fetch-parity-cli.sh \
+            "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" 626966 parity-cli/dw.phar
       - name: Share the verified parity CLI with the corpus jobs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -2374,6 +2374,7 @@ jobs:
               tests/Unit/ServerParityUpdateValidationProcessTest.mjs \
               tests/Unit/ServerParityKilledAuthorPollTest.mjs \
               tests/Unit/ServerParityImagePullTest.mjs \
+              tests/Unit/ServerParityCliFetchTest.mjs \
               tests/Unit/ServerParityAdapterCacheTest.mjs \
               tests/Unit/ServerParityWorkerSessionsContractTest.mjs \
               tests/Unit/ServerParityWorkerSessionActivitiesContractTest.mjs \
