@@ -192,7 +192,8 @@ docker create --name "$probe" --label "$label" --network "$network" \
       php -l /runner/php-sdk-condition-wait-export.php > /result/php-condition-export-lint.txt
       php /result/php-sdk-project/vendor/durable-workflow/sdk/scripts/qualify-condition-wait-native.php \
         /result/php-sdk-project/vendor/autoload.php "$DW_PHP_SDK_CONFORMANCE_SERVER_URL" \
-        > /result/php-condition-waits.json 2> /result/php-condition-waits.log
+        > /result/php-condition-waits.stdout.log 2> /result/php-condition-waits.log
+      python3 /runner/php-sdk-condition-wait-input.py --extract-report /result > /result/php-condition-waits.json
       php /runner/php-sdk-condition-wait-export.php > /result/php-condition-wait-exports.json
       python3 /runner/php-sdk-condition-wait-input.py /result > /result/php-condition-wait-input.sql
     fi

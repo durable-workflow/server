@@ -52,6 +52,20 @@ def report_runs(report):
     return rows
 
 
+def extract_report(raw):
+    """Keep the published CLI's progress separate from its final JSON object."""
+    lines = raw.splitlines(keepends=True)
+    progress = 0
+    for line in lines:
+        if not line.startswith(b'ok: '):
+            break
+        progress += 1
+    require(progress > 0, 'condition_cli_progress_missing')
+    report = json.loads(b''.join(lines[progress:]))
+    report_runs(report)
+    return report
+
+
 def validate_exports(report, exports):
     rows = report_runs(report)
     for case, run in rows:
@@ -127,6 +141,11 @@ def sql_input(report, exports, sql):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--extract-report':
+        root = Path(sys.argv[2])
+        report = extract_report((root / 'php-condition-waits.stdout.log').read_bytes())
+        sys.stdout.write(json.dumps(report, indent=2) + '\n')
+        return
     root = Path(sys.argv[1])
     report = json.loads((root / 'php-condition-waits.json').read_bytes())
     rows = report_runs(report)

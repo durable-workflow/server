@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -62,6 +63,25 @@ class InstalledConditionWaitInputTest(unittest.TestCase):
         self.assertIn("SELECT 'R0_run_inventory', COUNT(*)", result)
         self.assertIn('HAVING COUNT(*) <> 9;', result)
         self.assertTrue(result.endswith('\nROLLBACK;\n'))
+
+    def test_published_cli_progress_is_retained_separately_from_the_final_report(self):
+        report, _ = self.fixture()
+        raw = b'ok: runtime advertises condition_wait_idempotent_reopen\nok: history fits one complete page\n'
+        raw += json.dumps(report, indent=2).encode() + b'\n'
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(raw)
+        self.assertEqual(gate.extract_report(raw), report)
+
+    def test_cli_noise_crashes_missing_progress_and_partial_reports_refuse(self):
+        report, _ = self.fixture()
+        body = json.dumps(report).encode()
+        for raw in (body, b'ok: started\n', b'unexpected log\n' + body,
+                    b'ok: started\nunexpected log\n' + body,
+                    b'ok: started\n' + body + b'\ntrailing output',
+                    b'ok: started\n{}'):
+            with self.subTest(raw=raw[:60]):
+                with self.assertRaises(ValueError):
+                    gate.extract_report(raw)
 
     def test_missing_duplicate_and_untrusted_run_inventories_refuse(self):
         for mutation in ('missing_case', 'extra_case', 'missing_evidence', 'contract', 'duplicate', 'sql_id', 'workflow_id'):
