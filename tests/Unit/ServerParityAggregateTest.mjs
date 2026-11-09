@@ -71,6 +71,34 @@ test('path patterns follow GitHub filter semantics for the forms in use', () => 
   assert.deepEqual(matchingFiles(['rust/**', 'docs/x.md'], ['README.md', 'rust/Cargo.toml', 'docs/x.md']), ['rust/Cargo.toml', 'docs/x.md']);
 });
 
+test('only the publication subject is excluded from CI-helper fixture inputs', () => {
+  const patterns = pushPathPatterns(workflowText);
+  const subject = 'scripts/ci/native-qualification-subject.json';
+  assert.deepEqual(matchingFiles(patterns, [subject]), []);
+  // These executable helpers remain selected, including the isolation check
+  // that the changes job now executes before the expensive fixture fan-out.
+  const selected = ['rust/src/runtime/store.rs', 'Cargo.lock', '.github/workflows/server-parity.yml',
+    'scripts/ci/check-docker-workflow-isolation.py', 'scripts/ci/native_alias_evidence.py',
+    'scripts/ci/native_qualification.py', 'scripts/ci/new-helper.sh',
+    'scripts/ci/nested/native-qualification-subject.json',
+    'scripts/conformance/server-parity/native-image-corpus.sh'];
+  for (const file of selected) {
+    assert.deepEqual(matchingFiles(patterns, [file]), [file], `${file} must re-run the fixtures`);
+    assert.deepEqual(matchingFiles(patterns, [subject, file]), [file], `a subject change must not hide ${file}`);
+  }
+});
+
+test('negated path filters preserve GitHub ordering and refuse ambiguous YAML entries', () => {
+  assert.deepEqual(matchingFiles(['a/**', '!a/b.py', 'a/b*'], ['a/b.py', 'a/c.py', 'x.py']), ['a/b.py', 'a/c.py']);
+  assert.deepEqual(matchingFiles(['a/**', '!a/*.py'], ['a/b.py', 'a/b/c.py']), ['a/b/c.py']);
+  assert.throws(() => matchingFiles(['!a/**', 'b/**'], ['b/c']), /cannot start with a negated pattern/);
+  assert.throws(() => patternRegExp('!a/**'), /Unsupported path filter pattern/);
+  const listed = entries => pushPathPatterns(`on:\n  push:\n    paths:\n${entries}\njobs:\n`);
+  assert.deepEqual(listed("      - a/**\n      # Ordered exclusion\n      - '!a/b.py'"), ['a/**', '!a/b.py']);
+  assert.throws(() => listed('      - a/**\n      - !a/b.py'), /Unsupported path filter entry/);
+  assert.throws(() => listed("      - a/**\n      - '!a/b.py"), /Unsupported path filter entry/);
+});
+
 test('literal native inputs and parity imports are covered by the shared input list', () => {
   const sourceFiles = (directory, suffix) => readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
     const path = join(directory, entry.name);
@@ -331,6 +359,12 @@ function classify(root, env) {
 
 for (const [label, change, expected] of [
   ['a documentation-only change skips the fixtures', ({write}) => write('docs/note.md', 'x\n'), 'run=false'],
+  ['a publication-subject-only change skips the fixtures', ({write}) =>
+    write('scripts/ci/native-qualification-subject.json', '{}\n'), 'run=false'],
+  ['a publication subject cannot hide a Rust change', ({write}) => {
+    write('scripts/ci/native-qualification-subject.json', '{}\n');
+    write('rust/src/lib.rs', 'x\n');
+  }, 'run=true'],
   ['a Rust change runs the fixtures', ({write}) => write('rust/src/lib.rs', 'x\n'), 'run=true'],
   ['a configuration-audit contract edit runs the fixtures', ({write}) =>
     write('config/dw-contract.php', "<?php\nreturn ['fixture.option' => ['env' => 'FIXTURE_OPTION']];\n"), 'run=true'],
@@ -471,6 +505,8 @@ test('the workflow supplies the merge-group identity to the classifier', () => {
 for (const [label, change, expected] of [
   ['PHP-only changes skip the fixtures', ({write}) => write('app/Controller.php', '<?php\n'), 'run=false'],
   ['documentation-only changes skip the fixtures', ({write}) => write('docs/note.md', 'x\n'), 'run=false'],
+  ['a publication-subject-only change skips the fixtures', ({write}) =>
+    write('scripts/ci/native-qualification-subject.json', '{}\n'), 'run=false'],
   ['native changes run the fixtures', ({write}) => write('rust/src/lib.rs', 'x\n'), 'run=true'],
   ['parent Cargo configuration runs the fixtures', ({write}) => write('.cargo/config.toml', '[build]\n'), 'run=true'],
   ['parent Cargo manifests run the fixtures', ({write}) => write('Cargo.toml', '[workspace]\n'), 'run=true'],

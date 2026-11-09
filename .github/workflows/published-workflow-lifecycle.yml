@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: Existing lifecycle aggregate or complete PHP replay matrix
+        description: Lifecycle aggregate, complete PHP replay, or replay plus installed condition-wait cases
         required: true
         default: lifecycle
         type: choice
-        options: [lifecycle, php-replay]
+        options: [lifecycle, php-replay, php-replay-conditions]
       php_runner_image:
         description: Published tooling image digest for php-replay (no product source)
         required: false
@@ -67,6 +67,7 @@ jobs:
       SERVER_PORT: '0'
       DW_CONFORMANCE_EXPERIMENT: ${{ inputs.experiment }}
       DW_REPLAY_PHP_RUNNER_IMAGE: ${{ inputs.php_runner_image }}
+      DW_PHP_SDK_CONFORMANCE_CONDITION_WAITS: ${{ inputs.experiment == 'php-replay-conditions' && '1' || '0' }}
       DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE: mysql@sha256:679e7e924f38a3cbb62a3d7df32924b83f7321a602d3f9f967c01b3df18495d6
       DW_WORKFLOW_LIFECYCLE_REDIS_IMAGE: redis@sha256:0637954999d01b7c9ce9167db2da50656e2590d3b884f1c600c5f63bb6e6773c
     steps:
@@ -84,7 +85,7 @@ jobs:
           done
           case "$DW_CONFORMANCE_EXPERIMENT" in
             lifecycle) ;;
-            php-replay)
+            php-replay|php-replay-conditions)
               [[ "$DW_REPLAY_PHP_RUNNER_IMAGE" =~ ^ghcr.io/durable-workflow/sample-app-devcontainer@sha256:[0-9a-f]{64}$ ]]
               ;;
             *) exit 2 ;;
@@ -94,13 +95,17 @@ jobs:
         if: ${{ always() && steps.validate.outcome == 'success' }}
         run: |
           mkdir -p "$RUNNER_TEMP/published-workflow-lifecycle"
-          if [[ "$DW_CONFORMANCE_EXPERIMENT" == php-replay ]]; then
-            bash scripts/conformance/replay-published-artifacts.sh --focus php \
-              --result-dir "$RUNNER_TEMP/published-workflow-lifecycle"
-          else
-            bash scripts/conformance/workflow-lifecycle-host-published-artifacts.sh \
-              --result-dir "$RUNNER_TEMP/published-workflow-lifecycle"
-          fi
+          case "$DW_CONFORMANCE_EXPERIMENT" in
+            php-replay|php-replay-conditions)
+              bash scripts/conformance/replay-published-artifacts.sh --focus php \
+                --result-dir "$RUNNER_TEMP/published-workflow-lifecycle"
+              ;;
+            lifecycle)
+              bash scripts/conformance/workflow-lifecycle-host-published-artifacts.sh \
+                --result-dir "$RUNNER_TEMP/published-workflow-lifecycle"
+              ;;
+            *) exit 2 ;;
+          esac
 
       - name: Remove job-owned lifecycle containers and network
         if: always()
@@ -114,7 +119,7 @@ jobs:
           docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.php.yml down --volumes --remove-orphans >/dev/null 2>&1 || true
 
       - name: Require PHP replay cleanup receipt
-        if: ${{ always() && steps.validate.outcome == 'success' && inputs.experiment == 'php-replay' }}
+        if: ${{ always() && steps.validate.outcome == 'success' && (inputs.experiment == 'php-replay' || inputs.experiment == 'php-replay-conditions') }}
         run: test "$(<"$RUNNER_TEMP/published-workflow-lifecycle/php-replay-cleanup.txt")" = 'cleanup=0'
 
       - name: Make lifecycle evidence readable
@@ -140,6 +145,7 @@ jobs:
             ${{ runner.temp }}/published-workflow-lifecycle/*.txt
             ${{ runner.temp }}/published-workflow-lifecycle/*.csv
             ${{ runner.temp }}/published-workflow-lifecycle/*.tsv
+            ${{ runner.temp }}/published-workflow-lifecycle/*.sql
             ${{ runner.temp }}/published-workflow-lifecycle/*.sqlite
           if-no-files-found: error
           retention-days: 30

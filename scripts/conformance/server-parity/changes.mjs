@@ -28,10 +28,15 @@ export function pushPathPatterns(workflowText) {
   let inPaths = false;
   for (const line of lines.slice(push + 1)) {
     if (/^ {0,3}\S/.test(line)) break;
+    if (/^ {4,}#/.test(line)) continue;
     if (line === '    paths:') {
       inPaths = true;
     } else if (inPaths && line.startsWith('      - ')) {
-      patterns.push(line.slice('      - '.length).trim());
+      // YAML requires quoting a leading ! so it is not read as a tag.
+      const entry = line.slice('      - '.length).trim();
+      const quoted = /^'(![^']+)'$/.exec(entry);
+      if (!quoted && /^['"!]/.test(entry)) throw new Error(`Unsupported path filter entry: ${entry}`);
+      patterns.push(quoted ? quoted[1] : entry);
     } else if (inPaths) {
       break;
     }
@@ -66,8 +71,12 @@ export function nulSeparatedPaths(bytes) {
 }
 
 export function matchingFiles(patterns, files) {
-  const expressions = patterns.map(patternRegExp);
-  return files.filter(file => expressions.some(expression => expression.test(file)));
+  // GitHub evaluates paths in order: the last matching pattern decides.
+  const rules = patterns.map(pattern => pattern.startsWith('!')
+    ? {include: false, expression: patternRegExp(pattern.slice(1))}
+    : {include: true, expression: patternRegExp(pattern)});
+  if (rules.length > 0 && !rules[0].include) throw new Error('A path filter cannot start with a negated pattern');
+  return files.filter(file => rules.reduce((selected, rule) => rule.expression.test(file) ? rule.include : selected, false));
 }
 
 function classify({event, headSha, mergeBaseRef, mergeBaseSha, mergeHeadSha, workflowPath}) {

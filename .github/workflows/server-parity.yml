@@ -14,6 +14,9 @@ on:
       - Cargo.lock
       - scripts/conformance/**
       - scripts/ci/**
+      # Publication identity is checked by Native promotion contracts. The
+      # fixture jobs do not read it; every other CI helper stays selected.
+      - '!scripts/ci/native-qualification-subject.json'
       - tests/Unit/ServerParity*.mjs
       - tests/Support/ServerParity*.mjs
       - scripts/conformance/server-parity*
