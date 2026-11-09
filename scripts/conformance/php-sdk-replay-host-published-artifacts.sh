@@ -10,11 +10,13 @@ fi
 server_image="${DW_SERVER_IMAGE:-}"
 runner_image="${DW_REPLAY_PHP_RUNNER_IMAGE:-}"
 mysql_image="${DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE:-}"
+condition_waits="${DW_PHP_SDK_CONFORMANCE_CONDITION_WAITS:-0}"
 if [[ ! "${DW_SERVER_VERSION:-}" =~ ^3\.[0-9]+\.[0-9]+$ \
   || ! "${DW_PHP_SDK_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ \
   || ! "$server_image" =~ ^(docker.io/)?durableworkflow/server@sha256:[0-9a-f]{64}$ \
   || ! "$runner_image" =~ ^ghcr.io/durable-workflow/sample-app-devcontainer@sha256:[0-9a-f]{64}$ \
-  || ! "$mysql_image" =~ ^(docker.io/library/)?mysql@sha256:[0-9a-f]{64}$ ]]; then
+  || ! "$mysql_image" =~ ^(docker.io/library/)?mysql@sha256:[0-9a-f]{64}$ \
+  || ! "$condition_waits" =~ ^[01]$ ]]; then
   echo 'PHP replay requires exact Native/SDK versions and digest-pinned Server, MySQL and published tooling images.' >&2
   exit 2
 fi
@@ -134,7 +136,8 @@ docker create --name "$server" --label "$label" --network "$network" \
   -e DB_CONNECTION=mysql -e DB_HOST="$mysql" -e DB_PORT=3306 \
   -e DB_DATABASE=durable_workflow -e DB_USERNAME=workflow -e DB_PASSWORD=workflow \
   -e DW_BIND_ADDRESS=0.0.0.0:8080 -e DW_AUTH_DRIVER=token \
-  -e DW_AUTH_TOKEN=php-replay-control -e DW_WORKER_TOKEN=php-replay-worker \
+  -e DW_AUTH_TOKEN=claimed-task-admin -e DW_OPERATOR_TOKEN=claimed-task-client \
+  -e DW_WORKER_TOKEN=claimed-task-worker \
   "$server_image" >"$result_dir/php-replay-server-id.txt"
 grep -Ex '[0-9a-f]{64}' "$result_dir/php-replay-server-id.txt" >/dev/null
 creating=''
@@ -150,9 +153,10 @@ docker create --name "$probe" --label "$label" --network "$network" \
   -e DW_SERVER_VERSION -e DW_SERVER_IMAGE -e DW_PHP_SDK_VERSION \
   -e DW_PHP_SDK_CONFORMANCE_SERVER_URL="http://$server:8080" \
   -e DW_PHP_SDK_CONFORMANCE_NAMESPACE=php-replay-conformance \
-  -e DW_PHP_SDK_CONFORMANCE_TOKEN=php-replay-control \
-  -e DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN=php-replay-worker \
+  -e DW_PHP_SDK_CONFORMANCE_TOKEN=claimed-task-admin \
+  -e DW_PHP_SDK_CONFORMANCE_WORKER_TOKEN=claimed-task-worker \
   -e DW_PHP_SDK_CONFORMANCE_REPLAY_MATRIX=1 \
+  -e DW_PHP_SDK_CONFORMANCE_CONDITION_WAITS="$condition_waits" \
   --entrypoint bash "$runner_image" -euc '
     mkdir -p -m 0700 "$HOME/bin"
     # The image PHP has a low-port file capability, which cannot execute with
@@ -182,6 +186,16 @@ docker create --name "$probe" --label "$label" --network "$network" \
       --data "{\"name\":\"$DW_PHP_SDK_CONFORMANCE_NAMESPACE\",\"retention_days\":7}" \
       "$DW_PHP_SDK_CONFORMANCE_SERVER_URL/api/namespaces" > /result/php-replay-namespace.json
     bash /runner/php-sdk-published-artifacts.sh --result-dir /result
+    if [[ "$DW_PHP_SDK_CONFORMANCE_CONDITION_WAITS" == 1 ]]; then
+      # Run the qualifier from the normal installed package, with its own
+      # synthetic namespace and worker. The original replay matrix stays intact.
+      php -l /runner/php-sdk-condition-wait-export.php > /result/php-condition-export-lint.txt
+      php /result/php-sdk-project/vendor/durable-workflow/sdk/scripts/qualify-condition-wait-native.php \
+        /result/php-sdk-project/vendor/autoload.php "$DW_PHP_SDK_CONFORMANCE_SERVER_URL" \
+        > /result/php-condition-waits.json 2> /result/php-condition-waits.log
+      php /runner/php-sdk-condition-wait-export.php > /result/php-condition-wait-exports.json
+      python3 /runner/php-sdk-condition-wait-input.py /result > /result/php-condition-wait-input.sql
+    fi
     python3 /runner/php-sdk-replay-result.py /result
   ' >"$result_dir/php-replay-probe-id.txt"
 grep -Ex '[0-9a-f]{64}' "$result_dir/php-replay-probe-id.txt" >/dev/null
@@ -189,3 +203,15 @@ creating=''
 docker start --attach "$probe" >"$result_dir/php-replay-shard.log" 2>&1
 test "$(query container inspect --format '{{.State.Status}}' "$probe")" = exited
 test "$(query container inspect --format '{{.State.ExitCode}}' "$probe")" = 0
+if [[ "$condition_waits" == 1 ]]; then
+  # The reviewed checker is SELECT-only, and the session is read-only too.
+  timeout 60 docker exec -i -e MYSQL_PWD=workflow "$mysql" mysql \
+    --default-character-set=utf8mb4 --batch --raw --skip-column-names -uworkflow durable_workflow \
+    < "$result_dir/php-condition-wait-input.sql" \
+    > "$result_dir/php-condition-wait-sql.tsv" 2> "$result_dir/php-condition-wait-sql.err"
+  test ! -s "$result_dir/php-condition-wait-sql.err"
+  test ! -s "$result_dir/php-condition-wait-sql.tsv"
+  sha256sum "$result_dir/php-condition-wait-input.sql" > "$result_dir/php-condition-wait-sql-sha256.txt"
+  printf '{"outcome":"pass","violations":0,"readonly_transaction":true}\n' \
+    > "$result_dir/php-condition-wait-sql-check.json"
+fi

@@ -93,6 +93,7 @@ class PublishedPhpReplayTest(unittest.TestCase):
                                ('DW_SERVER_IMAGE', 'durableworkflow/server:3.3.0'),
                                ('DW_REPLAY_PHP_RUNNER_IMAGE', 'ghcr.io/foreign/tool@sha256:' + 'b' * 64),
                                ('DW_WORKFLOW_LIFECYCLE_MYSQL_IMAGE', 'mysql:latest'),
+                               ('DW_PHP_SDK_CONFORMANCE_CONDITION_WAITS', 'true'),
                                ('DW_JOB_RESOURCE_PREFIX', 'bad/name')]:
                 with self.subTest(key=key):
                     env = dict(base); env[key] = value

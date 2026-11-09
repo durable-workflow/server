@@ -16,7 +16,7 @@ name: durable-workflow-server
 # release whose default names another image). Set DW_SERVER_IMAGE to run
 # any other native image, by tag or digest; pin a digest for production
 # change control.
-x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.3.0}
+x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.3.1}
 
 services:
   server:
