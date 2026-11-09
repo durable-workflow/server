@@ -4163,13 +4163,12 @@ where
             self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                 .await?;
         }
+        let closed_at = now();
         Self::query("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3")
-            .bind(&result).bind(DB::bind_time(now())).bind(&activity_id).execute(&mut *tx).await?;
-        let activity = Self::query("SELECT * FROM activity_executions WHERE id=$1")
-            .bind(&activity_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        let mut payload = Self::activity_payload(&activity)?;
+            .bind(&result).bind(DB::bind_time(closed_at)).bind(&activity_id).execute(&mut *tx).await?;
+        // The fenced row and these exact writes determine the snapshot.
+        // now() is whole milliseconds, preserved by every supported backend.
+        let mut payload = Self::activity_payload_with_completion(&activity, Some(closed_at))?;
         let metadata = super::selections::activity_metadata(DB::optional_document_row(
             &activity,
             "parallel_group_path",
@@ -5051,6 +5050,15 @@ where
     }
 
     pub(super) fn activity_payload(activity: &DB::Row) -> Result<Value> {
+        Self::activity_payload_with_completion(activity, None)
+    }
+
+    fn activity_payload_with_completion(
+        activity: &DB::Row,
+        completed_at: Option<DateTime<Utc>>,
+    ) -> Result<Value> {
+        // Only completion supplies overwritten fields; other callers retain
+        // the original row reads and their decode order.
         let mut payload = json!({"activity_execution_id": DB::string(activity,"id")?, "activity_type": DB::string(activity,"activity_type")?,
         "activity_class": DB::string(activity,"activity_class")?, "sequence": DB::number(activity,"sequence")?,
         "activity": {"id":DB::string(activity,"id")?,"idempotency_key":DB::string(activity,"id")?,
@@ -5058,10 +5066,11 @@ where
             "class":DB::string(activity,"activity_class")?,"local_activity":false,
             "activity_type": DB::string(activity,"activity_type")?, "arguments": DB::optional_string(activity,"arguments")?.map(|arguments| wire(&arguments)),
             "retry_policy":DB::optional_document_row(activity,"retry_policy")?,
-            "status":DB::string(activity,"status")?,"attempt_count":DB::number(activity,"attempt_count")?,
-            "closed_at":DB::optional_instant(activity,"closed_at")?,
+            "status":if completed_at.is_some() { "completed".to_owned() } else { DB::string(activity,"status")? },
+            "attempt_count":DB::number(activity,"attempt_count")?,
+            "closed_at":match completed_at { Some(at) => Some(at), None => DB::optional_instant(activity,"closed_at")? },
             "attempt_id":DB::optional_string(activity,"current_attempt_id")?,
-            "exception":DB::optional_string(activity,"exception")?.map(|value|wire(&value)),
+            "exception":(if completed_at.is_some() { None } else { DB::optional_string(activity,"exception")? }).map(|value|wire(&value)),
             "payload_codec": "avro", "queue": DB::string(activity,"queue")?}});
         let metadata = super::selections::activity_metadata(DB::optional_document_row(
             activity,

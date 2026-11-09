@@ -1194,6 +1194,16 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_activity_completion_snapshot_skips_readback() {
+        let db = Database::new().await;
+        let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+        store.qualify_activity_completion_without_readback().await;
+        store.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
     async fn qualification_poll_cache_single_statement_writes() {
         let db = Database::new().await;
         let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
