@@ -428,8 +428,16 @@ where
     /// `WorkflowCompatibilityFleet::detailsForNamespace` from the
     /// registrations whose heartbeat is within the fleet window.
     pub(super) async fn fleet_snapshots(&self, at: DateTime<Utc>) -> Result<Vec<(String, Option<String>, Vec<String>, DateTime<Utc>)>> {
+        let mut connection = self.pool.acquire().await?;
+        self.fleet_snapshots_in(&mut connection, at).await
+    }
+
+    /// `fleet_snapshots` on a given connection.
+    pub(super) async fn fleet_snapshots_in(
+        &self, connection: &mut DB::Connection, at: DateTime<Utc>,
+    ) -> Result<Vec<(String, Option<String>, Vec<String>, DateTime<Utc>)>> {
         let rows = Self::query("SELECT worker_id,task_queue,build_id,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND last_heartbeat_at IS NOT NULL")
-            .bind(self.namespace.as_ref()).fetch_all(&self.pool).await?;
+            .bind(self.namespace.as_ref()).fetch_all(&mut *connection).await?;
         let mut snapshots = Vec::new();
         for row in rows {
             let Some(heartbeat) = DB::optional_instant(&row, "last_heartbeat_at")? else { continue };
@@ -838,7 +846,7 @@ where
         // `WorkflowRunDiagnostics`: the definition route of the next ready
         // task, and a warning when no eligible worker can take it.
         let mut tx = self.begin_read().await?;
-        let routing = self.definition_inspect(&mut tx, &run, None).await?;
+        let routing = self.definition_inspect(&mut tx, &run, None, None).await?;
         tx.commit().await?;
         if routing["blocked"] == true {
             findings.push(json!({"severity": "warning", "code": "workflow_definition_routing_blocked",

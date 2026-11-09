@@ -114,7 +114,7 @@ where
                 .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?,
         };
         if let Some(run) = run {
-            response["definition_routing"] = self.definition_inspect(&mut tx, &run, None).await?;
+            response["definition_routing"] = self.definition_inspect(&mut tx, &run, None, None).await?;
         }
         tx.commit().await?;
         Ok((status, response))
