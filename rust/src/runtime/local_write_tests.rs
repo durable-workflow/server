@@ -9,7 +9,8 @@ store_methods! {
         let codec = ValueCodec::new().unwrap();
         let empty = codec.encode(&Payload::Array(vec![])).unwrap();
         self.register(json!({"worker_id":"local-batch-worker", "task_queue":"local-batches", "runtime":"php",
-            "supported_workflow_types":["local-batches"], "supported_activity_types":[], "capabilities":["local_activities"]}),
+            "supported_workflow_types":["local-batches"], "supported_activity_types":[], "capabilities":["local_activities"],
+            "capability_manifest":{"local_activities":{"supported":true}}}),
             &super::QueryTaskConfig::default(), Some("1.20")).await.unwrap();
         for (name, records, result_bytes) in [("small",40,0), ("split",4,250_000), ("single",1,900_000)] {
             let result = codec.encode(&Payload::String("x".repeat(result_bytes))).unwrap();
