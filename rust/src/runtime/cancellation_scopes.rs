@@ -1160,6 +1160,7 @@ store_methods! {
     /// after each descendant or fence fetches only the rows written since,
     /// instead of every row again while it holds the transition lock.
     pub(super) async fn scope_events(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<Arc<Vec<Event>>> {
+        Self::write_local_activities(tx).await?;
         let mut events = match tx.scope_history.take() {
             Some(cache) if cache.run_id == run_id => cache.events,
             _ => Arc::new(Vec::new()),
