@@ -69,6 +69,162 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.1.0 / Server 3.3.2 (native)
+
+The default image changes from native Server 3.0.5 to 3.3.2
+(`image.tag: "3.3.2"`), so the rendered Deployment runs the new image. If your
+values pin `image.tag` or `image.digest`, change it to 3.3.2 yourself. No
+template, values contract or values schema changes. The chart moves a minor
+version because the Server crosses three minor releases (3.1, 3.2 and 3.3), and
+**this upgrade changes the native database schema**.
+
+#### Schema upgrade: 8 → 11
+
+| Server | Native schema (MySQL, MariaDB, PostgreSQL) |
+| --- | --- |
+| 3.0.x (chart 1.0.0 to 1.0.3) | 8 |
+| 3.1.0 | 8 |
+| 3.2.0 | 10 |
+| 3.3.0, 3.3.1, 3.3.2 | 11 |
+
+A Server never upgrades its schema at startup. Server 3.3.2 started on a
+version 8 database refuses with `native_schema_upgrade_required`, so changing
+the image alone leaves the new pods unable to start. The 3.3.2 image's
+`schema-upgrade` command upgrades a version 8 database directly to version 11.
+It runs the version 9, 10 and 11 steps in order: a `ready_origin_at` column on
+`workflow_tasks` (9), indexes on `dw_query_cache` and `dw_poll_receipts` (10),
+and the scoped dispatch index on `workflow_tasks` (11). The chart doesn't run
+on SQLite, so the SQLite notes in the Server releases don't apply.
+
+To upgrade from chart 1.0.x:
+
+1. With the chart version you run now, scale the Server to zero with
+   autoscaling off, and wait for its pods to exit:
+
+   ```bash
+   helm upgrade durable-workflow <chart> --version <current 1.0.x> \
+     -f my-values.yaml \
+     --set server.replicaCount=0 --set server.autoscaling.enabled=false --wait
+   ```
+2. Back up the database with your usual procedure. This backup is the only
+   way back to 3.0.x.
+3. Upgrade to chart 1.1.0 with the schema-upgrade hook, your usual replica
+   count and autoscaling still off:
+
+   ```bash
+   helm upgrade durable-workflow <chart> --version 1.1.0 \
+     -f my-values.yaml \
+     --set server.autoscaling.enabled=false \
+     --set native.schemaUpgrade.enabled=true --wait --timeout 30m
+   ```
+
+   The `pre-upgrade` hook runs `schema-upgrade` once, before the new pods
+   start. It renders only when Helm's `lookup` shows the live native
+   Deployment at zero replicas with no autoscaler and no running server pod;
+   otherwise the upgrade is refused (see
+   [Native schema upgrades](../README.md#native-schema-upgrades)). Helm waits
+   for the hook Job for at most `--timeout` (default 5m), and the Job itself
+   stops after `native.schemaUpgrade.activeDeadlineSeconds` (default 1800).
+   Raise both if the index builds on your database can take longer.
+4. Check the hook Job's result, then turn `native.schemaUpgrade.enabled` off
+   again, and autoscaling back on if you use it, in your next upgrade.
+
+With Argo CD, Flux, `helm template` or any client that renders without the
+cluster, the hook is refused; use the
+[manual path](../README.md#manual-path-gitops-and-helm-template) with the
+`docker.io/durableworkflow/server:3.3.2` image instead.
+
+**PostgreSQL:** the version 11 step builds its index with a plain
+`CREATE INDEX`, which blocks writes to `workflow_tasks` until the build
+finishes; the version 10 indexes are plain `CREATE INDEX` as well. Every
+Server is stopped during the upgrade anyway, so on a large `workflow_tasks`
+table the build time adds to your downtime. Plan the window, and the timeouts
+above, for it.
+
+**MySQL and MariaDB:** DDL commits on its own there, so the upgrade marks the
+database as upgrading until it finishes, and every node refuses it meanwhile
+(`native_schema_upgrade_incomplete`). If an upgrade is interrupted, run
+`schema-upgrade` again to resume it.
+
+**Rollback needs the backup.** There is no schema downgrade. Once the database
+is at version 11, a 3.0.x or 3.2.x Server refuses it with
+`native_schema_newer_than_binary`, so a `helm rollback` to a chart 1.0.x
+revision that starts Servers won't run. To go back to 3.0.x, restore the
+backup taken in step 2, which discards everything written after it, and then
+run chart 1.0.x.
+
+The worker protocol stays at `1.20` and the control plane at version `2`.
+
+#### Runtime changes from 3.0.5 to 3.3.2
+
+Server 3.1.0
+([release record](https://github.com/durable-workflow/server/blob/3.1.0/docs/releases/3.1.0.md)):
+
+- Every worker-plane JSON answer carries `protocol_version` and
+  `server_capabilities` in its body, so the published CLI's raw worker
+  commands (for example `dw workflow-task:poll`) accept them. The activity
+  heartbeat answer's `protocol_version` is now the Server's `1.20` instead of
+  an echo of the worker's
+  ([server#1001](https://github.com/durable-workflow/server/issues/1001)).
+- `GET /api/cluster/info` serves `client_compatibility` and
+  `supported_sdk_versions`, which the CLI's `server:info` and `doctor` read.
+  Supported ranges: sdk-php `>=3.8.1,<4.0.0`, sdk-python `>=2.13.0,<3.0.0`,
+  sdk-rust `>=4.10.3,<5.0.0`, cli `>=2.0.0,<3.0.0`
+  ([server#1005](https://github.com/durable-workflow/server/issues/1005)).
+- A `start_child_workflow` command may set `await: "started"`, so the parent
+  gets a fresh workflow task with the child's committed identity while the
+  child runs; the default `await: "result"` is unchanged. Advertised as
+  `child_workflow_start_turn`
+  ([server#966](https://github.com/durable-workflow/server/issues/966)).
+- JSON doubles come back with the digits they were sent with, in memos,
+  search attributes, heartbeat details and other JSON values
+  ([server#1010](https://github.com/durable-workflow/server/issues/1010)).
+  The 3.1.0 record lists MySQL `json` columns rounding doubles in history
+  payloads as a known limitation
+  ([server#1016](https://github.com/durable-workflow/server/issues/1016),
+  still open).
+
+Server 3.2.0 was published as an image without release notes. The change it
+carries that this guide relies on is the move to native schema 10.
+
+Server 3.3.0 ([release](https://github.com/durable-workflow/server/releases/tag/3.3.0)):
+
+- An `open_condition_wait` command can opt in to one wall deadline for a
+  condition-wait occurrence, so false wake-ups no longer restart its timeout.
+  Advertised as `condition_wait_occurrence_deadline`. sdk-php 3.10.0 does not
+  send the policy; SDK support ships in a later sdk-php release
+  ([sdk-php#269](https://github.com/durable-workflow/sdk-php/issues/269)).
+  The PHP Server does not support it.
+- A non-waiting query poll that would find nothing is answered `empty` from
+  one read snapshot, without the transition lock and without writing
+  ([server#1057](https://github.com/durable-workflow/server/issues/1057)).
+- Claims read candidates in bounded ranges through the new scoped dispatch
+  index (MySQL, MariaDB and PostgreSQL) and try a fairness batch of 10 before
+  the full 100-candidate page. The candidates and their order are unchanged
+  ([server#1064](https://github.com/durable-workflow/server/issues/1064),
+  [server#1065](https://github.com/durable-workflow/server/issues/1065),
+  [server#1069](https://github.com/durable-workflow/server/issues/1069)).
+- The first history page reuses the history total the claim already read
+  ([server#1066](https://github.com/durable-workflow/server/issues/1066)).
+
+Server 3.3.1 ([release](https://github.com/durable-workflow/server/releases/tag/3.3.1))
+issues fewer database statements on workflow transitions, keeping the same
+answers, transaction boundaries and lease authority
+([server#1099](https://github.com/durable-workflow/server/pull/1099)).
+
+Server 3.3.2 ([release](https://github.com/durable-workflow/server/releases/tag/3.3.2))
+batches local activity execution, attempt and history records inside the
+existing completion transaction
+([server#1110](https://github.com/durable-workflow/server/pull/1110)), and
+reads a workflow description through one consistent read-only snapshot
+([server#1112](https://github.com/durable-workflow/server/pull/1112)).
+
+No benchmark speedup or latency improvement is claimed for 3.3.1 or 3.3.2.
+The 3.3.0 known limitation still applies: the MariaDB restart lane once failed
+a cold-poll replay claim assertion after `SIGKILL` recovery, and the cause is
+under investigation
+([server#1096](https://github.com/durable-workflow/server/issues/1096)).
+
 ### Chart 1.0.3 / Server 3.0.5 (native)
 
 The default image changes from native Server 3.0.4 to 3.0.5
