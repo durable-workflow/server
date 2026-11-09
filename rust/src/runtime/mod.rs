@@ -163,6 +163,8 @@ mod commit_handoff_tests;
 mod sql_counts;
 #[cfg(test)]
 mod poll_write_tests;
+#[cfg(test)]
+mod local_write_tests;
 mod schema;
 pub mod schema_upgrade;
 mod search_attribute_upserts;

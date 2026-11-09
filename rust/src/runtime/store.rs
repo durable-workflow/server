@@ -3474,6 +3474,9 @@ where
             .chain((0..commands.len()).filter(|index| is_terminal(&commands[*index])));
         for index in order {
             let command = &commands[index];
+            if command["type"] != super::local_activities::COMMAND {
+                Self::write_local_activities(&mut tx).await?;
+            }
             if command["type"] == "fail_workflow" {
                 // Applied after the loop.
                 continue;
@@ -3541,6 +3544,7 @@ where
                 }
             }
         }
+        Self::write_local_activities(&mut tx).await?;
         let failed = if let Some(command) = commands
             .iter()
             .find(|command| command["type"] == "fail_workflow")
@@ -3634,6 +3638,9 @@ where
         created: &mut Vec<String>,
     ) -> Result<()> {
         let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn } = *apply;
+        if command["type"] != super::local_activities::COMMAND {
+            Self::write_local_activities(tx).await?;
+        }
         let mut sequence = *sequence_ref;
         if matches!(
             command["type"].as_str(),
@@ -4773,6 +4780,39 @@ where
         Self::record(tx, run_id, event_type, payload, task_id, Some(command_id), None, false).await.map(|_| ())
     }
 
+    pub(super) async fn allocate_history_sequences(
+        tx: &mut Transaction<'_, DB>, run_id: &str, count: usize,
+    ) -> Result<Vec<i64>> {
+        if count == 0 { return Ok(Vec::new()); }
+        let count_i64 = i64::try_from(count)
+            .map_err(|_| refuse(StatusCode::CONFLICT, "history_sequence_exhausted"))?;
+        if let Some(maximum) = DB::HISTORY_SEQUENCE_MAX.checked_sub(count_i64).filter(|value| *value >= 0) {
+            let last = if DB::HISTORY_ADVANCE_RETURNS_ROW {
+                Self::query(DB::HISTORY_BATCH_ADVANCE_SQL).bind(count_i64).bind(run_id).bind(maximum)
+                    .fetch_optional(&mut **tx).await?
+                    .map(|row| DB::number(&row, "last_history_sequence")).transpose()?
+            } else {
+                let result = Self::query(DB::HISTORY_BATCH_ADVANCE_SQL)
+                    .bind(count_i64).bind(run_id).bind(maximum).execute(&mut **tx).await?;
+                let last = DB::advanced_history_sequence(&result);
+                if DB::affected(result) == 1 {
+                    Some(last.filter(|value| *value >= count_i64)
+                        .ok_or_else(|| refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_history_sequence"))?)
+                } else { None }
+            };
+            if let Some(last) = last {
+                return Ok((last - count_i64 + 1..=last).collect());
+            }
+        }
+        // Retain the single-event path's typed reads and refusals for a
+        // missing, noncanonical or exhausted counter. No partial batch commits.
+        let mut sequences = Vec::with_capacity(count);
+        for _ in 0..count {
+            sequences.push(Self::allocate_history_sequence(tx, run_id).await?);
+        }
+        Ok(sequences)
+    }
+
     pub(super) async fn allocate_history_sequence(
         tx: &mut Transaction<'_, DB>, run_id: &str,
     ) -> Result<i64> {
@@ -4854,12 +4894,7 @@ where
         let event_id = id();
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(&event_id).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
-        Self::project_activity_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
-        Self::project_timer_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
-        Self::project_signal_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
-        Self::project_condition_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
-        Self::project_child_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
-        Self::project_update_wait_event(tx, run_id, event_type, &payload, recorded_at).await?;
+        Self::project_event(tx, run_id, event_type, &payload, recorded_at).await?;
         if let Some(reason) = closed_reason(event_type) {
             Self::settle_closed_wait_timeouts(tx, run_id, recorded_at).await?;
             let task = payload.get("task").cloned();
@@ -4867,6 +4902,18 @@ where
         }
         tx.summary_changed(run_id);
         Ok(event_id)
+    }
+
+    pub(super) async fn project_event(
+        tx: &mut Transaction<'_, DB>, run_id: &str, event_type: &str,
+        payload: &Value, recorded_at: DateTime<Utc>,
+    ) -> Result<()> {
+        Self::project_activity_wait_event(tx, run_id, event_type, payload, recorded_at).await?;
+        Self::project_timer_wait_event(tx, run_id, event_type, payload, recorded_at).await?;
+        Self::project_signal_wait_event(tx, run_id, event_type, payload, recorded_at).await?;
+        Self::project_condition_wait_event(tx, run_id, event_type, payload, recorded_at).await?;
+        Self::project_child_wait_event(tx, run_id, event_type, payload, recorded_at).await?;
+        Self::project_update_wait_event(tx, run_id, event_type, payload, recorded_at).await
     }
 
     /// `PendingSignalCloser::closeForTerminalEvent`: once a run closes, each

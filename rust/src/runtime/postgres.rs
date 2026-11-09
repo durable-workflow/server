@@ -785,6 +785,7 @@ mod tests {
             let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
             store.qualify_commit_handoff().await;
             store.qualify_history_sequence_allocation().await;
+            store.qualify_local_write_batches().await;
             store.qualify_authored_sequence_reads().await;
             store.close().await;
             db.remove().await;

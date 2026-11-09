@@ -175,6 +175,55 @@ async fn a_recorded_local_activity_writes_its_attempts_history_and_failure() {
     assert_eq!((&described["status"], &described["wait_kind"]), (&json!("waiting"), &json!("signal")), "{described}");
 }
 
+/// Records written together, more of them than one statement takes, keep the
+/// order and consecutive sequences of records written one at a time, and a
+/// command between them is recorded between their histories.
+#[tokio::test]
+async fn a_long_run_of_local_activity_records_keeps_its_order() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    local_worker(&app, "local", json!(["local_activities"])).await;
+    let run = start(&app, "local-long").await;
+    let task = poll(&app, "local", "workflow").await;
+    let mut commands: Vec<Value> = (0..40)
+        .map(|index| record(json!({"activity_type": format!("local.step-{index}"),
+            "attempts": [{"attempt_id": format!("w-{index}"), "attempt_number": 1, "outcome": "completed", "duration_ms": 5}]})))
+        .collect();
+    commands.insert(35, json!({"type": "record_side_effect", "result": DONE, "payload_codec": "avro"}));
+    commands.push(wait());
+    let (status, body) = complete(&app, &task, Value::Array(commands), "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, history) = request(&app, "GET", &format!("/api/workflows/local-long/runs/{}/history?page_size=1000",
+        run["run_id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let events = history["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2 + 40 * 3 + 2, "{history}");
+    let sequences: Vec<i64> = events.iter().map(|event| event["sequence"].as_i64().unwrap()).collect();
+    assert_eq!(sequences, (1..=events.len() as i64).collect::<Vec<_>>());
+    let local = |index: usize| {
+        let at = 2 + 3 * index + usize::from(index >= 35);
+        let types: Vec<_> = events[at..at + 3].iter().map(|event| event["event_type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["ActivityScheduled", "ActivityStarted", "ActivityCompleted"], "record {index}");
+        assert_eq!(events[at]["payload"]["activity_type"], format!("local.step-{index}"));
+        assert_eq!(events[at + 1]["payload"]["worker_attempt_id"], format!("w-{index}"));
+        assert_eq!(events[at]["payload"]["sequence"], index as i64 + 1 + i64::from(index >= 35));
+    };
+    (0..40).for_each(local);
+    assert_eq!((&events[2 + 3 * 35]["event_type"], &events[2 + 3 * 35]["payload"]["sequence"]), (&json!("SideEffectRecorded"), &json!(36)));
+    assert_eq!(events.last().unwrap()["event_type"], "SignalWaitOpened");
+
+    let (status, view) = request(&app, "GET", &format!("/api/workflows/local-long/runs/{}/activities",
+        run["run_id"].as_str().unwrap()), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    let activities = view["activities"].as_array().unwrap();
+    assert_eq!(activities.len(), 40);
+    for (index, activity) in activities.iter().enumerate() {
+        assert_eq!((&activity["status"], &activity["attempt_count"]), (&json!("completed"), &json!(1)), "{activity}");
+        assert_eq!(activity["attempts"][0]["worker_attempt_id"], format!("w-{index}"), "{activity}");
+    }
+}
+
 /// The prepared local-activity routes answer as a PHP server whose bridge lacks
 /// the prepared role: refused with 409 before any task is read, whether or not
 /// the task exists, in the worker envelope.
