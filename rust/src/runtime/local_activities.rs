@@ -1041,13 +1041,13 @@ store_methods! {
         let queue = DB::optional_string(run, "queue")?;
         let started_at = attempts[0].started_at;
         tx.charge_rows(1)?;
-        Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_class,activity_type,status,payload_codec,arguments,result,exception,connection,queue,attempt_count,current_attempt_id,retry_policy,activity_options,started_at,closed_at,last_heartbeat_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)")
-            .bind(&execution_id).bind(&run_id).bind(sequence).bind(&record.activity_type).bind(&record.activity_type).bind(status)
-            .bind(&codec).bind(record.arguments.as_deref()).bind(record.result.as_deref()).bind(exception)
-            .bind(connection.as_deref()).bind(queue.as_deref()).bind(attempts.len() as i64).bind(&last.id)
-            .bind(policy.as_ref().map(DB::document)).bind(DB::document(&options)).bind(DB::bind_time(started_at))
-            .bind(DB::bind_time(at)).bind(DB::optional_time(latest_heartbeat)).bind(DB::bind_time(at)).bind(DB::bind_time(at))
-            .execute(&mut **tx).await?;
+        tx.local_writes.executions.push(Execution {
+            id: execution_id.clone(), run_id: run_id.clone(), sequence, activity_type: record.activity_type.clone(), status,
+            codec: codec.clone(), arguments: record.arguments.clone(), result: record.result.clone(),
+            exception: exception.map(str::to_owned), connection: connection.clone(), queue: queue.clone(),
+            attempt_count: attempts.len() as i64, attempt_id: last.id.clone(), retry_policy: policy.clone(), options,
+            started_at, at, last_heartbeat_at: latest_heartbeat,
+        });
         // `ActivitySnapshot::fromExecution`.
         let wire = |blob: &Option<String>| blob.as_deref().map_or(Value::Null, |blob| json!({"codec": codec, "blob": blob}));
         let terminal_activity = filtered(&[
@@ -1081,16 +1081,17 @@ store_methods! {
             }
             payload
         };
-        Self::append(tx, &run_id, "ActivityScheduled", event(scheduled_activity, json!({})), Some(&task_id), None).await?;
+        Self::hold_event(tx, &run_id, &task_id, "ActivityScheduled", event(scheduled_activity, json!({})))?;
         let mut emitted: Option<DateTime<Utc>> = None;
         for (position, attempt) in attempts.iter().enumerate() {
             let worker_attempt_id = attempt.report.get("attempt_id").and_then(Value::as_str);
             tx.charge_rows(1)?;
-            Self::query("INSERT INTO activity_attempts(id,workflow_run_id,activity_execution_id,workflow_task_id,worker_attempt_id,attempt_number,status,lease_owner,started_at,last_heartbeat_at,lease_expires_at,closed_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,$12,$13)")
-                .bind(&attempt.id).bind(&run_id).bind(&execution_id).bind(&task_id).bind(worker_attempt_id)
-                .bind(attempt.number()).bind(attempt.status()).bind(lease_owner.as_deref()).bind(DB::bind_time(attempt.started_at))
-                .bind(DB::optional_time(attempt.last_heartbeat_at)).bind(DB::bind_time(attempt.closed_at))
-                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
+            tx.local_writes.attempts.push(AttemptRow {
+                id: attempt.id.clone(), run_id: run_id.clone(), execution_id: execution_id.clone(), task_id: task_id.clone(),
+                worker_attempt_id: worker_attempt_id.map(str::to_owned), number: attempt.number(), status: attempt.status(),
+                lease_owner: lease_owner.clone(), started_at: attempt.started_at, last_heartbeat_at: attempt.last_heartbeat_at,
+                closed_at: attempt.closed_at, at,
+            });
             let terminal_attempt = filtered(&[
                 ("id", json!(attempt.id)), ("worker_attempt_id", attempt.worker_id()), ("attempt_number", json!(attempt.number())),
                 ("status", json!(attempt.status())), ("task_id", json!(task_id)), ("lease_owner", json!(lease_owner)),
@@ -1108,7 +1109,7 @@ store_methods! {
             }
             let started = json!({"activity_attempt_id": attempt.id, "worker_attempt_id": attempt.worker_id(),
                 "attempt_number": attempt.number(), "activity_attempt": running_attempt});
-            Self::append(tx, &run_id, "ActivityStarted", event(running_activity.clone(), started.clone()), Some(&task_id), None).await?;
+            Self::hold_event(tx, &run_id, &task_id, "ActivityStarted", event(running_activity.clone(), started.clone()))?;
             for heartbeat in attempt.heartbeats() {
                 let heartbeat_at = checked_add(attempt.started_at, Duration::try_milliseconds(milliseconds(heartbeat.get("elapsed_ms"))))?;
                 if emitted.is_none_or(|latest| heartbeat_at > latest) {
@@ -1123,7 +1124,7 @@ store_methods! {
                 if let Some(details) = heartbeat.get("details") {
                     fields["progress"] = details.clone();
                 }
-                Self::append(tx, &run_id, "ActivityHeartbeatRecorded", event(activity, fields), Some(&task_id), None).await?;
+                Self::hold_event(tx, &run_id, &task_id, "ActivityHeartbeatRecorded", event(activity, fields))?;
             }
             if position + 1 < attempts.len() {
                 let mut activity = running_activity.clone();
@@ -1141,7 +1142,7 @@ store_methods! {
                     "exception_type": report.get("exception_type").cloned().unwrap_or(Value::Null),
                     "retry_reason": report.get("retry_reason").cloned().unwrap_or_else(|| json!("failure")),
                     "retry_backoff_seconds": report.get("backoff_seconds").cloned().unwrap_or_else(|| json!(0))});
-                Self::append(tx, &run_id, "ActivityRetryScheduled", event(activity, retry), Some(&task_id), None).await?;
+                Self::hold_event(tx, &run_id, &task_id, "ActivityRetryScheduled", event(activity, retry))?;
             }
         }
         let mut terminal = json!({"activity_attempt_id": last.id, "worker_attempt_id": last.worker_id(), "attempt_number": last.number(),
@@ -1189,9 +1190,228 @@ store_methods! {
                 }
             }
         }
-        Self::append(tx, &run_id, event_type, event(terminal_activity, terminal), Some(&task_id), None).await?;
+        Self::hold_event(tx, &run_id, &task_id, event_type, event(terminal_activity, terminal))
+    }
+
+    /// Charges an event as `Store::record` does and holds it for
+    /// `write_local_activities`. Each event carries its task's snapshot and
+    /// no command, and closes nothing.
+    fn hold_event(tx: &mut Transaction<'_, DB>, run_id: &str, task_id: &str, event_type: &'static str, payload: Value) -> Result<()> {
+        let recorded_at = now();
+        tx.charge_event(event_type, &payload)?;
+        tx.local_writes.events.push(Event { id: id(), run_id: run_id.to_owned(), task_id: task_id.to_owned(), event_type, payload, recorded_at });
         Ok(())
     }
+
+    /// Writes the rows `record_local_activity` holds, in the order it made
+    /// them: each table's INSERTs have both row and encoded-size bounds, and a
+    /// run's events at sequences from one allocation. A run whose sequence
+    /// cannot take them all allocates one at a time, as `Store::record` does,
+    /// and so refuses as it would. Then each event is projected as
+    /// `Store::record` projects it.
+    pub(super) async fn write_local_activities(tx: &mut Transaction<'_, DB>) -> Result<()> {
+        if let Some(refusal) = tx.meter.as_ref().and_then(super::history_meter::Meter::tripped) {
+            return Err(refusal);
+        }
+        let writes = std::mem::take(&mut tx.local_writes);
+        for rows in bounded_rows(&writes.executions, EXECUTION_INSERT, Execution::bound_bytes) {
+            let sql = insert_rows::<DB>(EXECUTION_INSERT,
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows.len());
+            #[cfg(test)]
+            super::sql_counts::record(EXECUTION_INSERT);
+            let mut query = sqlx::query::<DB>(sqlx::AssertSqlSafe(sql));
+            for row in rows {
+                query = query.bind(row.id.as_str()).bind(row.run_id.as_str()).bind(row.sequence).bind(row.activity_type.as_str())
+                    .bind(row.activity_type.as_str()).bind(row.status).bind(row.codec.as_str()).bind(row.arguments.as_deref())
+                    .bind(row.result.as_deref()).bind(row.exception.as_deref()).bind(row.connection.as_deref()).bind(row.queue.as_deref())
+                    .bind(row.attempt_count).bind(row.attempt_id.as_str()).bind(row.retry_policy.as_ref().map(DB::document))
+                    .bind(DB::document(&row.options)).bind(DB::bind_time(row.started_at)).bind(DB::bind_time(row.at))
+                    .bind(DB::optional_time(row.last_heartbeat_at)).bind(DB::bind_time(row.at)).bind(DB::bind_time(row.at));
+            }
+            query.execute(&mut **tx).await?;
+        }
+        for rows in bounded_rows(&writes.attempts, ATTEMPT_INSERT, AttemptRow::bound_bytes) {
+            let sql = insert_rows::<DB>(ATTEMPT_INSERT,
+                "(?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)", rows.len());
+            #[cfg(test)]
+            super::sql_counts::record(ATTEMPT_INSERT);
+            let mut query = sqlx::query::<DB>(sqlx::AssertSqlSafe(sql));
+            for row in rows {
+                query = query.bind(row.id.as_str()).bind(row.run_id.as_str()).bind(row.execution_id.as_str()).bind(row.task_id.as_str())
+                    .bind(row.worker_attempt_id.as_deref()).bind(row.number).bind(row.status).bind(row.lease_owner.as_deref())
+                    .bind(DB::bind_time(row.started_at)).bind(DB::optional_time(row.last_heartbeat_at)).bind(DB::bind_time(row.closed_at))
+                    .bind(DB::bind_time(row.at)).bind(DB::bind_time(row.at));
+            }
+            query.execute(&mut **tx).await?;
+        }
+        for events in writes.events.chunk_by(|left, right| left.run_id == right.run_id) {
+            let run_id = events[0].run_id.as_str();
+            let sequences = Self::allocate_history_sequences(tx, run_id, events.len()).await?;
+            let mut offset = 0;
+            for rows in bounded_rows(events, HISTORY_INSERT, Event::bound_bytes) {
+                let sequences = &sequences[offset..offset + rows.len()];
+                offset += rows.len();
+                let sql = insert_rows::<DB>(HISTORY_INSERT,
+                    "(?,?,?,?,?,?,NULL,?)", rows.len());
+                #[cfg(test)]
+                super::sql_counts::record(HISTORY_INSERT);
+                let mut query = sqlx::query::<DB>(sqlx::AssertSqlSafe(sql));
+                for (row, sequence) in rows.iter().zip(sequences) {
+                    query = query.bind(row.id.as_str()).bind(run_id).bind(*sequence).bind(row.event_type)
+                        .bind(DB::document(&row.payload)).bind(row.task_id.as_str()).bind(DB::bind_time(row.recorded_at));
+                }
+                query.execute(&mut **tx).await?;
+            }
+            for event in events {
+                Self::project_event(tx, run_id, event.event_type, &event.payload, event.recorded_at).await?;
+            }
+            tx.summary_changed(run_id);
+        }
+        Ok(())
+    }
+}
+
+/// The most rows one INSERT of held local activity rows writes.
+const ROWS_PER_INSERT: usize = 100;
+const BYTES_PER_INSERT: usize = 1024 * 1024;
+const EXECUTION_INSERT: &str = "INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_class,activity_type,status,payload_codec,arguments,result,exception,connection,queue,attempt_count,current_attempt_id,retry_policy,activity_options,started_at,closed_at,last_heartbeat_at,created_at,updated_at)";
+const ATTEMPT_INSERT: &str = "INSERT INTO activity_attempts(id,workflow_run_id,activity_execution_id,workflow_task_id,worker_attempt_id,attempt_number,status,lease_owner,started_at,last_heartbeat_at,lease_expires_at,closed_at,created_at,updated_at)";
+const HISTORY_INSERT: &str = "INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at)";
+
+// Values remain bound parameters. Each bound includes the UTF-8 strings and
+// serialized JSON plus 128 bytes per parameter for its placeholder, framing,
+// type/length metadata and fixed-width numeric/timestamp representation.
+// The shared row cap bounds placeholder widths as well as parameter counts.
+fn string_bytes(values: &[Option<&str>]) -> usize {
+    values.iter().flatten().fold(0usize, |total, value| total.saturating_add(value.len()))
+}
+
+fn bounded_rows<'a, T>(rows: &'a [T], head: &str, size: impl Fn(&T) -> usize) -> Vec<&'a [T]> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let prefix = head.len().saturating_add(" VALUES ".len());
+    let mut bytes = prefix;
+    for (index, row) in rows.iter().enumerate() {
+        let row_bytes = size(row);
+        if index > start && (index - start == ROWS_PER_INSERT
+            || bytes.saturating_add(row_bytes) > BYTES_PER_INSERT)
+        {
+            chunks.push(&rows[start..index]);
+            start = index;
+            bytes = prefix;
+        }
+        bytes = bytes.saturating_add(row_bytes);
+    }
+    if start < rows.len() { chunks.push(&rows[start..]); }
+    // A legal row larger than the batching target is written alone using
+    // the existing bindings. It never enlarges a multi-row statement or
+    // introduces a new product refusal for a previously legal single row.
+    chunks
+}
+
+/// The rows `record_local_activity` makes, held in the transaction
+/// (`Transaction::local_writes`) while a completion applies a run of local
+/// activity records, so that each table takes one INSERT for the run and
+/// its history one sequence allocation (`Store::write_local_activities`).
+#[derive(Default)]
+pub(super) struct Writes {
+    executions: Vec<Execution>,
+    attempts: Vec<AttemptRow>,
+    events: Vec<Event>,
+}
+
+struct Execution {
+    id: String,
+    run_id: String,
+    sequence: i64,
+    activity_type: String,
+    status: &'static str,
+    codec: String,
+    arguments: Option<String>,
+    result: Option<String>,
+    exception: Option<String>,
+    connection: Option<String>,
+    queue: Option<String>,
+    attempt_count: i64,
+    attempt_id: String,
+    retry_policy: Option<Value>,
+    options: Value,
+    started_at: DateTime<Utc>,
+    at: DateTime<Utc>,
+    last_heartbeat_at: Option<DateTime<Utc>>,
+}
+
+impl Execution {
+    fn bound_bytes(&self) -> usize {
+        (21usize * 128).saturating_add(string_bytes(&[
+            Some(&self.id), Some(&self.run_id), Some(&self.activity_type), Some(&self.activity_type),
+            Some(self.status), Some(&self.codec), self.arguments.as_deref(), self.result.as_deref(),
+            self.exception.as_deref(), self.connection.as_deref(), self.queue.as_deref(), Some(&self.attempt_id),
+        ])).saturating_add(self.retry_policy.as_ref().map_or(0, |value| value.to_string().len()))
+            .saturating_add(self.options.to_string().len())
+    }
+}
+
+struct AttemptRow {
+    id: String,
+    run_id: String,
+    execution_id: String,
+    task_id: String,
+    worker_attempt_id: Option<String>,
+    number: i64,
+    status: &'static str,
+    lease_owner: Option<String>,
+    started_at: DateTime<Utc>,
+    last_heartbeat_at: Option<DateTime<Utc>>,
+    closed_at: DateTime<Utc>,
+    at: DateTime<Utc>,
+}
+
+impl AttemptRow {
+    fn bound_bytes(&self) -> usize {
+        (13usize * 128).saturating_add(string_bytes(&[
+            Some(&self.id), Some(&self.run_id), Some(&self.execution_id), Some(&self.task_id),
+            self.worker_attempt_id.as_deref(), Some(self.status), self.lease_owner.as_deref(),
+        ]))
+    }
+}
+
+struct Event {
+    id: String,
+    run_id: String,
+    task_id: String,
+    event_type: &'static str,
+    payload: Value,
+    recorded_at: DateTime<Utc>,
+}
+
+impl Event {
+    fn bound_bytes(&self) -> usize {
+        (7usize * 128).saturating_add(string_bytes(&[
+            Some(&self.id), Some(&self.run_id), Some(&self.task_id), Some(self.event_type),
+        ])).saturating_add(self.payload.to_string().len())
+    }
+}
+
+/// `head` with `rows` copies of the placeholder row `row`, numbered as
+/// the shared templates are except on MySQL, which binds '?' in order.
+fn insert_rows<DB: sqlx::Database>(head: &str, row: &str, rows: usize) -> String {
+    let mut sql = format!("{head} VALUES ");
+    let mut position = 0;
+    for index in 0..rows {
+        if index > 0 {
+            sql.push(',');
+        }
+        for character in row.chars() {
+            if character == '?' && DB::NAME != "MySQL" {
+                position += 1;
+                sql.push_str(&format!("${position}"));
+            } else {
+                sql.push(character);
+            }
+        }
+    }
+    sql
 }
 
 #[cfg(test)]

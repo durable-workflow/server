@@ -88,6 +88,7 @@ pub(super) trait Backend: Database {
     const HISTORY_SEQUENCE_MAX: i64 = i64::MAX;
     const HISTORY_ADVANCE_RETURNS_ROW: bool = true;
     const HISTORY_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1 AND last_history_sequence>=0 AND last_history_sequence<$2 RETURNING last_history_sequence";
+    const HISTORY_BATCH_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+$1 WHERE id=$2 AND last_history_sequence>=0 AND last_history_sequence<=$3 RETURNING last_history_sequence";
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT sequence,event_type,CASE WHEN projection_bytes<=8388608 THEN payload ELSE NULL END AS payload,workflow_task_id,recorded_at,projection_count FROM (SELECT sequence,event_type,payload,workflow_task_id,recorded_at,COUNT(*) OVER () AS projection_count,SUM(octet_length(CAST(payload AS TEXT))) OVER (ORDER BY sequence) AS projection_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') ORDER BY sequence LIMIT 10001) AS page ORDER BY sequence";
     // Waits whose stored position differs from their chronological ordinal
     // over every retained wait of the run, as Workflow #941's projector stores.
@@ -253,6 +254,7 @@ fn sqlite_instant(value: String) -> Result<DateTime<Utc>> {
 
 impl Backend for Sqlite {
     const HISTORY_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1 AND typeof(last_history_sequence)='integer' AND last_history_sequence>=0 AND last_history_sequence<$2 RETURNING last_history_sequence";
+    const HISTORY_BATCH_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+$1 WHERE id=$2 AND typeof(last_history_sequence)='integer' AND last_history_sequence>=0 AND last_history_sequence<=$3 RETURNING last_history_sequence";
     type EncodedInteger = Option<i64>;
     type EncodedFloat = Option<f64>;
     type EncodedFlag = Option<bool>;
@@ -564,6 +566,7 @@ impl Backend for MySql {
     const HISTORY_SEQUENCE_MAX: i64 = u32::MAX as i64;
     const HISTORY_ADVANCE_RETURNS_ROW: bool = false;
     const HISTORY_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=LAST_INSERT_ID(last_history_sequence+1) WHERE id=$1 AND last_history_sequence>=0 AND last_history_sequence<$2";
+    const HISTORY_BATCH_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=LAST_INSERT_ID(last_history_sequence+$1) WHERE id=$2 AND last_history_sequence>=0 AND last_history_sequence<=$3";
     fn advanced_history_sequence(result: &Self::QueryResult) -> Option<i64> {
         i64::try_from(result.last_insert_id()).ok()
     }

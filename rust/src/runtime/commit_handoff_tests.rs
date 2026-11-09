@@ -14,6 +14,10 @@ fn allocation_outcome(result: super::Result<i64>) -> std::result::Result<i64, St
     })
 }
 
+fn batch_allocation_outcome(result: super::Result<Vec<i64>>) -> std::result::Result<Vec<i64>, String> {
+    result.map_err(|error| allocation_outcome(Err(error)).unwrap_err())
+}
+
 #[derive(Default)]
 pub(super) struct CommitGate {
     pub(super) entered: Notify,
@@ -137,6 +141,73 @@ store_methods! {
         }
         Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
             .bind(initial_sequence).bind(run_id).execute(&self.pool).await.unwrap();
+        self.qualify_history_batch_allocation().await;
+    }
+
+    async fn qualify_history_batch_allocation(&self) {
+        use crate::codec::{Value as Payload, ValueCodec};
+        use serde_json::json;
+        let blob = ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap();
+        let run = self.start(json!({"workflow_id":"history-batch-allocation","workflow_type":"probe","task_queue":"batch-allocation",
+            "input":{"codec":"avro","blob":blob}}),Default::default(),None,None).await.unwrap();
+        let run_id = run["run_id"].as_str().unwrap();
+        let original_sequence = DB::number(&Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(run_id).fetch_one(&self.pool).await.unwrap(),"last_history_sequence").unwrap();
+        let maximum = DB::HISTORY_SEQUENCE_MAX;
+        for value in [0,42,maximum-3,maximum-2,maximum-1,maximum] {
+            Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
+                .bind(value).bind(run_id).execute(&self.pool).await.unwrap();
+            let mut original = self.begin().await.unwrap();
+            let expected: super::Result<Vec<i64>> = async {
+                let mut values = Vec::new();
+                for _ in 0..3 { values.push(Self::allocate_history_sequence_fallback(&mut original,run_id).await?); }
+                Ok(values)
+            }.await;
+            let expected = batch_allocation_outcome(expected);
+            original.rollback().await.unwrap();
+            let mut candidate = self.begin().await.unwrap();
+            let (answer,statements) = super::sql_counts::measure(Self::allocate_history_sequences(&mut candidate,run_id,3)).await;
+            assert_eq!(batch_allocation_outcome(answer),expected,"batch at {value}");
+            assert_eq!(statements.count(DB::HISTORY_BATCH_ADVANCE_SQL),1);
+            if value <= maximum-3 {
+                assert_eq!(statements.total(),1,"canonical range allocation is one statement");
+            }
+            candidate.rollback().await.unwrap();
+            let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+                .bind(run_id).fetch_one(&self.pool).await.unwrap();
+            assert_eq!(DB::number(&row,"last_history_sequence").unwrap(),value);
+        }
+        let missing = "00000000000000000000000000";
+        let mut original = self.begin().await.unwrap();
+        let expected = allocation_outcome(Self::allocate_history_sequence_fallback(&mut original,missing).await).unwrap_err();
+        original.rollback().await.unwrap();
+        let mut candidate = self.begin().await.unwrap();
+        assert_eq!(batch_allocation_outcome(Self::allocate_history_sequences(&mut candidate,missing,3).await).unwrap_err(),expected);
+        let (empty,statements) = super::sql_counts::measure(Self::allocate_history_sequences(&mut candidate,missing,0)).await;
+        assert!(empty.unwrap().is_empty());
+        assert_eq!(statements.total(),0);
+        candidate.rollback().await.unwrap();
+        if DB::NAME != "MySQL" {
+            Self::query("UPDATE workflow_runs SET last_history_sequence=-1 WHERE id=$1")
+                .bind(run_id).execute(&self.pool).await.unwrap();
+            let mut candidate = self.begin().await.unwrap();
+            assert_eq!(Self::allocate_history_sequences(&mut candidate,run_id,3).await.unwrap(),vec![0,1,2]);
+            candidate.rollback().await.unwrap();
+        }
+        if DB::NAME == "SQLite" {
+            for sql in ["UPDATE workflow_runs SET last_history_sequence=1.5 WHERE id=$1",
+                "UPDATE workflow_runs SET last_history_sequence='not-an-integer' WHERE id=$1"] {
+                Self::query(sql).bind(run_id).execute(&self.pool).await.unwrap();
+                let mut original = self.begin().await.unwrap();
+                let expected = allocation_outcome(Self::allocate_history_sequence_fallback(&mut original,run_id).await).unwrap_err();
+                original.rollback().await.unwrap();
+                let mut candidate = self.begin().await.unwrap();
+                assert_eq!(batch_allocation_outcome(Self::allocate_history_sequences(&mut candidate,run_id,3).await).unwrap_err(),expected);
+                candidate.rollback().await.unwrap();
+            }
+        }
+        Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")
+            .bind(original_sequence).bind(run_id).execute(&self.pool).await.unwrap();
     }
 
     pub(super) async fn qualify_authored_sequence_reads(&self) {

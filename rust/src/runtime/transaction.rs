@@ -40,6 +40,7 @@ pub(super) struct Transaction<'a, DB: Backend> {
     pub(super) meter: Option<super::history_meter::Meter>,
     /// The run history the cancellation scope engine has read (`scope_events`).
     pub(super) scope_history: Option<super::cancellation_scopes::HistoryCache>,
+    pub(super) local_writes: super::local_activities::Writes,
     // An implicit failure drops the database transaction before this guard.
     _queue_guard: Option<OwnedMutexGuard<()>>,
     #[cfg(test)]
@@ -60,6 +61,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             history_budget,
             meter: None,
             scope_history: None,
+            local_writes: Default::default(),
             _queue_guard: queue_guard,
             #[cfg(test)]
             commit_gate: None,
@@ -139,6 +141,7 @@ where
     /// a partial claim. Budget charges stay consumed and discarded reads
     /// cannot survive in the transaction's cancellation-history cache.
     pub(super) async fn poll_savepoint(&mut self) -> Result<PollSavepoint> {
+        Store::<DB>::write_local_activities(self).await?;
         // MySQL does not support savepoint commands in its prepared-statement
         // protocol. Send these fixed transaction-control literals directly.
         (&mut **self).execute("SAVEPOINT dw_poll_claim").await?;
@@ -150,6 +153,7 @@ where
         self.summaries = saved.summaries;
         self.workflow_poll_replayed = saved.workflow_poll_replayed;
         self.scope_history = None;
+        self.local_writes = Default::default();
         self.run_tags.clear();
         self.release_poll_claim().await
     }
@@ -165,6 +169,7 @@ where
         if let Some(refusal) = self.meter.as_ref().and_then(super::history_meter::Meter::tripped) {
             return Err(refusal);
         }
+        Store::<DB>::write_local_activities(&mut self).await?;
         for run_id in std::mem::take(&mut self.summaries) {
             Store::<DB>::order_waits(&mut self, &run_id).await?;
             Store::<DB>::project_run_summary(&mut self, &run_id).await?;
