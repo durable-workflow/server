@@ -57,14 +57,18 @@ where
         run: &DB::Row,
         task_queue: Option<&str>,
         required_build_id: Option<String>,
+        started: Option<&Value>,
     ) -> Result<DefinitionContext> {
-        let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-            .bind(DB::string(run, "id")?)
-            .fetch_optional(&mut **tx)
-            .await?
-            .map(|row| DB::document_row(&row, "payload"))
-            .transpose()?
-            .unwrap_or(Value::Null);
+        // A caller that already read the start payload in this transaction
+        // passes it; otherwise it is read here.
+        let read;
+        let started = match started {
+            Some(started) => started,
+            None => {
+                read = Self::started_payload(&mut **tx, &DB::string(run, "id")?).await?;
+                &read
+            }
+        };
         Ok(DefinitionContext {
             worker_pinned: started["workflow_definition_fingerprint_source"] == "worker",
             recorded: trimmed(started["workflow_definition_fingerprint"].as_str()),
@@ -210,6 +214,7 @@ where
         tx: &mut Transaction<'_, DB>,
         run: &DB::Row,
         task_queue: Option<&str>,
+        started: Option<&Value>,
     ) -> Result<Value> {
         let run_id = DB::string(run, "id")?;
         let task = Self::query("SELECT queue,compatibility FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' AND (available_at IS NULL OR available_at<=$2) ORDER BY id")
@@ -226,7 +231,7 @@ where
             ),
             None => (task_queue.map(str::to_owned), None),
         };
-        let context = Self::definition_context(tx, run, queue.as_deref(), required).await?;
+        let context = Self::definition_context(tx, run, queue.as_deref(), required, started).await?;
         let (mut matching, mut changed, mut missing, mut unsafe_replacement) = (0, 0, 0, 0);
         let mut examples = Vec::new();
         let peers = self.definition_peers(tx, run, &context).await?;
@@ -296,7 +301,7 @@ where
             }
             let mut example = json!({"workflow_id": DB::string(run, "workflow_instance_id")?, "run_id": DB::string(run, "id")?});
             if let (Some(example), Value::Object(inspected)) =
-                (example.as_object_mut(), self.definition_inspect(tx, run, Some(task_queue)).await?)
+                (example.as_object_mut(), self.definition_inspect(tx, run, Some(task_queue), None).await?)
             {
                 example.extend(inspected);
             }

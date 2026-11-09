@@ -756,6 +756,23 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires disposable PostgreSQL; run qualification_ explicitly"]
+    async fn qualification_describe_is_coherent_and_returns_one_connection() {
+        use super::super::{describe_snapshot_tests::reader_pool, store::Store};
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let db = Database::new().await;
+        let writer = Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
+        let checkouts = Arc::new(AtomicUsize::new(0));
+        let pool = reader_pool(PgPoolOptions::new(),checkouts.clone())
+            .connect_with(db.options.clone()).await.unwrap();
+        let reader = Store::new(pool);
+        reader.qualify_describe_snapshot(&writer,&checkouts,false).await;
+        reader.close().await;
+        writer.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_empty_query_poll_is_lock_free_only_when_proven() {
         let db = Database::new().await;

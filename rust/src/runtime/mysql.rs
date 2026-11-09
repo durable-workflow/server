@@ -1236,6 +1236,34 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_describe_snapshot_under_repeatable_read_and_read_committed() {
+        use super::super::{describe_snapshot_tests::reader_pool, store::Store};
+        use std::sync::{Arc, atomic::AtomicUsize};
+        let db = Database::new().await;
+        let writer = Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+        for level in ["SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+                      "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED"] {
+            let checkouts = Arc::new(AtomicUsize::new(0));
+            let pool = reader_pool(runtime_pool_options(),checkouts.clone())
+                .connect_with(db.options.clone()).await.unwrap();
+            pool.acquire().await.unwrap().execute(level).await.unwrap();
+            let reader = Store::new(pool);
+            if level.ends_with("READ COMMITTED") {
+                reader.qualify_describe_snapshot(&writer,&checkouts,true).await;
+            }
+            reader.qualify_describe_snapshot(&writer,&checkouts,false).await;
+            if level.ends_with("READ COMMITTED") {
+                // The one-transaction override must leave the session intact.
+                reader.qualify_describe_snapshot(&writer,&checkouts,true).await;
+            }
+            reader.close().await;
+        }
+        writer.close().await;
+        db.remove().await;
+    }
+
+    #[tokio::test]
     #[ignore = "requires the existing disposable mysql source suite"]
     async fn qualification_transition_queue_preserves_reads_fifo_and_timeout_admission() {
         tokio::time::timeout(Duration::from_secs(30), async {
