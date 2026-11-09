@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "65"
+  version: "66"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -77,21 +77,27 @@ x-durable-workflow-activity-workflow-continuation:
   history_endpoint: /worker/activity-tasks/{taskId}/continuation/history
   complete_endpoint: /worker/activity-tasks/{taskId}/continuation/complete
   history_read: complete_gap_free_timed_run_history_under_the_activity_attempt_lease_no_write_or_claim
-  history_ineligible: [run_not_open, standalone_activity, cancellation_requested, parallel_group, pending_workflow_task, history_too_large, history_not_contiguous, untimed_history]
+  history_ineligible: [run_not_open, standalone_activity, cancellation_requested, parallel_group, pending_workflow_task, history_too_large, history_not_contiguous, untimed_history, pending_update, external_payload]
   worker_replay: side_effect_free_replay_of_the_returned_history_plus_its_own_result_and_no_event_time
   worker_clock_rule: abandon_speculation_if_workflow_code_reads_business_time_at_or_after_the_speculative_result
   supported_commands: [schedule_activity, start_timer, complete_workflow, record_version_marker]
   request_refusals_before_any_write: [invalid_continuation, unsupported_continuation_version, unsupported_continuation_command, continuation_requires_workflow_poll, ordinary_completion_request_checks]
-  activity_result: commits_exactly_as_an_ordinary_completion_with_server_assigned_event_time
-  commit_condition: history_ends_at_the_worker_prefix_with_no_ready_or_leased_workflow_task_checked_under_the_completion_transition_lock
-  dispatch: when_the_commit_condition_holds_the_required_workflow_poll_claims_only_the_resumed_task_a_bounded_same_worker_priority_like_eager_activity_dispatch_otherwise_normal_dispatch_order
-  commands_applied_by: the_ordinary_workflow_task_completion_with_its_validators_and_receipts
+  activity_result: ordinary_server_assigned_event_time_result_and_commands_commit_together_when_accepted
+  commit_condition: complete_gap_free_timed_history_equals_the_worker_prefix_no_pending_workflow_or_update_work_no_cancellation_checked_under_the_same_transition_lock_as_commands
+  dispatch: eligible_continuation_claims_only_its_resumed_task_under_ordinary_worker_admission_capacity_queue_and_build_fences
+  commands_applied_by: ordinary_workflow_completion_validators_and_mutations_inside_the_activity_transaction
+  savepoint: before_result_write_known_eligibility_miss_rolls_back_database_and_all_transaction_caches_then_applies_ordinary_completion
+  history_transaction_budget: includes_activity_result_and_speculative_commands
   outcomes:
-    accepted: commands_recorded_carried_lease_consumed_and_workflow_poll_omitted
-    declined: [activity_not_completed, history_changed, workflow_slot_unavailable, no_workflow_task, dispatch_selected_other_task]
-    rejected: ordinary_completion_refusal_returned_and_carried_lease_kept_for_ordinary_completion
-    unknown: carried_lease_kept_retry_the_ordinary_workflow_completion_whose_receipt_deduplicates
-  retry_after_lost_answer: activity_stale_attempt_receipt_then_recover_the_carried_lease_with_the_original_poll_request_id
+    accepted: result_commands_and_exact_request_receipt_committed_carried_lease_consumed_workflow_poll_omitted
+    declined: [external_payload, history_changed, workflow_slot_unavailable, no_workflow_task, dispatch_selected_other_task]
+  faults: command_backend_decoder_budget_and_invariant_errors_roll_back_the_entire_transition_never_become_declines
+  exact_receipt: versioned_wrapper_in_dw_task_completions_sha256_of_canonical_request_and_protocol_bounded_decision_and_ids_no_command_payload_copy
+  retry_after_lost_answer: identical_request_returns_recorded_decision_with_recorded_false_changed_request_is_409_conflicting_completion
+  declined_retry: recover_only_original_still_live_carried_lease_without_claim_or_renewal
+  commit_outcome_unknown: storage_unavailable_503_retry_exact_original_request
+  legacy_receipt: ordinary_stale_attempt_no_new_effects
+  corrupt_receipt: invalid_continuation_receipt_error_no_new_effects
   default_enablement: none_worker_opt_in_only
 x-durable-workflow-workflow-completion-poll-order:
   server_capability: workflow_task_completion_workflow_poll
@@ -1397,12 +1403,14 @@ paths:
       description: >
         Requires activity_workflow_continuation. Completes the activity as
         completeActivityTask does, with a required workflow_poll. The
-        continuation's commands are applied only when the run's history still
-        ends at the worker's prefix with no workflow task waiting; the
-        carried claim then leases only the run's resumed task to this worker.
-        Otherwise it claims by normal dispatch order. The continuation member reports the
-        outcome; a declined, rejected or unknown outcome leaves any carried
-        workflow lease with the worker for ordinary completion.
+        result, resumed task, commands and bounded exact-request receipt
+        share one transaction. Commands apply only against the complete unchanged
+        admitted prefix with no pending workflow/update work or cancellation.
+        An eligibility decline restores the savepoint and all transaction caches,
+        then preserves the ordinary result and normal carried dispatch. A command,
+        storage, decoder or budget fault rolls back the entire transition and is
+        returned as an error. An identical retry recovers the recorded decision;
+        a changed request conflicts. No retry claims or renews a lease.
       parameters:
         - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
         - $ref: "#/components/parameters/TaskIdPath"
@@ -3943,13 +3951,11 @@ components:
               required: [version, outcome]
               properties:
                 version: { const: 1 }
-                outcome: { enum: [accepted, declined, rejected, unknown] }
+                outcome: { enum: [accepted, declined] }
                 reason: { type: string }
                 workflow_task_id: { type: string }
                 workflow_task_attempt: { type: integer }
                 completion: { type: object }
-                status: { type: integer }
-                response: { type: object }
     TaskFailureRequest:
       type: object
       additionalProperties: true

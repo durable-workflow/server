@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 /// (`WorkflowCommandNormalizer::MIN_COMMAND_HISTORY_EVENTS`).
 pub(super) const MIN_COMMAND_HISTORY_EVENTS: usize = 1;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Meter {
     limits: [Option<usize>; 3],
     used: [usize; 3],

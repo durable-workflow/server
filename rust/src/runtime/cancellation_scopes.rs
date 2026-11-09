@@ -220,6 +220,7 @@ pub(super) struct Event {
 /// the in-place payload update (`attribute_worker_terminal`) and the deletes
 /// (retention pruning, namespace deletion) clear this, so a later read only
 /// fetches rows past the last sequence.
+#[derive(Clone)]
 pub(super) struct HistoryCache {
     run_id: String,
     events: Arc<Vec<Event>>,

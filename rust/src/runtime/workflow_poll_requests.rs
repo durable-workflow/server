@@ -33,6 +33,7 @@ pub(super) struct WorkflowPollKeys {
 
 /// A workflow poll's request ID, its keys, its pending window and the
 /// normalized task-kind set it binds to.
+#[derive(Clone)]
 pub(super) struct WorkflowPollRequest {
     pub(super) id: String,
     pub(super) keys: WorkflowPollKeys,
