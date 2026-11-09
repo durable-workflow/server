@@ -384,6 +384,8 @@ mod worker_protocol_envelope;
 mod child_start_turn;
 #[path = "execution/carried_polls.rs"]
 mod carried_polls;
+#[path = "execution/continuations_v1.rs"]
+mod continuations_v1;
 
 #[path = "execution/workflow_poll_clock.rs"]
 mod workflow_poll_clock;

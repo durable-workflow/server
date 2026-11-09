@@ -41,6 +41,9 @@ pub(super) struct Transaction<'a, DB: Backend> {
     /// The run history the cancellation scope engine has read (`scope_events`).
     pub(super) scope_history: Option<super::cancellation_scopes::HistoryCache>,
     pub(super) local_writes: super::local_activities::Writes,
+    /// A continuation's resumed task (Server #1078): the only task a carried
+    /// workflow claim in this transaction may lease.
+    pub(super) claim_only: Option<String>,
     // An implicit failure drops the database transaction before this guard.
     _queue_guard: Option<OwnedMutexGuard<()>>,
     #[cfg(test)]
@@ -62,6 +65,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             meter: None,
             scope_history: None,
             local_writes: Default::default(),
+            claim_only: None,
             _queue_guard: queue_guard,
             #[cfg(test)]
             commit_gate: None,

@@ -371,6 +371,14 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/worker/activity-tasks/{task_id}/complete",
             post(complete_activity),
         )
+        .route(
+            "/api/worker/activity-tasks/{task_id}/continuation/history",
+            post(continuation_history),
+        )
+        .route(
+            "/api/worker/activity-tasks/{task_id}/continuation/complete",
+            post(complete_activity_continuation),
+        )
         .route("/api/worker/query-tasks/poll", post(poll_query))
         .route(
             "/api/worker/query-tasks/{task_id}/status",
@@ -2560,6 +2568,103 @@ async fn complete_activity(
             )
         })
         .map(|body| Json(worker_response(body)))
+}
+
+/// POST …/continuation/history (Server #1078): the run's history for a
+/// worker deciding whether to compute its next workflow task ahead of time.
+async fn continuation_history(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    let attempt = body["activity_attempt_id"].clone();
+    runtime
+        .continuation_history(&task_id, body)
+        .await
+        .map_err(|error| completion_refusal(error, &task_id, "activity_attempt_id", attempt, "Activity task not found."))
+        .map(|body| Json(worker_response(body)))
+}
+
+/// POST …/continuation/complete (Server #1078). The activity result commits
+/// as an ordinary completion carrying the request's `workflow_poll`. Only if
+/// the history still ended at the worker's prefix, and normal dispatch then
+/// leased this run's resumed task to the worker, are the commands applied by
+/// the ordinary workflow-task completion. The answer always says which.
+async fn complete_activity_continuation(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path(task_id): Path<String>,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
+) -> Result<Json<Value>> {
+    use super::continuation::{VERSION, declined};
+    let protocol = request_protocol(&headers)?;
+    let continuation = super::continuation::parse(body.as_object_mut().and_then(|fields| fields.remove("continuation")))
+        .map_err(worker_refusal)?;
+    if !body["workflow_poll"].is_object() {
+        return Err(worker_refusal(super::refuse(StatusCode::UNPROCESSABLE_ENTITY, "continuation_requires_workflow_poll")));
+    }
+    let owner = super::text(&body, "lease_owner").map_err(worker_refusal)?.to_owned();
+    // The commands meet the ordinary completion's request checks before the
+    // activity result is written.
+    completion_checks(&task_id, &headers, json!({"lease_owner": owner, "workflow_task_attempt": 1, "commands": continuation.commands}))?;
+    let attempt = body["activity_attempt_id"].clone();
+    let prefix = (continuation.through, continuation.last_event_id.as_str());
+    let mut response = runtime
+        .complete_activity_continuing(&task_id, body, protocol, Some(prefix))
+        .await
+        .map_err(|error| completion_refusal(error, &task_id, "activity_attempt_id", attempt, "Activity task not found."))?;
+    let prefix_holds = response.as_object_mut().and_then(|fields| fields.remove("continuation_prefix_holds"));
+    let leased = (response["workflow_poll"]["leased"] == true).then(|| response["workflow_poll"]["answer"]["task"].clone());
+    let resumed = response["next_task_id"].as_str().map(str::to_owned);
+    let outcome = match (prefix_holds, leased, resumed) {
+        // A result too large to store becomes a failure; nothing continues.
+        (None, ..) => declined("activity_not_completed"),
+        (Some(holds), ..) if holds != true => declined("history_changed"),
+        (_, None, _) if response.get("workflow_poll").is_none() => declined("workflow_slot_unavailable"),
+        (_, None, _) => declined("no_workflow_task"),
+        (_, Some(task), resumed) if task["task_id"].as_str().is_none() || task["task_id"].as_str() != resumed.as_deref() => {
+            declined("dispatch_selected_other_task")
+        }
+        (_, Some(task), _) => {
+            let workflow_task = task["task_id"].as_str().unwrap_or_default().to_owned();
+            let workflow_attempt = task["workflow_task_attempt"].clone();
+            let completion = json!({"lease_owner": owner, "workflow_task_attempt": workflow_attempt, "commands": continuation.commands});
+            let applied = match completion_checks(&workflow_task, &headers, completion) {
+                Ok(completion) => {
+                    runtime
+                        .complete_workflow(&workflow_task, completion, Some(request.principal().clone()),
+                            headers.get("x-durable-workflow-protocol-version").and_then(|value| value.to_str().ok()))
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            match applied {
+                Ok(completed) => {
+                    // The carried lease was used by this completion.
+                    if let Some(fields) = response.as_object_mut() { fields.remove("workflow_poll"); }
+                    json!({"version": VERSION, "outcome": "accepted", "workflow_task_id": workflow_task,
+                        "workflow_task_attempt": workflow_attempt, "completion": completed})
+                }
+                // The worker still holds the carried lease and finishes the
+                // task the ordinary way, with the answer below as its guide.
+                Err(error) => match completion_refusal(error, &workflow_task, "workflow_task_attempt", workflow_attempt.clone(), "Workflow task not found.") {
+                    super::RuntimeError::Protocol { status, response: refused } => json!({"version": VERSION, "outcome": "rejected",
+                        "workflow_task_id": workflow_task, "workflow_task_attempt": workflow_attempt, "status": status.as_u16(), "response": refused}),
+                    super::RuntimeError::Refused { status, reason } => json!({"version": VERSION, "outcome": "rejected",
+                        "workflow_task_id": workflow_task, "workflow_task_attempt": workflow_attempt, "status": status.as_u16(),
+                        "response": {"reason": reason}}),
+                    _ => {
+                        eprintln!("continuation_workflow_completion_failed: {workflow_task}");
+                        json!({"version": VERSION, "outcome": "unknown", "workflow_task_id": workflow_task,
+                            "workflow_task_attempt": workflow_attempt, "reason": "workflow_completion_failed"})
+                    }
+                },
+            }
+        }
+    };
+    response["continuation"] = outcome;
+    Ok(Json(worker_response(response)))
 }
 
 fn completion_refusal(
