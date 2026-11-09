@@ -71,6 +71,28 @@ x-durable-workflow-carried-workflow-poll:
     scope: conservative_database_wide_drain_because_predecessor_keys_are_opaque
     expiry: original_predecessor_result_and_binding_expiry_not_process_restart_or_a_new_wait_window
     new_requests: canonical_key_only_after_predecessor_drain
+x-durable-workflow-activity-workflow-continuation:
+  server_capability: activity_workflow_continuation
+  version: 1
+  history_endpoint: /worker/activity-tasks/{taskId}/continuation/history
+  complete_endpoint: /worker/activity-tasks/{taskId}/continuation/complete
+  history_read: complete_gap_free_timed_run_history_under_the_activity_attempt_lease_no_write_or_claim
+  history_ineligible: [run_not_open, standalone_activity, cancellation_requested, parallel_group, pending_workflow_task, history_too_large, history_not_contiguous, untimed_history]
+  worker_replay: side_effect_free_replay_of_the_returned_history_plus_its_own_result_and_no_event_time
+  worker_clock_rule: abandon_speculation_if_workflow_code_reads_business_time_at_or_after_the_speculative_result
+  supported_commands: [schedule_activity, start_timer, complete_workflow, record_version_marker]
+  request_refusals_before_any_write: [invalid_continuation, unsupported_continuation_version, unsupported_continuation_command, continuation_requires_workflow_poll, ordinary_completion_request_checks]
+  activity_result: commits_exactly_as_an_ordinary_completion_with_server_assigned_event_time
+  commit_condition: history_ends_at_the_worker_prefix_with_no_ready_or_leased_workflow_task_checked_under_the_completion_transition_lock
+  dispatch: the_required_workflow_poll_claims_by_normal_dispatch_order_and_continues_only_if_it_leases_the_resumed_task
+  commands_applied_by: the_ordinary_workflow_task_completion_with_its_validators_and_receipts
+  outcomes:
+    accepted: commands_recorded_carried_lease_consumed_and_workflow_poll_omitted
+    declined: [activity_not_completed, history_changed, workflow_slot_unavailable, no_workflow_task, dispatch_selected_other_task]
+    rejected: ordinary_completion_refusal_returned_and_carried_lease_kept_for_ordinary_completion
+    unknown: carried_lease_kept_retry_the_ordinary_workflow_completion_whose_receipt_deduplicates
+  retry_after_lost_answer: activity_stale_attempt_receipt_then_recover_the_carried_lease_with_the_original_poll_request_id
+  default_enablement: none_worker_opt_in_only
 x-durable-workflow-workflow-completion-poll-order:
   server_capability: workflow_task_completion_workflow_poll
   endpoint: /worker/workflow-tasks/{taskId}/complete
@@ -1337,6 +1359,66 @@ paths:
               schema: { $ref: "#/components/schemas/ActivityTaskCompletionResult" }
         "409": { $ref: "#/components/responses/WorkerError" }
         "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
+  /worker/activity-tasks/{taskId}/continuation/history:
+    post:
+      operationId: readActivityContinuationHistory
+      tags: [activity-tasks]
+      description: >
+        Requires activity_workflow_continuation. Reads the run's complete
+        worker history under the activity attempt's own lease, without any
+        write, claim or lease change. An ineligible run answers 200 with
+        continuation.eligible false and a reason.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required: [lease_owner, activity_attempt_id]
+              properties:
+                lease_owner: { type: string, minLength: 1 }
+                activity_attempt_id: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: The run history and replay inputs, or an ineligible reason.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityContinuationHistory" }
+        "404": { $ref: "#/components/responses/WorkerError" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+  /worker/activity-tasks/{taskId}/continuation/complete:
+    post:
+      operationId: completeActivityTaskWithContinuation
+      tags: [activity-tasks]
+      description: >
+        Requires activity_workflow_continuation. Completes the activity as
+        completeActivityTask does, with a required workflow_poll. The
+        continuation's commands are applied only when the run's history still
+        ends at the worker's prefix and normal dispatch leases the run's
+        resumed task to this worker. The continuation member reports the
+        outcome; a declined, rejected or unknown outcome leaves any carried
+        workflow lease with the worker for ordinary completion.
+      parameters:
+        - $ref: "#/components/parameters/WorkerProtocolVersionHeader"
+        - $ref: "#/components/parameters/TaskIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivityTaskContinuationRequest" }
+      responses:
+        "200":
+          description: The recorded activity completion and the continuation outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActivityTaskContinuationResult" }
+        "409": { $ref: "#/components/responses/WorkerError" }
+        "422": { $ref: "#/components/responses/WorkerError" }
+        "503": { $ref: "#/components/responses/WorkerServiceUnavailable" }
   /worker/activity-tasks/{taskId}/fail:
     post:
       operationId: failActivityTask
@@ -1793,6 +1875,24 @@ components:
             id, condition key, definition fingerprint and original budget; a new
             occurrence or run gets a fresh budget. Without this capability a producer
             must not send the policy, and per-open deadlines apply.
+        activity_workflow_continuation:
+          type: object
+          description: >
+            Present when the server accepts an activity completion that also
+            completes the run's resumed workflow task with worker-computed
+            commands. See x-durable-workflow-activity-workflow-continuation.
+            Absence means workers complete activities and workflow tasks the
+            ordinary way.
+          required: [version, history_endpoint, complete_endpoint, supported_commands, max_history_events, max_commands]
+          properties:
+            version: { const: 1 }
+            history_endpoint: { const: "/worker/activity-tasks/{taskId}/continuation/history" }
+            complete_endpoint: { const: "/worker/activity-tasks/{taskId}/continuation/complete" }
+            supported_commands:
+              type: array
+              items: { enum: [schedule_activity, start_timer, complete_workflow, record_version_marker] }
+            max_history_events: { type: integer, minimum: 1 }
+            max_commands: { type: integer, minimum: 1 }
         workflow_task_completion_workflow_poll:
           type: boolean
           description: Literal true supports workflow_poll on workflow-task completion. If activity_poll delivers a lease, workflow_poll is not attempted and its response member is omitted. Omission delivers no workflow lease and releases its reservation without assuming queue emptiness or disabling this capability. Both supplied carriers must name the completing owner.
@@ -3782,6 +3882,73 @@ components:
         workflow_poll:
           $ref: "#/components/schemas/CarriedWorkflowPollRequest"
           description: Requires activity_completion_workflow_poll. No eager poll is granted if the normal result is refused or converted to a structural-limit failure.
+    ActivityContinuationHistory:
+      allOf:
+        - $ref: "#/components/schemas/WorkerEnvelope"
+        - type: object
+          required: [task_id, activity_attempt_id, continuation]
+          properties:
+            task_id: { type: string, minLength: 1 }
+            activity_attempt_id: { type: string, minLength: 1 }
+            continuation:
+              type: object
+              required: [version, eligible, reason]
+              properties:
+                version: { const: 1 }
+                eligible: { type: boolean }
+                reason: { type: [string, "null"] }
+            workflow_id: { type: string }
+            run_id: { type: string }
+            workflow_type: { type: string }
+            arguments: true
+            compatibility: { type: [string, "null"] }
+            history_through_sequence: { type: integer, minimum: 1 }
+            history_last_event_id: { type: string }
+            history_events: { type: array, items: { type: object } }
+    ActivityTaskContinuationRequest:
+      type: object
+      additionalProperties: true
+      required: [lease_owner, activity_attempt_id, result, workflow_poll, continuation]
+      properties:
+        lease_owner: { type: string, minLength: 1 }
+        activity_attempt_id: { type: string, minLength: 1 }
+        result: true
+        workflow_poll: { $ref: "#/components/schemas/CarriedWorkflowPollRequest" }
+        continuation:
+          type: object
+          additionalProperties: false
+          required: [version, history_through_sequence, history_last_event_id, commands]
+          properties:
+            version: { const: 1 }
+            history_through_sequence: { type: integer, minimum: 1 }
+            history_last_event_id: { type: string, minLength: 1, maxLength: 64 }
+            commands:
+              type: array
+              minItems: 1
+              maxItems: 16
+              items:
+                type: object
+                required: [type]
+                properties:
+                  type: { enum: [schedule_activity, start_timer, complete_workflow, record_version_marker] }
+    ActivityTaskContinuationResult:
+      allOf:
+        - $ref: "#/components/schemas/ActivityTaskCompletionResult"
+        - type: object
+          required: [continuation]
+          properties:
+            continuation:
+              type: object
+              required: [version, outcome]
+              properties:
+                version: { const: 1 }
+                outcome: { enum: [accepted, declined, rejected, unknown] }
+                reason: { type: string }
+                workflow_task_id: { type: string }
+                workflow_task_attempt: { type: integer }
+                completion: { type: object }
+                status: { type: integer }
+                response: { type: object }
     TaskFailureRequest:
       type: object
       additionalProperties: true

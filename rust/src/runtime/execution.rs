@@ -1766,6 +1766,14 @@ impl Runtime {
         }
     }
     pub(crate) async fn complete_activity(&self, task_id: &str, body: Value, protocol: &str) -> Result<Value> {
+        self.complete_activity_continuing(task_id, body, protocol, None).await
+    }
+
+    /// An activity completion that reports whether a continuation's history
+    /// prefix still holds (Server #1078).
+    pub(crate) async fn complete_activity_continuing(
+        &self, task_id: &str, body: Value, protocol: &str, prefix: Option<(i64, &str)>,
+    ) -> Result<Value> {
         let external = self.prepare_external(&body["result"]).await?;
         // `ActivityOutcomeRecorder` measures the result it would store.
         let stored = match &external {
@@ -1784,11 +1792,12 @@ impl Runtime {
         }
         let polling = super::carried_polls::Config { protocol: Some(protocol), pages: self.history_pages(), default_wait: self.worker_poll_wait() };
         match &*self.storage {
-            Storage::Sqlite(store) => store.complete_activity(task_id, body, external, polling).await,
-            Storage::Postgres(store) => store.complete_activity(task_id, body, external, polling).await,
-            Storage::MySql(store) => store.complete_activity(task_id, body, external, polling).await,
+            Storage::Sqlite(store) => store.complete_activity_continuing(task_id, body, external, polling, prefix).await,
+            Storage::Postgres(store) => store.complete_activity_continuing(task_id, body, external, polling, prefix).await,
+            Storage::MySql(store) => store.complete_activity_continuing(task_id, body, external, polling, prefix).await,
         }
     }
+    delegate!(continuation_history(task_id: &str, body: Value) -> Result<Value>);
     delegate!(heartbeat_activity(task_id: &str, body: Value) -> Result<Value>);
     delegate!(activity_status(task_id: &str, body: Value, protocol: &str) -> Result<Value>);
     delegate!(renew_activity_lease(task_id: &str, body: Value) -> Result<Value>);

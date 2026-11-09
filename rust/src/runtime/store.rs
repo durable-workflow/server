@@ -4074,12 +4074,29 @@ where
         Ok(())
     }
 
+    /// An ordinary activity completion; the runtime calls the continuing
+    /// form directly.
+    #[cfg(test)]
     pub(crate) async fn complete_activity(
         &self,
         task_id: &str,
         body: Value,
         external: Option<super::external_resolution::PreparedExternal>,
         polling: super::carried_polls::Config<'_>,
+    ) -> Result<Value> {
+        self.complete_activity_continuing(task_id, body, external, polling, None).await
+    }
+
+    /// An activity completion. A continuation (Server #1078) also names where
+    /// the worker read the run's history; whether it still ends there, before
+    /// this result is appended, is reported as `continuation_prefix_holds`.
+    pub(crate) async fn complete_activity_continuing(
+        &self,
+        task_id: &str,
+        body: Value,
+        external: Option<super::external_resolution::PreparedExternal>,
+        polling: super::carried_polls::Config<'_>,
+        prefix: Option<(i64, &str)>,
     ) -> Result<Value> {
         let mut body = body;
         let workflow_poll = body.as_object_mut().and_then(|fields| fields.remove("workflow_poll"));
@@ -4159,6 +4176,10 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
+        let prefix_holds = match prefix {
+            Some((through, last_event_id)) => Some(Self::continuation_prefix_holds(&mut tx, &run_id, through, last_event_id).await?),
+            None => None,
+        };
         if let Some(prepared) = &external {
             self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                 .await?;
@@ -4234,6 +4255,7 @@ where
         self.wake.notify_waiters();
         let mut response = json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id});
         if let Some(poll) = carried.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
+        if let Some(holds) = prefix_holds { response["continuation_prefix_holds"] = json!(holds); }
         Ok(response)
     }
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {
@@ -5139,7 +5161,7 @@ where
     /// history a worker reads shows a consumed signal's workflow sequence on
     /// its `SignalReceived`, from the signal's record. The run's own history
     /// route shows the events as recorded.
-    async fn with_signal_sequences(connection: &mut DB::Connection, run_id: &str, events: &mut [Value]) -> Result<()> {
+    pub(super) async fn with_signal_sequences(connection: &mut DB::Connection, run_id: &str, events: &mut [Value]) -> Result<()> {
         if !events.iter().any(|event| event["event_type"] == "SignalReceived") {
             return Ok(());
         }
@@ -5687,6 +5709,7 @@ fn capabilities_template() -> Value {
         "child_workflow_start_turn": true, "condition_wait_idempotent_reopen": true,
         "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
+    value[super::continuation::CAPABILITY] = super::continuation::capability();
     value["runtime_external_payload_transport"] = Value::Null;
     value["supported_workflow_task_commands"]
         .as_array_mut()
