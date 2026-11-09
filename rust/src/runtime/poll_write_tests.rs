@@ -1,9 +1,126 @@
-//! Compare stored projections and count the actual cache/projection writes.
+//! Compare stored snapshots/projections and count actual transition SQL.
 use super::store::Store;
 use serde_json::json;
 use std::collections::BTreeMap;
 
 store_methods! {
+    pub(super) async fn qualify_activity_completion_without_readback(&self) {
+        let codec = crate::codec::ValueCodec::new().unwrap();
+        let input = codec.encode(&crate::codec::Value::Array(vec![])).unwrap();
+        let result = json!({"codec":"avro","blob":codec.encode(&crate::codec::Value::String("finished — café".into())).unwrap()});
+        for legacy in [false, true] {
+            let queue = format!("completion-snapshot-{legacy}");
+            let worker = format!("snapshot-worker-{legacy}");
+            self.register(json!({"worker_id":worker,"task_queue":queue,"runtime":"php",
+                "supported_workflow_types":["snapshot"],"supported_activity_types":["snapshot"]}),
+                &super::QueryTaskConfig::default(),Some("1.20")).await.unwrap();
+            let run = self.start(json!({"workflow_id":queue,"workflow_type":"snapshot","task_queue":queue,
+                "input":{"codec":"avro","blob":input}}), BTreeMap::new(), None, None).await.unwrap();
+            let run_id = run["run_id"].as_str().unwrap();
+            let workflow = self.poll(json!({"worker_id":worker,"task_queue":queue,"timeout_seconds":0}),
+                "workflow","1.20").await.unwrap()["task"].clone();
+            self.complete_or_checkpoint(workflow["task_id"].as_str().unwrap(),
+                json!({"lease_owner":worker,"workflow_task_attempt":workflow["workflow_task_attempt"],
+                    "commands":[{"type":"schedule_activity","activity_type":"snapshot",
+                        "arguments":{"codec":"avro","blob":input},
+                        "retry_policy":{"max_attempts":2,"backoff_seconds":[]},
+                        "start_to_close_timeout":120,"schedule_to_close_timeout":600}]}),
+                std::sync::Arc::new(tokio::sync::Semaphore::new(1)), BTreeMap::new(), None,
+                super::carried_polls::Config {protocol:Some("1.20"),pages:Default::default(),default_wait:30},
+                Default::default(), None, None).await.unwrap();
+            let task = self.poll(json!({"worker_id":worker,"task_queue":queue,"timeout_seconds":0}),
+                "activity","1.20").await.unwrap()["task"].clone();
+            let activity_id = task["activity_execution_id"].as_str().unwrap();
+            let old_close = super::store::now() - chrono::Duration::days(1);
+            let heartbeat = super::store::now() - chrono::Duration::seconds(1);
+            // Retained prior-attempt fields must be overwritten, not copied.
+            Self::query("UPDATE activity_executions SET exception=$1,closed_at=$2,last_heartbeat_at=$3 WHERE id=$4")
+                .bind(result.to_string()).bind(DB::bind_time(old_close)).bind(DB::bind_time(heartbeat))
+                .bind(activity_id).execute(&self.pool).await.unwrap();
+            if legacy {
+                Self::query("UPDATE activity_executions SET arguments=NULL,retry_policy=NULL WHERE id=$1")
+                    .bind(activity_id).execute(&self.pool).await.unwrap();
+            }
+            // A separate Store has its own in-process queue; the database's
+            // transition lock must still serialize an activity heartbeat.
+            let held = self.begin().await.unwrap();
+            let other = Store::<DB>::new(self.pool.clone());
+            let beat = other.heartbeat_activity(task["task_id"].as_str().unwrap(),
+                json!({"lease_owner":worker,"activity_attempt_id":task["activity_attempt_id"]}));
+            tokio::pin!(beat);
+            tokio::select! {
+                outcome = &mut beat => panic!("heartbeat crossed an open transition: {outcome:?}"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+            }
+            held.rollback().await.unwrap();
+            let beat = beat.await.unwrap();
+            assert_eq!(beat["heartbeat_recorded"], true);
+            let before = Self::query("SELECT * FROM activity_executions WHERE id=$1")
+                .bind(activity_id).fetch_one(&self.pool).await.unwrap();
+            let before_payload = Self::activity_payload(&before).unwrap();
+            let body = json!({"lease_owner":worker,"activity_attempt_id":task["activity_attempt_id"],"result":result});
+            let (answer, counts) = super::sql_counts::measure(self.complete_activity(
+                task["task_id"].as_str().unwrap(), body.clone(), None,
+                super::carried_polls::Config {protocol:Some("1.20"),pages:Default::default(),default_wait:30})).await;
+            assert_eq!(answer.unwrap()["recorded"], true);
+            assert_eq!(counts.count("SELECT * FROM activity_executions WHERE id=$1"), 0,
+                "completion must not reread the row it just updated");
+            assert_eq!(counts.count("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3"), 1);
+
+            // The former readback is an independent stored-row reference.
+            let (stored, reference_counts) = super::sql_counts::measure(async {
+                // Counting begins at statement construction, not execution.
+                Self::query("SELECT * FROM activity_executions WHERE id=$1")
+                    .bind(activity_id).fetch_one(&self.pool).await
+            }).await;
+            assert_eq!(reference_counts.total(), 1);
+            let stored = stored.unwrap();
+            let reference = Self::activity_payload(&stored).unwrap();
+            let row = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ActivityCompleted'")
+                .bind(run_id).fetch_one(&self.pool).await.unwrap();
+            let mut history = DB::document_row(&row, "payload").unwrap();
+            assert_eq!(history["activity_attempt_id"], task["activity_attempt_id"]);
+            assert_eq!(history["attempt_number"], task["attempt_number"]);
+            assert_eq!(history["result"], result);
+            assert_eq!(history["payload_codec"], "avro");
+            assert_eq!(history["task"]["id"], task["task_id"]);
+            assert_eq!(history["task"]["lease_owner"], worker);
+            for field in ["activity_attempt_id", "attempt_number", "result", "payload_codec", "task"] {
+                history.as_object_mut().unwrap().remove(field);
+            }
+            assert_eq!(history, reference, "complete snapshot must equal the stored-row reference");
+            assert_eq!(reference["activity"]["status"], "completed");
+            assert!(reference["activity"]["exception"].is_null());
+            assert_ne!(before_payload["activity"]["status"], reference["activity"]["status"]);
+            assert_ne!(before_payload["activity"]["exception"], reference["activity"]["exception"]);
+            assert_ne!(before_payload["activity"]["closed_at"], reference["activity"]["closed_at"]);
+            assert_eq!(reference["activity"]["started_at"], before_payload["activity"]["started_at"]);
+            assert_eq!(reference["activity"]["last_heartbeat_at"], before_payload["activity"]["last_heartbeat_at"]);
+            assert_ne!(reference["activity"]["last_heartbeat_at"], json!(heartbeat));
+            assert_eq!(reference["activity"].get("arguments").is_none(), legacy);
+            assert_eq!(reference["activity"].get("retry_policy").is_none(), legacy);
+
+            // Both identical and changed repeats keep ordinary stale-attempt semantics.
+            let mut changed = body.clone();
+            changed["result"] = json!({"codec":"avro","blob":input});
+            for repeat in [body.clone(), changed] {
+                let error = self.complete_activity(task["task_id"].as_str().unwrap(), repeat, None,
+                    super::carried_polls::Config {protocol:Some("1.20"),pages:Default::default(),default_wait:30}).await.unwrap_err();
+                match error {
+                    super::RuntimeError::Protocol {status, response} => {
+                        assert_eq!(status, axum::http::StatusCode::CONFLICT);
+                        assert_eq!(response["reason"], "stale_attempt");
+                        assert_eq!(response["recorded"], false);
+                        assert_eq!(response["activity_status"], "completed");
+                    }
+                    other => panic!("unexpected repeat outcome: {other:?}"),
+                }
+            }
+            assert_eq!(Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ActivityCompleted'")
+                .bind(run_id).fetch_one(&self.pool).await.unwrap(), 1);
+        }
+    }
+
     pub(super) async fn qualify_completion_waiting_status(&self) {
         let input = crate::codec::ValueCodec::new().unwrap()
             .encode(&crate::codec::Value::Array(vec![])).unwrap();
@@ -291,6 +408,14 @@ store_methods! {
         assert_eq!(Self::scalar("SELECT COUNT(*) FROM workflow_run_summaries WHERE id=$1").bind(run_id).fetch_one(&mut *tx).await.unwrap(), 0);
         tx.rollback().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn sqlite_activity_completion_snapshot_skips_readback() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::<sqlx::Sqlite>::new(super::sqlite::open(dir.path().join("completion-snapshot.sqlite").to_str().unwrap()).await.unwrap());
+    store.qualify_activity_completion_without_readback().await;
+    store.close().await;
 }
 
 #[tokio::test]
