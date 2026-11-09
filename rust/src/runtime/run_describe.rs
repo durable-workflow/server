@@ -11,11 +11,16 @@ use super::{
     backend::Backend,
     store::{Store, now},
     task_queues::json_time,
+    transaction::Transaction,
 };
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::sync::OnceLock;
+
+/// A run's `WorkflowStarted` payload.
+pub(super) const STARTED_PAYLOAD_SQL: &str =
+    "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1";
 
 /// `server.limits.max_payload_bytes`, which describe reports and uses to
 /// omit oversized previews.
@@ -76,21 +81,34 @@ where
     /// The registered query route for a run row, with workers whose
     /// heartbeat is newer than `stale_after` seconds.
     pub(super) async fn query_route(&self, run: &DB::Row, stale_after: i64) -> Result<super::query_route::QueryRoute> {
+        let mut connection = self.pool.acquire().await?;
+        let started = Self::started_payload(&mut connection, &DB::string(run, "id")?).await?;
+        self.query_route_in(&mut connection, run, &started, stale_after).await
+    }
+
+    /// The run's `WorkflowStarted` payload, or null when it has none.
+    pub(super) async fn started_payload(connection: &mut DB::Connection, run_id: &str) -> Result<Value> {
+        Self::query(STARTED_PAYLOAD_SQL)
+            .bind(run_id)
+            .fetch_optional(&mut *connection)
+            .await?
+            .map(|row| DB::document_row(&row, "payload"))
+            .transpose()
+            .map(|payload| payload.unwrap_or(Value::Null))
+    }
+
+    /// `query_route` on a given connection with the run's start payload.
+    pub(super) async fn query_route_in(
+        &self, connection: &mut DB::Connection, run: &DB::Row, started: &Value, stale_after: i64,
+    ) -> Result<super::query_route::QueryRoute> {
         let task_queue = super::query_route::trimmed(DB::optional_string(run, "queue")?.as_deref()).unwrap_or("default").to_owned();
         let workflow_type = DB::optional_string(run, "workflow_type")?;
         let compatibility = DB::optional_string(run, "compatibility")?;
-        let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-            .bind(DB::string(run, "id")?)
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|row| DB::document_row(&row, "payload"))
-            .transpose()?
-            .unwrap_or(Value::Null);
         let fresh_after = now() - chrono::Duration::seconds(stale_after.max(1));
         let rows = Self::query("SELECT capabilities,supported_workflow_types,build_id,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND status='active' ORDER BY worker_id")
             .bind(self.namespace.as_ref())
             .bind(task_queue.as_str())
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await?;
         let mut workers = Vec::with_capacity(rows.len());
         for row in rows {
@@ -109,16 +127,15 @@ where
             &task_queue,
             super::query_route::trimmed(workflow_type.as_deref()),
             super::query_route::trimmed(compatibility.as_deref()),
-            &started,
+            started,
             &workers,
         ))
     }
 
     /// `WorkflowRun::typedSearchAttributes`, sorted by key; PHP renders an
     /// empty set as `[]`.
-    async fn typed_search_attributes(&self, run_id: &str) -> Result<Value> {
-        let mut connection = self.pool.acquire().await?;
-        let rows = Self::typed_rows(&mut connection, run_id).await?;
+    async fn typed_search_attributes(connection: &mut DB::Connection, run_id: &str) -> Result<Value> {
+        let rows = Self::typed_rows(connection, run_id).await?;
         Ok(if rows.is_empty() {
             json!([])
         } else {
@@ -186,7 +203,7 @@ where
             ..Default::default()
         };
         rows.summary = next().into_iter().next();
-        rows.search_attributes = self.typed_search_attributes(run_id).await?;
+        rows.search_attributes = Self::typed_search_attributes(&mut *self.pool.acquire().await?, run_id).await?;
         if let Some(summary) = &rows.summary {
             rows.task_problem_badge = super::run_diagnostics::task_problem_badge(
                 summary["task_problem"].as_bool().unwrap_or(false),
@@ -198,10 +215,10 @@ where
     }
 
     /// `runUpdateDiagnostics`: the run's updates in command order.
-    async fn update_diagnostics(&self, run_id: &str) -> Result<Vec<Value>> {
+    async fn update_diagnostics(connection: &mut DB::Connection, run_id: &str) -> Result<Vec<Value>> {
         let rows = Self::query("SELECT id,workflow_command_id,workflow_instance_id,workflow_run_id,target_scope,requested_workflow_run_id,resolved_workflow_run_id,update_name,status,outcome,command_sequence,workflow_sequence,rejection_reason,validation_errors,failure_id,failure_message,accepted_at,applied_at,rejected_at,closed_at FROM workflow_updates WHERE workflow_run_id=$1 ORDER BY command_sequence,created_at,id")
             .bind(run_id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *connection)
             .await?;
         let mut updates = Vec::with_capacity(rows.len());
         for row in rows {
@@ -227,9 +244,15 @@ where
     /// A run's compatibility marker and whether the live fleet supports it,
     /// as describe and history report them.
     pub(super) async fn compatibility_fields(&self, run: &DB::Row) -> Result<Map<String, Value>> {
+        let mut connection = self.pool.acquire().await?;
+        self.compatibility_fields_in(&mut connection, run).await
+    }
+
+    /// `compatibility_fields` on a given connection.
+    pub(super) async fn compatibility_fields_in(&self, connection: &mut DB::Connection, run: &DB::Row) -> Result<Map<String, Value>> {
         let compatibility = DB::optional_string(run, "compatibility")?;
         let queue = DB::optional_string(run, "queue")?;
-        let snapshots = self.fleet_snapshots(now()).await?;
+        let snapshots = self.fleet_snapshots_in(connection, now()).await?;
         let (supported, fleet_reason) = super::run_diagnostics::fleet_supports(
             &snapshots,
             compatibility.as_deref().map(str::trim).filter(|value| !value.is_empty()),
@@ -244,8 +267,10 @@ where
     }
 
     /// The fields `formatRun` adds for a described run row.
+    /// Every read goes through the caller's one read snapshot (Server #1075).
     pub(super) async fn describe_fields(
         &self,
+        tx: &mut Transaction<'_, DB>,
         run: &DB::Row,
         current: bool,
         terminal: bool,
@@ -255,27 +280,22 @@ where
     ) -> Result<Map<String, Value>> {
         let run_id = DB::string(run, "id")?;
         let status = DB::string(run, "status")?;
-        let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-            .bind(run_id.as_str())
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|row| DB::document_row(&row, "payload"))
-            .transpose()?
-            .unwrap_or(Value::Null);
+        // One start-payload read serves the description and the query route.
+        let started = Self::started_payload(&mut **tx, &run_id).await?;
         let summary = Self::query("SELECT wait_kind,wait_reason FROM workflow_run_summaries WHERE id=$1")
             .bind(run_id.as_str())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut **tx)
             .await?;
         let (wait_kind, wait_reason) = match summary {
             Some(row) => (DB::optional_string(&row, "wait_kind")?, DB::optional_string(&row, "wait_reason")?),
             None => (None, None),
         };
-        let compatibility = self.compatibility_fields(run).await?;
+        let compatibility = self.compatibility_fields_in(&mut **tx, run).await?;
         // `canServeQuery`: failed, cancelled and terminated runs refuse
         // queries; others need a registered route.
         let query_servable = current
             && (!terminal || status == "completed")
-            && self.query_route(run, stale_after).await?.servable;
+            && self.query_route_in(&mut **tx, run, &started, stale_after).await?.servable;
         let archived = DB::optional_instant(run, "archived_at")?.is_some();
         let (input_omitted, output_omitted) = (oversized(input), oversized(output));
         let mut fields = Map::new();
@@ -293,10 +313,7 @@ where
         let routing = if DB::optional_string(run, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
             Value::Null
         } else {
-            let mut tx = self.begin_read().await?;
-            let routing = self.definition_inspect(&mut tx, run, None).await?;
-            tx.commit().await?;
-            routing
+            self.definition_inspect(tx, run, None, Some(&started)).await?
         };
         fields.insert("definition_routing".into(), routing);
         fields.insert("payload_previews".into(), json!({"input_omitted":input_omitted,"output_omitted":output_omitted,
@@ -304,14 +321,12 @@ where
         fields.insert("last_progress_at".into(), iso8601(DB::optional_instant(run, "last_progress_at")?));
         fields.insert("wait_kind".into(), json!(wait_kind));
         fields.insert("wait_reason".into(), json!(wait_reason));
-        fields.insert("search_attributes".into(), self.typed_search_attributes(&run_id).await?);
+        fields.insert("search_attributes".into(), Self::typed_search_attributes(&mut **tx, &run_id).await?);
         fields.insert("actions".into(), actions(current, terminal, archived, query_servable));
         fields.insert("updates_scope".into(), json!("selected_run"));
-        fields.insert("updates".into(), json!(self.update_diagnostics(&run_id).await?));
+        fields.insert("updates".into(), json!(Self::update_diagnostics(&mut **tx, &run_id).await?));
         // `terminalFailurePayload`: a failed run's failure, last (Server #967).
-        let mut tx = self.begin_read().await?;
-        let failure = Self::terminal_failure_describe(&mut tx, &run_id, DB::string(run, "status")?.as_str()).await?;
-        tx.commit().await?;
+        let failure = Self::terminal_failure_describe(tx, &run_id, DB::string(run, "status")?.as_str()).await?;
         for (key, value) in failure.into_iter().flatten() {
             fields.insert(key.into(), value);
         }
