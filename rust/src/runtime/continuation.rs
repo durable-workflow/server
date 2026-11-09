@@ -74,6 +74,52 @@ fn contains_external(value: &Value) -> bool {
     }
 }
 
+fn exact_fields(value: &Value, expected: &[&str]) -> bool {
+    value.as_object().is_some_and(|fields| fields.len() == expected.len()
+        && expected.iter().all(|key| fields.contains_key(*key)))
+}
+
+fn identifier(value: &Value) -> bool {
+    value.as_str().is_some_and(|id| !id.is_empty() && id.len() <= 64)
+}
+
+/// A stored decision is authoritative only for the completed activity and
+/// its own resumed task. Well-formed but contradictory IDs are corruption,
+/// just like missing fields or an unsupported receipt version.
+fn valid_saved_answer(answer: &Value, task_id: &str, run_id: &str, attempt: &Value) -> bool {
+    if !exact_fields(answer, &["task_id", "activity_attempt_id", "outcome", "recorded", "reason", "next_task_id", "continuation"])
+        || answer["task_id"].as_str() != Some(task_id)
+        || !identifier(attempt) || answer["activity_attempt_id"] != *attempt
+        || answer["outcome"] != "completed" || answer["recorded"] != true || !answer["reason"].is_null()
+        || !(answer["next_task_id"].is_null() || identifier(&answer["next_task_id"])) {
+        return false;
+    }
+    let decision = &answer["continuation"];
+    if decision["version"].as_i64() != Some(VERSION) || decision["version"].is_f64() { return false; }
+    match decision["outcome"].as_str() {
+        Some("declined") => exact_fields(decision, &["version", "outcome", "reason"])
+            && matches!(decision["reason"].as_str(), Some("external_payload" | "history_changed"
+                | "workflow_slot_unavailable" | "no_workflow_task" | "dispatch_selected_other_task")),
+        Some("accepted") => {
+            let completed = &decision["completion"];
+            exact_fields(decision, &["version", "outcome", "workflow_task_id", "workflow_task_attempt", "completion"])
+                && identifier(&decision["workflow_task_id"])
+                && decision["workflow_task_id"] == answer["next_task_id"]
+                && decision["workflow_task_attempt"].as_i64().is_some_and(|attempt| attempt > 0)
+                && !decision["workflow_task_attempt"].is_f64()
+                && exact_fields(completed, &["task_id", "run_id", "run_status", "workflow_task_attempt", "outcome", "recorded", "reason", "created_task_ids"])
+                && completed["task_id"] == decision["workflow_task_id"]
+                && completed["workflow_task_attempt"] == decision["workflow_task_attempt"]
+                && completed["run_id"].as_str() == Some(run_id)
+                && matches!(completed["run_status"].as_str(), Some("waiting" | "completed"))
+                && completed["outcome"] == "completed" && completed["recorded"] == true && completed["reason"].is_null()
+                && completed["created_task_ids"].as_array().is_some_and(|ids| ids.len() <= MAX_COMMANDS + 1
+                    && ids.iter().all(identifier))
+        }
+        _ => false,
+    }
+}
+
 const RECEIPT: &str = "activity_workflow_continuation_v1";
 
 /// Object ordering is transport spelling, while every supplied field and
@@ -88,10 +134,16 @@ store_methods! {
     fn continuation_receipt(task: &DB::Row, request_hash: &str) -> Result<Option<Value>> {
         let Some(receipt) = DB::optional_document_row(task, "receipt")? else { return Ok(None); };
         let Some(wrapper) = receipt.get(RECEIPT) else { return Ok(None); };
-        let valid = wrapper["version"] == VERSION
-            && wrapper["request_hash"].as_str().is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
-            && wrapper["answer"].is_object()
-            && matches!(wrapper["answer"]["continuation"]["outcome"].as_str(), Some("accepted" | "declined"))
+        let stored_owner = DB::optional_string(task, "lease_owner")?;
+        let valid = exact_fields(wrapper, &["version", "request_hash", "answer"])
+            && wrapper["version"].as_i64() == Some(VERSION) && !wrapper["version"].is_f64()
+            && wrapper["request_hash"].as_str().is_some_and(|hash| hash.len() == 64
+                && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+            && DB::string(task, "task_type")? == "activity" && DB::string(task, "status")? == "completed"
+            && receipt["lease_owner"].as_str().is_some_and(|owner|
+                stored_owner.as_deref() == Some(owner))
+            && valid_saved_answer(&wrapper["answer"], &DB::string(task, "id")?,
+                &DB::string(task, "workflow_run_id")?, &receipt["activity_attempt_id"])
             && wrapper.to_string().len() <= 16 * 1024;
         if !valid { return Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_continuation_receipt")); }
         if wrapper["request_hash"].as_str() != Some(request_hash) {
@@ -205,6 +257,9 @@ store_methods! {
         // activity receipt fields remain readable by an older server.
         let mut stored_answer = answer.clone();
         stored_answer.as_object_mut().expect("completion object").remove("workflow_poll");
+        if !valid_saved_answer(&stored_answer, task_id, &DB::string(&task, "workflow_run_id")?, &receipt_body["activity_attempt_id"]) {
+            return Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_continuation_receipt"));
+        }
         let wrapper = json!({"version": VERSION, "request_hash": hash, "answer": stored_answer});
         if wrapper.to_string().len() > 16 * 1024 {
             return Err(refuse(StatusCode::PAYLOAD_TOO_LARGE, "continuation_receipt_exceeds_budget"));

@@ -342,7 +342,7 @@ async fn completion_independently_refuses_a_gapped_prefix_with_the_same_last_eve
 
 #[tokio::test]
 async fn legacy_absent_and_corrupt_receipts_never_become_a_new_continuation() {
-    for replacement in [0, 1, 2] {
+    for replacement in [0, 1, 2, 3, 4] {
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
         let app = router(runtime.clone());
@@ -356,11 +356,21 @@ async fn legacy_absent_and_corrupt_receipts_never_become_a_new_continuation() {
         match replacement {
             0 => database.execute("DELETE FROM dw_task_completions WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
             1 => database.execute("UPDATE dw_task_completions SET receipt='{}' WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
-            _ => database.execute("UPDATE dw_task_completions SET receipt='{\"activity_workflow_continuation_v1\":{}}' WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
+            2 => database.execute("UPDATE dw_task_completions SET receipt='{\"activity_workflow_continuation_v1\":{}}' WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
+            3 => match &database {
+                TestDatabase::Sqlite(_) => database.execute("UPDATE dw_task_completions SET receipt=json_set(receipt,'$.activity_workflow_continuation_v1.answer.task_id','foreign-task') WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
+                TestDatabase::MySql { .. } => database.execute("UPDATE dw_task_completions SET receipt=JSON_SET(receipt,'$.activity_workflow_continuation_v1.answer.task_id','foreign-task') WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
+                TestDatabase::Postgres { .. } => database.execute("UPDATE dw_task_completions SET receipt=jsonb_set(receipt,'{activity_workflow_continuation_v1,answer,task_id}','\"foreign-task\"') WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
+            },
+            _ => match &database {
+                TestDatabase::Sqlite(_) => database.execute("UPDATE dw_task_completions SET receipt=json_set(receipt,'$.activity_workflow_continuation_v1.answer.continuation.workflow_task_id','foreign-task') WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
+                TestDatabase::MySql { .. } => database.execute("UPDATE dw_task_completions SET receipt=JSON_SET(receipt,'$.activity_workflow_continuation_v1.answer.continuation.workflow_task_id','foreign-task') WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
+                TestDatabase::Postgres { .. } => database.execute("UPDATE dw_task_completions SET receipt=jsonb_set(receipt,'{activity_workflow_continuation_v1,answer,continuation,workflow_task_id}','\"foreign-task\"') WHERE task_id IN (SELECT id FROM workflow_tasks WHERE task_type='activity')").await,
+            },
         }
         let (status, refused) = continue_activity(&app, &activity, body).await;
-        if replacement == 2 {
-            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        if replacement >= 2 {
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "replacement {replacement}");
             assert_eq!(refused["reason"], "invalid_continuation_receipt");
         } else {
             assert_eq!(status, StatusCode::CONFLICT);
