@@ -5,10 +5,11 @@
 //! replays it with its activity result appended, and sends the resulting
 //! commands with its completion. The activity result commits exactly as an
 //! ordinary completion does. The commands are applied only when, under the
-//! same transition lock, the history still ends where the worker read it,
-//! and normal dispatch then hands this worker that run's resumed task. They
-//! go through the ordinary workflow-task completion, with its validators and
-//! receipts. Anything else is a declined continuation: the worker keeps any
+//! same transition lock, the history still ends where the worker read it
+//! with no workflow task waiting. The carried claim then leases only that
+//! run's resumed task to this worker, a bounded same-worker priority like
+//! eager activity dispatch. The commands go through the ordinary
+//! workflow-task completion, with its validators and receipts. Anything else is a declined continuation: the worker keeps any
 //! carried workflow lease and finishes it the ordinary way.
 use super::{Result, refuse};
 use axum::http::StatusCode;

@@ -84,7 +84,7 @@ x-durable-workflow-activity-workflow-continuation:
   request_refusals_before_any_write: [invalid_continuation, unsupported_continuation_version, unsupported_continuation_command, continuation_requires_workflow_poll, ordinary_completion_request_checks]
   activity_result: commits_exactly_as_an_ordinary_completion_with_server_assigned_event_time
   commit_condition: history_ends_at_the_worker_prefix_with_no_ready_or_leased_workflow_task_checked_under_the_completion_transition_lock
-  dispatch: the_required_workflow_poll_claims_by_normal_dispatch_order_and_continues_only_if_it_leases_the_resumed_task
+  dispatch: when_the_commit_condition_holds_the_required_workflow_poll_claims_only_the_resumed_task_a_bounded_same_worker_priority_like_eager_activity_dispatch_otherwise_normal_dispatch_order
   commands_applied_by: the_ordinary_workflow_task_completion_with_its_validators_and_receipts
   outcomes:
     accepted: commands_recorded_carried_lease_consumed_and_workflow_poll_omitted
@@ -1398,8 +1398,9 @@ paths:
         Requires activity_workflow_continuation. Completes the activity as
         completeActivityTask does, with a required workflow_poll. The
         continuation's commands are applied only when the run's history still
-        ends at the worker's prefix and normal dispatch leases the run's
-        resumed task to this worker. The continuation member reports the
+        ends at the worker's prefix with no workflow task waiting; the
+        carried claim then leases only the run's resumed task to this worker.
+        Otherwise it claims by normal dispatch order. The continuation member reports the
         outcome; a declined, rejected or unknown outcome leaves any carried
         workflow lease with the worker for ordinary completion.
       parameters:

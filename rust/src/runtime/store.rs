@@ -2449,9 +2449,16 @@ where
         let build = worker_build::<DB>(&worker)?;
         let lease_at = now();
         let ready_at = now();
-        let first = self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, true)
-            .fetch_all(&mut **tx).await?;
-        let first_is_full = first.len() == super::priority_fairness::FAIRNESS_BATCH;
+        // A continuation leases only its own resumed task, under the same
+        // queue, readiness and build conditions as an ordinary candidate.
+        let first = match tx.claim_only.clone() {
+            Some(task_id) => Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$1 AND t.namespace=$2 AND t.queue=$3 AND t.task_type=$4 AND t.status='ready' AND r.status IN ('pending','running','waiting') AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6)")
+                .bind(task_id).bind(self.namespace.as_ref()).bind(queue).bind(kind).bind(DB::bind_time(ready_at)).bind(build.as_deref())
+                .fetch_all(&mut **tx).await?,
+            None => self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, true)
+                .fetch_all(&mut **tx).await?,
+        };
+        let first_is_full = tx.claim_only.is_none() && first.len() == super::priority_fairness::FAIRNESS_BATCH;
         let mut candidates = Self::fairness_batches(first, kind, &types)?;
         // Unsupported workflow types are removed before fairness batching.
         // A short eligible prefix cannot decide the first complete batch.
@@ -4247,10 +4254,14 @@ where
             )
             .await?
         };
+        // A continuation whose prefix still holds claims only its resumed
+        // task: a same-worker priority, like eager activity dispatch.
+        tx.claim_only = if prefix_holds == Some(true) { next_task_id.clone() } else { None };
         let carried = match workflow_poll.as_ref() {
             Some(poll) => self.claim_carried_workflow(&mut tx, poll, &DB::string(&task, "lease_owner")?).await?,
             None => super::carried_polls::Outcome::Declined,
         };
+        tx.claim_only = None;
         tx.commit().await?;
         self.wake.notify_waiters();
         let mut response = json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id});

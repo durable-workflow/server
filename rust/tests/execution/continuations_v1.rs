@@ -127,7 +127,7 @@ async fn a_signal_after_the_history_read_declines_and_leaves_ordinary_work() {
 }
 
 #[tokio::test]
-async fn normal_dispatch_order_wins_over_the_resumed_task() {
+async fn the_resumed_task_is_claimed_ahead_of_other_waiting_runs() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -141,17 +141,14 @@ async fn normal_dispatch_order_wins_over_the_resumed_task() {
     let (status, done) = continue_activity(&app, &activity, body).await;
     assert_eq!(status, StatusCode::OK, "{done}");
     assert_eq!(done["recorded"], true);
-    assert_eq!(done["continuation"]["outcome"], "declined", "{done}");
-    assert_eq!(done["continuation"]["reason"], "dispatch_selected_other_task", "{done}");
-    let leased = done["workflow_poll"]["answer"]["task"].clone();
-    assert_ne!(leased["task_id"], done["next_task_id"]);
-    assert_eq!(leased["workflow_id"], "continuation-earlier");
-    // The resumed task is still ready for ordinary dispatch.
-    let finished = finish_task(&app, &leased, complete_workflow()).await;
-    assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
-    let resumed = poll(&app, "ordered", "workflow").await;
-    assert_eq!(resumed["task_id"], done["next_task_id"]);
-    assert!(!event_types(&app, "continuation-ordered").await.iter().any(|kind| kind == "WorkflowCompleted"));
+    // Same-worker priority: the continuation completes its own resumed task.
+    assert_eq!(done["continuation"]["outcome"], "accepted", "{done}");
+    assert_eq!(done["continuation"]["workflow_task_id"], done["next_task_id"]);
+    assert!(event_types(&app, "continuation-ordered").await.iter().any(|kind| kind == "WorkflowCompleted"));
+    // The other run's task was not touched and is next for ordinary dispatch.
+    let waiting = poll(&app, "ordered", "workflow").await;
+    assert_eq!(waiting["workflow_id"], "continuation-earlier");
+    assert_eq!(waiting["workflow_task_attempt"], 1);
     runtime.close().await;
     database.remove().await;
 }
