@@ -1313,13 +1313,14 @@ fn bounded_rows<'a, T>(rows: &'a [T], head: &str, size: impl Fn(&T) -> usize) ->
 /// (`Transaction::local_writes`) while a completion applies a run of local
 /// activity records, so that each table takes one INSERT for the run and
 /// its history one sequence allocation (`Store::write_local_activities`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Writes {
     executions: Vec<Execution>,
     attempts: Vec<AttemptRow>,
     events: Vec<Event>,
 }
 
+#[derive(Clone)]
 struct Execution {
     id: String,
     run_id: String,
@@ -1352,6 +1353,7 @@ impl Execution {
     }
 }
 
+#[derive(Clone)]
 struct AttemptRow {
     id: String,
     run_id: String,
@@ -1376,6 +1378,7 @@ impl AttemptRow {
     }
 }
 
+#[derive(Clone)]
 struct Event {
     id: String,
     run_id: String,

@@ -194,6 +194,8 @@ pub(super) struct Store<DB: Backend> {
     pub(super) test_claim_at: Option<DateTime<Utc>>,
     #[cfg(test)]
     pub(super) test_transitions: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    pub(super) test_continuation_gate: Arc<std::sync::Mutex<Option<Arc<super::commit_handoff_tests::CommitGate>>>>,
 }
 /// The `closed_reason` a terminal history event gives its run, or `None` for
 /// an event that does not close the run.
@@ -352,6 +354,8 @@ where
             test_claim_at: None,
             #[cfg(test)]
             test_transitions: Arc::default(),
+            #[cfg(test)]
+            test_continuation_gate: Arc::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -377,6 +381,8 @@ where
             test_claim_at: self.test_claim_at,
             #[cfg(test)]
             test_transitions: self.test_transitions.clone(),
+            #[cfg(test)]
+            test_continuation_gate: self.test_continuation_gate.clone(),
         }
     }
     pub(super) async fn database_live(&self) -> bool {
@@ -3134,6 +3140,27 @@ where
         checkpoint: Option<&super::scope_checkpoint::Checkpoint>,
         signal: Option<&super::signal_payloads::ResolvedSignal>,
     ) -> Result<Value> {
+        self.complete_or_checkpoint_in(task_id, body, transition_codec, external, worker, polling,
+            limits, checkpoint, signal, None, None).await.map(|(_, answer)| answer)
+    }
+
+    /// Reuse the ordinary completion validators and mutations while the
+    /// caller retains the enclosing atomic transition (Server #1078).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn complete_or_checkpoint_in(
+        &self,
+        task_id: &str,
+        body: Value,
+        transition_codec: Arc<Semaphore>,
+        external: super::external_resolution::PreparedCommands,
+        worker: Option<super::runtime_credentials::Principal>,
+        polling: super::carried_polls::Config<'_>,
+        limits: super::memo_limits::StructuralLimits,
+        checkpoint: Option<&super::scope_checkpoint::Checkpoint>,
+        signal: Option<&super::signal_payloads::ResolvedSignal>,
+        transaction: Option<Transaction<'static, DB>>,
+        continuation_after: Option<i64>,
+    ) -> Result<(Option<Transaction<'static, DB>>, Value)> {
         let protocol = polling.protocol;
         let transition_codec_for_streams = transition_codec.clone();
         let mut body = body;
@@ -3308,7 +3335,8 @@ where
             } else { (None, None) }
         } else { (None, None) };
         let (activity_poll, workflow_poll) = carriers;
-        let mut tx = self.begin().await?;
+        let deferred = transaction.is_some();
+        let mut tx = match transaction { Some(tx) => tx, None => self.begin().await? };
         let task = self.task_row(&mut tx, task_id).await?;
         if DB::string(&task, "task_type")? != "workflow" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
@@ -3333,10 +3361,11 @@ where
             let created = DB::optional_document_row(&task, "receipt")?
                 .and_then(|receipt| receipt.get(COMPLETION_RECEIPT).map(|receipt| receipt["created_task_ids"].clone()))
                 .unwrap_or_else(|| json!([]));
-            return Ok(
+            return Ok((
+                deferred.then_some(tx),
                 json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
                 "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
-            );
+            ));
         }
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
             .await
@@ -3401,7 +3430,7 @@ where
                 })
                 .map_err(|error| {
                     super::workflow_task_guard::not_recorded(error, receipt_task, &attempt, receipt_run, receipt_status)
-                });
+                }).map(|answer| (None, answer));
         }
         // `parseCommands`: at most one terminal command, anywhere in the
         // batch. It applies after every other command.
@@ -3414,7 +3443,17 @@ where
             .map_err(|error| Self::not_recorded(&task, &body, error))?;
         // `timeoutIfDeadlineExpired`: published PHP applies a run's deadlines
         // when one of its workflow tasks completes, and closes the run.
-        let mut tx = self.close_expired_run(tx, &run, &task, &body["workflow_task_attempt"]).await?;
+        let mut tx = if deferred {
+            // A nested completion cannot commit a deadline close independently
+            // of its activity result. The outer request visibly fails instead.
+            if [DB::optional_instant(&run, "execution_deadline_at")?, DB::optional_instant(&run, "run_deadline_at")?]
+                .into_iter().flatten().any(|deadline| deadline <= now()) {
+                return Err(refuse(StatusCode::CONFLICT, "continuation_run_deadline_expired"));
+            }
+            tx
+        } else {
+            self.close_expired_run(tx, &run, &task, &body["workflow_task_attempt"]).await?
+        };
         // Workflow #930: the deadline close above is never metered. Before
         // the worker's first write, its local activities' exact events and
         // rows (other commands at one event) must fit the limits; then the
@@ -3439,6 +3478,15 @@ where
             });
         }
         tx.meter = Some(super::history_meter::Meter::new(&limits, task_id, &body["workflow_task_attempt"]));
+        if let Some(after) = continuation_after {
+            // The enclosing activity result is part of this same history
+            // transaction, so it consumes the same event/row/byte budget.
+            let prior = Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence")
+                .bind(&run_id).bind(after).fetch_all(&mut *tx).await?;
+            for event in prior {
+                tx.charge_event(&DB::string(&event, "event_type")?, &DB::document_row(&event, "payload")?)?;
+            }
+        }
         let task_payload = DB::document_row(&task, "payload")?;
         if Self::cancellation_request(&run)?.is_some()
             && commands.iter().any(|command| {
@@ -3644,12 +3692,15 @@ where
                 None => super::carried_polls::Outcome::Declined,
             }
         };
-        tx.commit().await?;
-        self.wake.notify_waiters();
+        let transaction = if deferred { Some(tx) } else {
+            tx.commit().await?;
+            self.wake.notify_waiters();
+            None
+        };
         let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created});
         if let Some(poll) = carried.activity_response()? { response["activity_poll"] = poll; }
         if let Some(poll) = carried_workflow.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
-        Ok(response)
+        Ok((transaction, response))
     }
 
     /// One non-terminal command of a workflow task completion or of a
@@ -4115,13 +4166,27 @@ where
             Some(prepared) => prepared.stored(),
             None => envelope(&body, "result")?,
         };
-        let attempt_id = text(&body, "activity_attempt_id")?;
         let mut tx = self.begin().await?;
-        let task = self.task_row(&mut tx, task_id).await?;
+        let mut response = self.complete_activity_in(&mut tx, task_id, body, external.as_ref(), result, workflow_poll, prefix).await?;
+        tx.commit().await?;
+        super::carried_polls::refresh_workflow_clock(&mut response);
+        self.wake.notify_waiters();
+        Ok(response)
+    }
+
+    /// The ordinary activity mutation, under a caller-owned transition.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn complete_activity_in(
+        &self, tx: &mut Transaction<'_, DB>, task_id: &str, body: Value,
+        external: Option<&super::external_resolution::PreparedExternal>, result: String,
+        workflow_poll: Option<super::carried_polls::WorkflowPoll>, prefix: Option<(i64, &str)>,
+    ) -> Result<Value> {
+        let attempt_id = text(&body, "activity_attempt_id")?;
+        let task = self.task_row(tx, task_id).await?;
         if DB::string(&task, "task_type")? != "activity" {
             return Err(refuse(StatusCode::NOT_FOUND, "task_not_found"));
         }
-        Self::cancelled_activity_outcome(&mut tx, &task, &body).await?;
+        Self::cancelled_activity_outcome(tx, &task, &body).await?;
         // A repeat of the result that finished the attempt, identical or not,
         // gets published PHP's stale-attempt receipt below: the attempt is no
         // longer running. The published SDKs read that receipt, with its
@@ -4130,7 +4195,7 @@ where
             Self::query("SELECT * FROM activity_attempts WHERE id=$1 AND workflow_task_id=$2")
                 .bind(attempt_id)
                 .bind(task_id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "stale_attempt"))?;
         // PHP judges the attempt before the task's lease: a late result from
@@ -4147,7 +4212,7 @@ where
             if DB::optional_string(&attempt, "lease_owner")?.as_deref() == Some(owner) {
                 let activity = Self::query("SELECT status FROM activity_executions WHERE id=$1")
                     .bind(DB::string(&attempt, "activity_execution_id")?)
-                    .fetch_optional(&mut *tx)
+                    .fetch_optional(&mut **tx)
                     .await?;
                 receipt["lease_owner"] = json!(owner);
                 receipt["activity_status"] = match activity {
@@ -4165,16 +4230,16 @@ where
                 response: receipt,
             });
         }
-        Self::closed_run_outcome(&mut tx, &task, &body, "completed").await?;
+        Self::closed_run_outcome(tx, &task, &body, "completed").await?;
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let run = Self::active_run(&mut tx, &run_id).await?;
+        let run = Self::active_run(tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
         let activity =
             Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
                 .bind(&activity_id)
                 .bind(&run_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
         if DB::optional_string(&activity, "current_attempt_id")?.as_deref() != Some(attempt_id)
             || DB::number(&activity, "attempt_count")? != DB::number(&attempt, "attempt_number")?
@@ -4184,16 +4249,17 @@ where
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
         let prefix_holds = match prefix {
-            Some((through, last_event_id)) => Some(Self::continuation_prefix_holds(&mut tx, &run_id, through, last_event_id).await?),
+            Some((through, last_event_id)) => Some(DB::optional_document_row(&activity, "parallel_group_path")?.is_none()
+                && Self::continuation_prefix_holds(tx, &run_id, through, last_event_id).await?),
             None => None,
         };
         if let Some(prepared) = &external {
-            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
+            self.claim_external_in(tx, &prepared.reference, &prepared.uri)
                 .await?;
         }
         let closed_at = now();
         Self::query("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3")
-            .bind(&result).bind(DB::bind_time(closed_at)).bind(&activity_id).execute(&mut *tx).await?;
+            .bind(&result).bind(DB::bind_time(closed_at)).bind(&activity_id).execute(&mut **tx).await?;
         // The fenced row and these exact writes determine the snapshot.
         // now() is whole milliseconds, preserved by every supported backend.
         let mut payload = Self::activity_payload_with_completion(&activity, Some(closed_at))?;
@@ -4211,7 +4277,7 @@ where
             "lease_owner":DB::optional_string(&task,"lease_owner")?,"lease_expires_at":DB::optional_instant(&task,"lease_expires_at")?,
             "attempt_count":DB::number(&task,"attempt_count")?,"queue":DB::string(&task,"queue")?,"connection":DB::PHP_CONNECTION});
         Self::append(
-            &mut tx,
+            tx,
             &run_id,
             "ActivityCompleted",
             payload,
@@ -4220,7 +4286,7 @@ where
         )
         .await?;
         Self::resolve_selection(
-            &mut tx,
+            tx,
             &run_id,
             &metadata,
             "activity",
@@ -4231,20 +4297,20 @@ where
         Self::query("UPDATE activity_attempts SET status='completed',lease_expires_at=NULL,closed_at=$1 WHERE id=$2")
             .bind(DB::bind_time(now()))
             .bind(attempt_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
             .bind(task_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        Self::record_completion(&mut tx, task_id, &body).await?;
+        Self::record_completion(tx, task_id, &body).await?;
         // A standalone activity's host run closes with its result.
-        let closed = Self::close_standalone_host(&mut tx, &run_id, super::standalone_activities::HostClose::Completed { output: &result }).await?;
+        let closed = Self::close_standalone_host(tx, &run_id, super::standalone_activities::HostClose::Completed { output: &result }).await?;
         let next_task_id = if closed {
             None
         } else {
             Self::selection_resume(
-                &mut tx,
+                tx,
                 &run_id,
                 &DB::string(&run, "queue")?,
                 json!({"activity_execution_id": activity_id}),
@@ -4257,12 +4323,10 @@ where
         // task: a same-worker priority, like eager activity dispatch.
         tx.claim_only = if prefix_holds == Some(true) { next_task_id.clone() } else { None };
         let carried = match workflow_poll.as_ref() {
-            Some(poll) => self.claim_carried_workflow(&mut tx, poll, &DB::string(&task, "lease_owner")?).await?,
+            Some(poll) => self.claim_carried_workflow(tx, poll, &DB::string(&task, "lease_owner")?).await?,
             None => super::carried_polls::Outcome::Declined,
         };
         tx.claim_only = None;
-        tx.commit().await?;
-        self.wake.notify_waiters();
         let mut response = json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id});
         if let Some(poll) = carried.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
         if let Some(holds) = prefix_holds { response["continuation_prefix_holds"] = json!(holds); }

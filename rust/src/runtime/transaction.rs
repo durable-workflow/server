@@ -30,6 +30,19 @@ pub(super) struct PollSavepoint {
     workflow_poll_replayed: Option<String>,
 }
 
+/// Every mutable transaction cache, taken before continuation speculation.
+/// The database rollback and this restoration are one fallible operation.
+pub(super) struct ContinuationSavepoint {
+    run_tags: BTreeMap<String, RunTags>,
+    summaries: BTreeSet<String>,
+    workflow_poll_replayed: Option<String>,
+    history_budget: super::history_budget::Config,
+    meter: Option<super::history_meter::Meter>,
+    scope_history: Option<super::cancellation_scopes::HistoryCache>,
+    local_writes: super::local_activities::Writes,
+    claim_only: Option<String>,
+}
+
 pub(super) struct Transaction<'a, DB: Backend> {
     inner: sqlx::Transaction<'a, DB>,
     pub(super) run_tags: BTreeMap<String,RunTags>,
@@ -141,6 +154,32 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn continuation_savepoint(&mut self) -> Result<ContinuationSavepoint> {
+        (&mut **self).execute("SAVEPOINT dw_activity_continuation").await?;
+        Ok(ContinuationSavepoint { run_tags: self.run_tags.clone(), summaries: self.summaries.clone(),
+            workflow_poll_replayed: self.workflow_poll_replayed.clone(), history_budget: self.history_budget,
+            meter: self.meter.clone(), scope_history: self.scope_history.clone(),
+            local_writes: self.local_writes.clone(), claim_only: self.claim_only.clone() })
+    }
+
+    pub(super) async fn rollback_continuation(&mut self, saved: ContinuationSavepoint) -> Result<()> {
+        (&mut **self).execute("ROLLBACK TO SAVEPOINT dw_activity_continuation").await?;
+        self.run_tags = saved.run_tags;
+        self.summaries = saved.summaries;
+        self.workflow_poll_replayed = saved.workflow_poll_replayed;
+        self.history_budget = saved.history_budget;
+        self.meter = saved.meter;
+        self.scope_history = saved.scope_history;
+        self.local_writes = saved.local_writes;
+        self.claim_only = saved.claim_only;
+        self.release_continuation().await
+    }
+
+    pub(super) async fn release_continuation(&mut self) -> Result<()> {
+        (&mut **self).execute("RELEASE SAVEPOINT dw_activity_continuation").await?;
+        Ok(())
+    }
+
     /// Poll refusal preserves the earlier request binding, while discarding
     /// a partial claim. Budget charges stay consumed and discarded reads
     /// cannot survive in the transaction's cancellation-history cache.

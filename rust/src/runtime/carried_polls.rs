@@ -16,8 +16,9 @@ pub(super) struct Config<'a> {
     pub(super) default_wait: u64,
 }
 
+#[derive(Clone)]
 pub(super) struct WorkflowPoll {
-    body: Value,
+    pub(super) body: Value,
     fence: WorkerPollFence,
     protocol: String,
     page: Option<i64>,
@@ -65,6 +66,14 @@ pub(super) fn workflow_answer(mut answer: Value) -> Value {
         answer["server_time"] = json!(super::activity_lease_renewal::micros(super::store::now()));
     }
     answer
+}
+
+/// Presentation prepared inside a combined transition gets its observation
+/// clock only after the enclosing commit; it never renews the task lease.
+pub(super) fn refresh_workflow_clock(response: &mut Value) {
+    if let Some(answer) = response.get_mut("workflow_poll").and_then(|poll| poll.get_mut("answer")) {
+        *answer = workflow_answer(std::mem::take(answer));
+    }
 }
 
 // Request validation happens before claim_in. In particular, invalid_request
@@ -208,6 +217,17 @@ store_methods! {
         let encoding = super::history_pages::requested(&poll)?;
         let page = config.pages.poll(super::history_pages::requested_size(&poll)?, encoding);
         Ok(Some(WorkflowPoll { body: poll, fence, protocol: protocol.to_owned(), page, encoding, request }))
+    }
+
+    /// Recover only the original carrier's still-live lease, without a claim.
+    pub(super) async fn replay_carried_workflow(&self, poll: &WorkflowPoll) -> Result<Option<Value>> {
+        let owner = super::text(&poll.body, "worker_id")?;
+        let queue = super::text(&poll.body, "task_queue")?;
+        let Some(answer) = self.replay_workflow_poll_read_only(&poll.request, owner, queue, &poll.fence).await? else {
+            return Ok(None);
+        };
+        let outcome = if answer["task"].is_object() { Outcome::Leased(answer["task"].clone()) } else { Outcome::Empty };
+        outcome.workflow_response(Some(poll))
     }
 
     pub(super) async fn claim_carried_workflow(
