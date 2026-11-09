@@ -68,8 +68,11 @@ store_methods! {
             assert_eq!(counts.count("UPDATE activity_executions SET status='completed',result=$1,exception=NULL,closed_at=$2 WHERE id=$3"), 1);
 
             // The former readback is an independent stored-row reference.
-            let (stored, reference_counts) = super::sql_counts::measure(
-                Self::query("SELECT * FROM activity_executions WHERE id=$1").bind(activity_id).fetch_one(&self.pool)).await;
+            let (stored, reference_counts) = super::sql_counts::measure(async {
+                // Counting begins at statement construction, not execution.
+                Self::query("SELECT * FROM activity_executions WHERE id=$1")
+                    .bind(activity_id).fetch_one(&self.pool).await
+            }).await;
             assert_eq!(reference_counts.total(), 1);
             let stored = stored.unwrap();
             let reference = Self::activity_payload(&stored).unwrap();
