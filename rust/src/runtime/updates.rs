@@ -473,7 +473,25 @@ where
             let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
                 .bind(&run_id).fetch_one(&mut *tx).await
                 .map_err(|error| at_update_lookup(error.into(), UpdateLookup::StartContract))?;
-            let contract = DB::document_row(&started, "payload")?;
+            let started = DB::document_row(&started, "payload")?;
+            // Server #962: a run whose start captured no update contract
+            // admits updates under the one it bound at its first accepted
+            // workflow task. Until then a live run's update waits, retryably,
+            // and nothing is recorded.
+            let bound = if super::update_contracts::captured(&started) {
+                None
+            } else {
+                Self::bound_contract(&mut *tx, &run_id).await?
+            };
+            if active && !super::update_contracts::captured(&started) && bound.is_none() {
+                return Err(super::RuntimeError::Protocol {
+                    status: StatusCode::CONFLICT,
+                    response: json!({"workflow_id":workflow_id,"run_id":run_id,"update_name":name,
+                        "reason":super::update_contracts::PENDING,"retryable":true,
+                        "message":"The workflow run has not bound an update contract yet. Retry after a worker completes its first workflow task."}),
+                });
+            }
+            let contract = super::update_contracts::effective(&started, bound.as_ref());
             let declared = contract["declared_updates"]
                 .as_array()
                 .is_some_and(|names| names.iter().any(|value| value == name));

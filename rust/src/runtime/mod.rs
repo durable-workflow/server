@@ -195,6 +195,7 @@ mod terminal_updates;
 pub mod timer_holds;
 mod timer_summary;
 mod transaction;
+mod update_contracts;
 mod update_summary;
 mod update_validation;
 mod updates;

@@ -87,6 +87,8 @@ mod activity_failure_fields;
 mod query_worker_results;
 #[path = "execution/rejected_updates.rs"]
 mod rejected_updates;
+#[path = "execution/early_update_contracts.rs"]
+mod early_update_contracts;
 #[path = "execution/continue_messages.rs"]
 mod continue_messages;
 #[path = "execution/update_wait.rs"]

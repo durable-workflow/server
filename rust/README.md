@@ -348,6 +348,13 @@ are heartbeating. Runs it must skip (for example one holding an external
 reference native cannot settle) do not block the runs behind them. Worker
 heartbeats still run PHP's one-run inline pass, and the manual
 `/api/system/retention` endpoints are unchanged.
+Bound run update contracts (Server #962) add the native-only table
+`dw_run_command_contracts`: SQLite schema 11, MySQL, MariaDB and PostgreSQL
+schema 12. A run whose `WorkflowStarted` captured no update contract binds the
+completing worker's contract once, with its first accepted workflow task
+completion. Until then its updates return HTTP 409 `contract_pending`. Stop
+the native nodes, back up the database and run `schema-upgrade` before
+starting this binary on an earlier schema.
 
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,
