@@ -98,3 +98,65 @@ async fn an_expired_claim_forces_a_cold_replay() {
     let second = poll(&app, "sticky-a", "workflow").await;
     assert_eq!(second["sticky_replay_mode"], "forced_cold_replay", "{second}");
 }
+
+async fn suffix_worker(app: &Router, worker: &str) {
+    let entry = json!({"supported":true,"minimum_protocol_version":"1.18"});
+    let (status, body) = request(app, "POST", "/api/worker/register", json!({"worker_id":worker,"task_queue":"test",
+        "runtime":"php","build_id":"build-1","supported_workflow_types":["echo"],"supported_activity_types":[],
+        "capabilities":["sticky_execution","sticky_history_suffix"],
+        "capability_manifest":{"local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+            "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"},"sticky_execution":entry,
+            "sticky_history_suffix":{"supported":true,"minimum_protocol_version":"1.18","version":1}}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+fn sequences(task: &Value) -> Vec<i64> {
+    task["history_events"].as_array().unwrap().iter().map(|event| event["sequence"].as_i64().unwrap()).collect()
+}
+
+// Server #1017 part 2: a worker that takes suffixes gets only the events
+// after the boundary it reported with its previous completion.
+#[tokio::test]
+async fn a_suffix_worker_gets_only_the_events_after_its_cached_boundary() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let (_, cluster) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(cluster["worker_protocol"]["server_capabilities"]["sticky_history_suffix"], json!({"supported":true,"version":1}));
+    suffix_worker(&app, "suffix-a").await;
+    start(&app, "suffix").await;
+
+    let first = poll(&app, "suffix-a", "workflow").await;
+    assert_eq!(first["history_after_sequence"], 0, "{first}");
+    let delivered = sequences(&first);
+    assert_eq!(delivered.first(), Some(&1), "{first}");
+    assert_eq!(first["history_last_sequence"], json!(delivered.last().unwrap()), "{first}");
+    let mut sticky = claim(&first, "suffix-a", 300);
+    sticky["history_last_sequence"] = json!(delivered.last().unwrap());
+    let (status, body) = complete_sticky(&app, &first, sticky).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    signal(&app, "suffix").await;
+    let second = poll(&app, "suffix-a", "workflow").await;
+    assert_eq!(second["sticky_replay_mode"], "sticky_hit_expected", "{second}");
+    let after = *delivered.last().unwrap();
+    assert_eq!(second["history_after_sequence"], after, "{second}");
+    let suffix = sequences(&second);
+    assert_eq!(suffix.first(), Some(&(after + 1)), "{second}");
+    assert!(suffix.windows(2).all(|pair| pair[1] == pair[0] + 1), "{suffix:?}");
+    assert_eq!(second["history_last_sequence"], json!(suffix.last().unwrap()), "{second}");
+}
+
+#[tokio::test]
+async fn only_suffix_workers_report_or_receive_a_boundary() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    sticky_worker(&app, "plain").await;
+    start(&app, "plain-suffix").await;
+    let first = poll(&app, "plain", "workflow").await;
+    assert!(first.get("history_after_sequence").is_none(), "{first}");
+    let mut sticky = claim(&first, "plain", 300);
+    sticky["history_last_sequence"] = json!(3);
+    let (status, body) = complete_sticky(&app, &first, sticky).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["reason"], "sticky_history_suffix_not_supported", "{body}");
+}

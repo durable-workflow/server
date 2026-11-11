@@ -997,14 +997,18 @@ store_methods! {
         let Some(worker) = worker else {
             return Err(rejected("worker_capability_not_supported"));
         };
-        let listed = DB::optional_document_row(&worker, "capabilities")?.as_ref().and_then(Value::as_array)
-            .is_some_and(|capabilities| capabilities.iter().any(|capability| capability.as_str() == Some(CAPABILITY)));
-        let supported = DB::optional_document_row(&worker, "capability_manifest")?.as_ref().and_then(|manifest| manifest.get(CAPABILITY))
-            .is_some_and(|entry| (entry.is_object() || entry.is_array()) && entry["supported"] == Value::Bool(true));
-        if !listed || !supported {
+        let capabilities = DB::optional_document_row(&worker, "capabilities")?;
+        let manifest = DB::optional_document_row(&worker, "capability_manifest")?;
+        if !super::sticky_execution::registration_supports(capabilities.as_ref(), manifest.as_ref(), CAPABILITY) {
             return Err(rejected("worker_capability_not_supported"));
         }
         let claim = &body["sticky_cache"];
+        // Only a worker that takes history suffixes reports its cached boundary.
+        if !claim["history_last_sequence"].is_null()
+            && !super::sticky_execution::takes_suffixes(capabilities.as_ref())
+        {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "sticky_history_suffix_not_supported"));
+        }
         let build = DB::optional_string(&worker, "build_id")?.or(DB::optional_string(&worker, "sdk_version")?);
         let text = |field: &str| claim[field].as_str().unwrap_or_default();
         if text("worker_id") != owner || text("run_id") != DB::string(task, "workflow_run_id")? || text("workflow_id") != workflow_id
@@ -1019,8 +1023,15 @@ store_methods! {
     /// transaction, the run keeps the worker's affinity until the claim's
     /// expiry, or loses it when it closed. The worker's reported cache
     /// metrics are kept with its registration.
-    pub(super) async fn record_sticky_cache(tx: &mut Transaction<'_, DB>, namespace: &str, run_id: &str, body: &Value) -> Result<()> {
+    pub(super) async fn record_sticky_cache(tx: &mut Transaction<'_, DB>, namespace: &str, run_id: &str, task_id: &str, body: &Value) -> Result<()> {
         let claim = &body["sticky_cache"];
+        if let Some(through) = claim["history_last_sequence"].as_i64() {
+            let row = Self::query("SELECT payload FROM workflow_tasks WHERE id=$1").bind(task_id).fetch_one(&mut **tx).await?;
+            let mut payload = DB::optional_document_row(&row, "payload")?.filter(Value::is_object).unwrap_or_else(|| json!({}));
+            payload[super::sticky_execution::CACHED_THROUGH_KEY] = json!(through);
+            Self::query("UPDATE workflow_tasks SET payload=$1 WHERE id=$2").bind(DB::document(&payload)).bind(task_id)
+                .execute(&mut **tx).await?;
+        }
         let owner = super::text(body, "lease_owner")?;
         let status = Self::query("SELECT status FROM workflow_runs WHERE id=$1").bind(run_id).fetch_one(&mut **tx).await?;
         let retain = !super::sticky_execution::terminal(&DB::string(&status, "status")?);

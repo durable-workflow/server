@@ -56,6 +56,30 @@ pub(super) fn claim_mode(worker: Option<&str>, until: Option<DateTime<Utc>>, lea
     if worker == lease_owner { STICKY_HIT_EXPECTED } else { FORCED_COLD_REPLAY }
 }
 
+/// The worker capability and server capability for history suffixes.
+pub(super) const SUFFIX_CAPABILITY: &str = "sticky_history_suffix";
+/// The task payload key holding a completed task's reported cached boundary.
+pub(super) const CACHED_THROUGH_KEY: &str = "sticky_history_last_sequence";
+
+/// `server_capabilities.sticky_history_suffix`.
+pub(super) fn suffix_capability() -> Value {
+    json!({"supported": true, "version": 1})
+}
+
+/// Whether a registration takes history suffixes: it lists the capability.
+/// The stored manifest keeps only PHP's three affinity entries, so the
+/// listing is the opt-in; sticky execution itself must still be supported.
+pub(super) fn takes_suffixes(capabilities: Option<&Value>) -> bool {
+    capabilities.and_then(Value::as_array).is_some_and(|listed| listed.iter().any(|item| item.as_str() == Some(SUFFIX_CAPABILITY)))
+}
+
+/// Whether a registration lists and supports `capability`.
+pub(super) fn registration_supports(capabilities: Option<&Value>, manifest: Option<&Value>, capability: &str) -> bool {
+    capabilities.and_then(Value::as_array).is_some_and(|listed| listed.iter().any(|item| item.as_str() == Some(capability)))
+        && manifest.and_then(|manifest| manifest.get(capability))
+            .is_some_and(|entry| (entry.is_object() || entry.is_array()) && entry["supported"] == Value::Bool(true))
+}
+
 /// A run in one of these states keeps no affinity.
 pub(super) fn terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled" | "terminated" | "continued")
