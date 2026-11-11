@@ -6,7 +6,9 @@ import assert from 'node:assert/strict';
 // stored and recorded on StartAccepted and WorkflowStarted; without
 // registered definitions their types are inferred. The fixture's `expected`
 // holds the whole observation.
-export function checkStartSearchAttributes(fixture, observation) {
+// A case in `native_expected` replaces its published answer for the native
+// target where native deliberately differs (Server #571).
+export function checkStartSearchAttributes(fixture, observation, target) {
   const definition = fixture.start_search_attributes;
   const state = observation.start_search_attributes;
   const projection = {scope: 'start_search_attributes', cases: Object.keys(definition.expected).length};
@@ -19,7 +21,9 @@ export function checkStartSearchAttributes(fixture, observation) {
   assert.equal(state.applicable, true, 'HTTP targets record start search attributes');
   assert.deepStrictEqual(Object.keys(definition.expected).sort(), Object.keys(definition.cases).sort(),
     'every start search attributes case has an expectation');
-  for (const [name, steps] of Object.entries(definition.expected)) {
+  const native = target === 'rust' ? (definition.native_expected ?? {}) : {};
+  for (const [name, published] of Object.entries(definition.expected)) {
+    const steps = native[name] ?? published;
     assert.ok(state[name] && typeof state[name] === 'object', `start search attributes ${name} recorded`);
     for (const [step, expected] of Object.entries(steps)) {
       assert.deepStrictEqual(state[name][step], expected, `start search attributes ${name} ${step}`);

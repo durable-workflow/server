@@ -193,7 +193,8 @@ fn parse_iso_datetime(text: &[u8]) -> Option<DateTime<Utc>> {
 
 /// `SearchAttributeValueValidator::validateForNamespace`: the storage type of
 /// each attribute, or the validation messages PHP reports.
-/// `definitions` holds the namespace's custom registered types.
+/// `definitions` holds the namespace's custom registered types. Unlike
+/// published PHP, only registered keys are enforced (Server #571).
 pub(super) fn validate(
     definitions: &BTreeMap<String, String>,
     attributes: &Map<String, Value>,
@@ -207,7 +208,6 @@ pub(super) fn validate(
             .map(|(_, kind)| (*kind).to_owned())
             .or_else(|| definitions.get(key).cloned())
     };
-    let schema_enforced = !definitions.is_empty();
     let mut messages = Vec::new();
     let mut types = BTreeMap::new();
     for (key, kind) in declared {
@@ -268,10 +268,9 @@ pub(super) fn validate(
             }
             continue;
         }
-        if schema_enforced {
-            messages.push(format!("Search attribute [{key}] is not registered for this namespace."));
-            continue;
-        }
+        // Server #571: registering one attribute does not start refusing the
+        // others running workflows already upsert. An unregistered key is
+        // inferred, as it is in a namespace with no registered attributes.
         if !value.is_null() && !is_scalar(value) {
             messages.push(format!(
                 "Search attribute [{key}] must be a scalar value or null unless it is registered as keyword_list."
@@ -920,6 +919,8 @@ mod tests {
 
     #[test]
     fn validation_messages_match_php() {
+        // Except that an unregistered key beside a registered one is
+        // accepted (Server #571), so `Other` is not refused.
         let definitions = BTreeMap::from([("Count".to_owned(), "int".to_owned())]);
         let messages = validate(
             &definitions,
@@ -934,7 +935,6 @@ mod tests {
                 "Declared search attribute types must name keys present in the attribute update.",
                 "Search attribute [Count] declares type [keyword] but is registered as [int].",
                 "Search attribute key [1bad] must start with a letter and contain only letters, numbers, and underscores.",
-                "Search attribute [Other] is not registered for this namespace.",
                 "Search attribute keys must be non-empty strings.",
             ]
         );

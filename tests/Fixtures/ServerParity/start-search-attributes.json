@@ -533,6 +533,40 @@
           }
         }
       }
+    },
+    "native_expected": {
+      "_comment": "Server #571: native enforces only registered keys, so the published PHP refusal of an unregistered key beside registered ones does not apply.",
+      "unknown": {
+        "start": {
+          "status": 201,
+          "reason": null,
+          "outcome": "started_new",
+          "message": null,
+          "errors": null
+        },
+        "described": {
+          "Unregistered": "x"
+        },
+        "events": {
+          "StartAccepted": {
+            "Unregistered": "x"
+          },
+          "WorkflowStarted": {
+            "Unregistered": "x"
+          }
+        },
+        "listed": {
+          "status": 200,
+          "workflow_ids": [
+            "parity-v1-start-search-attributes-ssa-unknown"
+          ],
+          "search_attributes": [
+            {
+              "Unregistered": "x"
+            }
+          ]
+        }
+      }
     }
   }
 }
