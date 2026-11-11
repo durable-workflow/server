@@ -5,6 +5,6 @@
   },
   "helm_chart": {
     "version": "1.2.0",
-    "app_version": "3.3.2"
+    "app_version": "3.4.0"
   }
 }

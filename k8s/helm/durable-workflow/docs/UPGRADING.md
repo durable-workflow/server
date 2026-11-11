@@ -69,9 +69,16 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
-### Chart 1.2.0 / Server 3.3.2 (native)
+### Chart 1.2.0 / Server 3.4.0 (native)
 
-No action needed; the default image is unchanged.
+No schema upgrade from Server 3.3.x: MySQL, MariaDB and PostgreSQL stay at
+native schema 11, so a plain `helm upgrade` is enough. From Server 3.2.x or
+earlier, follow the Chart 1.1.0 / Server 3.3.2 steps below first (backup and
+explicit `schema-upgrade`).
+
+* The default image is native Server 3.4.0, which adds opt-in
+  activity/workflow continuations. Existing workers are unaffected. See the
+  [3.4.0 release notes](https://github.com/durable-workflow/server/releases/tag/3.4.0).
 
 * Native server pods now run a `preStop` hook that sleeps
   `native.preStopSleepSeconds` (default 5) before `SIGTERM`, so Services stop
