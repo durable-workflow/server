@@ -69,6 +69,25 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.3.0 / Server 3.5.0 (native)
+
+**This upgrade needs an explicit native schema upgrade.** Server 3.5.0 adds one
+native-only table, so MySQL, MariaDB and PostgreSQL move from native schema 11
+to 12. The upgrade creates the table and its index and rewrites no rows. A
+3.5.0 server refuses a schema-11 database with `native_schema_upgrade_required`.
+
+1. Scale the Server to zero.
+2. Back up the database.
+3. Run `helm upgrade` with `native.schemaUpgrade.enabled=true` (or the manual
+   schema-upgrade Job in the chart README) so the 3.5.0 image runs
+   `schema-upgrade` once.
+4. Scale the Server back up.
+
+From Server 3.2.x or earlier, the same command also applies the earlier steps;
+see Chart 1.1.0 below for those versions' notes. Rolling back to 3.4.x requires
+restoring the backup taken in step 2. See the
+[3.5.0 release notes](https://github.com/durable-workflow/server/releases/tag/3.5.0).
+
 ### Chart 1.2.0 / Server 3.4.0 (native)
 
 No schema upgrade from Server 3.3.x: MySQL, MariaDB and PostgreSQL stay at

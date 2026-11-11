@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 1.2.0
+version: 1.3.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.4.0"
+appVersion: "3.5.0"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,12 +30,12 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.4.0"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.5.0"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
-    - kind: added
-      description: "Native pods sleep native.preStopSleepSeconds (default 5, 0 disables) in a preStop hook before SIGTERM, so a rolling update drops no requests (server#608). native.terminationGracePeriodSeconds now defaults to 70 so worker polls still drain after the sleep; the chart refuses a grace period at or below the sleep plus DW_WORKER_POLL_TIMEOUT."
     - kind: changed
-      description: "Default image changes from native Server 3.3.2 to 3.4.0, which adds opt-in activity/workflow continuations. No schema upgrade from 3.3.x: MySQL, MariaDB and PostgreSQL stay at native schema 11. https://github.com/durable-workflow/server/releases/tag/3.4.0"
+      description: "Default image changes from native Server 3.4.0 to 3.5.0. Upgrading needs an explicit native schema upgrade: MySQL, MariaDB and PostgreSQL move from native schema 11 to 12 (a new native-only table, no row rewrites). Scale the Server to zero, back up the database, then run schema-upgrade with native.schemaUpgrade.enabled=true during helm upgrade or with the manual Job. Rolling back to 3.4.x means restoring the backup. See docs/UPGRADING.md."
+    - kind: added
+      description: "Server 3.5.0: updates for runs started before their worker registered now bind the worker's contract (server#962); sticky execution with history suffixes (server#1017); expired runs pruned every minute from the maintenance loop (server#633). https://github.com/durable-workflow/server/releases/tag/3.5.0"
