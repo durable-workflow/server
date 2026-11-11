@@ -1960,6 +1960,10 @@ where
             }
         };
         if previous.is_some() {
+            // `releaseLeasedWorkflowTasksForReplacedWorker`: a replaced worker
+            // process holds no sticky cache, so its runs lose their affinity.
+            Self::query("UPDATE workflow_runs SET sticky_worker_id=NULL,sticky_until=NULL WHERE namespace=$1 AND sticky_worker_id=$2")
+                .bind(self.namespace.as_ref()).bind(worker_id).execute(&mut *tx).await?;
             // Match PHP's registration boundary: return original workflow leases
             // to ready without a repair command/history event. Token rotation
             // and lease release commit together; failure restores the old attempt.
@@ -2689,9 +2693,20 @@ where
                     "updated_at":DB::instant(&worker,"updated_at")?,"last_heartbeat_at":DB::instant(&worker,"last_heartbeat_at")?,
                     "task_id":task_id,"run_id":run_id,"lease_owner":worker_id,"attempt":attempt});
             }
-            Self::query("UPDATE workflow_tasks SET ready_origin_at=CASE WHEN status='leased' AND task_type='workflow' THEN $1 ELSE ready_origin_at END,status='leased',lease_owner=$2,lease_expires_at=$3,attempt_count=$4,leased_at=$5,payload=$6 WHERE id=$7")
+            // `claimStatus`: a workflow claim records the replay its worker
+            // should expect from the run's sticky affinity (Server #1017).
+            let (sticky_worker, sticky_until, sticky_mode) = if kind == "workflow" {
+                let worker = DB::optional_string(&run, "sticky_worker_id")?.filter(|worker| !worker.is_empty());
+                let until = DB::optional_instant(&run, "sticky_until")?;
+                let mode = super::sticky_execution::claim_mode(worker.as_deref(), until, worker_id, leased_at);
+                (worker, until.filter(|_| mode != super::sticky_execution::COLD_REPLAY), Some(mode))
+            } else {
+                (None, None, None)
+            };
+            Self::query("UPDATE workflow_tasks SET ready_origin_at=CASE WHEN status='leased' AND task_type='workflow' THEN $1 ELSE ready_origin_at END,status='leased',lease_owner=$2,lease_expires_at=$3,attempt_count=$4,leased_at=$5,payload=$6,sticky_worker_id=$7,sticky_until=$8,sticky_replay_mode=$9,sticky_claimed_at=$10 WHERE id=$11")
                 .bind(DB::optional_time(ready_origin)).bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
-                .bind(DB::document(&task_payload)).bind(&task_id).execute(&mut **tx).await?;
+                .bind(DB::document(&task_payload)).bind(sticky_worker.as_deref()).bind(DB::optional_time(sticky_until)).bind(sticky_mode)
+                .bind(DB::optional_time(sticky_mode.map(|_| leased_at))).bind(&task_id).execute(&mut **tx).await?;
             // A lease is worker authority, not an authored lifecycle commit.
             if kind == "workflow" {
                 Self::query("UPDATE workflow_run_waits SET task_status='leased',updated_at=$1 WHERE workflow_run_id=$2 AND task_id=$3 AND ((kind='child' AND status IN ('resolved','cancelled')) OR (kind='update' AND status='open'))")
@@ -2770,7 +2785,9 @@ where
                 if let Some(update_id) = task_payload["workflow_update_id"].as_str() {
                     claim["workflow_update_id"] = json!(update_id);
                 }
-                claim["sticky_replay_mode"] = json!("cold_replay");
+                claim["sticky_worker_id"] = json!(sticky_worker);
+                claim["sticky_until"] = json!(sticky_until.map(super::cooperative::timestamp));
+                claim["sticky_replay_mode"] = json!(sticky_mode);
                 claim["compatibility"] = json!(DB::optional_string(&task, "compatibility")?
                     .filter(|build| !build.trim().is_empty())
                     .or(DB::optional_string(&run, "compatibility")?.filter(|build| !build.trim().is_empty())));
@@ -3416,6 +3433,10 @@ where
             local = super::local_activities::normalize(commands, protocol)?;
             exceptions = super::local_activities::exceptions(&local, transition_codec.clone()).await?;
         }
+        let sticky = body.get("sticky_cache").is_some_and(|claim| !claim.is_null());
+        if sticky {
+            Self::guard_sticky_cache(&mut tx, self.namespace.as_ref(), &task, &body, protocol, &stream_instance).await?;
+        }
         if let Some(checkpoint) = checkpoint {
             // Server #994: Core's refused checkpoint for a run that closed
             // after the guard is the same not-recorded receipt.
@@ -3695,6 +3716,9 @@ where
                 None => super::carried_polls::Outcome::Declined,
             }
         };
+        if sticky {
+            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, &body).await?;
+        }
         let transaction = if deferred { Some(tx) } else {
             tx.commit().await?;
             self.wake.notify_waiters();
@@ -5789,7 +5813,7 @@ fn capabilities_template() -> Value {
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "prepared_local_activity_groups": false, "prepared_local_activity_cancellation_policies": [],
         "worker_sessions": super::worker_sessions::capability(), "worker_session_verbs": ["create", "heartbeat", "close"],
-        "sticky_execution": false, "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
+        "sticky_execution": super::sticky_execution::describe(), "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,

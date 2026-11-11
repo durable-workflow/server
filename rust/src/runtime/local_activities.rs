@@ -934,10 +934,14 @@ pub(super) async fn exceptions(records: &BTreeMap<usize, Record>, codec: Arc<Sem
 
 /// `portableWorkerAffinityRejection`.
 fn affinity_rejection(task_id: &str, attempt: &Value, reason: &str, requested: Option<&str>) -> RuntimeError {
+    capability_rejection(task_id, attempt, reason, "local_activities", requested)
+}
+
+fn capability_rejection(task_id: &str, attempt: &Value, reason: &str, capability: &str, requested: Option<&str>) -> RuntimeError {
     RuntimeError::Protocol {
         status: StatusCode::CONFLICT,
         response: json!({"task_id": task_id, "workflow_task_attempt": attempt, "outcome": "rejected", "recorded": false,
-            "reason": reason, "capability": "local_activities", "requested_version": requested,
+            "reason": reason, "capability": capability, "requested_version": requested,
             "minimum_protocol_version": MINIMUM_PROTOCOL_VERSION,
             "remediation": "Use cold durable replay unless the registered worker manifest explicitly supports the required capability and exact cache identity.",
             "protocol_version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": super::store::capabilities()}),
@@ -972,6 +976,67 @@ store_methods! {
         Ok(())
     }
 
+
+    /// `guardPortableWorkerAffinityCompletion` for a completion that claims
+    /// sticky execution (Server #1017): protocol 1.18 or newer, a lease owner
+    /// whose registration lists and supports `sticky_execution`, and a claim
+    /// naming exactly that worker, the task's run and workflow, and the
+    /// registration's build (else its SDK version).
+    pub(super) async fn guard_sticky_cache(tx: &mut Transaction<'_, DB>, namespace: &str, task: &DB::Row, body: &Value,
+        protocol: Option<&str>, workflow_id: &str) -> Result<()> {
+        const CAPABILITY: &str = "sticky_execution";
+        let task_id = DB::string(task, "id")?;
+        let attempt = body["workflow_task_attempt"].as_i64().map_or(Value::Null, Value::from);
+        let rejected = |reason| capability_rejection(&task_id, &attempt, reason, CAPABILITY, protocol);
+        if below(protocol, MINIMUM_PROTOCOL_VERSION) {
+            return Err(rejected("portable_worker_affinity_protocol_floor_unavailable"));
+        }
+        let owner = super::text(body, "lease_owner")?;
+        let worker = Self::query("SELECT capabilities,capability_manifest,build_id,sdk_version FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(namespace).bind(owner).fetch_optional(&mut **tx).await?;
+        let Some(worker) = worker else {
+            return Err(rejected("worker_capability_not_supported"));
+        };
+        let listed = DB::optional_document_row(&worker, "capabilities")?.as_ref().and_then(Value::as_array)
+            .is_some_and(|capabilities| capabilities.iter().any(|capability| capability.as_str() == Some(CAPABILITY)));
+        let supported = DB::optional_document_row(&worker, "capability_manifest")?.as_ref().and_then(|manifest| manifest.get(CAPABILITY))
+            .is_some_and(|entry| (entry.is_object() || entry.is_array()) && entry["supported"] == Value::Bool(true));
+        if !listed || !supported {
+            return Err(rejected("worker_capability_not_supported"));
+        }
+        let claim = &body["sticky_cache"];
+        let build = DB::optional_string(&worker, "build_id")?.or(DB::optional_string(&worker, "sdk_version")?);
+        let text = |field: &str| claim[field].as_str().unwrap_or_default();
+        if text("worker_id") != owner || text("run_id") != DB::string(task, "workflow_run_id")? || text("workflow_id") != workflow_id
+            || build.as_deref().is_none_or(|build| text("build_id") != build)
+        {
+            return Err(rejected("sticky_cache_identity_mismatch"));
+        }
+        Ok(())
+    }
+
+    /// `applyStickyCacheClaim`: after the accepted completion, in its
+    /// transaction, the run keeps the worker's affinity until the claim's
+    /// expiry, or loses it when it closed. The worker's reported cache
+    /// metrics are kept with its registration.
+    pub(super) async fn record_sticky_cache(tx: &mut Transaction<'_, DB>, namespace: &str, run_id: &str, body: &Value) -> Result<()> {
+        let claim = &body["sticky_cache"];
+        let owner = super::text(body, "lease_owner")?;
+        let status = Self::query("SELECT status FROM workflow_runs WHERE id=$1").bind(run_id).fetch_one(&mut **tx).await?;
+        let retain = !super::sticky_execution::terminal(&DB::string(&status, "status")?);
+        let until = super::store::now() + chrono::Duration::seconds(claim["ttl_seconds"].as_i64().unwrap_or(0));
+        Self::query("UPDATE workflow_runs SET sticky_worker_id=$1,sticky_until=$2 WHERE id=$3")
+            .bind(retain.then_some(owner)).bind(DB::optional_time(retain.then_some(until))).bind(run_id)
+            .execute(&mut **tx).await?;
+        let mut metrics = Self::query("SELECT process_metrics FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+            .bind(namespace).bind(owner).fetch_optional(&mut **tx).await?
+            .map(|row| DB::optional_document_row(&row, "process_metrics")).transpose()?.flatten()
+            .filter(Value::is_object).unwrap_or_else(|| json!({}));
+        metrics["sticky_cache"] = claim.get("metrics").filter(|value| !value.is_null()).cloned().unwrap_or_else(|| json!([]));
+        Self::query("UPDATE workflow_worker_registrations SET process_metrics=$1 WHERE namespace=$2 AND worker_id=$3")
+            .bind(DB::document(&metrics)).bind(namespace).bind(owner).execute(&mut **tx).await?;
+        Ok(())
+    }
 
     /// `local_activity_timestamp_out_of_range`, in the completion's response.
     fn timestamp_out_of_range(tx: &Transaction<'_, DB>) -> RuntimeError {

@@ -275,7 +275,43 @@ where
             "update_wait": {"completion_timeout_seconds": 10, "poll_interval_milliseconds": 50},
             "repair_policy": repair_policy(),
             "matching_role": matching_role(config),
-            "sticky_execution": sticky_execution(),
+            "sticky_execution": self.sticky_execution_metrics(now).await?,
+        }))
+    }
+
+    /// `OperatorMetrics::stickyExecution` for this namespace (Server #1017):
+    /// live affinity, and the replay each workflow claim of the last minute
+    /// told its worker to expect.
+    async fn sticky_execution_metrics(&self, now: DateTime<Utc>) -> Result<Value> {
+        let namespace = self.namespace.as_ref();
+        let active = Self::scalar("SELECT COUNT(*) FROM workflow_runs WHERE namespace=$1 AND status IN ('pending','running','waiting') AND sticky_worker_id IS NOT NULL AND sticky_worker_id<>'' AND sticky_until>$2")
+            .bind(namespace).bind(DB::bind_time(now)).fetch_one(&self.pool).await?;
+        let ready = Self::scalar("SELECT COUNT(*) FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.task_type='workflow' AND t.status='ready' AND r.sticky_worker_id IS NOT NULL AND r.sticky_worker_id<>'' AND r.sticky_until>$2")
+            .bind(namespace).bind(DB::bind_time(now)).fetch_one(&self.pool).await?;
+        let leased = Self::scalar("SELECT COUNT(*) FROM workflow_tasks WHERE namespace=$1 AND task_type='workflow' AND status='leased' AND sticky_worker_id IS NOT NULL")
+            .bind(namespace).fetch_one(&self.pool).await?;
+        let mut counts = std::collections::BTreeMap::new();
+        for row in Self::query("SELECT sticky_replay_mode AS mode,COUNT(*) AS claims FROM workflow_tasks WHERE namespace=$1 AND sticky_claimed_at>=$2 AND sticky_replay_mode IS NOT NULL GROUP BY sticky_replay_mode")
+            .bind(namespace).bind(DB::bind_time(now - chrono::Duration::seconds(60))).fetch_all(&self.pool).await?
+        {
+            counts.insert(DB::string(&row, "mode")?, DB::number(&row, "claims")?);
+        }
+        let count = |mode: &str| counts.get(mode).copied().unwrap_or(0);
+        let (hits, forced) = (count(super::sticky_execution::STICKY_HIT_EXPECTED), count(super::sticky_execution::FORCED_COLD_REPLAY));
+        let rate = |part: i64| if hits + forced == 0 { 0.0 } else { part as f64 / (hits + forced) as f64 };
+        Ok(json!({
+            "enabled": true,
+            "ttl_seconds": 300,
+            "active_sticky_runs": active,
+            "ready_sticky_tasks": ready,
+            "leased_sticky_tasks": leased,
+            "hit_expected_last_minute": hits,
+            "miss_last_minute": forced,
+            "forced_cold_replay_last_minute": forced,
+            "cold_replay_last_minute": count(super::sticky_execution::COLD_REPLAY),
+            "hit_rate_last_minute": rate(hits),
+            "miss_rate_last_minute": rate(forced),
+            "capacity_pressure_tasks": ready,
         }))
     }
 
@@ -1858,22 +1894,6 @@ fn matching_role(config: &MetricsConfig) -> Value {
 }
 
 /// Native routes no task to a sticky worker.
-fn sticky_execution() -> Value {
-    json!({
-        "enabled": false,
-        "ttl_seconds": 0,
-        "active_sticky_runs": 0,
-        "ready_sticky_tasks": 0,
-        "leased_sticky_tasks": 0,
-        "hit_expected_last_minute": 0,
-        "miss_last_minute": 0,
-        "forced_cold_replay_last_minute": 0,
-        "cold_replay_last_minute": 0,
-        "hit_rate_last_minute": 0.0,
-        "miss_rate_last_minute": 0.0,
-        "capacity_pressure_tasks": 0,
-    })
-}
 
 #[cfg(test)]
 mod tests {
