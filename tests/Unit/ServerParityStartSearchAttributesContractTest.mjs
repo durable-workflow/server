@@ -58,3 +58,12 @@ for (const [name, mutate] of [
   const raw = observation(); mutate(raw.start_search_attributes);
   assert.throws(() => checkStartSearchAttributes(fixture, raw));
 });
+
+test('native accepts an unregistered key beside registered ones (Server #571)', () => {
+  const native = fixture.start_search_attributes.native_expected.unknown;
+  const raw = observation();
+  raw.start_search_attributes.unknown = structuredClone(native);
+  assert.deepStrictEqual(checkStartSearchAttributes(fixture, raw, 'rust'), {scope: 'start_search_attributes', cases});
+  assert.throws(() => checkStartSearchAttributes(fixture, raw, 'php'));
+  assert.throws(() => checkStartSearchAttributes(fixture, observation(), 'rust'));
+});

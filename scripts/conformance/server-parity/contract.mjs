@@ -216,7 +216,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const retriedChildCancellation = fixture.retried_child_cancellation ? checkRetriedChildCancellation(fixture, observation) : null;
   const parallelCancellation = fixture.parallel_cancellation ? checkParallelCancellation(fixture, observation) : null;
   const activityResultRepeats = fixture.activity_result_repeats ? checkActivityResultRepeats(fixture, observation) : null;
-  const startSearchAttributes = fixture.start_search_attributes ? checkStartSearchAttributes(fixture, observation) : null;
+  const startSearchAttributes = fixture.start_search_attributes ? checkStartSearchAttributes(fixture, observation, target) : null;
   const jsonDoubles = fixture.json_doubles ? checkJsonDoubles(fixture, observation) : null;
   const queryArguments = fixture.query_argument_routing ? checkQueryArgumentRouting(fixture, observation) : null;
   const queryContractArguments = fixture.query_contract_arguments ? checkQueryContractArguments(fixture, observation) : null;
