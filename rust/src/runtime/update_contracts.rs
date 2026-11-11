@@ -92,24 +92,21 @@ store_methods! {
         else {
             return Ok(None);
         };
-        serde_json::from_str(&DB::string(&row, "contract")?)
-            .map(Some)
+        serde_json::from_str::<Value>(&DB::string(&row, "contract")?)
+            .map(|contract| Some(contract).filter(|contract| !contract.is_null()))
             .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_bound_command_contract"))
     }
 
-    /// Bind the run's contract inside the transaction that accepts a
-    /// workflow task completion, when the start captured none and the run
-    /// has not bound one. The caller holds the run's transition, so no
+    /// Record the run's contract inside the transaction that accepts its
+    /// first workflow task completion: the completing worker's when the
+    /// start captured none. The caller holds the run's transition, so no
     /// concurrent completion of the run can bind first.
     pub(super) async fn bind_update_contract(
         tx: &mut Transaction<'_, DB>,
         task: &DB::Row,
     ) -> Result<()> {
         let run_id = DB::string(task, "workflow_run_id")?;
-        let started = Self::started_payload(&mut **tx, &run_id).await?;
-        if captured(&started) {
-            return Ok(());
-        }
+        // Every later completion of the run stops at this primary-key read.
         let bound: Option<String> = Self::query("SELECT workflow_run_id FROM dw_run_command_contracts WHERE workflow_run_id=$1")
             .bind(&run_id)
             .fetch_optional(&mut **tx)
@@ -138,12 +135,18 @@ store_methods! {
                 .and_then(|contracts| contracts.get(&workflow_type).cloned()),
             None => None,
         };
-        let fields = started_fields(&workflow_type, declaration.as_ref()).unwrap_or_else(|| empty_fields(&workflow_type));
+        // A run whose start captured its contract records JSON null: its first
+        // completion is past and admission keeps reading the start contract.
+        let contract = if captured(&Self::started_payload(&mut **tx, &run_id).await?) {
+            Value::Null
+        } else {
+            Value::Object(started_fields(&workflow_type, declaration.as_ref()).unwrap_or_else(|| empty_fields(&workflow_type)))
+        };
         Self::query("INSERT INTO dw_run_command_contracts(workflow_run_id,namespace,workflow_type,contract,worker_id,workflow_task_id,bound_at) VALUES ($1,$2,$3,$4,$5,$6,$7)")
             .bind(&run_id)
             .bind(namespace.as_str())
             .bind(workflow_type.as_str())
-            .bind(Value::Object(fields).to_string())
+            .bind(contract.to_string())
             .bind(worker_id.as_deref())
             .bind(DB::string(task, "id")?)
             .bind(DB::bind_time(now()))
