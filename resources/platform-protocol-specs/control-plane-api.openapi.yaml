@@ -717,7 +717,7 @@ paths:
         - name: intent
           in: path
           required: true
-          schema: { type: string, enum: [drain, resume] }
+          schema: { type: string, enum: [promote, drain, resume] }
       requestBody: { $ref: "#/components/requestBodies/JsonObject" }
       responses:
         "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
