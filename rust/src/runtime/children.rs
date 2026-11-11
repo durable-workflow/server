@@ -311,30 +311,10 @@ where
                 .is_some_and(|types| types.iter().any(|value| value == workflow_type))
             {
                 let contracts = DB::document_row(&worker, "workflow_command_contracts")?;
-                if let Some(contract) = contracts.get(workflow_type) {
-                    // Older development registrations may predate validation.
-                    // Never turn a malformed entry into authoritative empties.
-                    let Ok(contract) = super::worker_contracts::declaration(contract) else {
-                        continue;
-                    };
-                    for (source, target) in [
-                        ("signals", "declared_signals"),
-                        ("signal_contracts", "declared_signal_contracts"),
-                        ("queries", "declared_queries"),
-                        ("query_contracts", "declared_query_contracts"),
-                        ("updates", "declared_updates"),
-                        ("update_contracts", "declared_update_contracts"),
-                        ("update_validators", "declared_update_validators"),
-                    ] {
-                        if let Some(value) = contract.get(source) {
-                            started[target] = value.clone();
-                        }
+                if let Some(fields) = super::update_contracts::started_fields(workflow_type, contracts.get(workflow_type)) {
+                    for (key, value) in fields {
+                        started[key] = value;
                     }
-                    // WorkflowStartService's defaults for an external worker's
-                    // contract, which make it a complete durable contract.
-                    started["declared_entry_method"] = json!("handle");
-                    started["declared_entry_mode"] = json!("canonical");
-                    started["declared_entry_declaring_class"] = json!(format!("external:{workflow_type}"));
                     break;
                 }
             }

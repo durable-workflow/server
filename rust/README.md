@@ -341,6 +341,14 @@ documented stopped-node backup and explicit `schema-upgrade`; startup does not
 add the index. The retained schema-10 checksum and catalog remain exact.
 This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 
+Bound run update contracts (Server #962) add the native-only table
+`dw_run_command_contracts`: SQLite schema 11, MySQL, MariaDB and PostgreSQL
+schema 12. A run whose `WorkflowStarted` captured no update contract binds the
+completing worker's contract once, with its first accepted workflow task
+completion. Until then its updates return HTTP 409 `contract_pending`. Stop
+the native nodes, back up the database and run `schema-upgrade` before
+starting this binary on an earlier schema.
+
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,
 workflow/activity polling, workflow lease renewal and both completion paths.
