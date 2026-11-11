@@ -341,7 +341,7 @@ where
         };
         let exception = command.exception();
         Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,$4,$5,FALSE,$6,$7,'',0,'',$8,$9)")
-            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(closed_as).bind(closed_as).bind(exception).bind(&message)
+            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(closed_as).bind(closed_as).bind(exception).bind(super::workflow_failures::stored_message(&message).as_ref())
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         let mut terminal = identity;
         terminal["failure_id"] = json!(failure_id);
@@ -506,7 +506,7 @@ where
         }
         let failure_id = id();
         Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,'timeout','timeout',FALSE,$4,$5,'',0,'',$6,$7)")
-            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(exception).bind(&message)
+            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(exception).bind(super::workflow_failures::stored_message(&message).as_ref())
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET status='failed',closed_reason='timed_out',closed_at=$1,last_progress_at=$2 WHERE id=$3")
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut **tx).await?;

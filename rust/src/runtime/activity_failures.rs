@@ -512,7 +512,7 @@ where
             let (category, file) = if limit.is_some() { ("structural_limit", "") } else { ("activity", "external-worker") };
             Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,'activity',$4,$5,$6,CASE WHEN $7='true' THEN TRUE ELSE FALSE END,FALSE,$8,0,$9,$10)")
                 .bind(&failure_id).bind(&run_id).bind(&activity_id).bind(category).bind(failure["class"].as_str().unwrap_or("RuntimeException"))
-                .bind(failure["message"].as_str().unwrap()).bind(if non_retryable {"true"} else {"false"}).bind(file)
+                .bind(super::workflow_failures::stored_message(failure["message"].as_str().unwrap()).as_ref()).bind(if non_retryable {"true"} else {"false"}).bind(file)
                 .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).execute(&mut *tx).await?;
             let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                 .bind(&activity_id)

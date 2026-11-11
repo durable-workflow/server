@@ -163,3 +163,14 @@ async fn invalid_failure_reports_get_phps_validation_messages() {
     runtime.close().await;
     database.remove().await;
 }
+
+// Server #1135 (.github#225): a failure message over 64 KiB is recorded, not
+// refused by a TEXT column on MySQL/MariaDB.
+#[tokio::test]
+async fn a_failure_message_over_64_kib_is_recorded() {
+    let message = format!("boom {}", "x".repeat(70 * 1024));
+    let ((status, body), event) = fail_with("long-failure", 1,
+        json!({"message":message,"type":"RuntimeError","class":"RuntimeError","stack_trace":"tb"})).await;
+    assert!(status.is_success(), "{status}: {body}");
+    assert_eq!(event["event_type"], "ActivityFailed", "{event}");
+}
