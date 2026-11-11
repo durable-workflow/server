@@ -733,10 +733,11 @@ behavior it mirrors.
 {{- if and (not (get (default (dict) (get $native "storage")) "existingClaim")) (or .Values.server.autoscaling.enabled (gt (int (include "durable-workflow.serverReplicas" .)) 1)) -}}
 {{- fail "More than one native Server replica (server.replicaCount above 1 or server.autoscaling.enabled) needs native.storage.existingClaim: native keeps external payload objects on pod-local disk, so one pod cannot read an upload another pod accepted. Set a ReadWriteMany claim, or run one replica." -}}
 {{- end -}}
-{{- $grace := int (default 65 (get $native "terminationGracePeriodSeconds")) -}}
+{{- $grace := int (default 70 (get $native "terminationGracePeriodSeconds")) -}}
+{{- $preStop := int (default 0 (get $native "preStopSleepSeconds")) -}}
 {{- $poll := get (default (dict) .Values.config.extraEnv) "DW_WORKER_POLL_TIMEOUT" -}}
-{{- if and $poll (le $grace (int $poll)) -}}
-{{- fail (printf "native.terminationGracePeriodSeconds (%d) must exceed DW_WORKER_POLL_TIMEOUT (%v): the native Server holds open worker polls for up to that long while it drains on SIGTERM." $grace $poll) -}}
+{{- if and $poll (le $grace (add $preStop (int $poll))) -}}
+{{- fail (printf "native.terminationGracePeriodSeconds (%d) must exceed native.preStopSleepSeconds (%d) plus DW_WORKER_POLL_TIMEOUT (%v): the native Server holds open worker polls for up to that long while it drains on SIGTERM." $grace $preStop $poll) -}}
 {{- end -}}
 {{- end -}}
 

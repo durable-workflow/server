@@ -566,7 +566,7 @@ where
             .execute(&mut **tx)
             .await?;
             Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,$4,$5,$6,$7,CASE WHEN $8='true' THEN TRUE ELSE FALSE END,FALSE,'',0,$9,$10)")
-                .bind(&failure_id).bind(&run_id).bind(activity_id).bind(propagation).bind(category).bind(class).bind(&message)
+                .bind(&failure_id).bind(&run_id).bind(activity_id).bind(propagation).bind(category).bind(class).bind(super::workflow_failures::stored_message(&message).as_ref())
                 .bind(if non_retryable { "true" } else { "false" }).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
             let updated = Self::query("SELECT * FROM activity_executions WHERE id=$1")
                 .bind(activity_id)

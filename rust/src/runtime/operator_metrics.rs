@@ -1264,6 +1264,63 @@ where
             .collect()
     }
 
+    /// The native maintenance loop's retention over every namespace (Server
+    /// #633). PHP prunes only on worker heartbeats, one run per namespace a
+    /// minute, which falls behind any busy namespace and never runs for one
+    /// without heartbeating workers. A namespace's failure is reported and
+    /// the others continue.
+    pub(super) async fn retention_maintenance(&self) -> Result<()> {
+        let namespaces = Self::query("SELECT name FROM workflow_namespaces ORDER BY name")
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| DB::string(row, "name"))
+            .collect::<Result<Vec<_>>>()?;
+        for namespace in namespaces {
+            if let Err(error) = self.in_namespace(&namespace).retention_maintenance_pass().await {
+                eprintln!("retention_maintenance_failed: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// One namespace's maintenance retention: up to `MAINTENANCE_BATCHES`
+    /// batches of its oldest expired runs, resuming past runs it could not
+    /// prune (`retention::maintenance_offset`).
+    async fn retention_maintenance_pass(&self) -> Result<()> {
+        let policy = self.retention_policy().await?;
+        let Some(cutoff) = policy.cutoff.filter(|_| !policy.forever) else {
+            return Ok(());
+        };
+        let namespace = self.namespace.clone();
+        let mut offset = retention::maintenance_offset(&namespace, None);
+        for _ in 0..retention::MAINTENANCE_BATCHES {
+            let ids = Self::query("SELECT id FROM workflow_run_summaries WHERE namespace=$1 AND status_bucket IN ('completed','failed') AND closed_at IS NOT NULL AND archived_at IS NULL AND closed_at<$2 ORDER BY closed_at,id LIMIT $3 OFFSET $4")
+                .bind(namespace.as_ref())
+                .bind(DB::bind_time(cutoff))
+                .bind(retention::MAX_LIMIT)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(|row| DB::string(row, "id"))
+                .collect::<Result<Vec<_>>>()?;
+            let found = ids.len() as i64;
+            if found == 0 {
+                offset = 0;
+                break;
+            }
+            let report = self.prune_runs(&policy, retention::MAX_LIMIT, ids).await?;
+            offset += found - report["pruned"].as_i64().unwrap_or(0);
+            if found < retention::MAX_LIMIT {
+                offset = 0;
+                break;
+            }
+        }
+        retention::maintenance_offset(&namespace, Some(offset));
+        Ok(())
+    }
+
     /// `GET /api/system/retention`.
     pub(super) async fn retention_status(&self, limit: i64) -> Result<Value> {
         let policy = self.retention_policy().await?;

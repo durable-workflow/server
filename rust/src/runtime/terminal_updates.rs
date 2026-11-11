@@ -70,7 +70,7 @@ where
             let closed_at = now();
             Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,$3,$4,'update','application','RuntimeException',$5,TRUE,FALSE,'',0,'',$6,$7)")
                 .bind(&failure_id).bind(run_id).bind(if command.is_some(){"workflow_command"}else{"workflow_update"})
-                .bind(command_id.as_deref().unwrap_or(&update_id)).bind(&message)
+                .bind(command_id.as_deref().unwrap_or(&update_id)).bind(super::workflow_failures::stored_message(&message).as_ref())
                 .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).execute(&mut **tx).await?;
             let mut payload = json!({"workflow_command_id":command_id,"update_id":update_id,
                 "workflow_instance_id":workflow,"workflow_run_id":run_id,"update_name":name,

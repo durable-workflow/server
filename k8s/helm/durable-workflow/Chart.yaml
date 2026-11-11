@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 1.1.0
+version: 1.2.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.3.2"
+appVersion: "3.4.0"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,18 +30,12 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.3.2"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.4.0"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
-    - kind: changed
-      description: Default image changes from native Server 3.0.5 to 3.3.2. No template, values contract or values schema change.
-    - kind: changed
-      description: "Upgrading an existing install needs an explicit native schema upgrade: Server 3.3.2 moves MySQL, MariaDB and PostgreSQL from native schema 8 (3.0.x) to 11 and refuses a version 8 database with native_schema_upgrade_required. Scale the Server to zero, back up the database, then run schema-upgrade with native.schemaUpgrade.enabled=true during helm upgrade or with the manual Job in the chart README. On PostgreSQL the version 11 index is built with a plain CREATE INDEX that blocks writes to workflow_tasks until it finishes. There is no downgrade: going back to 3.0.x means restoring the backup. See docs/UPGRADING.md."
     - kind: added
-      description: "Server 3.1.0: every worker answer carries protocol_version and server_capabilities; cluster info serves client_compatibility and supported_sdk_versions; start_child_workflow may set await started (child_workflow_start_turn); JSON doubles keep every digit (server#1001, server#1005, server#966, server#1010)."
-    - kind: added
-      description: "Server 3.3.0: an open_condition_wait command can opt in to one wall deadline per condition-wait occurrence (condition_wait_occurrence_deadline). sdk-php 3.10.0 does not send it; SDK support ships in a later sdk-php release (sdk-php#269)."
+      description: "Native pods sleep native.preStopSleepSeconds (default 5, 0 disables) in a preStop hook before SIGTERM, so a rolling update drops no requests (server#608). native.terminationGracePeriodSeconds now defaults to 70 so worker polls still drain after the sleep; the chart refuses a grace period at or below the sleep plus DW_WORKER_POLL_TIMEOUT."
     - kind: changed
-      description: "Servers 3.3.0 to 3.3.2 answer empty non-waiting query polls from one read snapshot without the transition lock, read claim candidates in bounded ranges, issue fewer statements per workflow transition, batch local activity records and read a workflow description from one snapshot. Answers are unchanged; no speedup is claimed. https://github.com/durable-workflow/server/releases/tag/3.3.2"
+      description: "Default image changes from native Server 3.3.2 to 3.4.0, which adds opt-in activity/workflow continuations. No schema upgrade from 3.3.x: MySQL, MariaDB and PostgreSQL stay at native schema 11. https://github.com/durable-workflow/server/releases/tag/3.4.0"

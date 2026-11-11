@@ -175,6 +175,28 @@ fn auth_setting(primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn E
     )
 }
 
+/// An authentication token as configured, refused when it has leading or
+/// trailing whitespace or a control character (Server #554). A Kubernetes
+/// Secret written with `echo` ends in a newline; such a token can never match
+/// an `Authorization` header, so every request would fail as unauthorized.
+/// The refusal names the setting, never the value.
+fn token_setting(primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn Error>> {
+    let value = auth_setting(primary, legacy)?;
+    if let Some(token) = &value {
+        token_shape(primary, legacy, token)?;
+    }
+    Ok(value)
+}
+
+fn token_shape(primary: &str, legacy: &str, token: &str) -> Result<(), String> {
+    if token.trim() != token || token.chars().any(char::is_control) {
+        return Err(format!(
+            "{primary} (or {legacy}) has leading or trailing whitespace or a control character, such as a trailing newline from a Secret file; remove it"
+        ));
+    }
+    Ok(())
+}
+
 /// The process environment as PHP's `env:audit` sees it. Non-UTF-8 values
 /// are compared lossily; the settings native reads itself refuse them.
 fn environment_snapshot() -> BTreeMap<String, String> {
@@ -609,14 +631,15 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let (anonymous, runtime_credentials) = (anonymous_driver()?, runtime_credentials_enabled()?);
     // Published PHP reads each token under its `DW_*` name, or else its
     // legacy `WORKFLOW_SERVER_*` name, so an unchanged deployment starts.
-    let worker_token = auth_setting("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN")?;
-    let operator_token = auth_setting("DW_OPERATOR_TOKEN", "WORKFLOW_SERVER_OPERATOR_TOKEN")?;
-    let admin_token = auth_setting("DW_ADMIN_TOKEN", "WORKFLOW_SERVER_ADMIN_TOKEN")?;
+    let worker_token = token_setting("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN")?;
+    let operator_token = token_setting("DW_OPERATOR_TOKEN", "WORKFLOW_SERVER_OPERATOR_TOKEN")?;
+    let admin_token = token_setting("DW_ADMIN_TOKEN", "WORKFLOW_SERVER_ADMIN_TOKEN")?;
     let token = auth_setting("DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN")?
         .ok_or("DW_AUTH_TOKEN (or WORKFLOW_SERVER_AUTH_TOKEN) is required")?;
     if token.trim().is_empty() {
         return Err("DW_AUTH_TOKEN must not be empty".into());
     }
+    token_shape("DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN", &token)?;
     let address: SocketAddr = env::var("DW_BIND_ADDRESS")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
@@ -686,6 +709,16 @@ async fn run() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod startup_tests {
     use super::*;
+
+    #[test]
+    fn tokens_with_stray_whitespace_are_refused_without_their_value() {
+        assert!(token_shape("DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN", "s3cret-token").is_ok());
+        for token in ["s3cret-token\n", " s3cret-token", "s3cret-token\t", "s3cret\u{7}token"] {
+            let refusal = token_shape("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN", token).unwrap_err();
+            assert!(refusal.starts_with("DW_WORKER_TOKEN (or WORKFLOW_SERVER_WORKER_TOKEN) has"), "{refusal}");
+            assert!(!refusal.contains("s3cret"), "{refusal}");
+        }
+    }
 
     #[test]
     fn only_an_unreachable_database_is_awaited() {

@@ -11,6 +11,49 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
+/// The most bytes a MySQL/MariaDB `TEXT` column holds, which bounds
+/// `workflow_failures.message`.
+const MESSAGE_COLUMN_BYTES: usize = 65_535;
+/// Core's marker for a message whose full bytes are kept elsewhere.
+const OVERFLOW_MARKER: &str = "\n[full message stored separately]";
+
+/// The value `workflow_failures.message` stores (Server #1135). A message over
+/// the TEXT capacity, or holding a NUL, would fail the write on MySQL/MariaDB
+/// or PostgreSQL, so it becomes Core's labelled compatibility preview: NULs
+/// escaped, cut on a character boundary, then the marker. Native keeps no
+/// second column; retained history carries the full failure, as it does for
+/// a preview a PHP takeover carried over.
+pub(super) fn stored_message(message: &str) -> std::borrow::Cow<'_, str> {
+    if message.len() <= MESSAGE_COLUMN_BYTES && !message.contains('\0') {
+        return std::borrow::Cow::Borrowed(message);
+    }
+    let escaped = message.replace('\0', "\\0");
+    let mut end = (MESSAGE_COLUMN_BYTES - OVERFLOW_MARKER.len()).min(escaped.len());
+    while !escaped.is_char_boundary(end) {
+        end -= 1;
+    }
+    std::borrow::Cow::Owned(format!("{}{OVERFLOW_MARKER}", &escaped[..end]))
+}
+
+#[cfg(test)]
+mod stored_message_tests {
+    use super::*;
+
+    #[test]
+    fn long_or_nul_messages_store_cores_labelled_preview() {
+        assert_eq!(stored_message("boom"), "boom");
+        let fits = "x".repeat(MESSAGE_COLUMN_BYTES);
+        assert_eq!(stored_message(&fits), fits.as_str());
+        // A multi-byte character straddling the cut is not split.
+        let long = format!("{}λ{}", "x".repeat(MESSAGE_COLUMN_BYTES - OVERFLOW_MARKER.len() - 1), "y".repeat(100));
+        let preview = stored_message(&long);
+        assert!(preview.len() <= MESSAGE_COLUMN_BYTES);
+        assert!(preview.ends_with(OVERFLOW_MARKER), "{}", &preview[preview.len() - 40..]);
+        assert!(!preview.contains('λ'));
+        assert_eq!(stored_message("a\0b"), format!("a\\0b{OVERFLOW_MARKER}"));
+    }
+}
+
 pub(super) struct WorkflowFailure {
     message: String,
     class: String,
@@ -153,7 +196,7 @@ where
             false
         };
         Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,'terminal',$4,$5,$6,CASE WHEN $7='true' THEN TRUE ELSE FALSE END,FALSE,'',0,'',$8,$9)")
-            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(failure.category).bind(&failure.class).bind(&failure.message)
+            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(failure.category).bind(&failure.class).bind(stored_message(&failure.message).as_ref())
             .bind(if failure.non_retryable {"true"} else {"false"}).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         let mut payload = json!({"failure_id":failure_id,"source_kind":"workflow_run","source_id":run_id,
             "failure_category":failure.category,"non_retryable":failure.non_retryable,"exception_type":failure.exception_type,

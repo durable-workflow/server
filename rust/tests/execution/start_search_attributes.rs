@@ -77,7 +77,6 @@ async fn invalid_start_search_attributes_are_refused_before_anything_is_written(
     define(&app, "Count", "int").await;
     define(&app, "Amount", "double").await;
     for (id, attributes, messages) in [
-        ("unknown", json!({"Unregistered":"x"}), json!(["Search attribute [Unregistered] is not registered for this namespace."])),
         ("wrong-type", json!({"Count":"three"}), json!(["Search attribute [Count] is registered as int and must be an integer."])),
         // Native reports several errors in sorted key order (the port's
         // key-order gap); these keys are in that order already.
@@ -94,6 +93,23 @@ async fn invalid_start_search_attributes_are_refused_before_anything_is_written(
     assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_search_attributes").await, 0);
     runtime.close().await;
     database.remove().await;
+}
+
+// Server #571: registering one attribute does not refuse another key a
+// workflow starts with; it is inferred as in an unregistered namespace.
+#[tokio::test]
+async fn an_unregistered_key_is_accepted_beside_registered_ones() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    define(&app, "Count", "int").await;
+    let (status, body) = start_with(&app, "unregistered", json!({"Unregistered":"x","Count":2})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, described) = request(&app, "GET", "/api/workflows/unregistered", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    assert_eq!(described["search_attributes"]["Unregistered"], "x", "{described}");
+    assert_eq!(described["search_attributes"]["Count"], 2, "{described}");
+    runtime.close().await;
 }
 
 #[tokio::test]

@@ -69,6 +69,26 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.2.0 / Server 3.4.0 (native)
+
+No schema upgrade from Server 3.3.x: MySQL, MariaDB and PostgreSQL stay at
+native schema 11, so a plain `helm upgrade` is enough. From Server 3.2.x or
+earlier, follow the Chart 1.1.0 / Server 3.3.2 steps below first (backup and
+explicit `schema-upgrade`).
+
+* The default image is native Server 3.4.0, which adds opt-in
+  activity/workflow continuations. Existing workers are unaffected. See the
+  [3.4.0 release notes](https://github.com/durable-workflow/server/releases/tag/3.4.0).
+
+* Native server pods now run a `preStop` hook that sleeps
+  `native.preStopSleepSeconds` (default 5) before `SIGTERM`, so Services stop
+  routing to a terminating pod before its listener closes (server#608). Set
+  it to `0` to remove the hook.
+* `native.terminationGracePeriodSeconds` now defaults to 70 (was 65), so a
+  60-second worker poll still drains after the sleep. If you set the grace
+  period yourself, keep it above `preStopSleepSeconds` plus any
+  `DW_WORKER_POLL_TIMEOUT`; the chart refuses a smaller value at render time.
+
 ### Chart 1.1.0 / Server 3.3.2 (native)
 
 The default image changes from native Server 3.0.5 to 3.3.2
