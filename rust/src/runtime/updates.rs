@@ -1139,7 +1139,7 @@ where
             let closed_at = now();
             Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_command',$3,'update',$4,$5,$6,CASE WHEN $7='true' THEN TRUE ELSE FALSE END,FALSE,'',0,'',$8,$9)")
                 .bind(&failure_id).bind(&run_id).bind(&command_id).bind(failure.category)
-                .bind(failure.exception_class).bind(failure.message).bind(if failure.non_retryable {"true"} else {"false"})
+                .bind(failure.exception_class).bind(super::workflow_failures::stored_message(failure.message).as_ref()).bind(if failure.non_retryable {"true"} else {"false"})
                 .bind(DB::bind_time(closed_at)).bind(DB::bind_time(closed_at)).execute(&mut **tx).await?;
             let mut completed = payload;
             completed["failure_id"] = json!(failure_id);

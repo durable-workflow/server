@@ -1551,7 +1551,7 @@ store_methods! {
                 .bind(text(failure.get("propagation_kind")).unwrap_or("local")).bind(category)
                 .bind(i64::from(truthy(failure.get("non_retryable")))).bind(i64::from(truthy(failure.get("handled"))))
                 .bind(text(failure.get("exception_class")).or_else(|| text(failure.get("exception_type"))).unwrap_or("ImportedWorkflowFailure"))
-                .bind(text(failure.get("message")).unwrap_or("")).bind(text(failure.get("file")).unwrap_or(""))
+                .bind(super::workflow_failures::stored_message(text(failure.get("message")).unwrap_or("")).as_ref()).bind(text(failure.get("file")).unwrap_or(""))
                 .bind(DB::optional_integer(int(failure.get("line")))).bind(text(failure.get("trace_preview")))
                 .bind(DB::bind_time(created.wall)).bind(DB::bind_time(created.wall))
                 .execute(&mut **tx).await.map_err(db)?;

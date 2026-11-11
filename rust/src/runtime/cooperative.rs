@@ -1305,7 +1305,7 @@ where
         let message = format!("Workflow cancelled: {reason}");
         const EXCEPTION: &str = "Workflow\\V2\\Exceptions\\WorkflowCancelledException";
         Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,'cancelled','cancelled',FALSE,$4,$5,'',0,'',$6,$7)")
-            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(EXCEPTION).bind(&message)
+            .bind(&failure_id).bind(&run_id).bind(&run_id).bind(EXCEPTION).bind(super::workflow_failures::stored_message(&message).as_ref())
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET status='cancelled',closed_reason='cancelled',output=NULL,closed_at=$1,last_progress_at=$2 WHERE id=$3")
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut **tx).await?;

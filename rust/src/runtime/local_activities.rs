@@ -1175,7 +1175,7 @@ store_methods! {
                 Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,non_retryable,handled,exception_class,message,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'activity_execution',$3,$4,$5,CASE WHEN $6='true' THEN TRUE ELSE FALSE END,FALSE,$7,$8,'',0,'',$9,$10)")
                     .bind(&failure_id).bind(&run_id).bind(&execution_id).bind(if timed_out { "timeout" } else { "activity" })
                     .bind(if timed_out { "timeout" } else { "activity" }).bind(if non_retryable { "true" } else { "false" })
-                    .bind(&class).bind(&message).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
+                    .bind(&class).bind(super::workflow_failures::stored_message(&message).as_ref()).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
                 terminal["failure_id"] = json!(failure_id);
                 if timed_out {
                     terminal["failure_category"] = json!("timeout");
