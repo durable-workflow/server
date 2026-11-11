@@ -3527,6 +3527,9 @@ where
             });
         }
         Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
+        // Server #962: a run that captured no update contract at start binds
+        // the completing worker's, once, with this accepted completion.
+        Self::bind_update_contract(&mut tx, &task).await?;
         // The tasks this batch's commands create, in order, as PHP reports them.
         let mut created = Vec::new();
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, commands, signal).await?;

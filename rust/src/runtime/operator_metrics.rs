@@ -1424,6 +1424,8 @@ where
                 deleted.insert((*key).into(), json!(affected));
             }
         }
+        // Native's admission state for the run goes with its details.
+        Self::query("DELETE FROM dw_run_command_contracts WHERE workflow_run_id=$1").bind(run_id).execute(&mut *tx).await?;
         let [streams_deleted, items_deleted, items_compacted] = Self::apply_stream_retention(&mut tx, run_id, &streams).await?;
         for (key, value) in retention::STREAM_COUNTS.into_iter().zip([streams_deleted, items_deleted, items_compacted]) {
             deleted.insert(key.into(), json!(value));

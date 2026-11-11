@@ -9,7 +9,7 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 11;
+pub const VERSION: i64 = 12;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -58,7 +58,9 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql")
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -80,14 +82,16 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql")
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 VERSION,
-                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index".into(),
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts".into(),
                 MigrationType::Simple,
                 AssertSqlSafe(bootstrap_sql(sql)).into_sql_str(),
                 false,
@@ -100,8 +104,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0011_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0011_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0012_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0012_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -185,6 +189,8 @@ impl Flavor {
         static MARIA_10: OnceLock<Migration> = OnceLock::new();
         static MYSQL_9: OnceLock<Migration> = OnceLock::new();
         static MARIA_9: OnceLock<Migration> = OnceLock::new();
+        static MYSQL_11: OnceLock<Migration> = OnceLock::new();
+        static MARIA_11: OnceLock<Migration> = OnceLock::new();
         let description = "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters";
         let earlier = |slot: &'static OnceLock<Migration>, version, description: &'static str, sql: &'static str| {
             slot.get_or_init(|| {
@@ -192,6 +198,62 @@ impl Flavor {
             })
         };
         match (self, version) {
+            (Self::MySql, 11) => Some((
+                MYSQL_11.get_or_init(|| Migration::new(
+                    11,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(bootstrap_sql_v11(concat!(
+                include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql")
+            ))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mysql/0011_catalog.json"),
+            )),
+            (Self::MariaDb, 11) => Some((
+                MARIA_11.get_or_init(|| Migration::new(
+                    11,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(bootstrap_sql_v11(concat!(
+                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql")
+            ))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mariadb/0011_catalog.json"),
+            )),
             (_, 10) => {
                 let (slot, expected) = match self {
                     Self::MySql => (&MYSQL_10, include_str!("../../migrations/mysql/0010_catalog.json")),
@@ -340,6 +402,8 @@ impl Flavor {
             (Self::MariaDb, 9) => Some(include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql")),
             (Self::MySql, 10) => Some(include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql")),
             (Self::MariaDb, 10) => Some(include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql")),
+            (Self::MySql, 11) => Some(include_str!("../../migrations/mysql/0012_run_command_contracts.sql")),
+            (Self::MariaDb, 11) => Some(include_str!("../../migrations/mariadb/0012_run_command_contracts.sql")),
             _ => None,
         }
     }
@@ -377,12 +441,30 @@ fn poll_expiry_bootstrap_sql(mut sql: String) -> String {
         .replace("CREATE INDEX dw_poll_receipts_expiration ON dw_poll_receipts (expires_at);", "")
 }
 
-fn bootstrap_sql(sql: &str) -> String {
+fn bootstrap_sql_v11(sql: &str) -> String {
     let mut sql = bootstrap_sql_v10(sql);
     let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_tasks` (").expect("compiled workflow task definition");
     let end = start + sql[start..].find("\n) ENGINE=").expect("compiled workflow task end");
     sql.insert_str(end, ",\n  KEY `dw_workflow_tasks_scoped_dispatch` (`namespace`,`queue`,`task_type`(16),`status`(16),`priority`,`available_at`,`id`)");
     sql.replace("CREATE INDEX dw_workflow_tasks_scoped_dispatch ON workflow_tasks (namespace,queue,task_type(16),status(16),priority,available_at,id);", "")
+}
+
+/// Version 12 adds only a native table, created like every other native
+/// table of the cumulative bootstrap.
+fn bootstrap_sql(sql: &str) -> String {
+    bootstrap_sql_v11(sql)
+}
+
+/// Creating the bound-contract table commits on its own. A resumed upgrade
+/// or takeover accepts only the exact new definition once it exists.
+pub(super) async fn ensure_run_command_contracts(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let sql = flavor.step(11).expect("compiled run command contracts");
+    connection.execute(AssertSqlSafe(sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))).await?;
+    let table = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "dw_run_command_contracts");
+    if table(catalog(connection).await?) != table(flavor.expected()?) {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    Ok(())
 }
 
 /// An implicit-commit step may already have committed before interruption.
@@ -913,6 +995,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             }
             if version == 10 {
                 ensure_scoped_dispatch_index(&mut connection, flavor).await?;
+                continue;
+            }
+            if version == 11 {
+                ensure_run_command_contracts(&mut connection, flavor).await?;
                 continue;
             }
             let sql = flavor
@@ -2598,6 +2684,18 @@ mod tests {
             Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
             Err(error) => panic!("unexpected upgrade error: {error}"),
             Ok(found) => panic!("upgrade accepted {found:?}"),
+        }
+    }
+
+    #[test]
+    fn version_11_bootstraps_keep_their_pinned_source_checksums() {
+        for (flavor, pinned) in [
+            (Flavor::MySql, include_str!("../../migrations/mysql/0011_checksum.txt")),
+            (Flavor::MariaDb, include_str!("../../migrations/mariadb/0011_checksum.txt")),
+        ] {
+            assert_eq!(checksum_hex(flavor.earlier(11).unwrap().0), pinned.trim());
+            let sql = flavor.migration().sql.as_ref();
+            assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_run_command_contracts (").count(), 1);
         }
     }
 
