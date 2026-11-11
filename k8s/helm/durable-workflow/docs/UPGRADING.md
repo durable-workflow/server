@@ -69,6 +69,19 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.2.0 / Server 3.3.2 (native)
+
+No action needed; the default image is unchanged.
+
+* Native server pods now run a `preStop` hook that sleeps
+  `native.preStopSleepSeconds` (default 5) before `SIGTERM`, so Services stop
+  routing to a terminating pod before its listener closes (server#608). Set
+  it to `0` to remove the hook.
+* `native.terminationGracePeriodSeconds` now defaults to 70 (was 65), so a
+  60-second worker poll still drains after the sleep. If you set the grace
+  period yourself, keep it above `preStopSleepSeconds` plus any
+  `DW_WORKER_POLL_TIMEOUT`; the chart refuses a smaller value at render time.
+
 ### Chart 1.1.0 / Server 3.3.2 (native)
 
 The default image changes from native Server 3.0.5 to 3.3.2
