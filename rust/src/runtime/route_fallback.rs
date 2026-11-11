@@ -81,6 +81,12 @@ pub(super) enum Answer {
 }
 
 pub(super) fn answer(method: &str, path: &str) -> Answer {
+    // A trailing slash leaves an empty last segment, such as an empty
+    // workflow ID in `/api/workflows/`. Native serves no such route, so it
+    // is not found rather than an unimplemented PHP route (Server #1006).
+    if path.len() > 1 && path.ends_with('/') {
+        return Answer::NotFound(format!("The route {} could not be found.", path.trim_start_matches('/')));
+    }
     let trimmed = path.trim_matches('/');
     let parts: Vec<&str> = if trimmed.is_empty() { Vec::new() } else { trimmed.split('/').collect() };
     let shown = if trimmed.is_empty() { "/" } else { trimmed };
@@ -124,5 +130,8 @@ mod tests {
         assert_eq!(answer("POST", "/api/deployments/default/q@v1/promote"), Answer::NotImplemented);
         assert_eq!(answer("HEAD", "/api/workflows"), Answer::NotImplemented);
         assert_eq!(answer("GET", "/"), Answer::NotImplemented);
+        // An empty trailing segment, such as an empty workflow ID, is not a PHP route.
+        assert_eq!(answer("GET", "/api/workflows/"), Answer::NotFound("The route api/workflows/ could not be found.".into()));
+        assert_eq!(answer("GET", "/api/workflows/x/"), Answer::NotFound("The route api/workflows/x/ could not be found.".into()));
     }
 }

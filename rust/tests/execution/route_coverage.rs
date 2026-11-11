@@ -74,3 +74,16 @@ fn fill_parameters(uri: &str) -> String {
     path.push_str(rest);
     path
 }
+
+// Server #1006: an empty workflow ID (`/api/workflows/`) is not found, not
+// an unimplemented capability; the list route without the slash still lists.
+#[tokio::test]
+async fn an_empty_trailing_segment_is_not_found() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let (status, body) = request(&app, "GET", "/api/workflows/", Value::Null).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_ne!(body["reason"], "rust_capability_not_implemented", "{body}");
+    let (status, body) = request(&app, "GET", "/api/workflows", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
