@@ -100,8 +100,10 @@ class NativeModeTest(unittest.TestCase):
         self.assertEqual(container["livenessProbe"]["tcpSocket"], {"port": "http"})
         self.assertNotIn("httpGet", container["livenessProbe"])
         self.assertEqual(container["readinessProbe"]["httpGet"]["path"], "/api/ready")
-        # A worker poll may ask to be held for up to 60 seconds.
-        self.assertEqual(pod["terminationGracePeriodSeconds"], 65)
+        # A worker poll may ask to be held for up to 60 seconds, after a
+        # preStop sleep that lets routing move off the pod first (Server #608).
+        self.assertEqual(pod["terminationGracePeriodSeconds"], 70)
+        self.assertEqual(container["lifecycle"], {"preStop": {"exec": {"command": ["/bin/sleep", "5"]}}})
         self.assertEqual(pod["securityContext"]["runAsUser"], 1000)
         self.assertEqual(pod["securityContext"]["fsGroup"], 1000)
         self.assertIn({"name": "server-storage", "mountPath": "/app/storage"}, container["volumeMounts"])
@@ -165,8 +167,8 @@ class NativeModeTest(unittest.TestCase):
             "auth.authToken is required in native mode": ["--set-string", "auth.authToken="],
             "auth.principalTokens is not supported": ["--set-string", "auth.principalTokens=[]"],
             'config.auth.driver "none" is not supported': ["--set-string", "config.auth.driver=none"],
-            "must exceed DW_WORKER_POLL_TIMEOUT": [
-                "--set-string", "config.extraEnv.DW_WORKER_POLL_TIMEOUT=70",
+            "must exceed native.preStopSleepSeconds (5) plus DW_WORKER_POLL_TIMEOUT": [
+                "--set-string", "config.extraEnv.DW_WORKER_POLL_TIMEOUT=66",
             ],
             "More than one native Server replica": ["--set", "server.replicaCount=2"],
             "native.storage.existingClaim: native keeps external payload objects": [
@@ -190,10 +192,13 @@ class NativeModeTest(unittest.TestCase):
 
         accepted = render(
             "--set-string", "config.extraEnv.DW_WORKER_POLL_TIMEOUT=70",
-            "--set", "native.terminationGracePeriodSeconds=75",
+            "--set", "native.terminationGracePeriodSeconds=76",
         )
         server = named(accepted, "Deployment", "-server")
-        self.assertEqual(server["spec"]["template"]["spec"]["terminationGracePeriodSeconds"], 75)
+        self.assertEqual(server["spec"]["template"]["spec"]["terminationGracePeriodSeconds"], 76)
+        without_sleep = render("--set", "native.preStopSleepSeconds=0")
+        container = named(without_sleep, "Deployment", "-server")["spec"]["template"]["spec"]["containers"][0]
+        self.assertNotIn("lifecycle", container)
 
     def test_a_shared_payload_claim_allows_more_than_one_replica(self):
         resources = render(

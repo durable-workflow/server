@@ -62,7 +62,7 @@ spec:
       {{- /* On SIGTERM native stops accepting work and holds open worker
       polls until they end. A poll may ask for up to 60 seconds, so the grace
       period must outlast that. */}}
-      terminationGracePeriodSeconds: {{ default 65 (get $native "terminationGracePeriodSeconds") }}
+      terminationGracePeriodSeconds: {{ default 70 (get $native "terminationGracePeriodSeconds") }}
       containers:
         - name: server
           image: {{ include "durable-workflow.image" . | quote }}
@@ -93,6 +93,15 @@ spec:
           {{- with .Values.server.startupProbe }}
           startupProbe:
             {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- /* Endpoints are removed asynchronously; sleeping before SIGTERM
+          keeps the listener open until routing has moved off this pod. */}}
+          {{- $preStop := int (default 0 (get $native "preStopSleepSeconds")) }}
+          {{- if gt $preStop 0 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sleep", {{ $preStop | quote }}]
           {{- end }}
           resources:
             {{- $resources | nindent 12 }}

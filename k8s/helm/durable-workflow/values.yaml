@@ -214,10 +214,15 @@ native:
 
   # On SIGTERM the native Server holds open worker polls until they end. A
   # poll waits DW_WORKER_POLL_TIMEOUT (30 seconds) unless it asks for up to 60,
-  # so keep this above 60 for a rollout to drain polls instead of cutting them
-  # off. The chart refuses a value at or below a DW_WORKER_POLL_TIMEOUT set in
-  # config.extraEnv.
-  terminationGracePeriodSeconds: 65
+  # so keep this above preStopSleepSeconds plus 60 for a rollout to drain polls
+  # instead of cutting them off. The chart refuses a value at or below
+  # preStopSleepSeconds plus a DW_WORKER_POLL_TIMEOUT set in config.extraEnv.
+  terminationGracePeriodSeconds: 70
+
+  # Seconds a terminating pod keeps serving before it receives SIGTERM, so
+  # Services and load balancers stop routing to it first and a rolling update
+  # drops no requests. 0 removes the preStop hook.
+  preStopSleepSeconds: 5
 
   # Liveness for native pods. /api/health reports database liveness, so
   # probing it would restart every pod during a database outage while the
