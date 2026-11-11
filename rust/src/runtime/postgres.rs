@@ -1897,6 +1897,25 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_version_11_run_command_contracts_upgrade_preserves_rows() {
+        let db = Database::new().await;
+        version_database(&db, 11).await;
+        refused(PostgresStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+        assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), 11);
+        PostgresStorage::check(db.options.clone()).await.unwrap();
+        let mut connection = db.connection().await;
+        let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+        assert_eq!(kept, "seeded at version 11");
+        let bound: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dw_run_command_contracts").fetch_one(&mut connection).await.unwrap();
+        assert_eq!(bound, 0);
+        sqlx::query("DROP INDEX dw_run_command_contracts_namespace").execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        refused(PostgresStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
     async fn qualification_version_10_scoped_index_upgrade_is_atomic_and_preserves_rows() {
         let db = Database::new().await;
         version_database(&db, 10).await;

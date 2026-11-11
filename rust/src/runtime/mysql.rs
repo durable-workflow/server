@@ -2593,12 +2593,17 @@ mod tests {
     }
 
     async fn version_10_database(db: &Database) -> Flavor {
+        retained_version_database(db, 10).await
+    }
+
+    async fn retained_version_database(db: &Database, version: i64) -> Flavor {
         let mut connection = db.connection().await;
         configure(&mut connection).await.unwrap();
         let flavor = Flavor::detect(&mut connection).await.unwrap();
-        let (earlier, earlier_catalog) = flavor.earlier(10).unwrap();
+        let (earlier, earlier_catalog) = flavor.earlier(version).unwrap();
         connection.execute(MARKER_SQL).await.unwrap();
-        sqlx::query("INSERT INTO dw_server_schema VALUES ('rust-initializing',10,?)")
+        sqlx::query("INSERT INTO dw_server_schema VALUES ('rust-initializing',?,?)")
+            .bind(version)
             .bind(earlier.checksum.as_ref())
             .execute(&mut connection)
             .await
@@ -2613,7 +2618,8 @@ mod tests {
             .execute(&mut connection)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept','seeded at version 10')")
+        sqlx::query("INSERT INTO workflow_namespaces(name,description) VALUES ('kept',?)")
+            .bind(format!("seeded at version {version}"))
             .execute(&mut connection)
             .await
             .unwrap();
@@ -2709,6 +2715,34 @@ mod tests {
             let sql = flavor.migration().sql.as_ref();
             assert_eq!(sql.matches("KEY `dw_workflow_tasks_scoped_dispatch`").count(), 1);
             assert!(!sql.contains("CREATE INDEX dw_workflow_tasks_scoped_dispatch"));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_version_11_run_command_contracts_upgrade_resumes() {
+        for stage in ["before", "committed"] {
+            let db = Database::new().await;
+            let flavor = retained_version_database(&db, 11).await;
+            if stage == "before" {
+                refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+            } else {
+                // The table DDL committed before the interrupted upgrade recorded it.
+                let mut connection = db.connection().await;
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                connection.execute(flavor.step(11).unwrap()).await.unwrap();
+                connection.close().await.unwrap();
+            }
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 11));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection = db.connection().await;
+            let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(kept, "seeded at version 11");
+            assert_eq!(catalog(&mut connection).await.unwrap(), flavor.expected().unwrap());
+            connection.execute("DROP INDEX dw_run_command_contracts_namespace ON dw_run_command_contracts").await.unwrap();
+            connection.close().await.unwrap();
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+            db.remove().await;
         }
     }
 

@@ -481,7 +481,7 @@ where
             let bound = if super::update_contracts::captured(&started) {
                 None
             } else {
-                Self::bound_contract(&mut *tx, &run_id).await?.map(|(contract, _)| contract)
+                Self::bound_contract(&mut *tx, &run_id).await?
             };
             if active && !super::update_contracts::captured(&started) && bound.is_none() {
                 return Err(super::RuntimeError::Protocol {

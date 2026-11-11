@@ -10,7 +10,8 @@
 //! completion. A claimed task that is abandoned binds nothing.
 //!
 //! The binding is server-side admission state in `dw_run_command_contracts`,
-//! not history, so replay is unchanged. A captured start contract is never
+//! not history, so replay is unchanged. Describe keeps published PHP's
+//! shape, so the binding shows only through update admission. A captured start contract is never
 //! replaced, and a bound contract is never rebound. A worker with no valid
 //! contract for the type binds an empty one, so its updates are unknown, as
 //! before, instead of waiting for a contract that never comes.
@@ -83,40 +84,17 @@ pub(super) fn effective(started: &Value, bound: Option<&Value>) -> Value {
 
 store_methods! {
     /// The run's bound contract fields, if it has bound one.
-    pub(super) async fn bound_contract(
-        connection: &mut DB::Connection,
-        run_id: &str,
-    ) -> Result<Option<(Value, Value)>> {
-        let Some(row) = Self::query("SELECT contract,worker_id,bound_at FROM dw_run_command_contracts WHERE workflow_run_id=$1")
+    pub(super) async fn bound_contract(connection: &mut DB::Connection, run_id: &str) -> Result<Option<Value>> {
+        let Some(row) = Self::query("SELECT contract FROM dw_run_command_contracts WHERE workflow_run_id=$1")
             .bind(run_id)
             .fetch_optional(&mut *connection)
             .await?
         else {
             return Ok(None);
         };
-        let contract: Value = serde_json::from_str(&DB::string(&row, "contract")?)
-            .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_bound_command_contract"))?;
-        let detail = json!({
-            "worker_id": DB::optional_string(&row, "worker_id")?,
-            "bound_at": super::run_describe::iso8601(DB::optional_instant(&row, "bound_at")?),
-        });
-        Ok(Some((contract, detail)))
-    }
-
-    /// Describe's `update_contract`: where the run's update contract came
-    /// from, `workflow_started`, `bound` or `pending`.
-    pub(super) async fn update_contract_describe(
-        connection: &mut DB::Connection,
-        run_id: &str,
-        started: &Value,
-    ) -> Result<Value> {
-        if captured(started) {
-            return Ok(json!({"source":"workflow_started"}));
-        }
-        Ok(match Self::bound_contract(connection, run_id).await? {
-            Some((_, detail)) => json!({"source":"bound","worker_id":detail["worker_id"],"bound_at":detail["bound_at"]}),
-            None => json!({"source":"pending"}),
-        })
+        serde_json::from_str(&DB::string(&row, "contract")?)
+            .map(Some)
+            .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_bound_command_contract"))
     }
 
     /// Bind the run's contract inside the transaction that accepts a

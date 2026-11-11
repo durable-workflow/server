@@ -8,12 +8,6 @@ async fn update(app: &Router, workflow: &str, name: &str, value: i64) -> (Status
         json!({"input":envelope(Payload::Array(vec![Payload::Long(value)]))})).await
 }
 
-async fn update_contract(app: &Router, workflow: &str) -> Value {
-    let (status, described) = request(app, "GET", &format!("/api/workflows/{workflow}"), Value::Null).await;
-    assert_eq!(status, StatusCode::OK, "{described}");
-    described["update_contract"].clone()
-}
-
 fn kinds(history: &Value) -> Vec<String> {
     history.as_array().unwrap().iter().map(|event| event["event_type"].as_str().unwrap().to_owned()).collect()
 }
@@ -31,7 +25,6 @@ async fn an_early_run_binds_its_first_completing_workers_contract_once() {
     assert_eq!(pending["reason"], "contract_pending", "{pending}");
     assert_eq!(pending["retryable"], true, "{pending}");
     assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, before);
-    assert_eq!(update_contract(&app, "early-update").await["source"], "pending");
 
     update_worker(&app, "update-a").await;
     // A claim alone binds nothing.
@@ -43,11 +36,6 @@ async fn an_early_run_binds_its_first_completing_workers_contract_once() {
 
     let (status, body) = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let bound = update_contract(&app, "early-update").await;
-    assert_eq!(bound["source"], "bound", "{bound}");
-    assert_eq!(bound["worker_id"], "update-a", "{bound}");
-    assert!(bound["bound_at"].is_string(), "{bound}");
-
     let (status, admitted) = update(&app, "early-update", "set", 5).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{admitted}");
     // The bound contract's argument rules apply.
@@ -68,7 +56,6 @@ async fn an_early_run_binds_its_first_completing_workers_contract_once() {
     assert!(task["task_id"].is_string(), "{task}");
     let (status, body) = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(update_contract(&app, "early-update").await["bound_at"], bound["bound_at"]);
     let (status, unknown) = update(&app, "early-update", "other", 1).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
     assert_eq!(unknown["outcome"], "rejected_unknown_update", "{unknown}");
@@ -86,9 +73,7 @@ async fn a_start_captured_contract_is_never_rebound() {
     let app = router(database.open().await.unwrap());
     update_worker(&app, "update-a").await;
     start(&app, "captured-update").await;
-    assert_eq!(update_contract(&app, "captured-update").await, json!({"source":"workflow_started"}));
     open_update_wait(&app, "update-a").await;
-    assert_eq!(update_contract(&app, "captured-update").await, json!({"source":"workflow_started"}));
     let (status, admitted) = update(&app, "captured-update", "set", 5).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{admitted}");
 }
@@ -102,7 +87,6 @@ async fn a_worker_without_a_contract_binds_no_updates() {
     let task = poll(&app, "plain", "workflow").await;
     let (status, body) = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(update_contract(&app, "plain-update").await["source"], "bound");
     // The pending state ends: the update is unknown, as before binding existed.
     let (status, unknown) = update(&app, "plain-update", "set", 5).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
