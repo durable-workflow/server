@@ -61,6 +61,9 @@ const TOP: &[(&str, &[Check])] = &[
     ("sticky_cache.run_id", &[STICKY, STR, max(255)]),
     ("sticky_cache.build_id", &[STICKY, STR, max(255)]),
     ("sticky_cache.ttl_seconds", &[STICKY, INT, min(1), max(3600)]),
+    // Native only (Server #1017): the cached boundary of a worker that
+    // advertises `sticky_history_suffix`.
+    ("sticky_cache.history_last_sequence", &[NUL, INT, min(1)]),
     ("sticky_cache.metrics", &[NUL, ARR]),
     ("sticky_cache.metrics.hit", &[NUL, INT, min(0)]),
     ("sticky_cache.metrics.miss", &[NUL, INT, min(0)]),

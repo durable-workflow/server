@@ -2844,10 +2844,32 @@ where
                     }
                 }
                 let last = DB::number(&run, "last_history_sequence")?;
+                // Server #1017: a worker that takes history suffixes and is
+                // expected to hit its cache gets only the events after the
+                // boundary it reported with its previous completion of the run.
+                let capabilities = DB::optional_document_row(&worker, "capabilities")?;
+                let suffix_worker = super::sticky_execution::takes_suffixes(capabilities.as_ref())
+                    && super::sticky_execution::registration_supports(capabilities.as_ref(),
+                        DB::optional_document_row(&worker, "capability_manifest")?.as_ref(), "sticky_execution");
+                let after = if suffix_worker && sticky_mode == Some(super::sticky_execution::STICKY_HIT_EXPECTED) {
+                    Self::query("SELECT payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='completed' AND lease_owner=$2 AND id<>$3 ORDER BY id DESC LIMIT 1")
+                        .bind(&run_id).bind(worker_id).bind(&task_id).fetch_optional(&mut **tx).await?
+                        .map(|row| DB::optional_document_row(&row, "payload")).transpose()?.flatten()
+                        .and_then(|payload| payload[super::sticky_execution::CACHED_THROUGH_KEY].as_i64())
+                        .filter(|through| (1..=last).contains(through))
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
                 let (mut events, next) = match page {
-                    Some(size) => Self::history_page_connection_with_total(&mut **tx, &run_id, 0, size, Some(last)).await?,
+                    Some(size) => Self::history_page_connection_with_total(&mut **tx, &run_id, after, size, Some(last)).await?,
+                    None if after > 0 => Self::history_page_connection_with_total(&mut **tx, &run_id, after, last - after, Some(last)).await?,
                     None => (Self::whole_history(&mut **tx, &run_id, last).await?, None),
                 };
+                if suffix_worker {
+                    claim["history_after_sequence"] = json!(after);
+                    claim["history_last_sequence"] = json!(last);
+                }
                 Self::with_signal_sequences(&mut **tx, &run_id, &mut events).await?;
                 let budget = Self::workflow_history_budget(
                     tx,
@@ -3717,7 +3739,7 @@ where
             }
         };
         if sticky {
-            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, &body).await?;
+            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, task_id, &body).await?;
         }
         let transaction = if deferred { Some(tx) } else {
             tx.commit().await?;
@@ -5813,7 +5835,7 @@ fn capabilities_template() -> Value {
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "prepared_local_activity_groups": false, "prepared_local_activity_cancellation_policies": [],
         "worker_sessions": super::worker_sessions::capability(), "worker_session_verbs": ["create", "heartbeat", "close"],
-        "sticky_execution": super::sticky_execution::describe(), "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
+        "sticky_execution": super::sticky_execution::describe(), "sticky_history_suffix": super::sticky_execution::suffix_capability(), "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,
