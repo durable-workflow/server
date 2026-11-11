@@ -239,6 +239,15 @@ where
             "workflow_instance_id":workflow,"workflow_run_id":next,"continued_from_run_id":old,"workflow_link_id":link,
             "child_call_id":parent["child_call_id"],"parent_workflow_instance_id":parent["parent_workflow_instance_id"],
             "parent_workflow_run_id":parent["parent_workflow_run_id"],"parent_sequence":parent["parent_sequence"]}),None,None).await?;
+        // Server #1143 (.github#243): a scheduled run's continuation is the
+        // same scheduled execution, so it keeps the schedule origin. The
+        // successor records the source's ScheduleTriggered unchanged, after
+        // its start, where the scheduled run recorded it.
+        if let Some(origin) = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ScheduleTriggered' ORDER BY sequence LIMIT 1")
+            .bind(&old).fetch_optional(&mut **tx).await?
+        {
+            Self::append(tx, &next, "ScheduleTriggered", DB::document_row(&origin, "payload")?, None, None).await?;
+        }
         Self::transfer_messages(tx, &old, &next, &workflow).await?;
         Self::query("UPDATE workflow_runs SET status='completed',closed_reason='continued',closed_at=$1,last_progress_at=$2 WHERE id=$3")
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).bind(&old).execute(&mut **tx).await?;
