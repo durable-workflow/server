@@ -620,3 +620,28 @@ async fn last_skip_pair_tracks_repeated_skips_and_survives_a_later_fire() {
     runtime.close().await;
     database.remove().await;
 }
+
+// Server #1143 (.github#243): a scheduled run's continuation keeps its
+// schedule origin, so `scheduleOrigin()` reads the same occurrence.
+#[tokio::test]
+async fn a_continued_scheduled_run_keeps_its_schedule_origin() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "origin-worker", json!(["echo"]), json!([])).await;
+    create(&app, "origin", "1h", None).await;
+    let triggered = request(&app, "POST", "/api/schedules/origin/trigger", json!({})).await;
+    assert_eq!(triggered.0, StatusCode::OK, "{}", triggered.1);
+    let task = poll(&app, "origin-worker", "workflow").await;
+    let origin = run_history(&app, &task["workflow_id"], &task["run_id"]).await.as_array().unwrap().iter()
+        .find(|event| event["event_type"] == "ScheduleTriggered").cloned().unwrap();
+    let (status, body) = finish_task(&app, &task, json!([{"type":"continue_as_new",
+        "arguments":envelope(Payload::Array(vec![Payload::Long(2)])),"workflow_type":null,"queue":"test"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let next = poll(&app, "origin-worker", "workflow").await;
+    assert_ne!(next["run_id"], task["run_id"]);
+    let history = run_history(&app, &next["workflow_id"], &next["run_id"]).await;
+    let kinds: Vec<&str> = history.as_array().unwrap().iter().map(|event| event["event_type"].as_str().unwrap()).collect();
+    let started = kinds.iter().position(|kind| *kind == "WorkflowStarted").unwrap();
+    assert_eq!(kinds.get(started + 1), Some(&"ScheduleTriggered"), "{kinds:?}");
+    assert_eq!(history[started + 1]["payload"], origin["payload"]);
+}
