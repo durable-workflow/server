@@ -55,6 +55,9 @@ pub struct Runtime {
 struct TimerScheduler {
     stop: watch::Sender<bool>,
     task: Mutex<Option<JoinHandle<()>>>,
+    /// The maintenance loop's retention, apart from the ticker so a long
+    /// prune never delays timers (Server #633).
+    retention: Mutex<Option<JoinHandle<()>>>,
     healthy: Arc<AtomicBool>,
     /// Whether the ticker also runs the repair pass (`maintenance_repair_enabled`).
     repair: Arc<AtomicBool>,
@@ -77,11 +80,39 @@ impl TimerScheduler {
         Self {
             stop,
             task: Mutex::new(None),
+            retention: Mutex::new(None),
             healthy: Arc::new(AtomicBool::new(true)),
             repair: Arc::new(AtomicBool::new(maintenance_repair_enabled())),
         }
     }
     fn start(&self, storage: Arc<Storage>) {
+        // With the maintenance loop on, closed runs past their namespace's
+        // retention are pruned every minute, whatever workers are connected.
+        let mut retention_stop = self.stop.subscribe();
+        let retention_enabled = self.repair.clone();
+        let retention_storage = storage.clone();
+        let retention = tokio::spawn(async move {
+            let interval = Duration::from_secs(super::retention::MAINTENANCE_INTERVAL_SECONDS);
+            loop {
+                tokio::select! {
+                    _ = retention_stop.changed() => break,
+                    _ = tokio::time::sleep(interval) => {
+                        if !retention_enabled.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        let result = match &*retention_storage {
+                            Storage::Sqlite(store) => store.retention_maintenance().await,
+                            Storage::Postgres(store) => store.retention_maintenance().await,
+                            Storage::MySql(store) => store.retention_maintenance().await,
+                        };
+                        if let Err(error) = result {
+                            eprintln!("retention_maintenance_failed: {error}");
+                        }
+                    }
+                }
+            }
+        });
+        *self.retention.lock().unwrap() = Some(retention);
         let mut stop = self.stop.subscribe();
         let healthy = self.healthy.clone();
         let repair = self.repair.clone();
@@ -119,6 +150,10 @@ impl TimerScheduler {
         let task = self.task.lock().unwrap().take();
         if let Some(task) = task {
             let _ = task.await;
+        }
+        let retention = self.retention.lock().unwrap().take();
+        if let Some(retention) = retention {
+            let _ = retention.await;
         }
     }
     fn running(&self) -> bool {
@@ -217,6 +252,16 @@ impl Runtime {
     /// and deadlines still fire.
     pub fn set_maintenance_repair(&self, enabled: bool) {
         self.scheduler.repair.store(enabled, Ordering::Relaxed);
+    }
+
+    /// One maintenance retention turn over every namespace, as the
+    /// maintenance loop runs each minute (Server #633).
+    pub async fn retention_maintenance(&self) -> Result<()> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.retention_maintenance().await,
+            Storage::Postgres(store) => store.retention_maintenance().await,
+            Storage::MySql(store) => store.retention_maintenance().await,
+        }
     }
 
     pub async fn open(database: &str, token: String) -> Result<Self> {

@@ -341,6 +341,14 @@ documented stopped-node backup and explicit `schema-upgrade`; startup does not
 add the index. The retained schema-10 checksum and catalog remain exact.
 This is not qualification of throughput, CPU-heavy deadlines or multi-node HA.
 
+With the maintenance loop on (`DW_RUST_MAINTENANCE_LOOP=1`, set by the native
+image), retention runs every minute for every namespace with a bounded policy:
+up to 1,000 of its oldest expired closed runs per turn, whether or not workers
+are heartbeating. Runs it must skip (for example one holding an external
+reference native cannot settle) do not block the runs behind them. Worker
+heartbeats still run PHP's one-run inline pass, and the manual
+`/api/system/retention` endpoints are unchanged.
+
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,
 workflow/activity polling, workflow lease renewal and both completion paths.
