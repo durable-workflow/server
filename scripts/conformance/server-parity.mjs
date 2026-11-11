@@ -15,6 +15,7 @@ import {checkSdkTimerAuthorArtifacts, checkSdkTimerAuthorPackages} from './serve
 import {checkSdkSignalDirectionArtifacts, checkSdkSignalDirectionPackages} from './server-parity/sdk-signal-direction-contract.mjs';
 import {captureProbe, probeNotes} from './server-parity/probe-capture.mjs';
 import {selectFixturePaths} from './server-parity/fixture-selection.mjs';
+import {waitOutScheduleOccurrences} from './server-parity/schedule-occurrence-guard.mjs';
 import {writeFixtureSummary, writeRecord} from './server-parity/record-file.mjs';
 import {checkCorrectedMarkerArtifacts, checkCorrectedMarkerPackages} from './server-parity/corrected-marker-contract.mjs';
 import {checkCorrectedRangeArtifacts, checkCorrectedRangePackages} from './server-parity/corrected-range-contract.mjs';
@@ -106,6 +107,7 @@ try {
         checkSdkTimerAuthorArtifacts(fixture, record.artifacts);
         checkSdkSignalDirectionArtifacts(fixture, record.artifacts);
         if (fixture.patch_deployment?.legacy_marker_history) checkLegacyMarkerArtifacts(fixture, record.artifacts);
+        if (fixture.schedule_catalog) waitOutScheduleOccurrences(fixture.id);
         const workflowId = `${values.prefix}-${fixture.id}`;
         const arguments_ = [resolve(root, 'scripts/conformance/server-parity/probe.php'), '--mode', values.mode, '--fixture', path, '--workflow-id', workflowId];
         for (const flag of ['url', 'application-root']) {
