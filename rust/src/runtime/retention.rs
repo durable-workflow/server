@@ -24,6 +24,25 @@ use std::{
 pub(super) const MAX_LIMIT: i64 = 100;
 /// PHP's inline pass prunes one run per namespace at most once a minute.
 const INLINE_THROTTLE_SECONDS: u64 = 60;
+/// How often the native maintenance loop runs retention (Server #633).
+pub(super) const MAINTENANCE_INTERVAL_SECONDS: u64 = 60;
+/// The most batches of `MAX_LIMIT` runs one namespace prunes per
+/// maintenance turn: up to 1,000 runs a minute.
+pub(super) const MAINTENANCE_BATCHES: usize = 10;
+
+/// Where the maintenance scan of `namespace` resumes: past the runs earlier
+/// turns could not prune, so held runs at the head of the oldest-first order
+/// cannot stall retention behind them (Server #500). Pruned runs leave the
+/// scan, so only the unpruned ones count. The scan restarts from the oldest
+/// run whenever it reaches the end.
+pub(super) fn maintenance_offset(namespace: &str, update: Option<i64>) -> i64 {
+    static OFFSETS: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
+    let mut offsets = OFFSETS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(offset) = update {
+        offsets.insert(namespace.to_owned(), offset);
+    }
+    offsets.get(namespace).copied().unwrap_or(0)
+}
 
 /// The deletes of PHP's `WorkflowRunRetentionCleanup::pruneRun`, in its
 /// order: report key, statement, and how many times it binds the run id.

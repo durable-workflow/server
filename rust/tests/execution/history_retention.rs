@@ -192,3 +192,37 @@ async fn a_pruned_run_exports_as_incomplete_and_import_refuses_it() {
     assert_eq!(kept_after, kept_before);
     assert_eq!([&kept_after["workflow"]["details_state"], &kept_after["workflow"]["details_pruned_at"]], [&json!("retained"), &Value::Null]);
 }
+
+// Server #633: the native maintenance loop prunes every expired run of a
+// namespace without worker heartbeats, past a run it has to skip (#500).
+#[tokio::test]
+async fn maintenance_retention_prunes_expired_runs_past_held_ones() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let held = completed_run(&app, "held").await;
+    let expired: Vec<String> = [completed_run(&app, "expired-a").await, completed_run(&app, "expired-b").await].into();
+    let kept = completed_run(&app, "kept").await;
+    // The held run is oldest and holds an external reference native cannot
+    // settle, so retention skips it.
+    for (run, closed) in [(&held, "2020-01-01 00:00:00.000000"), (&expired[0], "2020-01-02 00:00:00.000000"), (&expired[1], "2020-01-03 00:00:00.000000")] {
+        for table in ["workflow_runs", "workflow_run_summaries"] {
+            database.execute(sqlx::AssertSqlSafe(format!("UPDATE {table} SET closed_at='{closed}' WHERE id='{run}'"))).await;
+        }
+    }
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "UPDATE workflow_runs SET arguments='{{\"external_storage\":{{\"uri\":\"held\"}}}}' WHERE id='{held}'"))).await;
+
+    runtime.retention_maintenance().await.unwrap();
+    let (status, after) = request(&app, "GET", STATUS, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(after["expired_run_ids"], json!([held]), "{after}");
+    for run in &expired {
+        let (_, again) = request(&app, "POST", PASS, json!({"run_ids":[run]})).await;
+        assert_eq!(again["results"][0]["reason"], "run_not_found", "{again}");
+    }
+    let (status, export) = request(&app, "GET", &format!("/api/workflows/kept/runs/{kept}/history/export"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{export}");
+    assert!(!export["history_events"].as_array().unwrap().is_empty());
+}
