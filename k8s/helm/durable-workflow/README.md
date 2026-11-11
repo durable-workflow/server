@@ -77,7 +77,7 @@ helm install durable-workflow ./k8s/helm/durable-workflow \
 
 ```yaml
 image:
-  tag: "3.3.2"
+  tag: "3.4.0"
   # Pin a digest in production:
   # digest: "sha256:abc123..."
 
@@ -143,9 +143,12 @@ Driver, or any GitOps secret bridge that produces a Kubernetes `Secret`.
   single pod would block every node drain.
 * On `SIGTERM` the native Server holds open worker polls until they end. A
   poll waits `DW_WORKER_POLL_TIMEOUT` (30 seconds by default) unless it asks
-  for up to 60. `native.terminationGracePeriodSeconds` defaults to 65 so a
-  rollout drains every allowed poll. The chart refuses a grace period at or
-  below a `DW_WORKER_POLL_TIMEOUT` set in `config.extraEnv`.
+  for up to 60. A terminating pod first sleeps `native.preStopSleepSeconds`
+  (5 by default, 0 disables it) in a `preStop` hook, so Services stop routing
+  to it before the listener closes. `native.terminationGracePeriodSeconds`
+  defaults to 70 so a rollout drains every allowed poll after that sleep. The
+  chart refuses a grace period at or below the sleep plus a
+  `DW_WORKER_POLL_TIMEOUT` set in `config.extraEnv`.
 * Native liveness probes the listener (`native.livenessProbe`, a TCP check on
   the `http` port), not `/api/health`. `/api/health` reports database
   liveness, so probing it would restart every pod during a database outage,
