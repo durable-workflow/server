@@ -115,12 +115,10 @@ class GitHubRegistryProvider:
 
     def api(self, path: str) -> Any:
         # GitHub comparisons use a three-dot separator, not a traversal
-        # segment. Only the immutable-source and protected-main reads used by
-        # the evidence predicates may contain it; every other path keeps the
-        # original dot/traversal refusal.
+        # segment. Only the protected-main read of an exact source may contain
+        # it; every other path keeps the original dot/traversal refusal.
         comparison = type(path) is str and re.fullmatch(
-            rf"repos/{REPOSITORY}/compare/[0-9a-f]{{40}}\.\.\.(?:"
-            r"[0-9a-f]{40}\?per_page=100|main(?:\?per_page=1)?)", path) is not None
+            rf"repos/{REPOSITORY}/compare/[0-9a-f]{{40}}\.\.\.main", path) is not None
         require(type(path) is str and path.startswith(f"repos/{REPOSITORY}/")
                 and re.fullmatch(r"[A-Za-z0-9_./?=&-]+", path) is not None
                 and (".." not in path or comparison), "provider_api_path")
@@ -171,6 +169,17 @@ class GitHubRegistryProvider:
         arguments = ["docker", "buildx", "imagetools", "inspect"]
         arguments += ["--format", "{{json .Image}}"] if image_config else ["--raw"]
         return strict_json(self.commands.run(arguments + [image + "@" + digest]), JSON_LIMIT)
+
+    def exact_tag_digest(self, image: str, tag: str) -> str:
+        """The index digest an exact final version tag names, read without pulling."""
+        from native_alias_evidence import FINAL_TAG
+        require(image in (GHCR_IMAGE, DOCKERHUB_IMAGE) and matching(tag, FINAL_TAG), "registry_subject")
+        # Buildx prints a human manifest for templates that begin with {{.Manifest.
+        output = self.commands.run(["docker", "buildx", "imagetools", "inspect", "--format",
+                                    '{{printf "%s" .Manifest.Digest}}', image + ":" + tag.removeprefix("native-")],
+                                   128).decode("utf-8", errors="strict").strip()
+        require(matching(output, DIGEST), "registry_exact_tag")
+        return output
 
     def index_subjects(self, image: str, index_digest: str, source: str,
                        tag: str) -> dict[str, dict[str, str]]:

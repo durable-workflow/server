@@ -16,9 +16,11 @@ moves `X.Y`, `X` or `latest`. A final release follows this order:
    tag, then the existing published-Compose four-cell matrix on that same index
    from that tag. These are separately admitted invocations, not automatic
    promotion workflow dispatches.
-3. Review the exact current run attempts, provider job identities and five
-   canonical receipt artifacts. Dispatch `native-alias-promotion.yml` from the
-   exact release tag, a matching `tag` input and that data-only selection manifest.
+3. Build the data-only selection manifest from the three run IDs with
+   `scripts/ci/native_alias_manifest.py`, then review its exact current run
+   attempts, job identities and five canonical receipt artifacts. Dispatch
+   `native-alias-promotion.yml` from the exact release tag, a matching `tag`
+   input and that manifest.
 4. An unconditional, unprivileged plan first binds ref, tag, manifest source and
    protected-main ancestry. The read-only job then verifies the selection. After environment approval, the
    mutation job repeats the entire verification while holding
@@ -35,6 +37,69 @@ Candidates keep their existing publication/prerelease behavior and never move
 aliases. A final Release that already exists before promotion causes an explicit
 refusal. Escalate the exact legacy case to General; the promotion phase never
 edits a Release or treats it as qualification. Missing historical receipts refuse.
+
+## Release checklist
+
+Every step runs from the tag's own workflow files. No commit, branch or
+hand-written evidence file is needed. Run the commands from a checkout of
+`main` with `gh` signed in.
+
+1. Create the final tag at its commit on `main` and set the shared values.
+
+   ```sh
+   tag=3.6.0
+   commit=$(git rev-parse "$tag^{commit}")
+   ```
+
+2. Publish the tag and wait for the run to succeed. Note its run ID.
+
+   ```sh
+   gh workflow run native-release.yml --ref "$tag" -f tag="$tag" -f release_commit="$commit"
+   release_run=<native-release run ID>
+   ```
+
+3. Dispatch both qualifiers from the tag with the published index. The run
+   summary of the release run shows the same index.
+
+   ```sh
+   index=$(docker buildx imagetools inspect --format '{{printf "%s" .Manifest.Digest}}' \
+     "ghcr.io/durable-workflow/server:$tag")
+   gh workflow run native-image-parity.yml --ref "$tag" \
+     -f native_image="ghcr.io/durable-workflow/server@$index"
+   gh workflow run published-compose.yml --ref "$tag" \
+     -f server_image="ghcr.io/durable-workflow/server@$index"
+   corpus_run=<native-image-parity run ID>
+   compose_run=<published-compose run ID>
+   ```
+
+4. After both qualifiers succeed, build the evidence manifest.
+
+   ```sh
+   evidence=$(python3 -I scripts/ci/native_alias_manifest.py --tag "$tag" \
+     --release-run "$release_run" --corpus-run "$corpus_run" --compose-run "$compose_run")
+   ```
+
+5. Promote the aliases from the tag. The `dockerhub-native` Environment asks
+   for approval.
+
+   ```sh
+   gh workflow run native-alias-promotion.yml --ref "$tag" -f tag="$tag" -f evidence="$evidence"
+   ```
+
+6. Create the GitHub Release from `main` with the same manifest.
+
+   ```sh
+   gh workflow run native-github-release.yml --ref main -f tag="$tag" \
+     -f release_run_id="$release_run" \
+     -f release_run_attempt="$(jq -r .release.run_attempt <<<"$evidence")" \
+     -f promotion_evidence="$evidence"
+   ```
+
+The manifest builder only reads the provider API. It refuses a run that was
+not dispatched from the tag, a qualifier image that is not one canonical GHCR
+index, and any receipt artifact name that does not match exactly one artifact.
+Its output is a selection. Promotion and Release creation verify everything
+again.
 
 ## Evidence selection and authority
 
@@ -56,7 +121,16 @@ hex digits. The three run IDs and five artifact IDs are distinct. Compose cells
 are exactly `linux/amd64` and `linux/arm64`, each with `local` and `production`.
 Both qualifier runner commits equal the release source commit, with workflow
 blobs read at that exact commit; being another ancestor of main is insufficient.
-No alternative runner allowlist exists in this version.
+No alternative runner allowlist exists in this version. The earlier v2 manifest
+and its separate runner branch are gone.
+
+The qualification subject is derived, not edited per release. Its release part
+is the tag the qualifier was dispatched from, that tag's commit and the
+requested index. Admission refuses the run unless GHCR's exact version tag
+names that index. The pinned MySQL and QEMU helper images are the only
+committed part, in `scripts/ci/native-qualification-subject.json`. The verifier
+reads that file at the release commit and checks its Git blob identity against
+every receipt.
 
 Selection is not proof. Fixed `durable-workflow/server` provider reads establish
 repository/head-repository IDs, numeric workflow identity/path, dispatch event,
@@ -88,10 +162,13 @@ The existing corpus job retains its broad comparison artifact and adds
 contains only the canonical JSON receipt. PR/default/local image contexts emit a
 separate diagnostic schema with `eligible=false`, never positive evidence.
 
-A positive `durable-workflow.native-qualification-receipt.v1` binds repository,
+A positive `durable-workflow.native-qualification-receipt.v2` binds repository,
 run/attempt/job, runner/workflow blob, original requested index, platform/profile,
 resolved child manifest and image config, actual container config ID,
 architecture/OS, source/release labels, whitelisted observations and cleanup.
+It also binds the runner ref, which must be the release tag, the subject blob,
+the owned resource scope, the local image identity and each pinned dependency
+image the job actually ran.
 The index, child manifest and config are separate identities. Registry membership
 and both registries' source labels are checked independently by the consumer.
 

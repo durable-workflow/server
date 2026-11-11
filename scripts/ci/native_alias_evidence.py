@@ -24,23 +24,13 @@ REPOSITORY_ID = 1208272134
 GHCR_IMAGE = "ghcr.io/durable-workflow/server"
 DOCKERHUB_IMAGE = "durableworkflow/server"
 MANIFEST_SCHEMA = "durable-workflow.native-alias-promotion-evidence.v1"
-RECEIPT_SCHEMA = "durable-workflow.native-qualification-receipt.v1"
-MANIFEST_SCHEMA_V2 = "durable-workflow.native-alias-promotion-evidence.v2"
-RECEIPT_SCHEMA_V2 = "durable-workflow.native-qualification-receipt.v2"
+RECEIPT_SCHEMA = "durable-workflow.native-qualification-receipt.v2"
+SUBJECT_SCHEMA = "durable-workflow.native-qualification-subject.v2"
 LOCAL_IMAGE_KEYS = {"local_image_id", "local_manifest_digest", "config_digest_source"}
+# Only the pinned dependency images are committed. Qualifiers run from the
+# release tag, so the release part of the subject is the tag, its commit and
+# the requested index, never a per-release edit.
 SUBJECT_PATH = "scripts/ci/native-qualification-subject.json"
-RUNNER_REF = "refs/heads/feat/server-native32-qualification-runner"
-RUNNER_PATHS = {
-    ".github/workflows/native-image-parity.yml", ".github/workflows/published-compose.yml",
-    ".github/workflows/native-promotion-contracts.yml",
-    "scripts/ci/native_alias_evidence.py", "scripts/ci/native_alias_transport.py",
-    "scripts/ci/native_qualification.py", SUBJECT_PATH,
-    "scripts/ci/native-release-verify-publication.sh",
-    "scripts/ci/check-docker-workflow-isolation.py",
-    "tests/Unit/Support/native_alias_evidence_test.py", "tests/Unit/Support/native_qualification_test.py",
-    "tests/Feature/TaskQueueAdmissionTest.php",
-    "README.md",
-}
 MANIFEST_LIMIT = 8192
 RECEIPT_LIMIT = 32768
 ARCHIVE_LIMIT = 65536
@@ -163,12 +153,8 @@ def strict_json(data: bytes, limit: int) -> Any:
 
 
 def qualification_subject(value: Any) -> dict[str, Any]:
-    value = closed(value, {"schema", "release", "mysql", "qemu"}, "qualification_subject_shape")
-    require(value["schema"] == "durable-workflow.native-qualification-subject.v1", "qualification_subject_schema")
-    release = closed(value["release"], {"tag", "source_commit", "index_digest", "run_id", "run_attempt"}, "release_shape")
-    require(matching(release["tag"], FINAL_TAG) and matching(release["source_commit"], SHA)
-            and matching(release["index_digest"], DIGEST) and positive(release["run_id"])
-            and positive(release["run_attempt"]), "qualification_release_subject")
+    value = closed(value, {"schema", "mysql", "qemu"}, "qualification_subject_shape")
+    require(value["schema"] == SUBJECT_SCHEMA, "qualification_subject_schema")
     for name, repository in (("mysql", "mysql:8.0"), ("qemu", "docker.io/tonistiigi/binfmt")):
         dependency = closed(value[name], {"requested_image", "child_manifest_digest", "image_config_digest"},
                             "qualification_dependency_shape")
@@ -180,24 +166,14 @@ def qualification_subject(value: Any) -> dict[str, Any]:
     return value
 
 
-def runner_selection(value: Any) -> dict[str, str]:
-    value = closed(value, {"source_commit", "ref", "subject_blob"}, "qualification_runner_shape")
-    require(matching(value["source_commit"], SHA) and value["ref"] == RUNNER_REF
-            and matching(value["subject_blob"], SHA), "qualification_runner_identity")
-    return value
-
-
-def commit_is(value: Any, sha: str) -> bool:
-    return type(value) is dict and value.get("sha") == sha
-
-
-def runner_subject(provider: Provider, runner: dict[str, str], release: dict[str, Any]) -> dict[str, Any]:
-    """A reviewed runner may differ only in the bounded qualification source set."""
-    runner = runner_selection(runner)
-    source = runner["source_commit"]
+def release_subject(provider: Provider, release: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
+    """The qualifier runner is the release tag itself. Read its committed dependency pins."""
+    require(type(release) is dict and matching(release.get("tag"), FINAL_TAG)
+            and matching(release.get("source_commit"), SHA), "qualification_release_subject")
+    source = release["source_commit"]
     record = provider.api(f"repos/{REPOSITORY}/contents/{SUBJECT_PATH}?ref={source}")
     require(type(record) is dict and record.get("path") == SUBJECT_PATH and record.get("type") == "file"
-            and record.get("sha") == runner["subject_blob"] and record.get("encoding") == "base64"
+            and matching(record.get("sha"), SHA) and record.get("encoding") == "base64"
             and type(record.get("content")) is str and len(record["content"]) <= 12000,
             "qualification_subject_blob")
     try:
@@ -205,40 +181,23 @@ def runner_subject(provider: Provider, runner: dict[str, str], release: dict[str
     except ValueError:
         raise Refusal("qualification_subject_encoding") from None
     # Git's object format requires SHA-1 for this object identifier. The
-    # selected commit, protected-main ancestry and frozen delta bind authority.
+    # immutable release commit and its protected-main ancestry bind authority.
     object_id = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data,
                              usedforsecurity=False).hexdigest()
     require(len(data) <= MANIFEST_LIMIT and literal(record.get("size"), len(data))
-            and object_id == runner["subject_blob"],
-            "qualification_subject_digest")
-    subject = qualification_subject(strict_json(data, MANIFEST_LIMIT))
-    require(subject["release"] == release, "qualification_subject_release")
-    difference = provider.api(f"repos/{REPOSITORY}/compare/{release['source_commit']}...{source}?per_page=100")
-    require(type(difference) is dict and difference.get("status") == "ahead"
-            and commit_is(difference.get("base_commit"),release["source_commit"])
-            and commit_is(difference.get("merge_base_commit"),release["source_commit"])
-            and type(difference.get("total_commits")) is int and 1 <= difference["total_commits"] <= 32
-            and type(difference.get("commits")) is list
-            and len(difference["commits"]) == difference["total_commits"]
-            and commit_is(difference["commits"][-1],source), "qualification_runner_ancestry")
-    files = difference.get("files")
-    require(type(files) is list and 1 <= len(files) <= len(RUNNER_PATHS)
-            and all(type(item) is dict and item.get("filename") in RUNNER_PATHS
-                    and item.get("status") in ("added", "modified")
-                    and "previous_filename" not in item for item in files), "qualification_runner_frozen_source")
-    main = provider.api(f"repos/{REPOSITORY}/compare/{source}...main?per_page=1")
-    require(type(main) is dict and main.get("status") in ("ahead", "identical")
-            and commit_is(main.get("base_commit"),source)
-            and commit_is(main.get("merge_base_commit"),source), "qualification_runner_not_on_main")
-    return subject
+            and object_id == record["sha"], "qualification_subject_digest")
+    return release_runner(release, object_id), qualification_subject(strict_json(data, MANIFEST_LIMIT))
+
+
+def release_runner(release: dict[str, Any], subject_blob: Any) -> dict[str, str]:
+    require(matching(subject_blob, SHA), "qualification_subject_blob")
+    return {"source_commit": release["source_commit"], "ref": "refs/tags/" + release["tag"],
+            "subject_blob": subject_blob}
 
 
 def manifest(data: bytes) -> dict[str, Any]:
-    decoded = strict_json(data, MANIFEST_LIMIT)
-    v2 = type(decoded) is dict and decoded.get("schema") == MANIFEST_SCHEMA_V2
-    value = closed(decoded, {"schema", "release", "corpus", "compose"} | ({"runner"} if v2 else set()), "manifest_shape")
-    require(value["schema"] in (MANIFEST_SCHEMA, MANIFEST_SCHEMA_V2), "manifest_schema")
-    runner = runner_selection(value["runner"]) if v2 else None
+    value = closed(strict_json(data, MANIFEST_LIMIT), {"schema", "release", "corpus", "compose"}, "manifest_shape")
+    require(value["schema"] == MANIFEST_SCHEMA, "manifest_schema")
     release = closed(value["release"],
                      {"tag", "source_commit", "index_digest", "run_id", "run_attempt"},
                      "release_shape")
@@ -254,7 +213,7 @@ def manifest(data: bytes) -> dict[str, Any]:
                      "compose_shape")
     for role, selected in (("corpus", corpus), ("compose", compose)):
         require(positive(selected["run_id"]) and positive(selected["run_attempt"]), role + "_run")
-        require(selected["runner_commit"] == (runner["source_commit"] if runner else release["source_commit"]), role + "_runner_source")
+        require(selected["runner_commit"] == release["source_commit"], role + "_runner_source")
         require(matching(selected["workflow_blob"], SHA), role + "_workflow_blob")
     require(len({release["run_id"], corpus["run_id"], compose["run_id"]}) == 3,
             "distinct_workflow_runs_required")
@@ -355,7 +314,7 @@ class Provider(Protocol):
 
 
 def workflow_run(provider: Provider, selected: dict[str, Any], role: str,
-                 release: dict[str, Any], runner: dict[str,str] | None = None) -> dict[str, Any]:
+                 release: dict[str, Any]) -> dict[str, Any]:
     run = provider.api(f"repos/{REPOSITORY}/actions/runs/{selected['run_id']}")
     require(type(run) is dict and literal(run.get("id"), selected["run_id"]), "provider_run_id")
     for field in ("repository", "head_repository"):
@@ -365,10 +324,10 @@ def workflow_run(provider: Provider, selected: dict[str, Any], role: str,
     require(literal(run.get("run_attempt"), selected["run_attempt"]), "provider_current_attempt")
     require(run.get("status") == "completed" and run.get("conclusion") == "success",
             "provider_run_not_successful")
-    qualifier = runner if role != "release" else None
+    # Publication and both qualifiers are dispatched from the release tag.
     require(run.get("event") == "workflow_dispatch"
-            and run.get("head_sha") == (qualifier["source_commit"] if qualifier else release["source_commit"])
-            and run.get("head_branch") == (qualifier["ref"].removeprefix("refs/heads/") if qualifier else release["tag"])
+            and run.get("head_sha") == release["source_commit"]
+            and run.get("head_branch") == release["tag"]
             and run.get("path") == WORKFLOWS[role], "provider_run_source")
     workflow = provider.api(f"repos/{REPOSITORY}/actions/workflows/{WORKFLOWS[role].split('/')[-1]}")
     require(type(workflow) is dict and positive(workflow.get("id"))
@@ -451,7 +410,8 @@ RECEIPT_KEYS = {
     "index_digest", "platform", "profile", "child_manifest_digest", "image_config_digest",
     "actual_image_config_digest", "container_image_architecture", "container_image_os",
     "image_source_commit", "image_release_tag", "observations", "cleanup",
-}
+    "runner_ref", "subject_blob", "resource_scope", "dependencies",
+} | LOCAL_IMAGE_KEYS
 # Exactly the status object native-image-corpus.sh writes (Server #325).
 CORPUS_OBSERVATIONS = {"reference_records", "native_record", "compare", "service_calls",
                        "schedule_catalog", "namespace_delete_payloads", "retention_payloads"}
@@ -463,15 +423,14 @@ COMPOSE_OBSERVATIONS = {"health_serving", "ready", "cluster_version_matches_rele
 def bind_receipt(value: dict[str, Any], role: str, selected: dict[str, Any],
                  run: dict[str, Any], job: dict[str, Any], release: dict[str, Any],
                  platform: str, profile: str | None, subject: dict[str, Any],
-                 runner: dict[str,str] | None = None, binding: dict[str,Any] | None = None) -> None:
-    extra = {"runner_ref", "subject_blob", "resource_scope", "dependencies"} | LOCAL_IMAGE_KEYS if runner else set()
-    value = closed(value, RECEIPT_KEYS | extra, "receipt_shape")
-    require(value["schema"] == (RECEIPT_SCHEMA_V2 if runner else RECEIPT_SCHEMA) and value["kind"] == role
+                 runner: dict[str, str], binding: dict[str, Any]) -> None:
+    value = closed(value, RECEIPT_KEYS, "receipt_shape")
+    require(value["schema"] == RECEIPT_SCHEMA and value["kind"] == role
             and value["eligible"] is True, "receipt_not_eligible")
     expected = {
         "repository": REPOSITORY, "repository_id": REPOSITORY_ID,
         "run_id": run["id"], "run_attempt": run["run_attempt"], "job_id": job["id"],
-        "runner_commit": runner["source_commit"] if runner else release["source_commit"], "workflow_path": WORKFLOWS[role],
+        "runner_commit": release["source_commit"], "workflow_path": WORKFLOWS[role],
         "workflow_blob": selected["workflow_blob"],
         "requested_image": GHCR_IMAGE + "@" + release["index_digest"],
         "index_digest": release["index_digest"], "platform": platform, "profile": profile,
@@ -483,14 +442,13 @@ def bind_receipt(value: dict[str, Any], role: str, selected: dict[str, Any],
     }
     require(all(literal(value[key], expected_value) for key, expected_value in expected.items()),
             "receipt_source_or_subject_binding")
-    if runner:
-        require(value["runner_ref"] == runner["ref"] and value["subject_blob"] == runner["subject_blob"],
-                "receipt_runner_binding")
-        require(binding is not None and binding["release"] == release, "receipt_binding_missing")
-        observed_scope = resource_scope(role, run["id"], run["run_attempt"], platform, profile)
-        require(value["resource_scope"] == observed_scope, "receipt_resource_scope")
-        bind_local_image(value, subject, release["index_digest"])
-        bind_dependencies(value["dependencies"], role, platform, binding)
+    require(runner == release_runner(release, runner.get("subject_blob"))
+            and value["runner_ref"] == runner["ref"] and value["subject_blob"] == runner["subject_blob"],
+            "receipt_runner_binding")
+    observed_scope = resource_scope(role, run["id"], run["run_attempt"], platform, profile)
+    require(value["resource_scope"] == observed_scope, "receipt_resource_scope")
+    bind_local_image(value, subject, release["index_digest"])
+    bind_dependencies(value["dependencies"], role, platform, binding)
     cleanup = closed(value["cleanup"],
                      {"api_ok", "verified_absent", "container_count", "network_count", "volume_count"},
                      "receipt_cleanup_shape")
@@ -548,18 +506,18 @@ def bind_dependencies(value: Any, role: str, platform: str, subject: dict[str,An
                     "receipt_database_container")
 
 
+def qualification_jobs(role: str) -> dict[str, tuple[str, ...]]:
+    names = ([CORPUS_JOB] if role == "corpus" else
+             [platform + " " + profile + " published image" for platform in PLATFORMS for profile in PROFILES])
+    return {name: ("Admit published qualification subject",) + QUALIFICATION_STEPS[role]
+            + (("Set up QEMU",) if name.startswith("linux/arm64") else ()) for name in names}
+
+
 def qualification_receipts(provider: Provider, role: str, selected: dict[str, Any],
                            run: dict[str, Any], release: dict[str, Any],
-                           subjects: dict[str, Any], runner: dict[str, str] | None,
-                           binding: dict[str, Any] | None) -> list[tuple[Any, ...]]:
-    required = ({CORPUS_JOB: QUALIFICATION_STEPS[role]} if role == "corpus" else {
-        platform + " " + profile + " published image": QUALIFICATION_STEPS[role]
-        for platform in PLATFORMS for profile in PROFILES})
-    if runner:
-        required = {name: ("Admit published qualification subject",) + steps
-                    + (("Set up QEMU",) if name.startswith("linux/arm64") else ())
-                    for name, steps in required.items()}
-    current_jobs = jobs(provider, run, required)
+                           subjects: dict[str, Any], runner: dict[str, str],
+                           binding: dict[str, Any]) -> list[tuple[Any, ...]]:
+    current_jobs = jobs(provider, run, qualification_jobs(role))
     checks = []
     if role == "corpus":
         job = current_jobs[CORPUS_JOB]
@@ -586,8 +544,7 @@ def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
     # Revalidate programmatic callers exactly as CLI manifest bytes.
     value = manifest(canonical(value))
     release = value["release"]
-    runner = value.get("runner")
-    binding = runner_subject(provider, runner, release) if runner else None
+    runner, binding = release_subject(provider, release)
     publication = workflow_run(provider, release, "release", release)
     publication_jobs = jobs(provider, publication, RELEASE_JOBS)
     completed = max([timestamp(publication["updated_at"])] +
@@ -608,21 +565,20 @@ def verify(value: dict[str, Any], provider: Provider) -> dict[str, Any]:
         selected = value[role]
         require(provider.workflow_blob(selected["runner_commit"], WORKFLOWS[role]) == selected["workflow_blob"],
                 "qualifier_workflow_source")
-        run = workflow_run(provider, selected, role, release, runner)
+        run = workflow_run(provider, selected, role, release)
         require(timestamp(run["run_started_at"]) >= completed, "qualification_precedes_publication")
         checks = qualification_receipts(provider, role, selected, run, release, subjects, runner, binding)
         artifact_checks.extend(checks)
         artifact_ids.extend(check[0] for check in checks)
         snapshots.append((role, selected))
     for role, selected in snapshots:
-        workflow_run(provider, selected, role, release, runner)
-    if runner:
-        runner_subject(provider, runner, release)
+        workflow_run(provider, selected, role, release)
+    require(release_subject(provider, release) == (runner, binding), "qualification_subject_changed")
     for selected_artifact in artifact_checks:
         artifact_metadata(provider, *selected_artifact)
-    return {"schema": "durable-workflow.native-alias-verification.v2" if runner else "durable-workflow.native-alias-verification.v1",
+    return {"schema": "durable-workflow.native-alias-verification.v2",
             "release": release, "subjects": subjects, "qualified_artifact_ids": artifact_ids,
-            **({"runner":runner,"qualification_subject":binding} if runner else {})}
+            "runner": runner, "qualification_subject": binding}
 
 
 if __name__ == "__main__":
