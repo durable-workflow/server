@@ -337,7 +337,11 @@ async fn continuation_commits_one_successor_and_preserves_original_receipts_afte
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    register(&app, "continuation-worker", json!(["echo"]), json!([])).await;
+    // A sticky claim needs a registration that supports it (Server #1017).
+    let (status, registered) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"continuation-worker",
+        "task_queue":"test","runtime":"php","build_id":"build-1","supported_workflow_types":["echo"],
+        "supported_activity_types":[],"capabilities":["sticky_execution"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
     let initial=request(&app,"POST","/api/workflows",json!({"workflow_id":"continuation-original","workflow_type":"echo",
         "task_queue":"test","input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)])),
         "execution_timeout_seconds":1200,"run_timeout_seconds":600,"memo":{"keep":{"integer":9007199254740993_i64,"optional":null,"unicode":"continue λ"},"empty":[]}})).await;
