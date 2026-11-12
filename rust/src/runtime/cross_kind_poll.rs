@@ -56,14 +56,21 @@ where
         // Only bounded routing metadata leaves the database, never task payloads or query
         // history snapshots. The same reads observe independent server nodes.
         let at = super::store::now();
-        let rows = Self::query(DB::POLL_WAKE_TASKS_SQL)
-            .bind(self.namespace.as_ref())
-            .bind(text(body, "task_queue")?)
-            .bind(kind)
-            .bind(DB::bind_time(at))
-            .bind(DB::bind_time(at))
-            .fetch_all(&self.pool)
-            .await?;
+        // A workflow poll's hints are the queue's activity tasks. While the
+        // queue's activity dispatch is paused (Server #577) none can be
+        // claimed, so none wakes the poll.
+        let rows = if kind == "workflow" && Self::activity_dispatch_paused(&self.pool, self.namespace.as_ref(), queue).await? {
+            Vec::new()
+        } else {
+            Self::query(DB::POLL_WAKE_TASKS_SQL)
+                .bind(self.namespace.as_ref())
+                .bind(text(body, "task_queue")?)
+                .bind(kind)
+                .bind(DB::bind_time(at))
+                .bind(DB::bind_time(at))
+                .fetch_all(&self.pool)
+                .await?
+        };
         let mut ready = Vec::new();
         for row in rows {
             // Keep the indexed SQL scope filter, then compare exact bytes:

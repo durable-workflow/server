@@ -93,6 +93,8 @@ mod heartbeat_resume;
 mod sticky_execution;
 #[path = "execution/early_update_contracts.rs"]
 mod early_update_contracts;
+#[path = "execution/task_queue_pauses.rs"]
+mod task_queue_pauses;
 #[path = "execution/continue_messages.rs"]
 mod continue_messages;
 #[path = "execution/update_wait.rs"]

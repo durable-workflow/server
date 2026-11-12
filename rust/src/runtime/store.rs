@@ -2253,6 +2253,10 @@ where
         {
             return Ok(true);
         }
+        // A paused queue has nothing to claim until it resumes (Server #577).
+        if kind == "activity" && Self::activity_dispatch_paused(&self.pool, self.namespace.as_ref(), queue).await? {
+            return Ok(false);
+        }
         let at = now();
         Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
             .fetch_optional(&self.pool)
@@ -2451,6 +2455,11 @@ where
                 } else {
                     return Err(refuse(StatusCode::CONFLICT, "poll_cached_task_expired"));
                 }
+        }
+        // Server #577: a paused queue leases no activity task. The pause is
+        // read under the transition lock, so it holds for every later claim.
+        if kind == "activity" && Self::activity_dispatch_paused(&mut **tx, self.namespace.as_ref(), queue).await? {
+            return Ok(None);
         }
         let types: Value = DB::document_row(
             &worker,

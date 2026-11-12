@@ -1528,6 +1528,28 @@ impl Runtime {
             Storage::MySql(store) => store.build_id_action(queue, &body, action).await,
         }
     }
+    /// Server #577: a queue's activity dispatch state.
+    pub(crate) async fn activity_dispatch(&self, queue: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.activity_dispatch(queue).await,
+            Storage::Postgres(store) => store.activity_dispatch(queue).await,
+            Storage::MySql(store) => store.activity_dispatch(queue).await,
+        }
+    }
+    pub(crate) async fn pause_activity_dispatch(&self, queue: &str, body: &Value, paused_by: Option<Value>) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.pause_activity_dispatch(queue, body, paused_by).await,
+            Storage::Postgres(store) => store.pause_activity_dispatch(queue, body, paused_by).await,
+            Storage::MySql(store) => store.pause_activity_dispatch(queue, body, paused_by).await,
+        }
+    }
+    pub(crate) async fn resume_activity_dispatch(&self, queue: &str, resumed_by: Option<Value>) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.resume_activity_dispatch(queue, resumed_by).await,
+            Storage::Postgres(store) => store.resume_activity_dispatch(queue, resumed_by).await,
+            Storage::MySql(store) => store.resume_activity_dispatch(queue, resumed_by).await,
+        }
+    }
     pub(crate) async fn priority_fairness(&self, queue: &str) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.priority_fairness(queue).await,

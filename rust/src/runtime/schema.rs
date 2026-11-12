@@ -11,14 +11,14 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 11;
+pub(super) const VERSION: i64 = 12;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
-            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts".into(),
+            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts and task queue activity dispatch pauses".into(),
             MigrationType::Simple,
             concat!(
                 include_str!("../../migrations/sqlite/0003_full_schema.sql"),
@@ -37,7 +37,9 @@ fn migrator() -> &'static Migrator {
                 "\n",
                 include_str!("../../migrations/sqlite/0010_poll_expiry_indexes.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0011_run_command_contracts.sql")
+                include_str!("../../migrations/sqlite/0011_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql")
             )
             .into_sql_str(),
             false,
@@ -53,7 +55,35 @@ fn earlier_migration(version: i64) -> Option<&'static Migration> {
     static V8: OnceLock<Migration> = OnceLock::new();
     static V9: OnceLock<Migration> = OnceLock::new();
     static V10: OnceLock<Migration> = OnceLock::new();
+    static V11: OnceLock<Migration> = OnceLock::new();
     match version {
+        11 => Some(
+            V11.get_or_init(|| Migration::new(
+                11,
+                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts".into(),
+                MigrationType::Simple,
+                concat!(
+                include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0011_run_command_contracts.sql")
+            ).into_sql_str(),
+                false,
+            ))
+        ),
         10 => Some(
             V10.get_or_init(|| Migration::new(
                 10,
@@ -156,6 +186,7 @@ fn step(version: i64) -> Option<&'static str> {
         8 => Some(include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")),
         9 => Some(include_str!("../../migrations/sqlite/0010_poll_expiry_indexes.sql")),
         10 => Some(include_str!("../../migrations/sqlite/0011_run_command_contracts.sql")),
+        11 => Some(include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql")),
         _ => None,
     }
 }
@@ -262,7 +293,9 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/sqlite/0010_poll_expiry_indexes.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0011_run_command_contracts.sql")
+                include_str!("../../migrations/sqlite/0011_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql")
         ),
     )
 }
@@ -749,6 +782,33 @@ mod tests {
                 .unwrap();
         sqlx::raw_sql(sql).execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
+    }
+
+    #[test]
+    fn version_11_bootstrap_keeps_its_pinned_source_checksum() {
+        let hex: String = earlier_migration(11).unwrap().checksum.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(hex, include_str!("../../migrations/sqlite/0011_checksum.txt").trim());
+    }
+
+    #[tokio::test]
+    async fn version_11_upgrade_adds_task_queue_pauses_and_keeps_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v11.sqlite");
+        let mut connection = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path).create_if_missing(true)).await.unwrap();
+        Migrator::with_migrations(vec![earlier_migration(11).unwrap().clone()]).run(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO dw_query_cache VALUES ('kept','original',1)").execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        assert_eq!(reason(super::super::sqlite::open(path.to_str().unwrap()).await).await, "native_schema_upgrade_required");
+        let report = super::super::schema_upgrade::upgrade_sqlite(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["from_schema_version"], 11);
+        let pool = super::super::sqlite::open(path.to_str().unwrap()).await.unwrap();
+        let kept: String = sqlx::query_scalar("SELECT value FROM dw_query_cache WHERE key='kept'").fetch_one(&pool).await.unwrap();
+        assert_eq!(kept, "original");
+        let paused: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dw_task_queue_pauses").fetch_one(&pool).await.unwrap();
+        assert_eq!(paused, 0);
+        sqlx::query("ALTER TABLE dw_task_queue_pauses ADD COLUMN extra TEXT").execute(&pool).await.unwrap();
+        pool.close().await;
+        assert_eq!(reason(super::super::sqlite::open(path.to_str().unwrap()).await).await, "native_schema_catalog_mismatch");
     }
 
     #[test]

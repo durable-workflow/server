@@ -401,15 +401,21 @@ where
             "activity_tasks":task_admission("activity", &pollers, &stats, (active[1], namespace_counts[1])),
             "query_tasks":self.query_admission(queue).await?,
         });
+        // Server #577: whether the queue's activity dispatch is paused.
+        let pause = Self::task_queue_pause(&self.pool, self.namespace.as_ref(), queue).await?;
+        let activity_dispatch = super::task_queue_pauses::view(pause.as_ref());
         Ok(if detail {
             json!({"name":queue,"pollers":pollers,"stats":stats,"current_leases":base["current_leases"],
-                "repair":repair,"admission":admission,"poll_transport":Self::poll_transport()})
+                "repair":repair,"admission":admission,"poll_transport":Self::poll_transport(),
+                "activity_dispatch":activity_dispatch})
         } else {
-            json!({"name":queue,"stats":stats,"repair":repair,"admission":admission,"poll_transport":Self::poll_transport()})
+            json!({"name":queue,"stats":stats,"repair":repair,"admission":admission,"poll_transport":Self::poll_transport(),
+                "activity_dispatch":activity_dispatch})
         })
     }
 
-    /// `GET /api/task-queues`: every queue with tasks or registered workers.
+    /// `GET /api/task-queues`: every queue with tasks, registered workers or
+    /// a pause.
     pub(crate) async fn list_task_queues(&self, config: &QueryTaskConfig) -> Result<Value> {
         let mut names = BTreeSet::new();
         for row in Self::query("SELECT DISTINCT queue FROM workflow_tasks WHERE namespace=$1 AND queue IS NOT NULL AND queue<>''")
@@ -424,6 +430,8 @@ where
                 names.insert(queue);
             }
         }
+        // A paused queue stays listed after its tasks and workers are gone.
+        names.extend(self.paused_task_queues().await?);
         let mut queues = Vec::new();
         for name in names {
             queues.push(self.queue_view(&name, config, false).await?);

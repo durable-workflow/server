@@ -1236,6 +1236,18 @@ restart the traversal without a token in that case.
 ### Task Queues
 - `GET /api/task-queues` — List task queues
 - `GET /api/task-queues/{name}` — Task queue details, pollers, and recent add/dispatch flow
+- `GET /api/task-queues/{name}/activity-dispatch` — Whether activity dispatch on the queue is paused (native only)
+- `POST /api/task-queues/{name}/activity-dispatch/pause` — Pause activity dispatch, with an optional `reason` (native only)
+- `POST /api/task-queues/{name}/activity-dispatch/resume` — Resume activity dispatch (native only)
+
+A native Server that advertises `task_queue_activity_dispatch_pause` can hold
+new activity dispatch on one queue of one namespace. Ready activity tasks stay
+ready with no attempt used, activity deadlines keep running, activities
+already leased finish normally, and workflow, signal, query and update
+delivery is unchanged. The pause is durable and records who paused and
+resumed the queue and when. It is not a concurrency cap: a cap setting of `0`
+never pauses a queue. See
+[the contract](contracts/task-queue-activity-dispatch-pause.md).
 
 Task queue responses include an `admission` object so operators can separate
 worker-local capacity from server-side queue and query-task admission limits. Workflow
