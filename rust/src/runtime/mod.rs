@@ -93,6 +93,7 @@ mod deployments;
 mod priority_fairness;
 mod route_fallback;
 mod redrive;
+mod replay_clock;
 mod memos;
 pub mod mysql;
 mod namespace_cleanup;

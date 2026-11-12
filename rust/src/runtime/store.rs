@@ -2794,6 +2794,10 @@ where
                 if let Some(cancellation) = cancellation {
                     claim["cancellation_request"] = cancellation;
                 }
+                // Server #1132: the run's replay entry instant, when proved.
+                if let Some(clock) = Self::replay_clock(&mut **tx, &run).await? {
+                    claim["replay_clock"] = clock;
+                }
                 for field in [
                     "workflow_wait_kind",
                     "child_call_id",
