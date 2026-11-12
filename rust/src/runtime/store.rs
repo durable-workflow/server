@@ -2808,6 +2808,10 @@ where
                 if let Some(cancellation) = cancellation {
                     claim["cancellation_request"] = cancellation;
                 }
+                // Server #1132: the run's replay entry instant, when proved.
+                if let Some(clock) = Self::replay_clock(&mut **tx, &run).await? {
+                    claim["replay_clock"] = clock;
+                }
                 for field in [
                     "workflow_wait_kind",
                     "child_call_id",
@@ -2907,6 +2911,111 @@ where
             return Ok(Some(claim));
         }
         Ok(None)
+    }
+
+    /// The task's `replay_clock` (#1132, see replay_clock.rs), or `None` when its authority is not proved.
+    pub(super) async fn replay_clock(connection: &mut DB::Connection, run: &DB::Row) -> Result<Option<Value>> {
+        let run_id = DB::string(run, "id")?;
+        let instance_id = DB::string(run, "workflow_instance_id")?;
+        let opening = Self::query("SELECT event_type,payload,workflow_command_id FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence<=$2 ORDER BY sequence")
+            .bind(run_id.as_str())
+            .bind(super::replay_clock::OPENING_EVENTS)
+            .fetch_all(&mut *connection)
+            .await?;
+        let mut starts = Vec::new();
+        for row in &opening {
+            if DB::string(row, "event_type")? == "WorkflowStarted" {
+                starts.push(row);
+            }
+        }
+        let [started] = starts.as_slice() else {
+            return Ok(None);
+        };
+        let payload = DB::optional_document_row(started, "payload")?.unwrap_or(Value::Null);
+        if payload["workflow_run_id"].as_str().is_some_and(|recorded| recorded != run_id) {
+            return Ok(None);
+        }
+        if payload.get("recovery_kind").is_some_and(|kind| !kind.is_null()) {
+            if payload["recovery_kind"] != "redrive" {
+                return Ok(None);
+            }
+            return Self::redrive_anchor(connection, &run_id, &instance_id, &payload, DB::optional_string(started, "workflow_command_id")?).await;
+        }
+        // An unmarked start of a run some redrive created is ambiguous.
+        let redriven = Self::scalar("SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$1 AND command_type='redrive'")
+            .bind(run_id.as_str())
+            .fetch_one(&mut *connection)
+            .await?;
+        if redriven > 0 {
+            return Ok(None);
+        }
+        Ok(DB::optional_instant(run, "started_at")?.map(|started_at| super::replay_clock::carrier(&run_id, started_at, super::replay_clock::RUN_STARTED)))
+    }
+
+    /// A redrive successor's anchor, when its command, link and single start
+    /// all name this redrive.
+    async fn redrive_anchor(connection: &mut DB::Connection, run_id: &str, instance_id: &str, payload: &Value,
+        event_command: Option<String>) -> Result<Option<Value>> {
+        let text = |field: &str| payload[field].as_str().filter(|value| !value.is_empty());
+        let (Some(command_id), Some(source_run), Some(link_id), Some(resume), Some(anchor)) = (
+            text("workflow_command_id"),
+            text("continued_from_run_id"),
+            text("workflow_link_id"),
+            payload["resume_step_sequence"].as_i64(),
+            text("replayed_started_at"),
+        ) else {
+            return Ok(None);
+        };
+        let Ok(anchor) = chrono::DateTime::parse_from_rfc3339(anchor) else {
+            return Ok(None);
+        };
+        if event_command.as_deref() != Some(command_id) || source_run == run_id {
+            return Ok(None);
+        }
+        let command = Self::query("SELECT id,workflow_instance_id,workflow_run_id,requested_workflow_run_id,command_type,status,outcome FROM workflow_commands WHERE id=$1")
+            .bind(command_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+        let Some(command) = command else {
+            return Ok(None);
+        };
+        // The lookup's collation may fold case; the identities must match exactly.
+        let command_matches = DB::string(&command, "id")? == command_id
+            && DB::string(&command, "workflow_instance_id")? == instance_id
+            && DB::optional_string(&command, "workflow_run_id")?.as_deref() == Some(run_id)
+            && DB::optional_string(&command, "requested_workflow_run_id")?.as_deref() == Some(source_run)
+            && DB::string(&command, "command_type")? == "redrive"
+            && DB::string(&command, "status")? == "accepted"
+            && DB::optional_string(&command, "outcome")?.as_deref() == Some("redriven");
+        if !command_matches {
+            return Ok(None);
+        }
+        let link = Self::query("SELECT id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id FROM workflow_links WHERE id=$1")
+            .bind(link_id)
+            .fetch_optional(&mut *connection)
+            .await?;
+        let Some(link) = link else {
+            return Ok(None);
+        };
+        let link_matches = DB::string(&link, "id")? == link_id
+            && DB::string(&link, "link_type")? == "redrive"
+            && DB::optional_number(&link, "sequence")? == Some(resume)
+            && DB::optional_string(&link, "parent_workflow_instance_id")?.as_deref() == Some(instance_id)
+            && DB::optional_string(&link, "parent_workflow_run_id")?.as_deref() == Some(source_run)
+            && DB::optional_string(&link, "child_workflow_instance_id")?.as_deref() == Some(instance_id)
+            && DB::optional_string(&link, "child_workflow_run_id")?.as_deref() == Some(run_id);
+        if !link_matches {
+            return Ok(None);
+        }
+        // The command started exactly one run.
+        let starts = Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_command_id=$1 AND event_type='WorkflowStarted'")
+            .bind(command_id)
+            .fetch_one(&mut *connection)
+            .await?;
+        if starts != 1 {
+            return Ok(None);
+        }
+        Ok(Some(super::replay_clock::carrier(run_id, anchor.with_timezone(&chrono::Utc), super::replay_clock::REDRIVE_ANCHOR)))
     }
 
     pub(crate) async fn heartbeat_task(&self, task_id: &str, body: Value) -> Result<Value> {

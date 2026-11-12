@@ -1,12 +1,12 @@
 use super::*;
 
-const FINGERPRINT: &str = "sha256:abababababababababababababababababababababababababababababababab";
+pub(super) const FINGERPRINT: &str = "sha256:abababababababababababababababababababababababababababababababab";
 
 fn kinds(history: &Value) -> Vec<String> {
     history.as_array().unwrap().iter().map(|event| event["event_type"].as_str().unwrap().to_owned()).collect()
 }
 
-async fn complete_activity(app: &Router, task: &Value) {
+pub(super) async fn complete_activity(app: &Router, task: &Value) {
     let path = format!("/api/worker/activity-tasks/{}/complete", task["task_id"].as_str().unwrap());
     let done = request(app, "POST", &path, json!({"lease_owner":task["lease_owner"],
         "activity_attempt_id":task["activity_attempt_id"],"result":envelope(Payload::Array(vec![]))})).await;
@@ -15,7 +15,7 @@ async fn complete_activity(app: &Router, task: &Value) {
 
 /// A run whose second activity failed and whose workflow then failed at
 /// that step, as the PHP SDK reports it.
-async fn failed_at_second_activity(app: &Router, workflow: &str) -> Value {
+pub(super) async fn failed_at_second_activity(app: &Router, workflow: &str) -> Value {
     let started = start(app, workflow).await;
     let task = poll(app, "worker", "workflow").await;
     finish_task(app, &task, json!([{"type":"schedule_activity","activity_type":"a","arguments":envelope(Payload::Array(vec![]))}])).await;
