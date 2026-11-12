@@ -491,7 +491,7 @@ impl PostgresStorage {
         result?;
 
         let pool = super::backend::test_idle_connections(PgPoolOptions::new())
-            .max_connections(4)
+            .max_connections(crate::statement_cache::POOL_CONNECTIONS)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(connect_options)
             .await?;
@@ -741,6 +741,38 @@ mod tests {
         })
         .await
         .expect("bounded PostgreSQL pool disconnect/recovery qualification");
+    }
+
+    /// Server #1174: a runtime pool connection keeps a working set larger
+    /// than SQLx's 100-entry default; no statement is parsed again.
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_runtime_statement_cache_holds_the_hot_path() {
+        // Simple protocol: the probe itself is neither prepared nor cached.
+        const PREPARED: &str = "SELECT COUNT(*)::text || ':' || COALESCE(MAX(prepare_time)::text,'') FROM pg_prepared_statements WHERE statement LIKE 'SELECT $1::int8+%'";
+        let db = Database::new().await;
+        let capacity = crate::statement_cache::capacity(None, None).unwrap();
+        let working_set: i64 = 180;
+        assert!(working_set > 100 && working_set as usize <= capacity);
+        let storage = PostgresStorage::open(db.options.clone().statement_cache_capacity(capacity)).await.unwrap();
+        let pool = storage.into_pool();
+        let mut connection = pool.acquire().await.unwrap();
+        let mut first = None;
+        for pass in 0..2 {
+            for statement in 0..working_set {
+                let sql = sqlx::AssertSqlSafe(format!("SELECT $1::int8+{statement}"));
+                let value: i64 = sqlx::query_scalar(sql).bind(1_i64).fetch_one(&mut *connection).await.unwrap();
+                assert_eq!(value, statement + 1);
+            }
+            let row = sqlx::Executor::fetch_one(&mut *connection, PREPARED).await.unwrap();
+            let prepared: String = sqlx::Row::get(&row, 0);
+            assert!(prepared.starts_with(&format!("{working_set}:")), "pass {pass}: {prepared}");
+            // A statement evicted and parsed again would carry a later prepare_time.
+            assert_eq!(first.get_or_insert_with(|| prepared.clone()), &prepared, "pass {pass}");
+        }
+        drop(connection);
+        pool.close().await;
+        db.remove().await;
     }
 
     #[tokio::test]

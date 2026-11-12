@@ -1191,7 +1191,7 @@ pub struct MySqlStorage {
 
 fn runtime_pool_options() -> MySqlPoolOptions {
     super::backend::test_idle_connections(MySqlPoolOptions::new())
-        .max_connections(4)
+        .max_connections(crate::statement_cache::POOL_CONNECTIONS)
         .acquire_timeout(Duration::from_secs(5))
         .after_connect(|connection, _| {
             Box::pin(async move {
@@ -1416,6 +1416,42 @@ mod tests {
         ] {
             assert_eq!(canonical(kept), kept);
         }
+    }
+
+    /// Server #1174: a runtime pool connection keeps a working set larger
+    /// than SQLx's 100-entry default, so a statement is prepared once and
+    /// never closed and prepared again. SQLx's default re-prepares all of it.
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_runtime_statement_cache_holds_the_hot_path() {
+        async fn status(connection: &mut MySqlConnection, name: &'static str) -> i64 {
+            // Text protocol: the probe itself is neither prepared nor cached.
+            let row = connection.fetch_one(name).await.unwrap();
+            sqlx::Row::get::<String, _>(&row, 1).parse().unwrap()
+        }
+        const PREPARED: &str = "SHOW SESSION STATUS LIKE 'Com_stmt_prepare'";
+        const CLOSED: &str = "SHOW SESSION STATUS LIKE 'Com_stmt_close'";
+        let db = Database::new().await;
+        let capacity = crate::statement_cache::capacity(None, None).unwrap();
+        let working_set: i64 = 180;
+        assert!(working_set > 100 && working_set as usize <= capacity);
+        let storage = MySqlStorage::open(db.options.clone().statement_cache_capacity(capacity)).await.unwrap();
+        let pool = storage.into_pool();
+        let mut connection = pool.acquire().await.unwrap();
+        for pass in 0..2 {
+            let (prepared, closed) = (status(&mut connection, PREPARED).await, status(&mut connection, CLOSED).await);
+            for statement in 0..working_set {
+                let sql = AssertSqlSafe(format!("SELECT ?+{statement}"));
+                let value: i64 = sqlx::query_scalar(sql).bind(1_i64).fetch_one(&mut *connection).await.unwrap();
+                assert_eq!(value, statement + 1);
+            }
+            let prepared = status(&mut connection, PREPARED).await - prepared;
+            let closed = status(&mut connection, CLOSED).await - closed;
+            assert_eq!((prepared, closed), (if pass == 0 { working_set } else { 0 }, 0), "pass {pass}");
+        }
+        drop(connection);
+        pool.close().await;
+        db.remove().await;
     }
 
     #[tokio::test]
