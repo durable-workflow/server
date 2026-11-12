@@ -18,10 +18,20 @@ INDEX_TYPES = ("application/vnd.oci.image.index.v1+json",
                "application/vnd.docker.distribution.manifest.list.v2+json")
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect could leave ghcr.io; refuse it instead of following."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        raise SystemExit(f"refusing redirect to {newurl}")
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 def get(url: str, headers: dict[str, str]) -> bytes:
     if not url.startswith("https://ghcr.io/"):
         raise SystemExit(f"refusing {url}")
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as response:
+    with OPENER.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
         return response.read(1 << 20)
 
 
