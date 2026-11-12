@@ -26,6 +26,8 @@ jobs:
     name: Rescan latest ${{ matrix.platform }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      RESOURCE_SCOPE: dw-native-rescan-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}
     strategy:
       fail-fast: false
       matrix:
@@ -39,22 +41,17 @@ jobs:
         id: resolve
         env:
           PLATFORM: ${{ matrix.platform }}
-        run: |
-          set -euo pipefail
-          docker buildx imagetools inspect "$GHCR_IMAGE:latest" --format '{{json .Manifest}}' > index.json
-          digest=$(python3 -I -c 'import json, sys
-          os_name, arch = sys.argv[2].split("/")
-          index = json.load(open(sys.argv[1]))
-          found = [m["digest"] for m in index["manifests"] if m.get("platform", {}).get("os") == os_name and m["platform"].get("architecture") == arch]
-          assert len(found) == 1, found
-          print(found[0])' index.json "$PLATFORM")
-          echo "image=$GHCR_IMAGE@$digest" >> "$GITHUB_OUTPUT"
+        run: echo "image=$(python3 -I scripts/ci/resolve_latest_platform_digest.py "$PLATFORM")" >> "$GITHUB_OUTPUT"
 
       - name: Scan the latest ${{ matrix.platform }} digest
         env:
           IMAGE: ${{ steps.resolve.outputs.image }}
           PLATFORM: ${{ matrix.platform }}
         run: bash scripts/ci/native-image-scan.sh "$IMAGE" "$PLATFORM" native-scan
+
+      - name: Remove this job's scanner container
+        if: always()
+        run: docker rm -f "$RESOURCE_SCOPE-trivy" || true
 
       - name: Keep the scan receipt
         if: always()

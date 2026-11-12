@@ -23,6 +23,13 @@ case $platform in
   *) echo "native-image-scan: unsupported platform $platform" >&2; exit 2 ;;
 esac
 
+# The scanner container's name derives from RESOURCE_SCOPE, so the job's
+# cleanup step can remove it.
+scope_identity="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-native-scan}"
+if test -z "${RESOURCE_SCOPE:-}"; then
+  RESOURCE_SCOPE="dw-native-$scope_identity-$(date -u +%Y%m%d%H%M%S)-$$"
+fi
+
 mkdir -p "$out"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -30,7 +37,7 @@ mkdir -p "$work/cache" "$work/report"
 name=scan-${platform#linux/}
 
 trivy() {
-  docker run --rm --name "dw-native-scan-$name-$$" -u "$(id -u):$(id -g)" \
+  docker run --rm --name "$RESOURCE_SCOPE-trivy" -u "$(id -u):$(id -g)" \
     -v "$work/cache:/cache" -v "$work/report:/report" "$scanner" "$@"
 }
 
@@ -39,5 +46,5 @@ trivy image --cache-dir /cache --image-src remote --platform "$platform" \
   --scanners vuln --severity HIGH,CRITICAL --format json --output /report/trivy.json --quiet "$image"
 trivy version --cache-dir /cache --format json > "$work/report/version.json"
 
-python3 -I "$(dirname "$0")/native_scan_receipt.py" "$work/report/trivy.json" "$work/report/version.json" \
-  "$image" "$platform" "$scanner" > "$out/$name.json"
+python3 -I "$(dirname "$0")/native_scan_receipt.py" "$(cat "$work/report/version.json")" \
+  "$image" "$platform" "$scanner" < "$work/report/trivy.json" > "$out/$name.json"

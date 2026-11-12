@@ -17,7 +17,7 @@ from pathlib import Path
 # explicit model update and countercontrol review before gaining coverage.
 QUALIFICATION_CLEANUP_SOURCES = {
     "scripts/ci/native_qualification.py": "775655e8d60ecd9a468970cdc28ea40860e0b1549b75343786837f2a35f37eac",
-    "scripts/ci/native_alias_evidence.py": "7097eb55cf32b698539860b4a0a1bd010e251baf2def9f9e77f145aab96f60db",
+    "scripts/ci/native_alias_evidence.py": "2d4a05b812a1a914679ddf017b46de2bcb1dedbbf19c09297002f026f63b50d9",
     "scripts/ci/native_alias_transport.py": "5a925299f3fc5c58fb937e85de579d3bed70942b19b464aca78a77e6d0d63273",
 }
 

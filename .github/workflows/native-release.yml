@@ -365,6 +365,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      RESOURCE_SCOPE: dw-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - name: Check out trusted release tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -376,6 +378,10 @@ jobs:
         env:
           IMAGE: ${{ env.GHCR_IMAGE }}@${{ needs.build-amd64.outputs.digest }}
         run: bash scripts/ci/native-image-scan.sh "$IMAGE" linux/amd64 native-scan
+
+      - name: Remove this job's scanner container
+        if: always()
+        run: docker rm -f "$RESOURCE_SCOPE-trivy" || true
 
       - name: Keep the linux/amd64 scan receipt
         if: always()
@@ -394,6 +400,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      RESOURCE_SCOPE: dw-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - name: Check out trusted release tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
@@ -405,6 +413,10 @@ jobs:
         env:
           IMAGE: ${{ env.GHCR_IMAGE }}@${{ needs.build-arm64.outputs.digest }}
         run: bash scripts/ci/native-image-scan.sh "$IMAGE" linux/arm64 native-scan
+
+      - name: Remove this job's scanner container
+        if: always()
+        run: docker rm -f "$RESOURCE_SCOPE-trivy" || true
 
       - name: Keep the linux/arm64 scan receipt
         if: always()

@@ -54,9 +54,12 @@ class ScanReceipt(unittest.TestCase):
         changed = R.receipt(report(vulnerability("CVE-2", "libc6", "HIGH", "fixed", "2.1")), VERSION, IMAGE, "linux/amd64", SCANNER)
         self.assertNotEqual(changed["fingerprint"], first["fingerprint"])
 
-    def test_refuses_a_report_for_another_or_unpinned_image(self) -> None:
+    def test_refuses_an_unpinned_image(self) -> None:
+        unpinned = report()
         with self.assertRaises(SystemExit):
-            R.receipt(report(), VERSION, "ghcr.io/durable-workflow/server:latest", "linux/amd64", SCANNER)
+            R.receipt(unpinned, VERSION, "ghcr.io/durable-workflow/server:latest", "linux/amd64", SCANNER)
+
+    def test_refuses_a_report_for_another_image(self) -> None:
         other = report()
         other["Metadata"]["RepoDigests"] = ["ghcr.io/durable-workflow/server@sha256:" + "c" * 64]
         with self.assertRaises(SystemExit):

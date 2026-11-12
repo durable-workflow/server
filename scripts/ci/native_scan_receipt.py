@@ -11,7 +11,8 @@ A row is actionable when Trivy reports a fixed version for it (status
 distribution rows are inventory for Security's reachability disposition on
 server#802, not a failure.
 
-Usage: native_scan_receipt.py REPORT VERSION IMAGE PLATFORM SCANNER_IMAGE
+Usage: native_scan_receipt.py VERSION_JSON IMAGE PLATFORM SCANNER_IMAGE < REPORT
+(the Trivy report on standard input, `trivy version --format json` as text)
 """
 from __future__ import annotations
 
@@ -82,14 +83,12 @@ def receipt(report: dict[str, Any], version: dict[str, Any], image: str, platfor
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 6:
+    if len(argv) != 5:
         print(__doc__, file=sys.stderr)
         return 2
-    _, report_path, version_path, image, platform, scanner = argv
-    with open(report_path, encoding="utf-8") as handle:
-        report = json.load(handle)
-    with open(version_path, encoding="utf-8") as handle:
-        version = json.load(handle)
+    _, version_text, image, platform, scanner = argv
+    report = json.load(sys.stdin)
+    version = json.loads(version_text)
     result = receipt(report, version, image, platform, scanner)
     json.dump(result, sys.stdout, indent=1)
     sys.stdout.write("\n")
