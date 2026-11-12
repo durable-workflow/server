@@ -2997,6 +2997,38 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_task_queue_pauses_upgrade_resumes() {
+        // server#577: MySQL 13 -> 14 and MariaDB 12 -> 13 add only the pause table.
+        for stage in ["before", "committed"] {
+            let db = Database::new().await;
+            let mut connection = db.connection().await;
+            let from = task_queue_pauses_step(Flavor::detect(&mut connection).await.unwrap());
+            connection.close().await.unwrap();
+            let flavor = retained_version_database(&db, from).await;
+            if stage == "before" {
+                refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+            } else {
+                // The table DDL committed before the interrupted upgrade recorded it.
+                let mut connection = db.connection().await;
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                connection.execute(flavor.step(from).unwrap()).await.unwrap();
+                connection.close().await.unwrap();
+            }
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection = db.connection().await;
+            let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(kept, format!("seeded at version {from}"));
+            assert_eq!(catalog(&mut connection).await.unwrap(), flavor.expected().unwrap());
+            connection.execute("ALTER TABLE dw_task_queue_pauses ADD COLUMN extra TEXT NULL").await.unwrap();
+            connection.close().await.unwrap();
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
     async fn qualification_version_11_run_command_contracts_upgrade_resumes() {
         for stage in ["before", "committed"] {
             let db = Database::new().await;
@@ -3032,8 +3064,8 @@ mod tests {
             let flavor = Flavor::detect(&mut connection).await.unwrap();
             connection.close().await.unwrap();
             let Flavor::MySql = flavor else {
-                // MariaDB stores JSON as text already and stays at 12.
-                assert_eq!(flavor.version(), 12);
+                // MariaDB stores JSON as text already: it has no JSON text step.
+                assert!(flavor.step(12).is_some_and(|step| !step.contains("ALTER TABLE")));
                 db.remove().await;
                 return;
             };
@@ -3068,7 +3100,7 @@ mod tests {
                 db.remove().await;
                 continue;
             }
-            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 12, 13));
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 12, flavor.version()));
             MySqlStorage::check(db.options.clone()).await.unwrap();
             let mut connection = db.connection().await;
             assert_eq!(catalog(&mut connection).await.unwrap(), flavor.expected().unwrap());
@@ -3123,7 +3155,7 @@ mod tests {
         connection.close().await.unwrap();
         let seeding = seeded.elapsed();
         let started = std::time::Instant::now();
-        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 12, 13));
+        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 12, flavor.version()));
         let elapsed = started.elapsed().as_secs_f64();
         println!("JSON_TEXT_TIMING mysql={version} rows={rows} history_data_bytes={bytes} seed_seconds={:.1} upgrade_seconds={elapsed:.1} seconds_per_million_rows={:.1}",
             seeding.as_secs_f64(), elapsed * 1_000_000.0 / rows as f64);
