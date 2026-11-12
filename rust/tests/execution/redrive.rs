@@ -16,22 +16,7 @@ pub(super) async fn complete_activity(app: &Router, task: &Value) {
 /// A run whose second activity failed and whose workflow then failed at
 /// that step, as the PHP SDK reports it.
 pub(super) async fn failed_at_second_activity(app: &Router, workflow: &str) -> Value {
-    let started = start(app, workflow).await;
-    let task = poll(app, "worker", "workflow").await;
-    finish_task(app, &task, json!([{"type":"schedule_activity","activity_type":"a","arguments":envelope(Payload::Array(vec![]))}])).await;
-    complete_activity(app, &poll(app, "worker", "activity").await).await;
-    let task = poll(app, "worker", "workflow").await;
-    finish_task(app, &task, json!([{"type":"schedule_activity","activity_type":"b","arguments":envelope(Payload::Array(vec![]))}])).await;
-    let activity = poll(app, "worker", "activity").await;
-    let path = format!("/api/worker/activity-tasks/{}/fail", activity["task_id"].as_str().unwrap());
-    let failed = request(app, "POST", &path, json!({"lease_owner":activity["lease_owner"],
-        "activity_attempt_id":activity["activity_attempt_id"],"failure":{"class":"App\\Boom","message":"boom"}})).await;
-    assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
-    let task = poll(app, "worker", "workflow").await;
-    let done = finish_task(app, &task, json!([{"type":"fail_workflow","message":"gave up","failed_step_sequence":2,
-        "failed_activity_execution_id":activity["activity_execution_id"]}])).await;
-    assert_eq!(done.1["run_status"], "failed", "{}", done.1);
-    started
+    failed_with(app, workflow, json!({"input":envelope(Payload::Array(vec![Payload::Long(9007199254740993)]))}), vec![]).await
 }
 
 // Published PHP 2.11.1's redrive continues a run that failed at an activity
