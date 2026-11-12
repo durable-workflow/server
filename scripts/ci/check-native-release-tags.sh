@@ -660,7 +660,9 @@ tag_gate="github.ref == format('refs/tags/{0}', inputs.tag)"
 expected_conditions="plan=none
 build-amd64=$tag_gate
 build-arm64=$tag_gate
-publish=$tag_gate"
+publish=$tag_gate
+scan-amd64=$tag_gate
+scan-arm64=$tag_gate"
 test "$job_conditions" = "$expected_conditions" \
   || fail "native-release.yml job conditions changed; expected:
 $expected_conditions

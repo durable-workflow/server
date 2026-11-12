@@ -11,7 +11,13 @@ any frozen release remain subject to their separate operator and Security gates.
 `native-release.yml` publishes and attests exact version tags only. It never
 moves `X.Y`, `X` or `latest`. A final release follows this order:
 
-1. Publish both architecture children and the same index in both registries.
+1. Publish both architecture children and the same index in both registries,
+   then scan each published child with the pinned Trivy (`scan-amd64`,
+   `scan-arm64`, server#802). A HIGH or CRITICAL row with a fixed version fails
+   the run, and the manifest builder refuses a release run with a failed job,
+   so that finding holds promotion. Unfixed rows are inventory in the
+   `native-scan-*` receipts for Security's disposition on server#802.
+   `native-image-rescan.yml` rescans `latest` weekly.
 2. Run the existing native-image corpus on that exact GHCR index from the release
    tag, then the existing published-Compose four-cell matrix on that same index
    from that tag. These are separately admitted invocations, not automatic
@@ -51,7 +57,9 @@ hand-written evidence file is needed. Run the commands from a checkout of
    commit=$(git rev-parse "$tag^{commit}")
    ```
 
-2. Publish the tag and wait for the run to succeed. Note its run ID.
+2. Publish the tag and wait for the run to succeed, scans included. Note its
+   run ID. If a scan fails, fix the image (for example, refresh the base digest)
+   in a new release.
 
    ```sh
    gh workflow run native-release.yml --ref "$tag" -f tag="$tag" -f release_commit="$commit"

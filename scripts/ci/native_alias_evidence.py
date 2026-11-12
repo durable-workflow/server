@@ -64,6 +64,11 @@ RELEASE_JOBS = {
         "Attest the index's build provenance in GHCR",
         "Attest the index's build provenance in Docker Hub",
     ),
+    # Server #802: a fixed-version HIGH or CRITICAL finding fails the scan.
+    **{
+        "Scan published " + platform: ("Scan the published " + platform + " digest",)
+        for platform in PLATFORMS
+    },
 }
 QUALIFICATION_STEPS = {
     "corpus": (
