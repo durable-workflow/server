@@ -7,8 +7,11 @@ Server 2.x has no such route.
 ## Routes
 
 All three take the control-plane version header and the request's namespace
-(`X-Namespace`, else `?namespace=`, else `default`). They need the operator or
-admin role, like the build-id routes.
+(`X-Namespace`, else `?namespace=`, else `default`), in `default` or any named
+namespace. They need the operator or admin role, like the build-id routes; a
+worker token gets `403`. A credential bound to one tenant namespace is refused
+(`403`) for any other, before anything is read or written. A request only
+ever reads or changes the pause of its own namespace's queue.
 
 - `GET /api/task-queues/{task_queue}/activity-dispatch` reads the queue's
   state.
@@ -106,8 +109,11 @@ MySQL 14. An existing database needs the stopped-node backup and explicit
 `schema-upgrade` before the new binary starts; startup refuses an older
 schema with `native_schema_upgrade_required`.
 
-`tests/execution/task_queue_pauses.rs` covers the held immediate and long
-polls, the unchanged ready task and attempt count, workflow delivery while
+`tests/execution/task_queue_pauses.rs` covers named-namespace isolation
+(a pause in one namespace neither shows in nor holds another's same-named
+queue, and another namespace's resume cannot lift it), worker-role and
+tenant-bound refusals, that a principal named in the body is ignored, the
+held immediate and long polls, the unchanged ready task and attempt count, workflow delivery while
 paused, the pause across a runtime restart, the resume waking a held poll and
 leasing the first attempt, idempotent pause and resume, a schedule-to-start
 timeout while paused, validation, exact queue names and listing.

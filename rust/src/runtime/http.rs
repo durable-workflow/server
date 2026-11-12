@@ -968,12 +968,13 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
 }
 
 /// Task queue views, build-id cohorts and fairness are namespace-scoped reads;
-/// rollout changes act on the namespace's own cohorts.
+/// rollout changes act on the namespace's own cohorts. An activity dispatch
+/// pause (Server #577) is a row keyed by the requested namespace.
 fn task_queue_route(rest: &str) -> Option<Allowed> {
     match rest.split('/').collect::<Vec<_>>().as_slice() {
         [queue, ..] if queue.is_empty() => None,
-        [_] | [_, "build-ids" | "priority-fairness"] => Some(READ),
-        [_, "build-ids", "promote" | "drain" | "resume"] => Some(WRITE),
+        [_] | [_, "build-ids" | "priority-fairness" | "activity-dispatch"] => Some(READ),
+        [_, "build-ids", "promote" | "drain" | "resume"] | [_, "activity-dispatch", "pause" | "resume"] => Some(WRITE),
         _ => None,
     }
 }

@@ -197,3 +197,139 @@ async fn pause_requests_are_validated_before_anything_is_recorded() {
     runtime.close().await;
     database.remove().await;
 }
+
+async fn as_token(app: &Router, token: &str, namespace: &str, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
+    let worker = path.starts_with("/api/worker/");
+    let (status, _, body) = admission::admission_http(app, method, path, worker, Some(token),
+        Some(if worker { "1.20" } else { "2" }), Some(namespace), body).await;
+    (status, body)
+}
+
+const SHOW: &str = "/api/task-queues/test/activity-dispatch";
+const PAUSE: &str = "/api/task-queues/test/activity-dispatch/pause";
+const RESUME: &str = "/api/task-queues/test/activity-dispatch/resume";
+
+/// One named namespace with a worker and a ready activity on `test`.
+async fn named_backlog(app: &Router, namespace: &str) {
+    namespaces::create(app, namespace).await;
+    let (status, body) = namespaces::scoped(app, namespace, "POST", "/api/worker/register",
+        json!({"worker_id":"pause-worker","task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":["pause_activity"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    namespaces::start_scoped(app, namespace, &format!("pause-{namespace}")).await;
+    let (status, polled) = namespaces::scoped(app, namespace, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"pause-worker","task_queue":"test","timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    let task = &polled["task"];
+    let (status, body) = namespaces::scoped(app, namespace, "POST",
+        &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
+        completion(task, json!([schedule("pause_activity", None)]))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+async fn named_activity(app: &Router, namespace: &str) -> Value {
+    let (status, body) = namespaces::scoped(app, namespace, "POST", "/api/worker/activity-tasks/poll",
+        json!({"worker_id":"pause-worker","task_queue":"test","timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["task"].clone()
+}
+
+#[tokio::test]
+async fn a_pause_holds_only_its_own_named_namespace() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    named_backlog(&app, "alpha").await;
+    named_backlog(&app, "beta").await;
+    // An operator in a named namespace pauses that namespace's queue.
+    let (status, paused) = namespaces::scoped(&app, "alpha", "POST", PAUSE, json!({"reason":"alpha only"})).await;
+    assert_eq!(status, StatusCode::OK, "{paused}");
+    assert_eq!((paused["namespace"].clone(), paused["outcome"].clone()), (json!("alpha"), json!("paused")));
+    assert_eq!(namespaces::scoped(&app, "alpha", "GET", SHOW, json!({})).await.1["activity_dispatch"]["paused"], true);
+    // The same-named queue in beta, and in default, is untouched: a request
+    // for those namespaces neither sees nor holds alpha's pause.
+    for other in ["beta", "default"] {
+        let (status, shown) = namespaces::scoped(&app, other, "GET", SHOW, json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{shown}");
+        assert_eq!((shown["namespace"].clone(), shown["activity_dispatch"]["paused"].clone(),
+            shown["activity_dispatch"]["paused_at"].clone()), (json!(other), json!(false), Value::Null));
+    }
+    assert!(named_activity(&app, "alpha").await.is_null());
+    assert_eq!(named_activity(&app, "beta").await["activity_type"], "pause_activity");
+    // Resuming in beta cannot lift alpha's pause.
+    let (status, resumed) = namespaces::scoped(&app, "beta", "POST", RESUME, json!({})).await;
+    assert_eq!((status, resumed["outcome"].clone()), (StatusCode::OK, json!("not_paused")), "{resumed}");
+    assert!(named_activity(&app, "alpha").await.is_null());
+    let (_, describe) = namespaces::scoped(&app, "alpha", "GET", "/api/task-queues/test", json!({})).await;
+    assert_eq!(describe["activity_dispatch"]["reason"], "alpha only", "{describe}");
+    // Alpha's own resume releases its backlog.
+    let (status, resumed) = namespaces::scoped(&app, "alpha", "POST", RESUME, json!({})).await;
+    assert_eq!((status, resumed["outcome"].clone()), (StatusCode::OK, json!("resumed")), "{resumed}");
+    assert_eq!(named_activity(&app, "alpha").await["activity_type"], "pause_activity");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn only_operators_and_admins_pause_and_the_actor_is_never_the_request_body() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone().with_role_tokens(Some("worker-token".into()), Some("operator-token".into()), Some("admin-token".into())));
+    // A worker token reaches none of the routes, and records nothing.
+    for (method, path) in [("GET", SHOW), ("POST", PAUSE), ("POST", RESUME)] {
+        let (status, body) = as_token(&app, "worker-token", "default", method, path, json!({})).await;
+        assert_eq!((status, body["reason"].clone()), (StatusCode::FORBIDDEN, json!("forbidden")), "{method} {path}: {body}");
+    }
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM dw_task_queue_pauses").await, 0);
+    // A principal named in the body is ignored: the actor is the token's.
+    let forged = json!({"type":"auth:token","id":"role:admin","label":"Someone Else"});
+    let (status, paused) = as_token(&app, "operator-token", "default", "POST", PAUSE,
+        json!({"reason":"maintenance","paused_by":forged,"paused_at":"2000-01-01T00:00:00Z","resumed_at":"2000-01-01T00:00:00Z"})).await;
+    assert_eq!(status, StatusCode::OK, "{paused}");
+    let state = &paused["activity_dispatch"];
+    assert_eq!(state["paused_by"], json!({"type":"auth:token","id":"role:operator","label":"Operator"}));
+    assert_eq!((state["paused"].clone(), state["resumed_at"].clone()), (json!(true), Value::Null));
+    assert_ne!(state["paused_at"], "2000-01-01T00:00:00Z");
+    let (status, resumed) = as_token(&app, "admin-token", "default", "POST", RESUME,
+        json!({"resumed_by":forged,"reason":"ignored"})).await;
+    assert_eq!(status, StatusCode::OK, "{resumed}");
+    let state = &resumed["activity_dispatch"];
+    assert_eq!(state["resumed_by"], json!({"type":"auth:token","id":"role:admin","label":"Admin"}));
+    assert_eq!((state["paused_by"]["id"].clone(), state["reason"].clone()), (json!("role:operator"), json!("maintenance")));
+    let (status, shown) = as_token(&app, "operator-token", "default", "GET", SHOW, json!({})).await;
+    assert_eq!((status, shown["activity_dispatch"].clone()), (StatusCode::OK, resumed["activity_dispatch"].clone()));
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn a_tenant_bound_operator_pauses_only_its_own_namespace() {
+    const TENANT_OPERATOR: &str = "dwr_fixture_operator_alpha_0123456789";
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone().with_auth_options(false, true));
+    for name in ["alpha", "beta"] {
+        namespaces::create(&app, name).await;
+    }
+    let (status, body) = as_token(&app, "test-token", "default", "PUT", "/api/runtime-credentials/operator-alpha",
+        json!({"token":TENANT_OPERATOR,"subject":"svc:alpha-ops","roles":["operator"],"tenant":"alpha"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, paused) = as_token(&app, TENANT_OPERATOR, "alpha", "POST", PAUSE, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{paused}");
+    assert_eq!(paused["activity_dispatch"]["paused_by"]["id"], "svc:alpha-ops", "{paused}");
+    // Another namespace, named in the header or the query, is refused before
+    // anything is read or written.
+    for other in ["beta", "default"] {
+        for (method, path) in [("GET", SHOW), ("POST", PAUSE), ("POST", RESUME)] {
+            let (status, body) = as_token(&app, TENANT_OPERATOR, other, method, path, json!({})).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{other} {method} {path}: {body}");
+        }
+    }
+    assert_eq!(rows(&database, "SELECT COUNT(*) FROM dw_task_queue_pauses").await, 1);
+    let (_, beta) = namespaces::scoped(&app, "beta", "GET", SHOW, json!({})).await;
+    assert_eq!(beta["activity_dispatch"]["paused"], false, "{beta}");
+    let (status, resumed) = as_token(&app, TENANT_OPERATOR, "alpha", "POST", RESUME, json!({})).await;
+    assert_eq!((status, resumed["outcome"].clone()), (StatusCode::OK, json!("resumed")), "{resumed}");
+    runtime.close().await;
+    database.remove().await;
+}
