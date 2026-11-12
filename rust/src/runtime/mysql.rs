@@ -10,10 +10,11 @@ use sqlx::{
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
 /// The native schema version on MySQL. Version 13 stores JSON documents as
-/// exact text (server#1016); MariaDB already stores them as text and stays at
-/// 12. `Flavor::version` selects the one a server needs.
-pub const MYSQL_VERSION: i64 = 13;
-pub const MARIADB_VERSION: i64 = 12;
+/// exact text (server#1016); MariaDB already stores them as text and stayed
+/// at 12. Each then adds task queue pauses (server#577): MySQL 14, MariaDB
+/// 13. `Flavor::version` selects the one a server needs.
+pub const MYSQL_VERSION: i64 = 14;
+pub const MARIADB_VERSION: i64 = 13;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -66,7 +67,9 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0012_run_command_contracts.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0013_json_text.sql")
+                include_str!("../../migrations/mysql/0013_json_text.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0014_task_queue_pauses.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -90,14 +93,16 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql")
+                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let description = match self {
-                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents",
-                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts",
+                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses",
+                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses",
             };
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 self.version(),
@@ -112,19 +117,16 @@ impl Flavor {
             migrations
         })
     }
-    /// The schema-12 catalog: MySQL's retained one, MariaDB's current one.
-    /// Steps before MySQL's JSON text step build toward it; a resumed upgrade
-    /// may also find a table already past it, in its current definition.
+    /// The retained schema-12 catalog. Steps before MySQL's JSON text step
+    /// build toward it; a resumed upgrade may also find a table already past
+    /// it, in its current definition.
     fn v12_catalog(self) -> Result<Catalog> {
-        match self {
-            Self::MySql => Ok(serde_json::from_str(&canonical(self.earlier(12).expect("retained v12 schema").1))?),
-            Self::MariaDb => self.expected(),
-        }
+        Ok(serde_json::from_str(&canonical(self.earlier(12).expect("retained v12 schema").1))?)
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0013_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0012_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0014_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0013_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -217,6 +219,8 @@ impl Flavor {
         static MYSQL_11: OnceLock<Migration> = OnceLock::new();
         static MYSQL_12: OnceLock<Migration> = OnceLock::new();
         static MARIA_11: OnceLock<Migration> = OnceLock::new();
+        static MYSQL_13: OnceLock<Migration> = OnceLock::new();
+        static MARIA_12: OnceLock<Migration> = OnceLock::new();
         let description = "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters";
         let earlier = |slot: &'static OnceLock<Migration>, version, description: &'static str, sql: &'static str| {
             slot.get_or_init(|| {
@@ -224,6 +228,68 @@ impl Flavor {
             })
         };
         match (self, version) {
+            (Self::MySql, 13) => Some((
+                MYSQL_13.get_or_init(|| Migration::new(
+                    13,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(json_text_bootstrap_sql(&bootstrap_sql_v11(concat!(
+                include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0013_json_text.sql")
+            )))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mysql/0013_catalog.json"),
+            )),
+            (Self::MariaDb, 12) => Some((
+                MARIA_12.get_or_init(|| Migration::new(
+                    12,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(bootstrap_sql_v11(concat!(
+                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql")
+            ))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mariadb/0012_catalog.json"),
+            )),
             (Self::MySql, 12) => Some((
                 MYSQL_12.get_or_init(|| Migration::new(
                     12,
@@ -461,6 +527,8 @@ impl Flavor {
             (Self::MySql, 11) => Some(include_str!("../../migrations/mysql/0012_run_command_contracts.sql")),
             (Self::MariaDb, 11) => Some(include_str!("../../migrations/mariadb/0012_run_command_contracts.sql")),
             (Self::MySql, 12) => Some(include_str!("../../migrations/mysql/0013_json_text.sql")),
+            (Self::MySql, 13) => Some(include_str!("../../migrations/mysql/0014_task_queue_pauses.sql")),
+            (Self::MariaDb, 12) => Some(include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql")),
             _ => None,
         }
     }
@@ -507,9 +575,10 @@ fn bootstrap_sql_v11(sql: &str) -> String {
 }
 
 impl Flavor {
-    /// Version 12 adds only a native table, created like every other native
-    /// table of the cumulative bootstrap. MySQL's version 13 creates each JSON
-    /// document column as exact text directly, as its upgrade ALTERs it.
+    /// Versions 12 and MySQL 14 / MariaDB 13 add only a native table, created
+    /// like every other native table of the cumulative bootstrap. MySQL's
+    /// version 13 creates each JSON document column as exact text directly,
+    /// as its upgrade ALTERs it.
     fn bootstrap_sql(self, sql: &str) -> String {
         match self {
             Self::MySql => json_text_bootstrap_sql(&bootstrap_sql_v11(sql)),
@@ -593,6 +662,27 @@ pub(super) async fn ensure_run_command_contracts(connection: &mut MySqlConnectio
     connection.execute(AssertSqlSafe(sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))).await?;
     let table = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "dw_run_command_contracts");
     if table(catalog(connection).await?) != table(flavor.v12_catalog()?) {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    Ok(())
+}
+
+/// The step that creates the task queue pause table (server#577): MySQL's
+/// from 13, MariaDB's from 12.
+fn task_queue_pauses_step(flavor: Flavor) -> i64 {
+    match flavor {
+        Flavor::MySql => 13,
+        Flavor::MariaDb => 12,
+    }
+}
+
+/// Creating the task queue pause table commits on its own. A resumed upgrade
+/// or takeover accepts only the exact new definition once it exists.
+pub(super) async fn ensure_task_queue_pauses(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let sql = flavor.step(task_queue_pauses_step(flavor)).expect("compiled task queue pauses");
+    connection.execute(AssertSqlSafe(sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))).await?;
+    let table = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "dw_task_queue_pauses");
+    if table(catalog(connection).await?) != table(flavor.expected()?) {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
     }
     Ok(())
@@ -1121,6 +1211,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         // Each step's own marker update names the development engine, so it
         // changes nothing while the marker fences the upgrade.
         for version in from..flavor.version() {
+            if version == task_queue_pauses_step(flavor) {
+                ensure_task_queue_pauses(&mut connection, flavor).await?;
+                continue;
+            }
             if version == 12 {
                 ensure_json_text(&mut connection, flavor).await?;
                 continue;
@@ -2684,13 +2778,12 @@ mod tests {
         assert_eq!(checksum_hex(Flavor::MySql.earlier(12).unwrap().0),
             include_str!("../../migrations/mysql/0012_checksum.txt").trim());
         assert_ne!(Flavor::MySql.checksum(), Flavor::MySql.earlier(12).unwrap().0.checksum.as_ref());
-        // MariaDB stores JSON as text already: its bootstrap is unchanged.
-        assert_eq!(Flavor::MariaDb.version(), 12);
-        assert!(Flavor::MariaDb.earlier(12).is_none());
-        assert_eq!(checksum_hex(Flavor::MariaDb.migration()),
+        // MariaDB stores JSON as text already: its schema 12 bootstrap was
+        // unchanged by MySQL's 13, and stays byte for byte the released one.
+        assert_eq!(checksum_hex(Flavor::MariaDb.earlier(12).unwrap().0),
             include_str!("../../migrations/mariadb/0012_checksum.txt").trim());
         let sql: &str = Flavor::MySql.migration().sql.as_ref();
-        assert_eq!(Flavor::MySql.version(), 13);
+        assert_eq!(Flavor::MySql.version(), 14);
         assert!(!sql.contains("ALTER TABLE `activity_executions`"), "upgrade ALTERs are folded into the bootstrap");
         assert!(!regex_lite::Regex::new(r"(?i)`?\w+`? json( |,)").unwrap().is_match(sql), "no json column remains");
         assert_eq!(sql.matches("CHECK (json_valid(").count(), 75);
@@ -2858,6 +2951,22 @@ mod tests {
             Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
             Err(error) => panic!("unexpected upgrade error: {error}"),
             Ok(found) => panic!("upgrade accepted {found:?}"),
+        }
+    }
+
+    #[test]
+    fn task_queue_pause_bootstraps_keep_the_previous_checksums() {
+        // server#577: MySQL 13 and MariaDB 12 stay byte for byte the released
+        // bootstraps; the current ones add only the pause table.
+        assert_eq!(checksum_hex(Flavor::MySql.earlier(13).unwrap().0),
+            include_str!("../../migrations/mysql/0013_checksum.txt").trim());
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (14, 13));
+        for flavor in [Flavor::MySql, Flavor::MariaDb] {
+            let sql: &str = flavor.migration().sql.as_ref();
+            assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_task_queue_pauses (").count(), 1);
+            let previous: &str = flavor.earlier(task_queue_pauses_step(flavor)).unwrap().0.sql.as_ref();
+            assert!(!previous.contains("dw_task_queue_pauses"));
+            assert!(flavor.step(task_queue_pauses_step(flavor)).unwrap().contains("CREATE TABLE dw_task_queue_pauses ("));
         }
     }
 

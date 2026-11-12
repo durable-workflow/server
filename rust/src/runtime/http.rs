@@ -294,6 +294,9 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/task-queues/{task_queue}/build-ids/promote", post(build_id_promote))
         .route("/api/task-queues/{task_queue}/build-ids/drain", post(build_id_drain))
         .route("/api/task-queues/{task_queue}/build-ids/resume", post(build_id_resume))
+        .route("/api/task-queues/{task_queue}/activity-dispatch", get(activity_dispatch))
+        .route("/api/task-queues/{task_queue}/activity-dispatch/pause", post(pause_activity_dispatch))
+        .route("/api/task-queues/{task_queue}/activity-dispatch/resume", post(resume_activity_dispatch))
         .route("/api/deployments", get(list_deployments))
         .route("/api/deployments/{*name}", get(show_deployment).post(deployment_action))
         .route(
@@ -2212,6 +2215,35 @@ async fn build_id_action(
 ) -> Result<(StatusCode, Json<Value>)> {
     let (status, body) = runtime.build_id_action(&task_queue, body, action).await?;
     Ok((status, Json(body)))
+}
+/// `GET /api/task-queues/{name}/activity-dispatch` (Server #577).
+async fn activity_dispatch(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.activity_dispatch(&task_queue).await.map(Json)
+}
+/// `POST /api/task-queues/{name}/activity-dispatch/pause`: the pause records
+/// the authenticated principal, never one the request names, and an optional
+/// `reason`.
+async fn pause_activity_dispatch(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path(task_queue): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    let paused_by = super::command_context::server_principal(request.principal());
+    runtime.pause_activity_dispatch(&task_queue, &body, paused_by).await.map(Json)
+}
+/// `POST /api/task-queues/{name}/activity-dispatch/resume`, recording the
+/// authenticated principal. The request has no fields.
+async fn resume_activity_dispatch(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path(task_queue): Path<String>,
+) -> Result<Json<Value>> {
+    let resumed_by = super::command_context::server_principal(request.principal());
+    runtime.resume_activity_dispatch(&task_queue, resumed_by).await.map(Json)
 }
 /// `GET /api/task-queues/{name}/priority-fairness`.
 async fn priority_fairness(

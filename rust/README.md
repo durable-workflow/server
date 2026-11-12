@@ -368,6 +368,15 @@ whole upgrade, and the time grows with the data: measured on MySQL 8.0.46 with
 took 115 s, about 2 minutes per million history rows; plan for the other JSON
 tables too. Documents already stored keep MySQL's rendering, including any
 rounded doubles. Rolling back means restoring the backup.
+Task queue activity dispatch pauses (Server #577) add the native-only table
+`dw_task_queue_pauses`: SQLite schema 12, PostgreSQL and MariaDB 13, MySQL 14.
+An operator can pause and resume activity dispatch on one task queue of one
+namespace; while paused no activity task there is leased, the ready backlog
+keeps its attempt counts and activity deadlines keep running
+([contract](../docs/contracts/task-queue-activity-dispatch-pause.md)). The
+upgrade creates one empty table. Stop the native nodes, back up the database
+and run `schema-upgrade` before starting this binary on an earlier schema;
+rolling back means restoring the backup.
 
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.control-plane-api
-  version: "14"
+  version: "15"
   summary: Durable Workflow control-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the standalone Durable Workflow
@@ -721,6 +721,60 @@ paths:
       requestBody: { $ref: "#/components/requestBodies/JsonObject" }
       responses:
         "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /task-queues/{taskQueue}/activity-dispatch:
+    get:
+      tags: [task-queues]
+      operationId: getTaskQueueActivityDispatch
+      summary: Read whether activity dispatch on the queue is paused.
+      description: >
+        Native Server only, advertised by cluster info
+        capabilities.task_queue_activity_dispatch_pause (Server #577). The
+        answer carries namespace, task_queue and activity_dispatch: state
+        (paused or active), paused, reason, paused_at, paused_by, resumed_at
+        and resumed_by of the last pause cycle. See
+        docs/contracts/task-queue-activity-dispatch-pause.md.
+      x-durable-workflow-server-capability: task_queue_activity_dispatch_pause
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/TaskQueuePath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
+  /task-queues/{taskQueue}/activity-dispatch/{action}:
+    post:
+      tags: [task-queues]
+      operationId: setTaskQueueActivityDispatch
+      summary: Pause or resume activity dispatch on the queue.
+      description: >
+        Native Server only, advertised by cluster info
+        capabilities.task_queue_activity_dispatch_pause (Server #577). pause
+        accepts an optional reason (at most 1000 characters) and answers
+        outcome paused or already_paused; resume takes no fields and answers
+        resumed or not_paused. Both are idempotent and record the
+        authenticated principal. While paused no activity task on the queue
+        is leased, ready tasks keep their attempt count, activity deadlines
+        keep running, and workflow, signal, query and update delivery is
+        unchanged. A concurrency cap of 0 is never a pause.
+      x-durable-workflow-server-capability: task_queue_activity_dispatch_pause
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/TaskQueuePath"
+        - name: action
+          in: path
+          required: true
+          schema: { type: string, enum: [pause, resume] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              properties:
+                reason: { type: [string, "null"], maxLength: 1000 }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
   /deployments:
     get:
       tags: [deployments]
