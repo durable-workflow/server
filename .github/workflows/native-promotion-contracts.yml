@@ -13,6 +13,9 @@ on:
       - scripts/conformance/server-parity/native-image-corpus.sh
       - tests/Unit/Support/native_alias_*test.py
       - tests/Unit/Support/native_qualification_test.py
+      - scripts/ci/native-image-scan.sh
+      - scripts/ci/native_scan_receipt.py
+      - tests/Unit/Support/native_scan_receipt_test.py
       - .github/workflows/native-*.yml
       - .github/workflows/published-compose.yml
 permissions:
@@ -29,5 +32,6 @@ jobs:
         run: |
           python3 -m unittest discover -s tests/Unit/Support -p 'native_qualification_test.py' -v
           python3 -m unittest discover -s tests/Unit/Support -p 'native_alias_*test.py' -v
+          python3 -m unittest discover -s tests/Unit/Support -p 'native_scan_receipt_test.py' -v
       - name: Preserve release, candidate and monotonic alias contracts
         run: bash scripts/ci/check-native-release-tags.sh

@@ -29,8 +29,11 @@ RUN cargo build --release --locked \
     && install -m 0755 target/release/durable-workflow-server /durable-workflow-server
 
 # A digest-pinned slim runtime: glibc for the binary, nothing else. TLS uses
-# rustls with compiled-in web PKI roots, and SQLite is bundled.
-FROM mirror.gcr.io/library/debian@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+# rustls with compiled-in web PKI roots, and SQLite is bundled. Debian 12
+# bookworm-slim (12.15) as its multi-architecture index, refreshed for
+# CVE-2026-109518 (apt 2.6.2), which the release scan found fixable in the
+# previous pin (server#802).
+FROM mirror.gcr.io/library/debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 COPY --from=build /durable-workflow-server /usr/local/bin/durable-workflow-server
 # The PHP image's paths, so a taken-over installation keeps its volumes:
 # SQLite in /app/database, and external payload objects under /app/storage,

@@ -353,5 +353,67 @@ jobs:
           subject-digest: ${{ steps.index.outputs.digest }}
           push-to-registry: true
 
+  # Server #802: each published platform digest is scanned with the pinned
+  # Trivy. A HIGH or CRITICAL row with a fixed version fails this job, and
+  # alias promotion requires every job of this run to succeed, so it holds
+  # promotion. Unfixed rows are inventory in the kept receipt.
+  scan-amd64:
+    name: Scan published linux/amd64
+    needs: [build-amd64, publish]
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Scan the published linux/amd64 digest
+        env:
+          IMAGE: ${{ env.GHCR_IMAGE }}@${{ needs.build-amd64.outputs.digest }}
+        run: bash scripts/ci/native-image-scan.sh "$IMAGE" linux/amd64 native-scan
+
+      - name: Keep the linux/amd64 scan receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: native-scan-amd64
+          path: native-scan
+          retention-days: 90
+          if-no-files-found: ignore
+
+  scan-arm64:
+    name: Scan published linux/arm64
+    needs: [build-arm64, publish]
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out trusted release tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Scan the published linux/arm64 digest
+        env:
+          IMAGE: ${{ env.GHCR_IMAGE }}@${{ needs.build-arm64.outputs.digest }}
+        run: bash scripts/ci/native-image-scan.sh "$IMAGE" linux/arm64 native-scan
+
+      - name: Keep the linux/arm64 scan receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: native-scan-arm64
+          path: native-scan
+          retention-days: 90
+          if-no-files-found: ignore
+
   # Rolling aliases are deliberately absent. Future final tags containing
   # this source use native-alias-promotion.yml after existing qualification.
