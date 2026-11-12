@@ -69,6 +69,30 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.5.0 / Server 3.7.0 (native)
+
+**MySQL only: this upgrade needs an explicit native schema upgrade, 12 to 13.**
+Server 3.7.0 stores MySQL JSON documents as exact text: its 75 `json` columns in
+36 tables become `LONGTEXT` (`utf8mb4_bin`) with an enforced `json_valid`
+check, one `ALTER TABLE` per table. The Server is down for the whole upgrade:
+measured at about 2 minutes per million history rows (MySQL 8.0, 2 CPUs,
+default buffer pool). A resumed upgrade continues table by table.
+
+1. Scale the Server to zero.
+2. Back up the database.
+3. Run `helm upgrade` with `native.schemaUpgrade.enabled=true` (or the manual
+   schema-upgrade Job in the chart README) so the 3.7.0 image runs
+   `schema-upgrade` once.
+4. Scale the Server back up.
+
+Rolling back to 3.6.0 on MySQL requires restoring the backup taken in step 2.
+
+**MariaDB, PostgreSQL and SQLite: no schema change.** MariaDB stays at 12 with
+an unchanged checksum and PostgreSQL at 12, so `helm upgrade` only replaces the
+image, and rolling back to 3.6.0 is an image change. From Server 3.4.x or
+earlier, apply the Chart 1.3.0 schema upgrade below first. See the
+[3.7.0 release notes](https://github.com/durable-workflow/server/releases/tag/3.7.0).
+
 ### Chart 1.4.0 / Server 3.6.0 (native)
 
 No schema upgrade from Server 3.5.0: MySQL, MariaDB and PostgreSQL stay at
