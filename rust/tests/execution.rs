@@ -212,6 +212,8 @@ mod command_batches;
 mod child_open_parent_task;
 #[path = "execution/update_routing.rs"]
 mod update_routing;
+#[path = "execution/update_reads.rs"]
+mod update_reads;
 #[path = "execution/command_payloads.rs"]
 mod command_payloads;
 #[path = "execution/activity_timeout_pass.rs"]

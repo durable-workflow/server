@@ -31,6 +31,13 @@ const UPDATE_RULES: &[(&str, &[Rule])] = &[
     ("wait_timeout_seconds", &[Nullable, Integer, Min(1), Max(UPDATE_WAIT_TIMEOUT_SECONDS_MAX)]),
 ];
 
+/// A read of a retained update (#1131): only its wait. Other query fields,
+/// such as `namespace`, belong to the route.
+const UPDATE_READ_RULES: &[(&str, &[Rule])] = &[
+    ("wait_for", &[Nullable, Rule::String, In(&["accepted", "completed"])]),
+    ("wait_timeout_seconds", &[Nullable, Integer, Min(1), Max(UPDATE_WAIT_TIMEOUT_SECONDS_MAX)]),
+];
+
 fn defaults(_: &str, _: Rule) -> Option<&'static str> {
     None
 }
@@ -50,6 +57,10 @@ pub(super) fn signal(body: &Value) -> Result<()> {
         return Err(refuse(StatusCode::NOT_IMPLEMENTED, "signal_dry_run_unavailable"));
     }
     Ok(())
+}
+
+pub(super) fn update_read(query: &Value) -> Result<()> {
+    checked(query, UPDATE_READ_RULES)
 }
 
 pub(super) fn update(body: &Value) -> Result<()> {

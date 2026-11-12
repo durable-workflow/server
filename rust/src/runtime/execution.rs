@@ -1103,6 +1103,15 @@ impl Runtime {
     ) -> Result<(StatusCode, Value)> {
         self.update_command(workflow_id, run_id, name, body, context, None).await
     }
+    /// A retained update's receipt by id; it never admits an update (#1131).
+    pub(crate) async fn read_update(&self, workflow_id: &str, update_id: &str, query: &Value) -> Result<(StatusCode, Value)> {
+        let codec = self.signal_codec.clone();
+        match &*self.storage {
+            Storage::Sqlite(store) => store.read_update(workflow_id, update_id, query, codec).await,
+            Storage::Postgres(store) => store.read_update(workflow_id, update_id, query, codec).await,
+            Storage::MySql(store) => store.read_update(workflow_id, update_id, query, codec).await,
+        }
+    }
     /// A bridge adapter's update, whose request id is its bridge identity.
     /// An accepted command already recorded under it is answered as
     /// `deduped_existing_command`.

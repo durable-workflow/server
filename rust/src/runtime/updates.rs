@@ -148,6 +148,8 @@ fn update_argument_errors(contract: &Value, name: &str, values: &[crate::codec::
 }
 // An update reads only its own workflow's command (Server #765).
 const UPDATE_ROW: &str = "SELECT u.*,c.workflow_type,c.message_sequence,c.context AS command_context FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_instance_id=u.workflow_instance_id WHERE u.id=$1";
+// A read names the update's workflow, in the caller's namespace.
+const SCOPED_UPDATE_ROW: &str = "SELECT u.id FROM workflow_updates u JOIN workflow_instances i ON i.id=u.workflow_instance_id WHERE u.id=$1 AND u.workflow_instance_id=$2 AND i.namespace=$3";
 
 #[derive(Clone, Copy)]
 enum UpdateLookup {
@@ -727,6 +729,48 @@ where
         // A completion wait owns neither the transaction nor a pool connection.
         tx.commit().await?;
         self.wake.notify_waiters();
+        self.wait_update(&update_id, wait_for, timeout, codec).await
+    }
+
+    /// Reads a retained update by id without admitting anything (#1131).
+    /// It answers as submission does: `wait_for=completed` waits for the
+    /// outcome up to `wait_timeout_seconds`; otherwise an accepted update
+    /// still open is 202 with `update_status: accepted`, never a null result.
+    pub(crate) async fn read_update(
+        &self,
+        workflow_id: &str,
+        update_id: &str,
+        query: &Value,
+        codec: Arc<Semaphore>,
+    ) -> Result<(StatusCode, Value)> {
+        super::command_requests::update_read(query)?;
+        let found = Self::query(SCOPED_UPDATE_ROW)
+            .bind(update_id)
+            .bind(workflow_id)
+            .bind(self.namespace.as_ref())
+            .fetch_optional(&self.pool)
+            .await?;
+        if found.is_none() {
+            // Missing or pruned: this does not prove it was never admitted.
+            return Err(RuntimeError::Protocol {
+                status: StatusCode::NOT_FOUND,
+                response: json!({"message":format!("Update [{update_id}] is not retained for workflow [{workflow_id}]."),
+                    "reason":"update_not_found","workflow_id":workflow_id,"update_id":update_id}),
+            });
+        }
+        let wait_for = query["wait_for"].as_str().unwrap_or("accepted");
+        let timeout = super::laravel_validation::integer(&query["wait_timeout_seconds"]);
+        self.wait_update(update_id, wait_for, timeout, codec).await
+    }
+
+    /// An update's receipt, after waiting for its outcome when asked.
+    async fn wait_update(
+        &self,
+        update_id: &str,
+        wait_for: &str,
+        timeout: Option<i64>,
+        codec: Arc<Semaphore>,
+    ) -> Result<(StatusCode, Value)> {
         // `UpdateWaitPolicy`: a completion wait lasts the requested seconds,
         // else DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS, and only a
         // completion wait reports them.
@@ -737,7 +781,7 @@ where
         loop {
             let wake = self.wake.notified();
             let update = Self::query(UPDATE_ROW)
-                .bind(&update_id)
+                .bind(update_id)
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|error| at_update_lookup(error.into(), UpdateLookup::ReceiptRead))?;
