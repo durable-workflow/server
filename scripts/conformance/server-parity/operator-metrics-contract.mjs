@@ -22,6 +22,10 @@ const CHECKS = [
   ['routing_health', 'correctness'], ['durable_resume_paths', 'correctness'], ['worker_compatibility', 'correctness'],
   ['scheduler_role', 'correctness'], ['long_poll_wake_acceleration', 'acceleration'],
 ];
+// Native also reports Workflow 2.24.0's advisory replay_blocked_runs check
+// after durable_resume_paths (#1154). Published PHP 2.x predates it. No stage
+// here blocks a replay, so native's check is ok throughout.
+const NATIVE_CHECKS = [...CHECKS.slice(0, 9), ['replay_blocked_runs', 'correctness'], ...CHECKS.slice(9)];
 const UNCOMPARED_CHECK = 'selected_run_projections';
 const TIMESTAMPS = {
   runs: {oldest_repair_needed_at: 'repair_needed', oldest_wait_started_at: 'waiting'},
@@ -244,7 +248,8 @@ function checkStage(name, stage, namespace, family) {
   assert.equal(stage.active_workers, ['empty', 'waiting', 'waiting_after_redispatch'].includes(name) ? 0 : 1,
     `${label} active workers`);
   if (defect) return counts;
-  assert.deepStrictEqual(stage.checks.map(check => [check.name, check.category]), CHECKS, `${label} check names`);
+  assert.deepStrictEqual(stage.checks.map(check => [check.name, check.category]), stage.runtime === 'rust' ? NATIVE_CHECKS : CHECKS,
+    `${label} check names`);
   const statuses = stage.checks.filter(check => check.name !== UNCOMPARED_CHECK);
   assert.ok(statuses.every(check => ['ok', 'warning'].includes(check.status)), `${label} no check errors`);
   const warnings = statuses.filter(check => check.status !== 'ok').map(check => check.name);

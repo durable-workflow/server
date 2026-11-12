@@ -64,7 +64,8 @@ async fn operator_metrics_and_health_count_a_waiting_run_as_published_php_does()
         ],
         [&json!("default"), &json!("bounded"), &json!(30)]
     );
-    assert_eq!(health["health"]["checks"].as_array().unwrap().len(), 12);
+    // PHP 2.x's twelve checks plus Workflow 2.24.0's replay_blocked_runs.
+    assert_eq!(health["health"]["checks"].as_array().unwrap().len(), 13);
     assert_eq!(health["health"]["status"], "ok", "{health}");
 
     // A run started before any worker declared its command contract.
@@ -225,6 +226,41 @@ async fn a_named_namespace_deregisters_only_its_own_worker() {
     )
     .await;
     assert_eq!(kept.0, StatusCode::OK, "{}", kept.1);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Workflow 2.24.0 (#1154): an open run whose workflow task cannot replay is
+// counted in operator metrics and warns in health, which stays 200.
+#[tokio::test]
+async fn a_replay_blocked_run_is_counted_and_warns() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let quiet = metrics(&app).await;
+    assert_eq!((quiet["runs"]["replay_blocked"].clone(), quiet["runs"]["oldest_replay_blocked_at"].clone(),
+        quiet["runs"]["max_replay_blocked_age_ms"].clone()), (json!(0), Value::Null, json!(0)));
+    register(&app, "replay-worker", json!(["echo"]), json!([])).await;
+    let started = start(&app, "replay-blocked-metrics").await;
+    let task = poll(&app, "replay-worker", "workflow").await;
+    let (status, body) = request(&app, "POST", &format!("/api/worker/workflow-tasks/{}/fail", task["task_id"].as_str().unwrap()),
+        json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
+            "failure":{"type":"NonDeterminismError","message":"workflow code produced a different command at sequence 1"}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let summary = run_observation_active_summaries::observe(&app, "default", &started).await;
+    assert_eq!(summary["liveness_state"], "workflow_replay_blocked", "{summary}");
+
+    let runs = metrics(&app).await["runs"].clone();
+    assert_eq!(runs["replay_blocked"], 1, "{runs}");
+    assert!(runs["oldest_replay_blocked_at"].is_string(), "{runs}");
+    assert!(runs["max_replay_blocked_age_ms"].as_i64().is_some_and(|age| age >= 0), "{runs}");
+    let (status, health) = request(&app, "GET", HEALTH, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{health}");
+    assert!(warnings(&health).contains(&"replay_blocked_runs".to_owned()), "{health}");
+    let check = health["health"]["checks"].as_array().unwrap().iter()
+        .find(|check| check["name"] == "replay_blocked_runs").unwrap().clone();
+    assert_eq!((check["category"].clone(), check["data"]["replay_blocked_runs"].clone()), (json!("correctness"), json!(1)), "{check}");
+    assert_eq!(check["data"]["oldest_replay_blocked_at"], runs["oldest_replay_blocked_at"]);
     runtime.close().await;
     database.remove().await;
 }
