@@ -556,6 +556,7 @@ const UNLISTED: &[Setting] = &[
 pub const NATIVE_HONORED: &[Setting] = &[
     Setting { name: "DW_NATIVE_POLL_SWEEP_INTERVAL_MS", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_POLL_SWEEP_BATCH_SIZE", legacy: None, disposition: Honored },
+    Setting { name: "DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY", legacy: None, disposition: Honored },
     Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS"), disposition: Honored },
 ];
 

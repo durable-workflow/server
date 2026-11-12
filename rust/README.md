@@ -248,6 +248,39 @@ collection blocks, duplicate map keys, recursion/allocation limits and streaming
 external payloads require the existing negative corpus before enabling HTTP
 datum decoding or qualifying ingress.
 
+## Prepared-statement cache
+
+Each connection of the MySQL and PostgreSQL runtime pools (4 connections per
+node) keeps up to `DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY` server-side prepared
+statements, default **200**. SQLx's `statement-cache-capacity` `DB_URL`
+parameter sets the same value; if both are set they must agree. Values are
+whole numbers from `0` (prepare and close every statement) to `4095`; anything
+else, or two different values, stops startup. SQLite is
+unaffected.
+
+SQLx's own default of 100 is smaller than the hot path. On the #1078 workload
+(200 workflows of five 20 ms activities, six PHP workers, MySQL 8.0) each pool
+connection uses about 160 distinct statements. At 100 the cache evicted them,
+so every workflow prepared about 12 statements again and closed about 11
+(Server #1174). At 200 the same workload prepares 0.2 statements per workflow
+and closes none.
+
+MySQL counts every prepared statement of every client toward the server-wide
+`max_prepared_stmt_count` (default 16382). When a client reaches it, further
+prepares fail with error 1461. A native node holds at most
+`4 × capacity` statements, so keep
+
+```text
+nodes × 4 × DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY + other clients' statements ≤ max_prepared_stmt_count
+```
+
+At the default that is 800 per node and up to 20 nodes on a default MySQL
+server. The hot path above fills about 650 per node. For a larger cluster,
+raise `max_prepared_stmt_count` or lower the capacity. `Prepared_stmt_count`
+in `SHOW GLOBAL STATUS` reports current use. The upper bound of 4095 keeps one
+node within the default limit. PostgreSQL has no server-wide limit; each cached
+statement holds memory in its own backend.
+
 ## Native schema upgrades
 
 A native database records its schema version in the `dw_server_schema`

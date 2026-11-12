@@ -5,6 +5,7 @@ pub mod config_audit;
 pub mod database_tls;
 pub mod external_payload;
 pub mod runtime;
+pub mod statement_cache;
 
 #[cfg(test)]
 mod logging_tests {

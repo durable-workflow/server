@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, env, error::Error, net::SocketAddr, str::FromSt
 
 use durable_workflow_server::config_audit::{self, PhpValue};
 use durable_workflow_server::database_tls::{self, Driver, Settings};
+use durable_workflow_server::statement_cache;
 use durable_workflow_server::runtime::{
     Runtime, RuntimeError, mysql::MySqlStorage, postgres::PostgresStorage,
     router,
@@ -103,8 +104,19 @@ fn tls_connection_error(settings: &Settings, error: RuntimeError) -> Box<dyn Err
     Box::new(error)
 }
 
+/// Prepared statements each runtime connection keeps (Server #1174).
+fn statement_cache_capacity(url: Option<&str>) -> Result<usize, Box<dyn Error>> {
+    let configured = match env::var(statement_cache::ENV) {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => return Err(statement_cache::INVALID.into()),
+    };
+    Ok(statement_cache::capacity(configured.as_deref(), url)?)
+}
+
 fn postgres_options() -> Result<PgConnectOptions, Box<dyn Error>> {
     let (tls, url) = tls_settings(Driver::Postgres)?;
+    let capacity = statement_cache_capacity(url.as_deref())?;
     let options = if let Some(url) = url {
         // Parsing errors must not echo a connection URL or password.
         PgConnectOptions::from_str(&url).map_err(|_| "invalid DB_URL")?
@@ -121,7 +133,9 @@ fn postgres_options() -> Result<PgConnectOptions, Box<dyn Error>> {
             .username(&username)
             .password(&env::var("DB_PASSWORD").unwrap_or_default())
     };
-    let options = options.ssl_mode(tls.postgres_mode());
+    let options = options
+        .ssl_mode(tls.postgres_mode())
+        .statement_cache_capacity(capacity);
     Ok(match &tls.root_cert {
         Some(path) => options.ssl_root_cert(path),
         None => options,
@@ -130,6 +144,7 @@ fn postgres_options() -> Result<PgConnectOptions, Box<dyn Error>> {
 
 fn mysql_options() -> Result<MySqlConnectOptions, Box<dyn Error>> {
     let (tls, url) = tls_settings(Driver::MySql)?;
+    let capacity = statement_cache_capacity(url.as_deref())?;
     let options = if let Some(url) = url {
         MySqlConnectOptions::from_str(&url).map_err(|_| "invalid DB_URL")?
     } else {
@@ -145,7 +160,9 @@ fn mysql_options() -> Result<MySqlConnectOptions, Box<dyn Error>> {
             .username(&username)
             .password(&env::var("DB_PASSWORD").unwrap_or_default())
     };
-    let options = options.ssl_mode(tls.mysql_mode());
+    let options = options
+        .ssl_mode(tls.mysql_mode())
+        .statement_cache_capacity(capacity);
     Ok(match &tls.root_cert {
         Some(path) => options.ssl_ca(path),
         None => options,
