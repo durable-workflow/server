@@ -110,9 +110,6 @@ class RuntimeEvidenceConfigurationTest(unittest.TestCase):
     def test_installed_workflow_version_uses_php_service(self):
         for variant, service in (
             ("apache", "server"),
-            ("swoole", "server"),
-            ("openswoole", "server"),
-            ("frankenphp", "server"),
             ("nginx-fpm", "fpm"),
             ("apache-event-fpm", "fpm"),
         ):
@@ -146,12 +143,12 @@ class RuntimeEvidenceConfigurationTest(unittest.TestCase):
         self.assertEqual(80, resources["http"]["cpu_mean_percent"])
 
     def test_soak_subprocesses_use_the_same_comparison_overlays(self) -> None:
-        with patch.dict(os.environ, {"DW_PERF_COMPOSE_FILES": "/tmp/base.yml:/tmp/fixed.yml:/tmp/swoole.yml"}):
+        with patch.dict(os.environ, {"DW_PERF_COMPOSE_FILES": "/tmp/base.yml:/tmp/fixed.yml:/tmp/overlay.yml"}):
             self.assertEqual(
                 [
                     "docker", "compose", "-p", "fixture",
                     "-f", "/tmp/base.yml", "-f", "/tmp/fixed.yml",
-                    "-f", "/tmp/swoole.yml", "ps", "-q", "server",
+                    "-f", "/tmp/overlay.yml", "ps", "-q", "server",
                 ],
                 server_soak.compose_command("fixture", "ps", "-q", "server"),
             )

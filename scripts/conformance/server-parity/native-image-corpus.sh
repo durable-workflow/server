@@ -91,7 +91,7 @@ docker run --label "dev.durable-workflow.qualification.scope=$RESOURCE_SCOPE" -d
   "$image" -c 'while :; do php artisan workflow:v2:repair-pass --json; php artisan schedule:evaluate --limit=100 --json; sleep 1; done' >/dev/null
 
 mkdir -p parity-consumers
-curl --fail --location --retry 3 --silent --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
+curl --proto =https --proto-redir =https --fail --location --retry 3 --silent --output parity-consumers/dw.phar https://github.com/durable-workflow/cli/releases/download/2.2.0/dw.phar
 printf '%s  %s\n' "$(jq -r '.visibility.cli.phar_sha256' tests/Fixtures/ServerParity/visibility-current-runs.json)" parity-consumers/dw.phar \
   | sha256sum -c > parity-evidence/cli-artifact.txt
 export DW_PARITY_CLI_PHAR=/source/parity-consumers/dw.phar

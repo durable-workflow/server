@@ -173,72 +173,7 @@ Remove this project and its synthetic durable state after recording evidence:
 docker compose down -v --remove-orphans
 ```
 
-For the experimental Octane/FrankenPHP candidate, append
-`scripts/perf/octane-frankenphp-experiment.compose.yml` to the base profile and
-fixed-envelope files. The derived image reuses the published Server application
-and installs pinned Octane dependencies on PHP 8.3.33 ZTS; its PHP extensions
-are built separately from the published Apache image. The candidate starts four
-Octane workers by default. For eight concurrent idle polls, additionally append
-`scripts/perf/poll-wait-octane-experiment.compose.yml` and set
-`DW_PROFILE_POLL_WAIT_WORKER_LIMIT=6` and
-`DW_PROFILE_POLL_WAIT_QUERY_LIMIT=2`; that overlay starts 12 workers, admitting
-six workflow/activity polls and two query polls while leaving four workers for
-ordinary requests. Keep the sum of the two caps below the available worker
-count and record both values with each run. A queued request is not a successful
-wait. A canary and idle-poll pass are only
-setup evidence: persistent-worker state isolation, backend interruption,
-repeatable throughput, and bounded memory still require qualification before
-any runtime recommendation.
-
-To check request-scoped authentication and namespace state in one persistent
-Octane worker, append `scripts/perf/octane-single-worker-experiment.compose.yml`
-after the Octane overlay and start `server worker` in a fresh project. This
-override configures synthetic role tokens, one HTTP worker, and recycling after
-20 requests. It defaults to FrankenPHP. For the Swoole or OpenSwoole overlay,
-set `DW_PROFILE_OCTANE_SERVER=swoole` when running `docker compose`; both use
-Octane's Swoole server driver. Keep the published Server, MySQL and Redis image
-digests and the fixed resource envelope the same across candidate fixtures.
-Run the black-box probe from a separate PHP container on the project network:
-
-```sh
-docker run --rm --user 1000:1000 --network "${COMPOSE_PROJECT_NAME}_default" \
-  -e DW_PROBE_URL=http://server:8080 \
-  -e DW_PROBE_TOKEN=probe-admin-token \
-  -e DW_PROBE_WORKER_TOKEN=probe-worker-token \
-  --mount "type=bind,source=$PWD/scripts/perf/octane-request-isolation.php,target=/probe.php,readonly" \
-  php:8.3-cli php /probe.php
-```
-
-The probe creates disposable namespaces and pending workflows, then alternates
-210 control-plane requests across namespace and credential boundaries. It must
-report `result: pass`; any unexpected HTTP status or wrong-namespace response
-exits nonzero. Remove the entire Compose project and its volumes afterward.
-
-For a bounded concurrent isolation check, use a new project with the same
-published image digests and fixed envelope, replace the single-worker overlay
-with `scripts/perf/octane-concurrent-isolation.compose.yml`, and retain the
-selected Swoole or OpenSwoole overlay before it. The concurrent overlay sets
-four HTTP workers, 50 requests per worker, and synthetic role tokens. For
-example, with a unique `COMPOSE_PROJECT_NAME` and the three `DW_PROFILE_*_IMAGE`
-digests set as above:
-
-```sh
-export COMPOSE_FILE=scripts/perf/standard-workflow-profile.compose.yml:scripts/perf/standard-workflow-fixed-envelope.compose.yml:scripts/perf/octane-swoole-experiment.compose.yml:scripts/perf/octane-concurrent-isolation.compose.yml
-docker compose up -d --build --wait server worker
-docker run --rm --user 1000:1000 --network "${COMPOSE_PROJECT_NAME}_default" \
-  -e DW_PROBE_URL=http://server:8080 \
-  -e DW_PROBE_TOKEN=probe-admin-token \
-  -e DW_PROBE_WORKER_TOKEN=probe-worker-token \
-  --mount "type=bind,source=$PWD/scripts/perf/octane-concurrent-request-isolation.py,target=/probe.py,readonly" \
-  python:3.12-alpine python /probe.py
-docker compose down -v --remove-orphans
-```
-
-Repeat with `octane-openswoole-experiment.compose.yml` in a separate project.
-The probe sends 16 simultaneous requests for 40 rounds across two namespaces,
-mixing authorized, cross-namespace, invalid-token, and worker-role reads. It
-checks all 640 statuses and returned namespaces, then verifies authorized reads
-again. Inspect container health, restarts, and OOM state before cleanup. This
-only tests a small synthetic request-isolation fixture; long polls, database
-interruption, memory slope, sustained throughput, and full conformance still
-need separate evidence.
+The Octane (FrankenPHP, Swoole, OpenSwoole) experiments and their overlays and
+probes were removed in server#677: their PECL and extension downloads bypassed
+the checked CA stores, and the PHP Server they measured is retired. Their
+earlier evidence stays in the issues that recorded it.
