@@ -33,9 +33,9 @@ export function markerName(key, base, tree) {
   return `tested-merge-${key}-${base}-${tree}`;
 }
 
-// The checked-out merge commit: its two parents and its tree. Git runs
-// without a shell, from the current directory.
-export function localMerge(git = (...args) => execFileSync('git', args, {encoding: 'utf8'})) {
+// The checked-out merge commit: its two parents and its tree. The runner's
+// fixed Git runs without a shell or PATH lookup, from the current directory.
+export function localMerge(git = (...args) => execFileSync('/usr/bin/git', args, {encoding: 'utf8'})) {
   const [commit, ...parents] = git('rev-list', '--parents', '-n', '1', 'HEAD').trim().split(' ');
   const tree = git('rev-parse', 'HEAD^{tree}').trim();
   if (!SHA.test(commit) || parents.length !== 2 || !parents.every(parent => SHA.test(parent)) || !SHA.test(tree)) {
@@ -63,7 +63,7 @@ export async function testedRun({key, workflowPath, merge, mergeGroupHeadSha, re
     return no('invalid repository identity');
   }
   if (!token) return no('no token to read workflow runs');
-  if (!/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[A-Za-z0-9._\/-]*)?$/.test(apiUrl)) return no('invalid API URL');
+  if (!/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[A-Za-z0-9._/-]*)?$/.test(apiUrl)) return no('invalid API URL');
   let name;
   try {
     name = markerName(key, merge.base, merge.tree);
