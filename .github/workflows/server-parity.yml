@@ -169,13 +169,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # Reading this workflow's own runs lets a push to main that the merge queue
-    # already qualified skip repeating that qualification.
+    # already qualified skip repeating that qualification. Reading runs and
+    # artifacts lets a merge group that is exactly a merge a pull request run
+    # already passed skip repeating it (Server #1130).
     permissions:
       contents: read
       actions: read
     outputs:
-      run: ${{ steps.classify.outputs.run }}
+      run: ${{ steps.tested.outputs.tested == 'true' && 'false' || steps.classify.outputs.run }}
       full: ${{ steps.classify.outputs.full }}
+      tested: ${{ steps.tested.outputs.tested }}
+      marker: ${{ steps.record.outputs.marker }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -183,6 +187,22 @@ jobs:
           persist-credentials: false
       - name: Reject unsafe Docker ownership before starting fixture jobs
         run: python3 scripts/ci/check-docker-workflow-isolation.py
+      # The result job records this name only after every fixture job passed.
+      - name: Name the marker a passing pull request run records
+        id: record
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/ci/tested-merge.sh record server-parity .github/workflows/server-parity.yml >> "$GITHUB_OUTPUT"
+      # Same parents and tree as a passing pull request run: nothing new to
+      # qualify. Any doubt reports tested=false and the classifier decides.
+      - name: Find a passing pull request run of this exact merge
+        id: tested
+        if: ${{ github.event_name == 'merge_group' }}
+        env:
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          RUNS_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/tested-merge.sh check server-parity .github/workflows/server-parity.yml >> "$GITHUB_OUTPUT"
       - name: Decide whether fixture inputs changed
         id: classify
         env:
@@ -3006,3 +3026,22 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: bash scripts/conformance/server-parity/aggregate.sh
+      # Only after the result passed. An upload failure only means the queue
+      # runs the fixtures again.
+      - name: Write the tested-merge marker
+        if: ${{ success() && github.event_name == 'pull_request' && needs.changes.outputs.marker != '' }}
+        env:
+          MARKER: ${{ needs.changes.outputs.marker }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/tested-merge"
+          printf '%s\n' "$MARKER" > "$RUNNER_TEMP/tested-merge/marker.txt"
+      - name: Record that this exact merge passed
+        if: ${{ success() && github.event_name == 'pull_request' && needs.changes.outputs.marker != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.changes.outputs.marker }}
+          path: ${{ runner.temp }}/tested-merge/marker.txt
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true

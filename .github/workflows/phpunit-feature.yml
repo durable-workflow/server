@@ -112,7 +112,7 @@ jobs:
         run: node --test tests/Unit/PatchCohortMaintenanceTest.mjs
 
       - name: Run the required checks for merge queue groups
-        run: node --test tests/Unit/MergeGroupTriggersTest.mjs tests/Unit/MergeQueueSonarTest.mjs
+        run: node --test tests/Unit/MergeGroupTriggersTest.mjs tests/Unit/MergeQueueSonarTest.mjs tests/Unit/TestedMergeTest.mjs
 
       - name: Report one Shared Server fixtures result on every pull request
         run: node --test tests/Unit/ServerParityAggregateTest.mjs tests/Unit/ServerParityPartsTest.mjs
@@ -192,11 +192,54 @@ jobs:
       - name: Require all PHP replay runtime cells and exact artifact identity
         run: python3 -m unittest tests/Unit/Support/php_replay_published_test.py tests/Unit/Support/php_condition_wait_test.py
 
+  # A merge-queue group built straight onto the base a pull request run was
+  # tested on merges the same two parents into the same tree. When that pull
+  # request run passed, the queue does not repeat the feature suite (Server
+  # #1130). Repository contracts and the central action policy still run on
+  # every group, and any doubt runs the suite. See scripts/ci/tested-merge.mjs.
+  tested-merge:
+    name: Tested merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    # Only the merge-group check reads workflow runs and artifacts.
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      marker: ${{ steps.record.outputs.marker }}
+      tested: ${{ steps.check.outputs.tested }}
+    steps:
+      - name: Check out the merge and its parents
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci/tested-merge.sh
+            scripts/ci/tested-merge.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Name the marker a passing pull request run records
+        id: record
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/ci/tested-merge.sh record phpunit-feature .github/workflows/phpunit-feature.yml >> "$GITHUB_OUTPUT"
+
+      - name: Find a passing pull request run of this exact merge
+        id: check
+        if: ${{ github.event_name == 'merge_group' }}
+        env:
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          RUNS_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/tested-merge.sh check phpunit-feature .github/workflows/phpunit-feature.yml >> "$GITHUB_OUTPUT"
+
   feature:
     name: PHPUnit feature suite
-    needs: action-policy
-    # Report policy failures while allowing cancelled revisions to stop.
-    if: ${{ always() && !cancelled() }}
+    needs: [action-policy, tested-merge]
+    # Report policy failures while allowing cancelled revisions to stop. A
+    # failed tested-merge check reports nothing, so the suite runs.
+    if: ${{ always() && !cancelled() && needs.tested-merge.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -490,7 +533,7 @@ jobs:
 
   qualification:
     name: Feature source qualification
-    needs: [preflight, feature]
+    needs: [preflight, tested-merge, feature]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -498,13 +541,40 @@ jobs:
     steps:
       - name: Require repository contracts and feature tests
         env:
+          EVENT_NAME: ${{ github.event_name }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           FEATURE_RESULT: ${{ needs.feature.result }}
+          TESTED_MERGE: ${{ needs.tested-merge.outputs.tested }}
         run: |
           set -euo pipefail
           test "$PREFLIGHT_RESULT" = success
+          if [ "$EVENT_NAME" = merge_group ] && [ "$TESTED_MERGE" = true ] && [ "$FEATURE_RESULT" = skipped ]; then
+            echo "Server repository contracts succeeded; the feature tests already passed on this exact merge in its pull request run."
+            exit 0
+          fi
           test "$FEATURE_RESULT" = success
           echo "Server repository contracts and feature tests succeeded."
+
+      # Only after every check above passed. An upload failure only means the
+      # queue runs the suite again.
+      - name: Write the tested-merge marker
+        if: ${{ success() && github.event_name == 'pull_request' && needs.tested-merge.outputs.marker != '' }}
+        env:
+          MARKER: ${{ needs.tested-merge.outputs.marker }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/tested-merge"
+          printf '%s\n' "$MARKER" > "$RUNNER_TEMP/tested-merge/marker.txt"
+
+      - name: Record that this exact merge passed
+        if: ${{ success() && github.event_name == 'pull_request' && needs.tested-merge.outputs.marker != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: ${{ needs.tested-merge.outputs.marker }}
+          path: ${{ runner.temp }}/tested-merge/marker.txt
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
 
   prepared-local-source:
     name: Candidate cancellation and prepared-local source qualification
