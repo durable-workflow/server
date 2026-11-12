@@ -459,6 +459,7 @@ async fn finish(connection: &mut MySqlConnection, run: &Run<'_>) -> Result<()> {
     mysql::ensure_ready_origin(connection, run.flavor).await?;
     mysql::ensure_scoped_dispatch_index(connection, run.flavor).await?;
     mysql::ensure_run_command_contracts(connection, run.flavor).await?;
+    mysql::ensure_json_text(connection, run.flavor).await?;
     connection.execute(LEDGER_SQL).await?;
     let migration = run.flavor.migration();
     let mut tx = connection.begin().await?;
@@ -469,7 +470,7 @@ async fn finish(connection: &mut MySqlConnection, run: &Run<'_>) -> Result<()> {
         .execute(&mut *tx)
         .await?;
     let marked = sqlx::query("UPDATE dw_server_schema SET engine='rust-development',version=?,bootstrap_checksum=? WHERE engine=? AND version=?")
-        .bind(mysql::VERSION)
+        .bind(run.flavor.version())
         .bind(run.flavor.checksum())
         .bind(format!("{TAKEOVER_ENGINE}{}", run.layout))
         .bind(LAST)

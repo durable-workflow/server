@@ -355,6 +355,19 @@ completing worker's contract once, with its first accepted workflow task
 completion. Until then its updates return HTTP 409 `contract_pending`. Stop
 the native nodes, back up the database and run `schema-upgrade` before
 starting this binary on an earlier schema.
+MySQL schema 13 (Server #1016) stores every JSON document column as exact
+`utf8mb4_bin` text with an enforced `json_valid` check, as MariaDB already
+does, so doubles keep every digit. MySQL's `json` type parsed doubles itself
+and could store a value 1 ULP off. Only MySQL changes: MariaDB and PostgreSQL stay
+at schema 12 and SQLite at 11. The upgrade rebuilds the 36 tables that hold
+JSON columns, one atomic `ALTER TABLE` each, and an interrupted upgrade resumes
+table by table. On MySQL: stop every native node, back up the database, run
+`schema-upgrade` once, then start the new nodes. The service is down for the
+whole upgrade, and the time grows with the data: measured on MySQL 8.0.46 with
+2 CPUs and the default 128 MiB buffer pool, 1,000,000 history rows (2.65 GB)
+took 115 s, about 2 minutes per million history rows; plan for the other JSON
+tables too. Documents already stored keep MySQL's rendering, including any
+rounded doubles. Rolling back means restoring the backup.
 
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,

@@ -19,7 +19,8 @@ const projection = {scope: 'json_doubles', values: names.length};
 // JSON text and read back, as the recorder's observation file is.
 const observation = (implementation, storage) => {
   const attributes = implementation === null ? php14 : exact;
-  const history = storage === 'mysql_json' ? mysql : exact;
+  // Native keeps exact text on MySQL from schema 13 (server#1016).
+  const history = storage === 'mysql_json' && implementation === null ? mysql : exact;
   return JSON.parse(JSON.stringify({mode: 'http', json_doubles: {applicable: true, implementation, storage,
     described_memo: exact, described_search_attributes: keyed(attributes), listed_search_attributes: keyed(attributes),
     started_memo: history, started_search_attributes: keyed(history), heartbeat_details: history}}));
@@ -78,7 +79,8 @@ for (const [label, implementation, storage, mutate] of [
     (state) => { state.described_search_attributes = keyed(php14); }],
   ['PHP with exact search attributes', null, 'exact', (state) => { state.listed_search_attributes = keyed(exact); }],
   ['MySQL rounding on exact storage', 'rust', 'exact', (state) => { state.heartbeat_details = mysql; }],
-  ['exact history on MySQL storage', 'rust', 'mysql_json', (state) => { state.started_memo = exact; }],
+  ['exact history from PHP on MySQL storage', null, 'mysql_json', (state) => { state.started_memo = exact; }],
+  ['native MySQL rounding on MySQL storage', 'rust', 'mysql_json', (state) => { state.heartbeat_details = mysql; }],
   ['MySQL rounding in the described memo', null, 'mysql_json', (state) => { state.described_memo = mysql; }],
   ['an unknown implementation', 'go', 'exact', () => {}],
   ['an unnamed storage', 'rust', 'exact', (state) => { delete state.storage; }],
