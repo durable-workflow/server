@@ -270,3 +270,86 @@ async fn an_upsert_over_the_run_limits_is_rejected_as_php_rejects_it() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// Server #571: the registry changes while a run keeps upserting. Registering
+/// the namespace's first attribute, registering a key the run already writes,
+/// deleting it and re-registering it with another type must not break the run
+/// except where a registered type is actually violated.
+#[tokio::test]
+async fn registry_changes_while_a_workflow_upserts_leave_it_running() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    typed_worker(&app, "typed-worker").await;
+    let started = start(&app, "registry-lifecycle").await;
+    let signal = || async {
+        let (status, body) = request(&app, "POST", "/api/workflows/registry-lifecycle/signal/next",
+            json!({"input":envelope(Payload::Array(vec![]))})).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        poll(&app, "typed-worker", "workflow").await
+    };
+    let wait = json!({"type":"open_signal_wait","signal_name":"next"});
+    let last_types = |history: &Value| {
+        events(history, "SearchAttributesUpserted").last().unwrap()["payload"]["attribute_types"].clone()
+    };
+
+    // An empty registry infers every key.
+    let task = poll(&app, "typed-worker", "workflow").await;
+    let done = finish_task(&app, &task, json!([
+        {"type":"upsert_search_attributes","attributes":{"Region":"eu-west","Priority":1}}, wait.clone()])).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+
+    // Registering the namespace's first attribute, for a key the run never
+    // writes, does not start refusing the keys it already upserts.
+    define(&app, "Tier", "keyword").await;
+    let task = signal().await;
+    let done = finish_task(&app, &task, json!([
+        {"type":"upsert_search_attributes","attributes":{"Region":"us-east"}}, wait.clone()])).await;
+    assert_eq!(done.0, StatusCode::OK, "first registration refused an unregistered key: {}", done.1);
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(last_types(&history), json!({"Region":"keyword"}));
+
+    // Registering a key the run writes with the type it already has.
+    define(&app, "Priority", "int").await;
+    let task = signal().await;
+    let done = finish_task(&app, &task, json!([
+        {"type":"upsert_search_attributes","attributes":{"Priority":2}}, wait.clone()])).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    assert_eq!(described(&app, "registry-lifecycle").await, json!({"Priority":2,"Region":"us-east"}));
+
+    // Deleting it keeps the stored value, and later upserts of the key are
+    // inferred again instead of refused.
+    let (status, body) = request(&app, "DELETE", "/api/search-attributes/Priority", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(described(&app, "registry-lifecycle").await, json!({"Priority":2,"Region":"us-east"}));
+    let task = signal().await;
+    let done = finish_task(&app, &task, json!([
+        {"type":"upsert_search_attributes","attributes":{"Priority":"high"}}, wait.clone()])).await;
+    assert_eq!(done.0, StatusCode::OK, "deleted key refused: {}", done.1);
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(last_types(&history), json!({"Priority":"keyword"}));
+
+    // Re-registering the name with another type leaves the stored value in
+    // its old type. Only an upsert that violates the new type is refused,
+    // naming the key, and the task can be completed again.
+    define(&app, "Priority", "int").await;
+    assert_eq!(described(&app, "registry-lifecycle").await, json!({"Priority":"high","Region":"us-east"}));
+    let task = signal().await;
+    let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let refused = finish_task(&app, &task, json!([
+        {"type":"upsert_search_attributes","attributes":{"Priority":"low","Region":"ap-south"}}, wait.clone()])).await;
+    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
+    assert_eq!(refused.1["reason"], "validation_failed", "{}", refused.1);
+    assert_eq!(refused.1["errors"]["commands.0.attributes"],
+        json!(["Search attribute [Priority] is registered as int and must be an integer."]));
+    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, before);
+    let done = finish_task(&app, &task, json!([
+        {"type":"upsert_search_attributes","attributes":{"Priority":3,"Region":"ap-south"}},
+        {"type":"complete_workflow","result":envelope(Payload::Null)}])).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(last_types(&history), json!({"Priority":"int","Region":"keyword"}));
+    assert_eq!(described(&app, "registry-lifecycle").await, json!({"Priority":3,"Region":"ap-south"}));
+    runtime.close().await;
+    database.remove().await;
+}
