@@ -424,11 +424,19 @@ store_methods! {
     /// binding with PHP's result expiry. A workflow lease's answer is kept
     /// while its task can be delivered (the row decides), as PHP's lease
     /// binding replays for the whole live lease.
+    ///
+    /// Both rows go in one two-row upsert, after the claim's binding lock.
+    /// Each expiry is still the clock read just before the statement that
+    /// writes the row plus that row's own ttl, as each of PHP's two puts
+    /// reads its own clock; one statement now writes both, so they share
+    /// one reading. The answer can expire no later than two sequential
+    /// writes would leave it, and the binding still never outlives it.
     pub(super) async fn remember_workflow_poll(tx: &mut Transaction<'_, DB>, request: &WorkflowPollRequest, response: &Value) -> Result<()> {
         let ttl = result_ttl(response, request.pending_ttl);
-        Self::put_workflow_poll_row(tx, &request.keys.binding, &json!({"task_kinds": request.kinds}), ttl).await?;
         let kept = if response["task"].is_object() && task_kind(response) == "workflow" { 3600 } else { ttl };
-        Self::put_workflow_poll_row(tx, &request.keys.result, response, kept).await
+        let origin = epoch();
+        Self::put_workflow_poll_pair_until(tx, &request.keys, &json!({"task_kinds": request.kinds}), origin + ttl,
+            response, origin + kept).await
     }
 
     /// Whether a concurrent duplicate already left an answer to replay.
@@ -481,8 +489,22 @@ store_methods! {
         Ok(Some(serde_json::from_str(&DB::string(&row, "value")?)?))
     }
 
+    #[cfg(test)]
     async fn put_workflow_poll_row(tx: &mut Transaction<'_, DB>, key: &str, value: &Value, ttl: i64) -> Result<()> {
         Self::put_workflow_poll_row_until(tx, key, value, epoch() + ttl).await
+    }
+
+    /// The binding and answer rows of one poll request in one statement.
+    /// Keys, JSON values and both expirations are exactly the caller's.
+    async fn put_workflow_poll_pair_until(
+        tx: &mut Transaction<'_, DB>, keys: &WorkflowPollKeys, binding: &Value, binding_expiration: i64,
+        result: &Value, result_expiration: i64,
+    ) -> Result<()> {
+        Self::query(DB::QUERY_CACHE_PUT_PAIR)
+            .bind(&keys.binding).bind(binding.to_string()).bind(binding_expiration)
+            .bind(&keys.result).bind(result.to_string()).bind(result_expiration)
+            .execute(&mut **tx).await?;
+        Ok(())
     }
 
     async fn put_workflow_poll_row_until(tx: &mut Transaction<'_, DB>, key: &str, value: &Value, expiration: i64) -> Result<()> {
@@ -536,7 +558,111 @@ store_methods! {
         }
         tx.rollback().await.unwrap();
         assert!(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&self.pool).await.unwrap().is_none());
+        self.qualify_workflow_poll_pair_writes().await;
         self.qualify_workflow_poll_pair_reads().await;
+    }
+
+    #[cfg(test)]
+    async fn qualify_workflow_poll_pair_writes(&self) {
+        let keys = WorkflowPollKeys {binding:"dw-native-workflow-poll:pair-binding".into(),
+            result:"dw-native-workflow-poll:pair-result".into()};
+        let binding = json!({"task_kinds":["workflow","update_validation"]});
+        let stored = |row: DB::Row| (DB::string(&row,"value").unwrap(),DB::number(&row,"expiration").unwrap());
+        // The pair statement stores exactly the rows the two sequential
+        // upserts store for the same values and expirations, whichever of
+        // the two rows already exists, and touches no other key.
+        for existing in [0,1,2,3] {
+            let mut tx = self.begin().await.unwrap();
+            Self::put_workflow_poll_row_until(&mut tx,"dw-native-workflow-poll:pair-neighbour",&json!({"kept":true}),7).await.unwrap();
+            for (bit,key) in [(1,&keys.binding),(2,&keys.result)] {
+                if existing & bit != 0 {
+                    Self::put_workflow_poll_row_until(&mut tx,key,&json!({"old":bit}),1).await.unwrap();
+                }
+            }
+            for (result,binding_expiration,result_expiration) in [
+                (json!({"task":null,"poll_status":"empty"}),40_i64,41_i64),
+                (json!({"task":{"text":"escaped \\\" λ"},"poll_status":"leased"}),4_102_444_700,4_102_444_800),
+            ] {
+                let (written,counts) = super::sql_counts::measure(Self::put_workflow_poll_pair_until(
+                    &mut tx,&keys,&binding,binding_expiration,&result,result_expiration)).await;
+                written.unwrap();
+                assert_eq!(counts.total(),1);
+                assert_eq!(counts.count(DB::QUERY_CACHE_PUT_PAIR),1);
+                let mut paired = Vec::new();
+                for key in [&keys.binding,&keys.result] {
+                    paired.push(stored(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&mut *tx).await.unwrap()));
+                }
+                assert_eq!(paired,vec![(binding.to_string(),binding_expiration),(result.to_string(),result_expiration)]);
+                let (sequential,counts) = super::sql_counts::measure(async {
+                    Self::put_workflow_poll_row_until(&mut tx,&keys.binding,&binding,binding_expiration).await?;
+                    Self::put_workflow_poll_row_until(&mut tx,&keys.result,&result,result_expiration).await
+                }).await;
+                sequential.unwrap();
+                assert_eq!(counts.total(),2);
+                assert_eq!(counts.count(DB::QUERY_CACHE_PUT),2);
+                for (key,expected) in [&keys.binding,&keys.result].into_iter().zip(paired) {
+                    assert_eq!(stored(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&mut *tx).await.unwrap()),expected);
+                }
+            }
+            let neighbour = Self::query(DB::QUERY_CACHE_GET).bind("dw-native-workflow-poll:pair-neighbour").fetch_one(&mut *tx).await.unwrap();
+            assert_eq!(stored(neighbour),(json!({"kept":true}).to_string(),7));
+            tx.rollback().await.unwrap();
+        }
+        // Rolling back the transition restores both committed rows, value
+        // and expiry, or leaves no row where there was none.
+        for existing in [false,true] {
+            if existing {
+                for (key,value,expiration) in [(&keys.binding,"{\"task_kinds\":[\"old\"]}",11_i64),(&keys.result,"{\"task\":null,\"poll_status\":\"old\"}",12)] {
+                    Self::query(DB::QUERY_CACHE_PUT).bind(key).bind(value).bind(expiration).execute(&self.pool).await.unwrap();
+                }
+            }
+            let mut before = Vec::new();
+            for key in [&keys.binding,&keys.result] {
+                before.push(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&self.pool).await.unwrap().map(stored));
+            }
+            let mut tx = self.begin().await.unwrap();
+            Self::put_workflow_poll_pair_until(&mut tx,&keys,&binding,2_000_000_000,&json!({"task":null,"poll_status":"empty"}),2_000_000_001).await.unwrap();
+            assert!(Self::query(DB::QUERY_CACHE_GET).bind(&keys.result).fetch_optional(&mut *tx).await.unwrap().is_some());
+            tx.rollback().await.unwrap();
+            for (key,expected) in [&keys.binding,&keys.result].into_iter().zip(before) {
+                let after = Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_optional(&self.pool).await.unwrap().map(stored);
+                assert_eq!(after,expected);
+                assert_eq!(after.is_some(),existing);
+            }
+            for key in [&keys.binding,&keys.result] {
+                Self::query(DB::QUERY_CACHE_DELETE).bind(key).execute(&self.pool).await.unwrap();
+            }
+        }
+        // The caller: one statement; each row is its own ttl past one clock
+        // reading taken inside the call, so the answer's expiry exceeds the
+        // binding's by exactly the difference of the two ttls. A workflow
+        // lease's answer is kept for an hour, any other answer only as long
+        // as its binding. These are cache-writer vectors, not admitted
+        // protocol deliveries.
+        let request = WorkflowPollRequest {id:"pair-writer".into(),keys:keys.clone(),pending_ttl:35,
+            kinds:normalized(&["workflow","update_validation"]),legacy_keys:vec![],expiration_cap:None};
+        for (response,ttl,kept) in [
+            (json!({"task":null,"poll_status":"empty"}),35,35),
+            (json!({"task":{"task_id":"workflow","lease_expires_at":"2000-01-01T00:00:00Z"},"poll_status":"leased"}),35,3600),
+            (json!({"task":{"task_kind":"update_validation","update_validation_task_id":"validation","lease_expires_at":"2000-01-01T00:00:00Z"},"poll_status":"leased"}),35,35),
+        ] {
+            let mut tx = self.begin().await.unwrap();
+            let before = epoch();
+            let (result,counts) = super::sql_counts::measure(Self::remember_workflow_poll(&mut tx,&request,&response)).await;
+            result.unwrap();
+            let after = epoch();
+            assert_eq!(counts.total(),1);
+            assert_eq!(counts.count(DB::QUERY_CACHE_PUT_PAIR),1);
+            let mut expirations = Vec::new();
+            for (key,value,retained) in [(&keys.binding,json!({"task_kinds":request.kinds}),ttl),(&keys.result,response,kept)] {
+                let (stored_value,expiration) = stored(Self::query(DB::QUERY_CACHE_GET).bind(key).fetch_one(&mut *tx).await.unwrap());
+                assert_eq!(stored_value,value.to_string());
+                assert!((before+retained..=after+retained).contains(&expiration));
+                expirations.push(expiration);
+            }
+            assert_eq!(expirations[1]-expirations[0],kept-ttl);
+            tx.rollback().await.unwrap();
+        }
     }
 
     #[cfg(test)]
