@@ -69,6 +69,37 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.6.0 / Server 3.8.0 (native)
+
+**Every backend needs an explicit native schema upgrade.** Server 3.8.0 adds
+one native-only table, `dw_task_queue_pauses`, created empty: SQLite 11 to
+12, PostgreSQL 12 to 13, MariaDB 12 to 13 and MySQL 13 to 14. The step
+rewrites no rows and takes seconds. Started on the earlier schema, 3.8.0
+refuses with `native_schema_upgrade_required`.
+
+1. Scale the Server to zero.
+2. Back up the database.
+3. Run `helm upgrade` with `native.schemaUpgrade.enabled=true` (or the manual
+   schema-upgrade Job in the chart README) so the 3.8.0 image runs
+   `schema-upgrade` once.
+4. Scale the Server back up.
+
+Rolling back to 3.7.x requires restoring the backup taken in step 2: 3.7.0
+refuses the upgraded database with `native_schema_newer_than_binary`.
+
+From an earlier release, the 3.8.0 image's `schema-upgrade` applies every
+earlier step in the same run. On MySQL from Server 3.5.x or 3.6.x that
+includes the Chart 1.5.0 JSON rebuild below, with its downtime of about 2
+minutes per million history rows.
+
+**MySQL prepared statements.** Each MySQL, MariaDB and PostgreSQL pool
+connection now caches up to 200 prepared statements. A native node has 4 pool
+connections, so on MySQL keep `replicas × 4 × 200` plus other clients'
+statements within `max_prepared_stmt_count` (default 16382, about 20 nodes),
+or lower the cache with `DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY` (0 to 4095)
+in `config.extraEnv`.
+See the [3.8.0 release notes](https://github.com/durable-workflow/server/releases/tag/3.8.0).
+
 ### Chart 1.5.0 / Server 3.7.0 (native)
 
 **MySQL only: this upgrade needs an explicit native schema upgrade, 12 to 13.**
