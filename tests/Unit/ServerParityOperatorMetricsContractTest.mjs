@@ -122,6 +122,35 @@ test('a task PHP\'s maintenance loop already redispatched passes', () => {
   for (const check of stage.checks) if (['task_transport', 'routing_health'].includes(check.name)) check.status = 'ok';
   assert.deepStrictEqual(checkOperatorMetrics(fixture, observation, 'TEST'), projection);
 });
+// Native's stage reports its runtime and Workflow 2.24.0's replay check (#1154).
+const asNative = stage => {
+  stage.runtime = 'rust';
+  const at = stage.checks.findIndex(check => check.name === 'durable_resume_paths') + 1;
+  stage.checks.splice(at, 0, {name: 'replay_blocked_runs', status: 'ok', category: 'correctness'});
+};
+const nativeModel = () => {
+  const observation = model();
+  for (const stage of Object.values(observation.operator_metrics.stages)) asNative(stage);
+  return observation;
+};
+test('native stages with the replay check pass', () => assert.deepStrictEqual(checkOperatorMetrics(fixture, nativeModel(), 'TEST'), projection));
+test('rejects native health without the replay check', () => {
+  const observation = model();
+  observation.operator_metrics.stages.waiting.runtime = 'rust';
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /check names/);
+});
+test('rejects published PHP health with the replay check', () => {
+  const observation = model();
+  asNative(observation.operator_metrics.stages.waiting);
+  observation.operator_metrics.stages.waiting.runtime = 'php';
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /check names/);
+});
+test('rejects a replay warning where no run is blocked', () => {
+  const observation = nativeModel();
+  const stage = observation.operator_metrics.stages.waiting;
+  stage.checks.find(check => check.name === 'replay_blocked_runs').status = 'warning';
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
+});
 const setChecks = (stage, statuses) => {
   for (const check of stage.checks) if (check.name in statuses) check.status = statuses[check.name];
 };
@@ -138,14 +167,14 @@ test('published PHP health read after its maintenance loop redispatched the task
 test('rejects native health reporting a repair native never runs', () => {
   const observation = model();
   const stage = observation.operator_metrics.stages.waiting_after_redispatch;
-  stage.runtime = 'rust';
+  asNative(stage);
   setChecks(stage, {durable_resume_paths: 'warning'});
   assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
 });
 test('rejects native health reporting a redispatch native never runs', () => {
   const observation = model();
   const stage = observation.operator_metrics.stages.waiting_after_redispatch;
-  stage.runtime = 'rust';
+  asNative(stage);
   setChecks(stage, {task_transport: 'ok', routing_health: 'ok'});
   assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /warnings/);
 });
@@ -284,9 +313,10 @@ test('published PHP tasks read across a repair inside taskMetrics pass', () => {
 });
 test('rejects native tasks read across a repair', () => {
   const observation = model();
-  setChecks(straddle(observation, {...securityStraddle, runtime: 'rust'}),
-    {task_transport: 'ok', routing_health: 'ok', durable_resume_paths: 'warning'});
-  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'));
+  const stage = straddle(observation, {...securityStraddle, runtime: 'rust'});
+  asNative(stage);
+  setChecks(stage, {task_transport: 'ok', routing_health: 'ok', durable_resume_paths: 'warning'});
+  assert.throws(() => checkOperatorMetrics(fixture, observation, 'TEST'), /present exactly when|counts|warnings/);
 });
 test('published PHP timestamps kept from before a redispatch inside taskMetrics pass', () => {
   for (const backlogRepair of [1, 0]) {
@@ -384,8 +414,8 @@ for (const [label, mutate] of [
   ['history events miscounted', s => s.stages.completed.sections.history.counts.events = 7],
   ['a worker never counted', s => s.stages.activity_running.active_workers = 0],
   ['a transport warning missed by native', s => {
-    s.stages.waiting_after_redispatch.runtime = 'rust';
-    s.stages.waiting_after_redispatch.checks[5].status = 'ok';
+    asNative(s.stages.waiting_after_redispatch);
+    s.stages.waiting_after_redispatch.checks.find(check => check.name === 'task_transport').status = 'ok';
   }],
   ['an unexpected warning', s => s.stages.completed.checks[9].status = 'warning'],
   ['a check error', s => s.stages.empty.checks[0].status = 'error'],

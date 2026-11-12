@@ -307,6 +307,25 @@ fn durable_resume_check(metrics: &Value) -> Value {
     )
 }
 
+/// `HealthCheck::replayBlockedRunsCheck` (Workflow 2.24.0, #1154): advisory,
+/// so it warns and never fails health.
+fn replay_blocked_check(runs: &Value) -> Value {
+    let blocked = integer(&runs["replay_blocked"]);
+    check(
+        "replay_blocked_runs",
+        if blocked == 0 { "ok" } else { "warning" },
+        if blocked == 0 {
+            "No open v2 run has a workflow task blocked on replay."
+        } else {
+            "One or more open v2 runs have a workflow task that cannot replay. Fix the workflow code or definition, then repair the run."
+        },
+        CORRECTNESS,
+        json!({"replay_blocked_runs": blocked,
+            "oldest_replay_blocked_at": runs["oldest_replay_blocked_at"].as_str(),
+            "max_replay_blocked_age_ms": integer(&runs["max_replay_blocked_age_ms"])}),
+    )
+}
+
 fn worker_compatibility_check(workers: &Value) -> Value {
     let required = workers["required_compatibility"].as_str();
     let supporting = integer(&workers["active_workers_supporting_required"]);
@@ -380,6 +399,7 @@ pub(super) fn snapshot(metrics: &Value) -> Value {
         activity_path_check(&metrics["activities"]),
         routing_check(metrics),
         durable_resume_check(metrics),
+        replay_blocked_check(&metrics["runs"]),
         worker_compatibility_check(&metrics["workers"]),
         scheduler_check(&metrics["schedules"]),
         long_poll_check(),
@@ -439,6 +459,7 @@ mod tests {
                 "activity_path",
                 "routing_health",
                 "durable_resume_paths",
+                "replay_blocked_runs",
                 "worker_compatibility",
                 "scheduler_role",
                 "long_poll_wake_acceleration"
@@ -447,7 +468,7 @@ mod tests {
         assert_eq!(health["status"], "ok");
         assert_eq!(
             health["categories"],
-            json!({"correctness": {"status": "ok", "check_count": 11}, "acceleration": {"status": "ok", "check_count": 1}})
+            json!({"correctness": {"status": "ok", "check_count": 12}, "acceleration": {"status": "ok", "check_count": 1}})
         );
 
         let mut overdue = quiet();
@@ -469,6 +490,20 @@ mod tests {
             health["checks"][7]["message"],
             "One or more ready tasks have waited past the redispatch window without a successful dispatch wake."
         );
+
+        // A replay-blocked run warns, with its count and oldest age.
+        let mut blocked = quiet();
+        blocked["runs"] = json!({"replay_blocked": 2, "oldest_replay_blocked_at": "2026-11-12T10:00:00.000000Z",
+            "max_replay_blocked_age_ms": 1500});
+        let health = snapshot(&blocked);
+        let check = health["checks"].as_array().unwrap().iter().find(|check| check["name"] == "replay_blocked_runs").unwrap();
+        assert_eq!((check["status"].as_str(), check["category"].as_str()), (Some("warning"), Some("correctness")));
+        assert_eq!(check["data"], json!({"replay_blocked_runs": 2, "oldest_replay_blocked_at": "2026-11-12T10:00:00.000000Z",
+            "max_replay_blocked_age_ms": 1500}));
+        assert_eq!((health["status"].as_str(), health["healthy"].as_bool()), (Some("warning"), Some(true)));
+        let quiet_check = snapshot(&quiet())["checks"][9].clone();
+        assert_eq!((quiet_check["name"].as_str(), quiet_check["status"].as_str()), (Some("replay_blocked_runs"), Some("ok")));
+        assert_eq!(quiet_check["data"], json!({"replay_blocked_runs": 0, "oldest_replay_blocked_at": null, "max_replay_blocked_age_ms": 0}));
 
         let mut broken = quiet();
         broken["backend"] = json!({"severity": "error", "issues": [{"code": "x"}]});

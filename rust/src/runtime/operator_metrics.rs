@@ -685,6 +685,9 @@ where
             &[], "updated_at", Some("started_at")).await?;
         let wait = self.first_time("SELECT wait_started_at FROM workflow_run_summaries WHERE namespace=$1 AND status_bucket='running' AND wait_started_at IS NOT NULL ORDER BY wait_started_at LIMIT 1",
             &[], "wait_started_at", None).await?;
+        // Workflow 2.24.0 (#1154): open runs whose workflow task cannot replay.
+        let blocked = self.first_time("SELECT updated_at,started_at FROM workflow_run_summaries WHERE namespace=$1 AND liveness_state='workflow_replay_blocked' ORDER BY COALESCE(updated_at,started_at) LIMIT 1",
+            &[], "updated_at", Some("started_at")).await?;
         Ok(json!({
             "total": self.tally("SELECT COUNT(*) FROM workflow_run_summaries WHERE namespace=$1", &[]).await?,
             "current": self.tally(summaries!("is_current_run=TRUE"), &[]).await?,
@@ -697,6 +700,9 @@ where
             "repair_needed": self.tally(summaries!("liveness_state='repair_needed'"), &[]).await?,
             "oldest_repair_needed_at": time(repair),
             "max_repair_needed_age_ms": age(repair, now),
+            "replay_blocked": self.tally(summaries!("liveness_state='workflow_replay_blocked'"), &[]).await?,
+            "oldest_replay_blocked_at": time(blocked),
+            "max_replay_blocked_age_ms": age(blocked, now),
             "claim_failed": self.tally(summaries!("liveness_state LIKE '%_task_claim_failed'"), &[]).await?,
             "compatibility_blocked": self.compatibility_blocked_runs().await?,
             "waiting": self.tally(summaries!("status_bucket='running' AND wait_started_at IS NOT NULL"), &[]).await?,
