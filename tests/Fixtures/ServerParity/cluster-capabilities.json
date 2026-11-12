@@ -380,6 +380,10 @@
         "value": true,
         "reason": "Native serves start_child_workflow await: \"started\", a parent turn when the child start commits (Server #966); published PHP 2.x has no such mode."
       },
+      "capabilities.update_outcome_reads": {
+        "value": true,
+        "reason": "Native serves GET /api/workflows/{workflow_id}/updates/{update_id}, which reads a retained update's receipt, optionally waiting for its outcome, without admitting another update (Server #1131). Published PHP has no such route."
+      },
       "native_client_compatibility": {
         "value": {
           "schema": "durable-workflow.v2.client-compatibility",
