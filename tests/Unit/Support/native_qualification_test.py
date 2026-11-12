@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Transport/producer/cleanup countercontrols; no real Docker or API calls."""
+import contextlib
 import copy
 import json
 import os
@@ -19,7 +20,7 @@ import native_alias_evidence as E
 import native_alias_promote as P
 import native_alias_transport as T
 import native_qualification as Q
-from native_alias_evidence_test import FakeProvider, RunnerProvider, RUNNER
+from native_alias_evidence_test import FakeProvider, RUNNER, RUNNER_REF
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -265,7 +266,7 @@ class RunnerCommands:
     def run(self, args, *unused, **kwargs):
         self.reads.append(args)
         if args[:2] == ["git","rev-parse"]:
-            return (RUNNER if args[2] == "HEAD" else self.provider.binding_blob if args[2].endswith(E.SUBJECT_PATH) else "3"*40).encode()+b"\n"
+            return (SOURCE if args[2] == "HEAD" else self.provider.binding_blob if args[2].endswith(E.SUBJECT_PATH) else "3"*40).encode()+b"\n"
         if args[:3] == ["docker","container","ls"]:
             return ("f"*64+"\n").encode()
         identity = args[-1]
@@ -343,10 +344,35 @@ class ContainerdCommands(RunnerCommands):
         return json.dumps([value]).encode()
 
 
-def containerd_provider():
-    provider = RunnerProvider()
-    provider.commands = ContainerdCommands(provider)
+def tag_provider(commands=None):
+    """The release fixture as seen by a qualifier dispatched from tag 3.2.0."""
+    provider = FakeProvider()
+    provider.commands = (commands or RunnerCommands)(provider)
     provider.index_subjects = lambda *args: copy.deepcopy(provider.subjects)
+    provider.exact_tag_reads = []
+    provider.exact_tag_digest = lambda image, tag: provider.exact_tag_reads.append((image, tag)) or INDEX
+    return provider
+
+
+@contextlib.contextmanager
+def tag_dispatch(provider, change=None, subject=None):
+    """A compose cell dispatched from tag 3.2.0 with the tag's checkout as ROOT."""
+    project = E.resource_scope("compose", 303, 1, "linux/amd64", "local")
+    provider.commands.database_owner = project
+    context = {**CONTEXT, "DW_PUBLISHED_COMPOSE_PROJECT": project, "DW_PUBLISHED_COMPOSE_PROFILE": "local",
+               "MYSQL_VERSION": provider.binding["mysql"]["requested_image"].removeprefix("mysql:"),
+               "QUALIFICATION_QEMU_IMAGE": provider.binding["qemu"]["requested_image"], **(change or {})}
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        path = root / E.SUBJECT_PATH
+        path.parent.mkdir(parents=True)
+        path.write_bytes(provider.binding_bytes if subject is None else subject)
+        with patch.dict(os.environ, context, clear=True), patch.object(Q, "ROOT", root):
+            yield
+
+
+def containerd_provider():
+    provider = tag_provider(ContainerdCommands)
 
     def registry_image(repository, digest):
         subjects = list(provider.subjects.values()) + [provider.binding[name] for name in ("mysql", "qemu")]
@@ -358,18 +384,14 @@ def containerd_provider():
     return provider
 
 
-class RunnerProducerTests(unittest.TestCase):
+class TagProducerTests(unittest.TestCase):
     def context(self, provider):
-        return {**CONTEXT,"GITHUB_SHA":RUNNER,"GITHUB_REF":E.RUNNER_REF,
-            "GITHUB_REF_NAME":E.RUNNER_REF.removeprefix("refs/heads/"),
-            "GITHUB_WORKFLOW_REF":E.REPOSITORY+"/"+E.WORKFLOWS["compose"]+"@"+E.RUNNER_REF,
-            "DW_PUBLISHED_COMPOSE_PROJECT":SCOPE,"DW_PUBLISHED_COMPOSE_PROFILE":"local",
+        return {**CONTEXT,"DW_PUBLISHED_COMPOSE_PROJECT":SCOPE,"DW_PUBLISHED_COMPOSE_PROFILE":"local",
             "MYSQL_VERSION":provider.binding["mysql"]["requested_image"].removeprefix("mysql:"),
             "QUALIFICATION_QEMU_IMAGE":provider.binding["qemu"]["requested_image"]}
 
     def test_actual_producer_v2_receipt_is_consumable_without_restamping_the_image_source(self):
-        provider=RunnerProvider();provider.commands=RunnerCommands(provider)
-        provider.index_subjects=lambda *args:copy.deepcopy(provider.subjects)
+        provider=tag_provider()
         provider.runs[303]["status"]="in_progress"
         provider.job_sets[303][0]["status"]="in_progress"
         with tempfile.TemporaryDirectory() as directory:
@@ -385,10 +407,12 @@ class RunnerProducerTests(unittest.TestCase):
                 clean={"api_ok":True,"verified_absent":True,"container_count":0,"network_count":0,"volume_count":0}
                 record=Q.finalize(provider,"compose",image,"linux/amd64","local",observed,observations,clean,"success","success")
                 E.bind_receipt(record,"compose",provider.selected["compose"],provider.runs[303],provider.job_sets[303][0],
-                               provider.binding["release"],"linux/amd64","local",provider.subjects["linux/amd64"],
-                               provider.selected["runner"],provider.binding)
+                               provider.selected["release"],"linux/amd64","local",provider.subjects["linux/amd64"],
+                               provider.runner,provider.binding)
                 self.assertEqual(record["image_source_commit"],SOURCE)
-                self.assertEqual(record["runner_commit"],RUNNER)
+                self.assertEqual(record["runner_commit"],SOURCE)
+                self.assertEqual(record["runner_ref"],"refs/tags/3.2.0")
+                self.assertEqual(provider.exact_tag_reads[0],(E.GHCR_IMAGE,"3.2.0"))
                 dependencies=Q.observe_dependencies(provider,"compose","linux/arm64",context["DW_PUBLISHED_COMPOSE_PROJECT"],provider.binding)
                 E.bind_dependencies(dependencies,"compose","linux/arm64",provider.binding)
                 provider.commands.wrong_qemu_digest=True
@@ -405,7 +429,7 @@ class RunnerProducerTests(unittest.TestCase):
                     with self.subTest(field=field),patch.dict(os.environ,{field:value}),self.assertRaisesRegex(E.Refusal,"qualification_dependency_configuration"):
                         Q.admit(provider,"compose",image)
 
-    def test_manual_runner_has_no_builder_and_admits_before_dependency_steps(self):
+    def test_qualifiers_have_no_builder_and_admit_before_dependency_steps(self):
         corpus=(ROOT/E.WORKFLOWS["corpus"]).read_text()
         builder=corpus.split("      - name: Set up Docker Buildx\n",1)[1].split("      - name:",1)[0]
         self.assertIn("if: github.event_name == 'pull_request'",builder)
@@ -448,14 +472,14 @@ class RunnerProducerTests(unittest.TestCase):
                         record = Q.finalize(provider, "compose", image, platform, "local", observed, observations, clean, "success", "success")
                         job = next(job for job in provider.job_sets[303] if job["name"] == platform + " local published image")
                         E.bind_receipt(record, "compose", provider.selected["compose"], provider.runs[303], job,
-                            provider.binding["release"], platform, "local", provider.subjects[platform],
-                            provider.selected["runner"], provider.binding)
+                            provider.selected["release"], platform, "local", provider.subjects[platform],
+                            provider.runner, provider.binding)
                         for field, value in (("local_image_id", "sha256:" + "0" * 64),
                                              ("local_manifest_digest", None), ("config_digest_source", "engine_id")):
                             with self.subTest(field=field), self.assertRaises(E.Refusal):
                                 E.bind_receipt({**record, field: value}, "compose", provider.selected["compose"], provider.runs[303], job,
-                                    provider.binding["release"], platform, "local", provider.subjects[platform],
-                                    provider.selected["runner"], provider.binding)
+                                    provider.selected["release"], platform, "local", provider.subjects[platform],
+                                    provider.runner, provider.binding)
 
     def test_containerd_manifest_config_platform_and_local_id_conflicts_refuse(self):
         mutations = [
@@ -635,8 +659,10 @@ class ProducerTests(unittest.TestCase):
             Q.qualification_observations("corpus", None, {**written, "retention_payloads": 1})
 
     def test_observed_image_and_finalized_receipt_bind_to_consumer(self):
-        provider = ProducerProvider()
-        with patch.dict(os.environ, CONTEXT, clear=True):
+        provider = tag_provider()
+        provider.runs[303]["status"] = "in_progress"
+        provider.job_sets[303][0]["status"] = "in_progress"
+        with tag_dispatch(provider):
             image = E.GHCR_IMAGE + "@" + INDEX
             identity = Q.observe_image(provider, "compose", image, CID, "linux/amd64")
             observations = {key: True for key in E.COMPOSE_OBSERVATIONS}
@@ -644,9 +670,9 @@ class ProducerTests(unittest.TestCase):
             cleanup = Q.cleanup(ResourceCommands(), "compose", SCOPE)
             record = Q.finalize(provider, "compose", image, "linux/amd64", "local", identity,
                                 observations, cleanup, "success", "success")
-            E.bind_receipt(record, "compose", {"workflow_blob": "3" * 40}, provider.run, provider.job,
-                           {"source_commit": SOURCE, "tag": "3.2.0", "index_digest": INDEX},
-                           "linux/amd64", "local", provider.subject)
+            E.bind_receipt(record, "compose", provider.selected["compose"], provider.runs[303],
+                           provider.job_sets[303][0], provider.selected["release"],
+                           "linux/amd64", "local", provider.subjects["linux/amd64"], provider.runner, provider.binding)
             self.assertEqual(set(record), E.RECEIPT_KEYS)
             for field, replacement in (("api_ok", False), ("verified_absent", False),
                                        ("container_count", False), ("volume_count", 1)):
@@ -658,16 +684,74 @@ class ProducerTests(unittest.TestCase):
                 with self.subTest(body=body, clean=clean), self.assertRaises(E.Refusal):
                     Q.finalize(provider, "compose", image, "linux/amd64", "local", identity,
                                observations, cleanup, body, clean)
-            provider.run["run_attempt"] = 2
+            provider.runs[303]["run_attempt"] = 2
             with self.assertRaises(E.Refusal):
                 Q.finalize(provider, "compose", image, "linux/amd64", "local", identity,
                            observations, cleanup, "success", "success")
 
     def test_actual_config_id_cannot_be_substituted_with_index(self):
-        provider = ProducerProvider()
-        provider.subject["image_config_digest"] = INDEX
-        with patch.dict(os.environ, CONTEXT, clear=True), self.assertRaisesRegex(E.Refusal, "actual_container_image"):
+        provider = tag_provider()
+        published = copy.deepcopy(provider.subjects)
+        published["linux/amd64"]["image_config_digest"] = INDEX
+        provider.index_subjects = lambda *args: copy.deepcopy(published)
+        with tag_dispatch(provider), self.assertRaisesRegex(E.Refusal, "actual_container_image"):
             Q.observe_image(provider, "compose", E.GHCR_IMAGE + "@" + INDEX, CID, "linux/amd64")
+
+    def test_admission_derives_the_release_subject_from_the_dispatch_tag(self):
+        provider = tag_provider()
+        image = E.GHCR_IMAGE + "@" + INDEX
+        with tag_dispatch(provider):
+            admission = Q.admit(provider, "compose", image)
+            self.assertEqual(admission["release"], {"tag": "3.2.0", "source_commit": SOURCE, "index_digest": INDEX})
+            self.assertEqual(admission["runner"], provider.runner)
+            self.assertEqual(admission["subject"], provider.binding)
+            self.assertEqual(provider.exact_tag_reads, [(E.GHCR_IMAGE, "3.2.0")])
+            provider.exact_tag_digest = lambda *args: "sha256:" + "0" * 64
+            with self.assertRaisesRegex(E.Refusal, "qualification_requested_subject"):
+                Q.admit(provider, "compose", image)
+        provider = tag_provider()
+        before = len(provider.commands.reads)
+        for change in ({"GITHUB_REF": RUNNER_REF, "GITHUB_REF_NAME": RUNNER_REF.removeprefix("refs/heads/")},
+                       {"GITHUB_WORKFLOW_REF": E.REPOSITORY + "/" + E.WORKFLOWS["compose"] + "@" + RUNNER_REF},
+                       {"GITHUB_REF": "refs/tags/3.2.0-rc.1", "GITHUB_REF_NAME": "3.2.0-rc.1"},
+                       {"GITHUB_EVENT_NAME": "push"}, {"GITHUB_REPOSITORY": "fork/server"}):
+            with self.subTest(change=change), tag_dispatch(provider, change), \
+                    self.assertRaisesRegex(E.Refusal, "qualification_release_context"):
+                Q.admit(provider, "compose", image)
+        with tag_dispatch(provider), self.assertRaisesRegex(E.Refusal, "qualification_release_context"):
+            Q.admit(provider, "compose", E.GHCR_IMAGE + ":3.2.0")
+        self.assertEqual(len(provider.commands.reads), before, "context refusal precedes every read")
+
+    def test_admission_requires_the_checked_out_subject_to_equal_the_committed_blob(self):
+        local = copy.deepcopy(FakeProvider().binding)
+        local["mysql"]["image_config_digest"] = "sha256:" + "9" * 64
+        provider = tag_provider()
+        with tag_dispatch(provider, subject=E.canonical(local)), \
+                self.assertRaisesRegex(E.Refusal, "qualification_local_subject"):
+            Q.admit(provider, "compose", E.GHCR_IMAGE + "@" + INDEX)
+        provider = tag_provider()
+        provider.binding_blob = "8" * 40
+        with tag_dispatch(provider), self.assertRaisesRegex(E.Refusal, "qualification_local_subject"):
+            Q.admit(provider, "compose", E.GHCR_IMAGE + "@" + INDEX)
+
+    def test_admit_phase_requires_admission_only_for_a_final_tag_dispatch(self):
+        written = []
+        for change, expected in (({}, "qualification_release_context"),
+                                 ({"GITHUB_REF": "refs/tags/3.2.0-rc.1", "GITHUB_REF_NAME": "3.2.0-rc.1"}, None),
+                                 ({"GITHUB_REF": "refs/heads/main", "GITHUB_REF_NAME": "main"}, None)):
+            provider = tag_provider()
+            argv = ["native_qualification.py", "admit", "--kind", "compose", "--image", E.GHCR_IMAGE + ":3.2.0",
+                    "--output", "qualification-state/admission.json"]
+            with self.subTest(change=change), tag_dispatch(provider, change), patch.object(sys, "argv", argv), \
+                    patch.object(Q, "GitHubRegistryProvider", lambda: provider), \
+                    patch.object(Q, "write", lambda path, value: written.append(value)):
+                if expected:
+                    with self.assertRaisesRegex(E.Refusal, expected):
+                        Q.main()
+                else:
+                    Q.main()
+                    self.assertEqual(written.pop(), {"eligible": False, "reason": "nonpromotion_context"})
+        self.assertEqual(written, [])
 
 
 class ReadCommands:
@@ -729,18 +813,19 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), {'tag':'3.2.0','source_commit':SOURCE,
                                                          'index_digest':INDEX,'run_id':41,'run_attempt':1})
 
-    def test_git_comparisons_only_allow_the_exact_source_and_main_read_shapes(self):
+    def test_git_comparisons_only_allow_the_exact_source_and_main_read_shape(self):
         commands = ReadCommands(b"{}")
         provider = T.GitHubRegistryProvider(commands)
         prefix = "repos/" + E.REPOSITORY + "/compare/"
-        allowed = [prefix + SOURCE + "..." + RUNNER + "?per_page=100",
-                   prefix + RUNNER + "...main?per_page=1", prefix + SOURCE + "...main"]
+        allowed = [prefix + SOURCE + "...main"]
         for path in allowed:
             self.assertEqual(provider.api(path), {})
         self.assertEqual([call[0] for call in commands.calls],
                          [["gh", "api", "--hostname", "github.com", "--method", "GET", path]
                           for path in allowed])
-        refused = [prefix + SOURCE + suffix for suffix in (
+        # The removed runner-branch ancestry reads are refused like any traversal.
+        refused = [prefix + SOURCE + "..." + RUNNER + "?per_page=100", prefix + RUNNER + "...main?per_page=1"]
+        refused += [prefix + SOURCE + suffix for suffix in (
             ".." + RUNNER, "...." + RUNNER, "...main/../secrets", "...main?per_page=2",
             "...main?per_page=100", "...main&per_page=1", "...main?per_page=1&page=2",
             "..." + RUNNER, "..." + RUNNER + "?per_page=1", "...foreign?per_page=1")]
@@ -753,8 +838,8 @@ class TransportTests(unittest.TestCase):
                 provider.api(path)
         self.assertEqual(len(commands.calls), len(allowed), "refused paths never reach the command transport")
 
-    def test_runner_ancestry_uses_the_actual_provider_path_guard(self):
-        fixture = RunnerProvider()
+    def test_release_subject_uses_the_actual_provider_path_guard(self):
+        fixture = FakeProvider()
 
         class ApiCommands:
             def __init__(self):
@@ -769,20 +854,32 @@ class TransportTests(unittest.TestCase):
         self_test = self
         commands = ApiCommands()
         provider = T.GitHubRegistryProvider(commands)
-        selected = fixture.selected
-        self.assertEqual(E.runner_subject(provider, selected["runner"], selected["release"]), fixture.binding)
-        self.assertEqual(commands.paths, [
-            f"repos/{E.REPOSITORY}/contents/{E.SUBJECT_PATH}?ref={RUNNER}",
-            f"repos/{E.REPOSITORY}/compare/{SOURCE}...{RUNNER}?per_page=100",
-            f"repos/{E.REPOSITORY}/compare/{RUNNER}...main?per_page=1",
-        ])
-        fixture.on_main = False
-        with self.assertRaisesRegex(E.Refusal, "qualification_runner_not_on_main"):
-            E.runner_subject(provider, selected["runner"], selected["release"])
-        fixture.on_main = True
-        fixture.diff_files.append({"filename": "rust/src/runtime/store.rs", "status": "modified"})
-        with self.assertRaisesRegex(E.Refusal, "qualification_runner_frozen_source"):
-            E.runner_subject(provider, selected["runner"], selected["release"])
+        release = fixture.selected["release"]
+        self.assertEqual(E.release_subject(provider, release), (fixture.runner, fixture.binding))
+        self.assertEqual(commands.paths, [f"repos/{E.REPOSITORY}/contents/{E.SUBJECT_PATH}?ref={SOURCE}"])
+        for invalid in ({**release, "tag": "3.2.0-rc.1"}, {**release, "source_commit": "main"},
+                        {**release, "tag": "3.2.0&ref=main"}):
+            with self.subTest(release=invalid), self.assertRaisesRegex(E.Refusal, "qualification_release_subject"):
+                E.release_subject(provider, invalid)
+        self.assertEqual(len(commands.paths), 1)
+
+    def test_exact_tag_digest_reads_one_bounded_registry_tag(self):
+        commands = ReadCommands(INDEX.encode() + b"\n")
+        provider = T.GitHubRegistryProvider(commands)
+        self.assertEqual(provider.exact_tag_digest(E.GHCR_IMAGE, "3.2.0"), INDEX)
+        self.assertEqual(provider.exact_tag_digest(E.GHCR_IMAGE, "native-3.2.0"), INDEX)
+        self.assertEqual([call[0] for call in commands.calls], [
+            ["docker", "buildx", "imagetools", "inspect", "--format", '{{printf "%s" .Manifest.Digest}}',
+             E.GHCR_IMAGE + ":3.2.0"]] * 2)
+        self.assertEqual({call[1] for call in commands.calls}, {128})
+        for image, tag in (("foreign.invalid/server", "3.2.0"), (E.GHCR_IMAGE, "3.2.0-rc.1"),
+                           (E.GHCR_IMAGE, "latest"), (E.GHCR_IMAGE, "3.2.0 --raw")):
+            with self.subTest(image=image, tag=tag), self.assertRaisesRegex(E.Refusal, "registry_subject"):
+                provider.exact_tag_digest(image, tag)
+        self.assertEqual(len(commands.calls), 2)
+        for output in (b"Name: x\nDigest: " + INDEX.encode(), b"", b"sha256:short"):
+            with self.subTest(output=output), self.assertRaisesRegex(E.Refusal, "registry_exact_tag"):
+                T.GitHubRegistryProvider(ReadCommands(output)).exact_tag_digest(E.GHCR_IMAGE, "3.2.0")
 
     def test_unprivileged_plan_requires_exact_tag_and_accepted_main_source(self):
         value = {"release": {"tag": "3.2.0", "source_commit": SOURCE}}

@@ -6,8 +6,8 @@ run-name: Native image parity ${{ inputs.native_image || github.ref }}
 # reference, embedded PHP and the native image itself, and compares the three
 # records, as the Shared Server fixtures corpus part does for a source build.
 #
-# Dispatch it with a published native image by digest to qualify that
-# artifact. A pull request that changes the comparison itself builds the image
+# Dispatch it from a release tag with that tag's published native index by
+# digest to qualify that artifact for promotion. A pull request that changes the comparison itself builds the image
 # from its own source and compares that build, so the comparison is exercised
 # before it is relied on. Nothing is pushed.
 

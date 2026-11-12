@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Pure provider/receipt countercontrols. No network, Docker or credentials."""
+import base64
 import copy
 import hashlib
 import importlib.util
@@ -36,11 +37,20 @@ def packed(value, name="receipt.json", mode=stat.S_IFREG | 0o644, extra=None):
 
 
 class FakeProvider:
+    """A release whose publication and both qualifiers ran from tag 3.2.0."""
+
     def __init__(self):
         self.runs, self.workflows, self.job_sets, self.metadata, self.archives = {}, {}, {}, {}, {}
         self.run_reads, self.artifact_reads = {}, {}
         self.on_final_run = self.on_final_artifact = None
         self.writes = []
+        self.subject_reads = 0
+        self.subject_change = self.on_final_subject = None
+        self.binding = E.qualification_subject(json.loads((ROOT / E.SUBJECT_PATH).read_text()))
+        self.binding_bytes = E.canonical(self.binding)
+        self.binding_blob = hashlib.sha1(b"blob " + str(len(self.binding_bytes)).encode() + b"\0"
+                                         + self.binding_bytes, usedforsecurity=False).hexdigest()
+        self.runner = {"source_commit": SOURCE, "ref": "refs/tags/3.2.0", "subject_blob": self.binding_blob}
         self.subjects = {
             "linux/amd64": {"child_manifest_digest": "sha256:" + "b" * 64,
                             "image_config_digest": "sha256:" + "c" * 64},
@@ -73,13 +83,7 @@ class FakeProvider:
                 "run_started_at": "2026-11-05T00:00:00Z" if role == "release" else "2026-11-05T00:02:00Z",
                 "updated_at": "2026-11-05T00:01:00Z" if role == "release" else "2026-11-05T00:04:00Z",
             }
-            if role == "release":
-                names = E.RELEASE_JOBS
-            elif role == "corpus":
-                names = {E.CORPUS_JOB: E.QUALIFICATION_STEPS[role]}
-            else:
-                names = {platform + " " + profile + " published image": E.QUALIFICATION_STEPS[role]
-                         for platform in E.PLATFORMS for profile in E.PROFILES}
+            names = E.RELEASE_JOBS if role == "release" else E.qualification_jobs(role)
             self.job_sets[selection["run_id"]] = [
                 {"id": n * 1000 + i, "run_id": selection["run_id"], "run_attempt": 1,
                  "head_sha": SOURCE, "name": name, "status": "completed", "conclusion": "success",
@@ -106,10 +110,11 @@ class FakeProvider:
                         {k: True for k in E.COMPOSE_OBSERVATIONS})
         if role == "compose" and profile == "local":
             observations["production_default_token_refused"] = None
+        run_id = 302 if role == "corpus" else 303
         return {
-            "schema": "durable-workflow.native-qualification-receipt.v1", "kind": role,
+            "schema": "durable-workflow.native-qualification-receipt.v2", "kind": role,
             "eligible": True, "repository": E.REPOSITORY, "repository_id": E.REPOSITORY_ID,
-            "run_id": 302 if role == "corpus" else 303, "run_attempt": 1, "job_id": job_id,
+            "run_id": run_id, "run_attempt": 1, "job_id": job_id,
             "runner_commit": SOURCE, "workflow_path": E.WORKFLOWS[role],
             "workflow_blob": "2" * 40 if role == "corpus" else "3" * 40,
             "requested_image": E.GHCR_IMAGE + "@" + INDEX, "index_digest": INDEX,
@@ -119,10 +124,29 @@ class FakeProvider:
             "actual_image_config_digest": subject["image_config_digest"],
             "container_image_architecture": platform.split("/")[1], "container_image_os": "linux",
             "image_source_commit": SOURCE, "image_release_tag": "3.2.0",
+            "runner_ref": "refs/tags/3.2.0", "subject_blob": self.binding_blob,
+            "resource_scope": E.resource_scope(role, run_id, 1, platform, profile),
+            "local_image_id": subject["image_config_digest"], "local_manifest_digest": None,
+            "config_digest_source": "engine_id",
+            "dependencies": self.dependencies(role, platform),
             "observations": observations,
             "cleanup": {"api_ok": True, "verified_absent": True,
                         "container_count": 0, "network_count": 0, "volume_count": 0},
         }
+
+    def dependencies(self, role, platform):
+        if role == "corpus":
+            return {}
+        result = {}
+        for name in ("mysql", "qemu"):
+            result[name] = ({**self.binding[name],
+                "actual_image_config_digest": self.binding[name]["image_config_digest"],
+                "local_image_id": self.binding[name]["image_config_digest"], "local_manifest_digest": None,
+                "config_digest_source": "engine_id",
+                "container_image_architecture": "amd64", "container_image_os": "linux"}
+                if name == "mysql" or platform == "linux/arm64" else None)
+        result["mysql"]["container_id"] = "f" * 64
+        return result
 
     def set_artifact(self, artifact_id, record, name=None, run=None, data=None):
         if artifact_id in self.metadata:
@@ -134,7 +158,7 @@ class FakeProvider:
             "id": artifact_id, "name": name, "expired": False,
             "size_in_bytes": len(data), "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
             "workflow_run": {"id": run, "repository_id": E.REPOSITORY_ID,
-                             "head_repository_id": E.REPOSITORY_ID, "head_sha": SOURCE},
+                             "head_repository_id": E.REPOSITORY_ID, "head_sha": self.runs[run]["head_sha"]},
             "created_at": "2026-11-05T00:03:00Z",
         }
         if artifact_id == 501:
@@ -149,7 +173,22 @@ class FakeProvider:
         change(value)
         self.set_artifact(artifact_id, value)
 
+    def subject_record(self, data=None):
+        data = self.binding_bytes if data is None else data
+        return {"path": E.SUBJECT_PATH, "type": "file", "encoding": "base64", "size": len(data),
+                "sha": hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data,
+                                    usedforsecurity=False).hexdigest(),
+                "content": base64.b64encode(data).decode()}
+
     def api(self, path):
+        if path == f"repos/{E.REPOSITORY}/contents/{E.SUBJECT_PATH}?ref={SOURCE}":
+            self.subject_reads += 1
+            value = self.subject_record()
+            if self.subject_change:
+                self.subject_change(value)
+            if self.on_final_subject and self.subject_reads > 1:
+                self.on_final_subject(value)
+            return value
         prefix = "repos/" + E.REPOSITORY + "/actions/"
         if not path.startswith(prefix):
             raise AssertionError("unexpected provider path")
@@ -162,9 +201,14 @@ class FakeProvider:
             if self.on_final_artifact and self.artifact_reads[identity] > 1:
                 self.on_final_artifact(value)
             return value
-        identity = int(suffix.split("/")[1])
+        identity = int(suffix.split("/")[1].split("?")[0])
         if "/jobs?" in suffix:
             return {"total_count": len(self.job_sets[identity]), "jobs": copy.deepcopy(self.job_sets[identity])}
+        if "/artifacts?name=" in suffix:
+            name = suffix.split("?name=", 1)[1].split("&", 1)[0]
+            found = [copy.deepcopy(item) for item in self.metadata.values()
+                     if item["name"] == name and item["workflow_run"]["id"] == identity]
+            return {"total_count": len(found), "artifacts": found}
         self.run_reads[identity] = self.run_reads.get(identity, 0) + 1
         value = copy.deepcopy(self.runs[identity])
         if self.on_final_run and self.run_reads[identity] > 1:
@@ -190,81 +234,12 @@ class FakeProvider:
 
 
 RUNNER = "9" * 40
+RUNNER_REF = "refs/heads/feat/server-native32-qualification-runner"
 
 
-class RunnerProvider(FakeProvider):
-    def __init__(self):
-        super().__init__()
-        self.binding = E.qualification_subject(json.loads((ROOT / E.SUBJECT_PATH).read_text()))
-        self.binding["release"] = copy.deepcopy(self.selected["release"])
-        self.binding_bytes = E.canonical(self.binding)
-        self.binding_blob = hashlib.sha1(b"blob " + str(len(self.binding_bytes)).encode() + b"\0" + self.binding_bytes,
-                                         usedforsecurity=False).hexdigest()
-        self.selected.update(schema=E.MANIFEST_SCHEMA_V2, runner={"source_commit": RUNNER,
-                             "ref": E.RUNNER_REF, "subject_blob": self.binding_blob})
-        self.diff_files = [{"filename": path,"status": "modified"} for path in sorted(E.RUNNER_PATHS)]
-        self.on_main = True
-        for role in ("corpus", "compose"):
-            selected = self.selected[role]
-            selected["runner_commit"] = RUNNER
-            run = self.runs[selected["run_id"]]
-            run.update(head_sha=RUNNER,head_branch=E.RUNNER_REF.removeprefix("refs/heads/"))
-            for job in self.job_sets[run["id"]]:
-                job["head_sha"] = RUNNER
-                job["steps"].append({"name":"Admit published qualification subject","status":"completed","conclusion":"success"})
-                if job["name"].startswith("linux/arm64"):
-                    job["steps"].append({"name":"Set up QEMU","status":"completed","conclusion":"success"})
-        for identity in list(self.archives):
-            record = E.archive_receipt(self.archives[identity])
-            record.update(schema=E.RECEIPT_SCHEMA_V2,runner_commit=RUNNER,runner_ref=E.RUNNER_REF,
-                          subject_blob=self.binding_blob,
-                          resource_scope=E.resource_scope(record["kind"], record["run_id"],1,record["platform"],record["profile"]),
-                          local_image_id=record["image_config_digest"],local_manifest_digest=None,
-                          config_digest_source="engine_id",
-                          dependencies=self.dependencies(record["kind"],record["platform"]))
-            self.set_artifact(identity,record)
-
-    def dependencies(self, role, platform):
-        if role == "corpus":
-            return {}
-        result = {}
-        for name in ("mysql","qemu"):
-            result[name] = ({**self.binding[name],
-                "actual_image_config_digest": self.binding[name]["image_config_digest"],
-                "local_image_id":self.binding[name]["image_config_digest"],"local_manifest_digest":None,
-                "config_digest_source":"engine_id",
-                "container_image_architecture":"amd64","container_image_os":"linux"}
-                if name == "mysql" or platform == "linux/arm64" else None)
-        result["mysql"]["container_id"] = "f" * 64
-        return result
-
-    def set_artifact(self, identity, record, *args, **kwargs):
-        super().set_artifact(identity, record, *args, **kwargs)
-        run = self.metadata[identity]["workflow_run"]["id"]
-        self.metadata[identity]["workflow_run"]["head_sha"] = self.runs[run]["head_sha"]
-
-    def api(self, path):
-        if "/contents/" in path:
-            import base64
-            return {"path":E.SUBJECT_PATH,"type":"file","sha":self.binding_blob,"encoding":"base64",
-                    "size":len(self.binding_bytes),"content":base64.b64encode(self.binding_bytes).decode()}
-        if "/compare/" in path:
-            if path.endswith("...main?per_page=1"):
-                return {"status":"ahead","base_commit":{"sha":RUNNER},
-                        "merge_base_commit":{"sha":RUNNER if self.on_main else SOURCE}}
-            return {"status":"ahead","base_commit":{"sha":SOURCE},"merge_base_commit":{"sha":SOURCE},
-                    "total_commits":1,"commits":[{"sha":RUNNER}],"files":copy.deepcopy(self.diff_files)}
-        return super().api(path)
-
-    def workflow_blob(self, commit, path):
-        if commit != RUNNER:
-            raise E.Refusal("unapproved_runner")
-        return "2" * 40 if path.endswith("native-image-parity.yml") else "3" * 40
-
-
-class RunnerEvidenceTests(unittest.TestCase):
+class TagQualificationEvidenceTests(unittest.TestCase):
     def test_containerd_receipts_bind_target_manifest_and_config_as_distinct_identities(self):
-        provider = RunnerProvider()
+        provider = FakeProvider()
         for identity in list(provider.archives):
             record = E.archive_receipt(provider.archives[identity])
             record.update(local_image_id=INDEX, local_manifest_digest=record["child_manifest_digest"],
@@ -281,51 +256,103 @@ class RunnerEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(E.Refusal, "receipt_local_image_identity"):
             E.verify(provider.selected, provider)
 
-    def test_reviewed_runner_can_qualify_the_unchanged_published_producer(self):
-        provider = RunnerProvider()
-        proof = E.verify(provider.selected,provider)
-        self.assertEqual(SOURCE,proof["release"]["source_commit"])
-        self.assertEqual(5,len(proof["qualified_artifact_ids"]))
-        self.assertEqual(RUNNER,provider.selected["runner"]["source_commit"])
+    def test_qualifiers_dispatched_from_the_tag_qualify_the_published_release(self):
+        provider = FakeProvider()
+        proof = E.verify(provider.selected, provider)
+        self.assertEqual(provider.selected["release"], proof["release"])
+        self.assertEqual(provider.runner, proof["runner"])
+        self.assertEqual(provider.binding, proof["qualification_subject"])
+        self.assertEqual([501, 502, 503, 504, 505], proof["qualified_artifact_ids"])
+        self.assertEqual(2, provider.subject_reads, "the committed subject is read again before returning")
 
-    def test_runner_changes_cannot_cross_the_frozen_product_boundary(self):
-        for path in ("rust/src/runtime/store.rs","resources/worker-protocol-api.openapi.yaml",
-                     "tests/Fixtures/ServerParityBaselines/php-2.11.8.json"):
-            provider = RunnerProvider()
-            provider.diff_files.append({"filename":path,"status":"modified"})
-            with self.subTest(path=path), self.assertRaises(E.Refusal):
-                E.verify(provider.selected,provider)
-        provider = RunnerProvider();provider.on_main=False
-        with self.assertRaisesRegex(E.Refusal,"qualification_runner_not_on_main"):
-            E.verify(provider.selected,provider)
+    def test_runner_branch_evidence_and_receipts_refuse(self):
+        provider = FakeProvider()
+        for role, run_id in (("corpus", 302), ("compose", 303)):
+            provider.selected[role]["runner_commit"] = RUNNER
+            provider.runs[run_id].update(head_sha=RUNNER, head_branch=RUNNER_REF.removeprefix("refs/heads/"))
+        with self.assertRaisesRegex(E.Refusal, "corpus_runner_source"):
+            E.verify(provider.selected, provider)
+        provider = FakeProvider()
+        provider.runs[302].update(head_branch=RUNNER_REF.removeprefix("refs/heads/"))
+        with self.assertRaisesRegex(E.Refusal, "provider_run_source"):
+            E.verify(provider.selected, provider)
+        provider = FakeProvider()
+        v2 = {**provider.selected, "schema": "durable-workflow.native-alias-promotion-evidence.v2",
+              "runner": {"source_commit": RUNNER, "ref": RUNNER_REF, "subject_blob": provider.binding_blob}}
+        with self.assertRaisesRegex(E.Refusal, "manifest_shape"):
+            E.verify(v2, provider)
+        provider.mutate_receipt(501, lambda record: record.update(runner_ref=RUNNER_REF))
+        with self.assertRaisesRegex(E.Refusal, "receipt_runner_binding"):
+            E.verify(provider.selected, provider)
 
-    def test_v1_never_admits_a_different_runner_or_v2_receipt(self):
-        provider = FakeProvider();provider.selected["corpus"]["runner_commit"]=RUNNER
-        with self.assertRaisesRegex(E.Refusal,"corpus_runner_source"):
-            E.verify(provider.selected,provider)
-        provider = FakeProvider();provider.mutate_receipt(501,lambda r:r.update(schema=E.RECEIPT_SCHEMA_V2))
-        with self.assertRaisesRegex(E.Refusal,"receipt_not_eligible"):
-            E.verify(provider.selected,provider)
+    def test_v1_receipts_without_dependency_and_scope_bindings_refuse(self):
+        def legacy(record):
+            for key in {"runner_ref", "subject_blob", "resource_scope", "dependencies"} | E.LOCAL_IMAGE_KEYS:
+                record.pop(key)
+            record.update(schema="durable-workflow.native-qualification-receipt.v1")
+        provider = FakeProvider()
+        provider.mutate_receipt(501, legacy)
+        with self.assertRaisesRegex(E.Refusal, "receipt_shape"):
+            E.verify(provider.selected, provider)
+        provider = FakeProvider()
+        provider.mutate_receipt(501, lambda record: record.update(schema="durable-workflow.native-qualification-receipt.v1"))
+        with self.assertRaisesRegex(E.Refusal, "receipt_not_eligible"):
+            E.verify(provider.selected, provider)
 
-    def test_every_new_runner_and_dependency_field_is_authoritative(self):
+    def test_subject_is_the_exact_blob_committed_at_the_release_source(self):
+        cases = [
+            (lambda record: record.update(sha="8" * 40), "qualification_subject_digest"),
+            (lambda record: record.update(content=base64.b64encode(b'{"x":1}\n').decode()),
+             "qualification_subject_digest"),
+            (lambda record: record.update(path="other.json"), "qualification_subject_blob"),
+            (lambda record: record.update(type="symlink"), "qualification_subject_blob"),
+            (lambda record: record.update(size=1), "qualification_subject_digest"),
+        ]
+        for change, reason in cases:
+            provider = FakeProvider()
+            provider.subject_change = change
+            with self.subTest(reason=reason), self.assertRaisesRegex(E.Refusal, reason):
+                provider.promote()
+            self.assertEqual([], provider.writes)
+        # The 3.5.0 runner-branch subject carried a hand-edited release block.
+        provider = FakeProvider()
+        legacy = {**provider.binding, "schema": "durable-workflow.native-qualification-subject.v1",
+                  "release": provider.selected["release"]}
+        provider.subject_change = lambda record: record.update(provider.subject_record(E.canonical(legacy)))
+        with self.assertRaisesRegex(E.Refusal, "qualification_subject_shape"):
+            provider.promote()
+
+    def test_subject_change_during_verification_refuses(self):
+        provider = FakeProvider()
+        changed = copy.deepcopy(provider.binding)
+        changed["mysql"]["image_config_digest"] = "sha256:" + "9" * 64
+        data = E.canonical(changed)
+        provider.on_final_subject = lambda record: record.update(provider.subject_record(data))
+        with self.assertRaisesRegex(E.Refusal, "qualification_subject_changed"):
+            provider.promote()
+        self.assertEqual([], provider.writes)
+
+    def test_every_runner_and_dependency_field_is_authoritative(self):
         mutations = [
-            lambda p:p.selected["runner"].update(ref="refs/heads/main"),
-            lambda p:p.selected["runner"].update(subject_blob="8"*40),
-            lambda p:p.runs[302].update(head_sha=SOURCE),
+            lambda p:p.runs[302].update(head_sha=RUNNER),
+            lambda p:p.mutate_receipt(501,lambda r:r.update(runner_ref="refs/tags/3.2.1")),
+            lambda p:p.mutate_receipt(501,lambda r:r.update(subject_blob="8"*40)),
+            lambda p:p.mutate_receipt(501,lambda r:r.update(runner_commit=RUNNER)),
             lambda p:p.mutate_receipt(501,lambda r:r.update(image_source_commit=RUNNER)),
             lambda p:p.mutate_receipt(502,lambda r:r.update(resource_scope="foreign")),
             lambda p:p.mutate_receipt(502,lambda r:r["dependencies"].pop("mysql")),
             lambda p:p.mutate_receipt(502,lambda r:r["dependencies"]["mysql"].update(actual_image_config_digest=INDEX)),
             lambda p:p.mutate_receipt(504,lambda r:r["dependencies"].update(qemu=None)),
             lambda p:p.mutate_receipt(502,lambda r:r["dependencies"].update(qemu=p.dependencies("compose","linux/arm64")["qemu"])),
-            lambda p:p.job_sets[302][0]["steps"].pop(),
+            lambda p:p.job_sets[302][0]["steps"].pop(0),
+            lambda p:p.job_sets[303][2]["steps"].pop(),
             lambda p:p.mutate_receipt(501,lambda r:r.update(local_image_id=[])),
             lambda p:p.mutate_receipt(502,lambda r:r["dependencies"]["mysql"].update(config_digest_source="unknown")),
         ]
         for i,change in enumerate(mutations):
-            provider=RunnerProvider();change(provider)
+            provider=FakeProvider();change(provider)
             with self.subTest(mutation=i),self.assertRaises(E.Refusal):
-                E.verify(provider.selected,provider)
+                provider.promote()
             self.assertEqual([],provider.writes)
 
 

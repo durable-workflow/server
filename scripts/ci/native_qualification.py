@@ -15,8 +15,8 @@ from typing import Any
 
 from native_alias_evidence import (COMPOSE_OBSERVATIONS, CORPUS_JOB, CORPUS_OBSERVATIONS,
                                    DIGEST, FINAL_TAG, GHCR_IMAGE, JSON_LIMIT, PLATFORMS,
-                                   RECEIPT_SCHEMA, RECEIPT_SCHEMA_V2, REPOSITORY, REPOSITORY_ID, SHA, WORKFLOWS,
-                                   SUBJECT_PATH, RUNNER_REF, qualification_subject, runner_subject,
+                                   RECEIPT_SCHEMA, REPOSITORY, REPOSITORY_ID, SHA, WORKFLOWS,
+                                   SUBJECT_PATH, qualification_subject, release_subject,
                                    resource_scope, bind_dependencies, LOCAL_IMAGE_KEYS,
                                    Refusal, canonical, closed, literal, matching, positive,
                                    require, strict_json)
@@ -59,30 +59,25 @@ def write(path: Path, value: Any) -> None:
         stream.write(canonical(value))
 
 
+def final_tag_dispatch() -> bool:
+    tag = os.environ.get("GITHUB_REF_NAME", "")
+    return (os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and os.environ.get("GITHUB_REF") == "refs/tags/" + tag and matching(tag, FINAL_TAG))
+
+
 def eligible_context(role: str, image: str) -> bool:
     tag = os.environ.get("GITHUB_REF_NAME", "")
-    return branch_context(role, image) or (os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
-            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and os.environ.get("GITHUB_REF") == "refs/tags/" + tag
-            and matching(tag, FINAL_TAG) and matching(os.environ.get("GITHUB_SHA"), SHA)
+    return (final_tag_dispatch() and os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
+            and matching(os.environ.get("GITHUB_SHA"), SHA)
             and os.environ.get("GITHUB_WORKFLOW_REF") ==
             f"{REPOSITORY}/{WORKFLOWS[role]}@refs/tags/{tag}"
             and re.fullmatch(re.escape(GHCR_IMAGE) + r"@sha256:[0-9a-f]{64}", image) is not None)
 
 
-def branch_context(role: str, image: str) -> bool:
-    return (os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
-            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and os.environ.get("GITHUB_REF") == RUNNER_REF
-            and os.environ.get("GITHUB_REF_NAME") == RUNNER_REF.removeprefix("refs/heads/")
-            and matching(os.environ.get("GITHUB_SHA"), SHA)
-            and os.environ.get("GITHUB_WORKFLOW_REF") == f"{REPOSITORY}/{WORKFLOWS[role]}@{RUNNER_REF}"
-            and re.fullmatch(re.escape(GHCR_IMAGE) + r"@sha256:[0-9a-f]{64}", image) is not None)
-
-
 def admit(provider: GitHubRegistryProvider, role: str, image: str) -> dict[str, Any]:
-    require(branch_context(role, image), "qualification_runner_context")
-    source = os.environ["GITHUB_SHA"]
+    """Derive the subject from the release tag this run was dispatched from."""
+    require(eligible_context(role, image), "qualification_release_context")
+    source, tag = os.environ["GITHUB_SHA"], os.environ["GITHUB_REF_NAME"]
     actual = provider.commands.run(["git", "rev-parse", "HEAD"], 128).decode().strip()
     require(actual == source, "qualification_checkout")
     path = ROOT / SUBJECT_PATH
@@ -90,14 +85,17 @@ def admit(provider: GitHubRegistryProvider, role: str, image: str) -> dict[str, 
     with path.open("rb") as stream:
         subject = qualification_subject(strict_json(stream.read(8193), 8192))
     blob = provider.commands.run(["git", "rev-parse", source + ":" + SUBJECT_PATH],128).decode().strip()
-    runner = {"source_commit": source, "ref": RUNNER_REF, "subject_blob": blob}
-    require(runner_subject(provider, runner, subject["release"]) == subject, "qualification_local_subject")
-    require(image == GHCR_IMAGE + "@" + subject["release"]["index_digest"], "qualification_requested_subject")
+    release = {"tag": tag, "source_commit": source, "index_digest": image.split("@", 1)[1]}
+    runner, published = release_subject(provider, release)
+    require(runner["subject_blob"] == blob and published == subject, "qualification_local_subject")
+    # The requested index must be the one the exact version tag publishes.
+    require(provider.exact_tag_digest(GHCR_IMAGE, tag) == release["index_digest"],
+            "qualification_requested_subject")
     if role == "compose":
         require("mysql:" + os.environ.get("MYSQL_VERSION", "") == subject["mysql"]["requested_image"]
                 and os.environ.get("QUALIFICATION_QEMU_IMAGE") == subject["qemu"]["requested_image"],
                 "qualification_dependency_configuration")
-    return {"runner": runner, "subject": subject}
+    return {"runner": runner, "subject": subject, "release": release}
 
 
 MANIFEST_TYPES = {"application/vnd.oci.image.manifest.v1+json",
@@ -229,41 +227,29 @@ def observe_image(provider: GitHubRegistryProvider, role: str, image: str,
     if not eligible_context(role, image):
         return {"eligible": False, "reason": "nonpromotion_context"}
     require(platform in PLATFORMS, "qualification_platform")
-    admission = admit(provider, role, image) if branch_context(role, image) else None
-    release = admission["subject"]["release"] if admission else {
-        "source_commit": os.environ["GITHUB_SHA"], "tag": os.environ["GITHUB_REF_NAME"]}
-    source, tag = release["source_commit"], release["tag"]
+    admission = admit(provider, role, image)
+    release = admission["release"]
+    source, tag, index = release["source_commit"], release["tag"], release["index_digest"]
     actual_source = provider.commands.run(["git", "rev-parse", "HEAD"], 128).decode().strip()
     require(actual_source == os.environ["GITHUB_SHA"], "qualification_checkout")
-    index = image.split("@", 1)[1]
     subject = provider.index_subjects(GHCR_IMAGE, index, source, tag)[platform]
     instance = inspect(provider.commands, "container", container)
-    local = {}
-    if admission:
-        config, local = local_image(provider, subject, image, platform, index, instance)
-    else:
-        require(instance.get("Image") == subject["image_config_digest"], "actual_container_image")
-        config = inspect(provider.commands, "image", subject["image_config_digest"])
-        require(config.get("Id") == subject["image_config_digest"]
-                and config.get("Architecture") == platform.split("/")[1]
-                and config.get("Os") == "linux", "actual_container_platform")
+    config, local = local_image(provider, subject, image, platform, index, instance)
     require(type(config.get("Config")) is dict, "actual_container_platform")
     labels = config["Config"].get("Labels")
     require(type(labels) is dict and labels.get("org.opencontainers.image.revision") == source
             and labels.get("dev.durable-workflow.release.tag") == tag, "actual_container_source")
-    extra = {}
-    if admission:
-        profile = os.environ.get("DW_PUBLISHED_COMPOSE_PROFILE") if role == "compose" else None
-        observed_scope = resource_scope(role, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]), platform, profile)
-        require(os.environ.get("DW_PUBLISHED_COMPOSE_PROJECT" if role == "compose" else "RESOURCE_SCOPE") == observed_scope,
-                "qualification_resource_scope")
-        extra = {"runner_ref": admission["runner"]["ref"], "subject_blob": admission["runner"]["subject_blob"],
-                 "resource_scope": observed_scope, **local,
-                 "dependencies": observe_dependencies(provider, role, platform, observed_scope, admission["subject"])}
+    profile = os.environ.get("DW_PUBLISHED_COMPOSE_PROFILE") if role == "compose" else None
+    observed_scope = resource_scope(role, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]), platform, profile)
+    require(os.environ.get("DW_PUBLISHED_COMPOSE_PROJECT" if role == "compose" else "RESOURCE_SCOPE") == observed_scope,
+            "qualification_resource_scope")
     return {"eligible": True, "requested_image": image, "index_digest": index,
             "platform": platform, **subject, "actual_image_config_digest": subject["image_config_digest"],
             "container_image_architecture": config["Architecture"], "container_image_os": config["Os"],
-            "image_source_commit": source, "image_release_tag": tag, **extra}
+            "image_source_commit": source, "image_release_tag": tag,
+            "runner_ref": admission["runner"]["ref"], "subject_blob": admission["runner"]["subject_blob"],
+            "resource_scope": observed_scope, **local,
+            "dependencies": observe_dependencies(provider, role, platform, observed_scope, admission["subject"])}
 
 
 def lines(commands: Commands, args: list[str], expression: str) -> set[str]:
@@ -387,7 +373,7 @@ def finalize(provider: GitHubRegistryProvider, role: str, image: str, platform: 
             "qualification_cleanup_failed")
     observations = qualification_observations(role, profile, observations)
     source = os.environ["GITHUB_SHA"]
-    admission = admit(provider, role, image) if branch_context(role, image) else None
+    admission = admit(provider, role, image)
     run_id, attempt = int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"])
     require(positive(run_id) and positive(attempt), "qualification_run")
     run = provider.api(f"repos/{REPOSITORY}/actions/runs/{run_id}")
@@ -415,16 +401,15 @@ def finalize(provider: GitHubRegistryProvider, role: str, image: str, platform: 
     # Only explicitly whitelisted image fields cross into the artifact.
     image_keys = {"requested_image", "index_digest", "platform", "child_manifest_digest", "image_config_digest",
                   "actual_image_config_digest", "container_image_architecture", "container_image_os",
-                  "image_source_commit", "image_release_tag"}
-    if admission:
-        image_keys |= {"runner_ref", "subject_blob", "resource_scope", "dependencies"} | LOCAL_IMAGE_KEYS
-        require(identity.get("runner_ref") == admission["runner"]["ref"]
-                and identity.get("subject_blob") == admission["runner"]["subject_blob"]
-                and identity.get("resource_scope") == resource_scope(role,run_id,attempt,platform,profile),
-                "qualification_identity_runner")
-        bind_dependencies(identity.get("dependencies"), role, platform, admission["subject"])
+                  "image_source_commit", "image_release_tag",
+                  "runner_ref", "subject_blob", "resource_scope", "dependencies"} | LOCAL_IMAGE_KEYS
+    require(identity.get("runner_ref") == admission["runner"]["ref"]
+            and identity.get("subject_blob") == admission["runner"]["subject_blob"]
+            and identity.get("resource_scope") == resource_scope(role,run_id,attempt,platform,profile),
+            "qualification_identity_runner")
+    bind_dependencies(identity.get("dependencies"), role, platform, admission["subject"])
     closed(identity, image_keys | {"eligible"}, "qualification_identity_shape")
-    return {"schema": RECEIPT_SCHEMA_V2 if admission else RECEIPT_SCHEMA, "kind": role, "eligible": True,
+    return {"schema": RECEIPT_SCHEMA, "kind": role, "eligible": True,
             "repository": REPOSITORY, "repository_id": REPOSITORY_ID,
             "run_id": run_id, "run_attempt": attempt, "job_id": selected[0]["id"],
             "runner_commit": source, "workflow_path": WORKFLOWS[role], "workflow_blob": workflow_blob,
@@ -448,8 +433,8 @@ def main() -> None:
     args = parser.parse_args()
     provider = GitHubRegistryProvider()
     if args.phase == "admit":
-        value = (admit(provider, args.kind, args.image) if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-                 and os.environ.get("GITHUB_REF") == RUNNER_REF
+        # A dispatch from a final release tag must admit; nothing else can.
+        value = (admit(provider, args.kind, args.image) if final_tag_dispatch()
                  else {"eligible": False, "reason": "nonpromotion_context"})
     elif args.phase == "observe-image":
         value = observe_image(provider, args.kind, args.image, args.container, args.platform)
