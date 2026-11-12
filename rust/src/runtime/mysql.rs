@@ -9,7 +9,11 @@ use sqlx::{
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
-pub const VERSION: i64 = 12;
+/// The native schema version on MySQL. Version 13 stores JSON documents as
+/// exact text (server#1016); MariaDB already stores them as text and stays at
+/// 12. `Flavor::version` selects the one a server needs.
+pub const MYSQL_VERSION: i64 = 13;
+pub const MARIADB_VERSION: i64 = 12;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -60,7 +64,9 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0012_run_command_contracts.sql")
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0013_json_text.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -89,11 +95,15 @@ impl Flavor {
             ),
         };
         slot.get_or_init(|| {
+            let description = match self {
+                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents",
+                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts",
+            };
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
-                VERSION,
-                "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts".into(),
+                self.version(),
+                description.into(),
                 MigrationType::Simple,
-                AssertSqlSafe(bootstrap_sql(sql)).into_sql_str(),
+                AssertSqlSafe(self.bootstrap_sql(sql)).into_sql_str(),
                 false,
             )]);
             // A bounded named lock on this dedicated initialization connection
@@ -102,9 +112,18 @@ impl Flavor {
             migrations
         })
     }
+    /// The schema-12 catalog: MySQL's retained one, MariaDB's current one.
+    /// Steps before MySQL's JSON text step build toward it; a resumed upgrade
+    /// may also find a table already past it, in its current definition.
+    fn v12_catalog(self) -> Result<Catalog> {
+        match self {
+            Self::MySql => Ok(serde_json::from_str(&canonical(self.earlier(12).expect("retained v12 schema").1))?),
+            Self::MariaDb => self.expected(),
+        }
+    }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0012_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0013_catalog.json"),
             Self::MariaDb => include_str!("../../migrations/mariadb/0012_catalog.json"),
         }))?)
     }
@@ -172,6 +191,12 @@ impl Flavor {
             "CREATE TABLE IF NOT EXISTS dw_service_admission_counters",
         ))
     }
+    pub(super) fn version(self) -> i64 {
+        match self {
+            Self::MySql => MYSQL_VERSION,
+            Self::MariaDb => MARIADB_VERSION,
+        }
+    }
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::MySql => "mysql",
@@ -190,6 +215,7 @@ impl Flavor {
         static MYSQL_9: OnceLock<Migration> = OnceLock::new();
         static MARIA_9: OnceLock<Migration> = OnceLock::new();
         static MYSQL_11: OnceLock<Migration> = OnceLock::new();
+        static MYSQL_12: OnceLock<Migration> = OnceLock::new();
         static MARIA_11: OnceLock<Migration> = OnceLock::new();
         let description = "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters";
         let earlier = |slot: &'static OnceLock<Migration>, version, description: &'static str, sql: &'static str| {
@@ -198,6 +224,36 @@ impl Flavor {
             })
         };
         match (self, version) {
+            (Self::MySql, 12) => Some((
+                MYSQL_12.get_or_init(|| Migration::new(
+                    12,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(bootstrap_sql_v11(concat!(
+                include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql")
+            ))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mysql/0012_catalog.json"),
+            )),
             (Self::MySql, 11) => Some((
                 MYSQL_11.get_or_init(|| Migration::new(
                     11,
@@ -404,6 +460,7 @@ impl Flavor {
             (Self::MariaDb, 10) => Some(include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql")),
             (Self::MySql, 11) => Some(include_str!("../../migrations/mysql/0012_run_command_contracts.sql")),
             (Self::MariaDb, 11) => Some(include_str!("../../migrations/mariadb/0012_run_command_contracts.sql")),
+            (Self::MySql, 12) => Some(include_str!("../../migrations/mysql/0013_json_text.sql")),
             _ => None,
         }
     }
@@ -449,10 +506,84 @@ fn bootstrap_sql_v11(sql: &str) -> String {
     sql.replace("CREATE INDEX dw_workflow_tasks_scoped_dispatch ON workflow_tasks (namespace,queue,task_type(16),status(16),priority,available_at,id);", "")
 }
 
-/// Version 12 adds only a native table, created like every other native
-/// table of the cumulative bootstrap.
-fn bootstrap_sql(sql: &str) -> String {
-    bootstrap_sql_v11(sql)
+impl Flavor {
+    /// Version 12 adds only a native table, created like every other native
+    /// table of the cumulative bootstrap. MySQL's version 13 creates each JSON
+    /// document column as exact text directly, as its upgrade ALTERs it.
+    fn bootstrap_sql(self, sql: &str) -> String {
+        match self {
+            Self::MySql => json_text_bootstrap_sql(&bootstrap_sql_v11(sql)),
+            Self::MariaDb => bootstrap_sql_v11(sql),
+        }
+    }
+}
+
+/// The exact text definition and enforced check for each MySQL `json`
+/// column (server#1016). The constraint name is `dw_json_text_` and the first
+/// 20 hex digits of SHA-256 over table, NUL and column.
+fn json_text_check_name(table: &str, column: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{table}\0{column}").as_bytes());
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("dw_json_text_{}", &hex[..20])
+}
+
+/// Rewrites every compiled `json` column of the MySQL bootstrap to the
+/// version-13 text definition with its check, and drops the upgrade ALTERs,
+/// so a fresh or resumed initialization creates final tables directly.
+fn json_text_bootstrap_sql(sql: &str) -> String {
+    let column = regex_lite::Regex::new(r"(?i)^(\s*)`?(\w+)`? json( NOT NULL| DEFAULT NULL)?( COMMENT '[^']*')?(,?)\s*$")
+        .expect("json column pattern");
+    let table = regex_lite::Regex::new(r"^\s*CREATE TABLE (?:IF NOT EXISTS )?`?(\w+)`?").expect("table pattern");
+    let sql = sql.replace(include_str!("../../migrations/mysql/0013_json_text.sql"), "");
+    let mut out: Vec<String> = Vec::new();
+    let (mut current, mut checks) = (String::new(), Vec::new());
+    for line in sql.split('\n') {
+        if let Some(found) = table.captures(line) {
+            current = found[1].to_owned();
+            checks.clear();
+        }
+        if let Some(found) = column.captures(line) {
+            let name = found[2].to_owned();
+            checks.push(format!("  CONSTRAINT `{}` CHECK (json_valid(`{name}`))", json_text_check_name(&current, &name)));
+            out.push(format!("{}`{name}` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin{}{}{}", &found[1],
+                found.get(3).map_or("", |m| m.as_str()), found.get(4).map_or("", |m| m.as_str()), &found[5]));
+            continue;
+        }
+        if line.starts_with(")") && line.contains("ENGINE") && !checks.is_empty() {
+            let last = out.last_mut().expect("a definition before the table footer");
+            last.push(',');
+            last.push('\n');
+            last.push_str(&checks.join(",\n"));
+            checks.clear();
+        }
+        out.push(line.to_owned());
+    }
+    out.join("\n")
+}
+
+/// Version 13 on MySQL: each JSON document column becomes exact text, one
+/// atomic ALTER per table. A resumed upgrade or takeover accepts each table
+/// only in its exact version-12 or version-13 definition.
+pub(super) async fn ensure_json_text(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let Flavor::MySql = flavor else { return Ok(()) };
+    let (_, old) = flavor.earlier(12).expect("retained v12 schema");
+    let old: BTreeMap<String, String> = serde_json::from_str::<Catalog>(&canonical(old))?.into_iter().collect();
+    let expected: BTreeMap<String, String> = flavor.expected()?.into_iter().collect();
+    let actual: BTreeMap<String, String> = catalog(connection).await?.into_iter().collect();
+    for statement in flavor.step(12).expect("compiled json text step").split(";\n").map(str::trim) {
+        let Some(rest) = statement.lines().find(|line| line.starts_with("ALTER TABLE `")) else { continue };
+        let name = rest.trim_start_matches("ALTER TABLE `").trim_end_matches('`').to_owned();
+        match actual.get(&name) {
+            found if found == expected.get(&name) => continue,
+            found if found.is_some() && found == old.get(&name) => {
+                let alter = statement[statement.find("ALTER TABLE").expect("alter")..].to_owned();
+                connection.execute(AssertSqlSafe(alter)).await?;
+            }
+            _ => return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")),
+        }
+    }
+    Ok(())
 }
 
 /// Creating the bound-contract table commits on its own. A resumed upgrade
@@ -461,7 +592,7 @@ pub(super) async fn ensure_run_command_contracts(connection: &mut MySqlConnectio
     let sql = flavor.step(11).expect("compiled run command contracts");
     connection.execute(AssertSqlSafe(sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))).await?;
     let table = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "dw_run_command_contracts");
-    if table(catalog(connection).await?) != table(flavor.expected()?) {
+    if table(catalog(connection).await?) != table(flavor.v12_catalog()?) {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
     }
     Ok(())
@@ -474,7 +605,8 @@ pub(super) async fn ensure_ready_origin(connection: &mut MySqlConnection, flavor
     let old: Catalog = serde_json::from_str(&canonical(old))?;
     let actual = catalog(connection).await?;
     let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
-    if task(actual.clone()) == task(flavor.expected()?) { return Ok(()); }
+    let found = task(actual.clone());
+    if found == task(flavor.v12_catalog()?) || found == task(flavor.expected()?) { return Ok(()); }
     let (_, ready) = flavor.earlier(10).expect("retained v10 schema");
     let expected = task(serde_json::from_str(&canonical(ready))?);
     match task(actual) {
@@ -495,14 +627,15 @@ pub(super) async fn ensure_ready_origin(connection: &mut MySqlConnection, flavor
 pub(super) async fn ensure_poll_expiry_indexes(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
     let (_, old) = flavor.earlier(9).expect("retained v9 schema");
     let old: Catalog = serde_json::from_str(&canonical(old))?;
-    let expected = flavor.expected()?;
+    let expected = flavor.v12_catalog()?;
+    let current = flavor.expected()?;
     for (table, sql) in [
         ("dw_query_cache", "CREATE INDEX dw_query_cache_expiration ON dw_query_cache (expiration)"),
         ("dw_poll_receipts", "CREATE INDEX dw_poll_receipts_expiration ON dw_poll_receipts (expires_at)"),
     ] {
         let found = catalog(connection).await?;
         let row = |rows: &Catalog| rows.iter().find(|(name, _)| name == table).cloned();
-        if row(&found) == row(&expected) { continue; }
+        if row(&found) == row(&expected) || row(&found) == row(&current) { continue; }
         if row(&found) != row(&old) { return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")); }
         connection.execute(sql).await?;
         if row(&catalog(connection).await?) != row(&expected) {
@@ -518,9 +651,9 @@ pub(super) async fn ensure_scoped_dispatch_index(connection: &mut MySqlConnectio
     let (_, old) = flavor.earlier(10).expect("retained v10 schema");
     let old: Catalog = serde_json::from_str(&canonical(old))?;
     let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
-    let expected = task(flavor.expected()?);
+    let expected = task(flavor.v12_catalog()?);
     let found = task(catalog(connection).await?);
-    if found == expected { return Ok(()); }
+    if found == expected || found == task(flavor.expected()?) { return Ok(()); }
     if found != task(old) { return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")); }
     connection.execute(flavor.step(10).expect("compiled scoped dispatch index")).await?;
     if task(catalog(connection).await?) != expected {
@@ -774,12 +907,12 @@ async fn history(
     };
     if markers.len() != 1
         || markers[0].0 != engine
-        || markers[0].1 != VERSION
+        || markers[0].1 != flavor.version()
         || markers[0].2 != flavor.checksum()
     {
         return Err(match markers.as_slice() {
-            [(found, version, _)] if !initializing && (found != engine || *version != VERSION) => {
-                super::schema_upgrade::marker_refusal(found, *version, VERSION)
+            [(found, version, _)] if !initializing && (found != engine || *version != flavor.version()) => {
+                super::schema_upgrade::marker_refusal(found, *version, flavor.version())
             }
             _ => refuse(StatusCode::CONFLICT, "unsupported_rust_schema"),
         });
@@ -802,7 +935,7 @@ async fn history(
         return Ok(None);
     }
     if applied.len() != 1
-        || applied[0].0 != VERSION
+        || applied[0].0 != flavor.version()
         || applied[0].2 != flavor.checksum()
         || (!initializing && !applied[0].1)
     {
@@ -904,7 +1037,7 @@ async fn preflight(connection: &mut MySqlConnection, flavor: Flavor) -> Result<(
 /// `rust-upgrading`, which fences every node, and a rerun resumes from
 /// whatever the interrupted run left. Returns the backend and the version
 /// found; a current database is only verified.
-pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'static str, i64)> {
+pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'static str, i64, i64)> {
     use super::schema_upgrade::{DEVELOPMENT_ENGINE, UPGRADING_ENGINE, marker_refusal};
     let mut connection = MySqlConnection::connect_with(&options(connect_options)).await?;
     let result = async {
@@ -927,15 +1060,15 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
         };
         let from = *from;
-        if engine == DEVELOPMENT_ENGINE && from == VERSION {
+        if engine == DEVELOPMENT_ENGINE && from == flavor.version() {
             verify(&mut connection, flavor).await?;
-            return Ok((flavor.name(), from));
+            return Ok((flavor.name(), from, flavor.version()));
         }
         let Some((earlier, earlier_catalog)) = flavor
             .earlier(from)
             .filter(|_| engine == DEVELOPMENT_ENGINE || engine == UPGRADING_ENGINE)
         else {
-            return Err(marker_refusal(engine, from, VERSION));
+            return Err(marker_refusal(engine, from, flavor.version()));
         };
         if checksum.as_slice() != earlier.checksum.as_ref() {
             return Err(refuse(StatusCode::CONFLICT, "unsupported_rust_schema"));
@@ -968,12 +1101,15 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             // new definition, and every earlier relation is still there.
             let earlier_tables: BTreeMap<_, _> = earlier_catalog.into_iter().collect();
             let current: BTreeMap<_, _> = flavor.expected()?.into_iter().collect();
+            // On MySQL a table may also stand at its schema-12 definition,
+            // before the JSON text step reached it.
+            let v12: BTreeMap<_, _> = flavor.v12_catalog()?.into_iter().collect();
             // The ready-origin step can commit before the scoped index step.
             // Accept that exact retained intermediate task definition too.
             let intermediate: Catalog = serde_json::from_str(&canonical(flavor.earlier(10).expect("retained v10 schema").1))?;
             let intermediate_task = intermediate.into_iter().find(|(name, _)| name == "workflow_tasks");
             let partial = actual.iter().all(|(name, ddl)| {
-                earlier_tables.get(name) == Some(ddl) || current.get(name) == Some(ddl)
+                earlier_tables.get(name) == Some(ddl) || current.get(name) == Some(ddl) || v12.get(name) == Some(ddl)
                     || name == "workflow_tasks" && intermediate_task.as_ref().is_some_and(|(_, task)| task == ddl)
             }) && earlier_tables
                 .keys()
@@ -984,7 +1120,11 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         }
         // Each step's own marker update names the development engine, so it
         // changes nothing while the marker fences the upgrade.
-        for version in from..VERSION {
+        for version in from..flavor.version() {
+            if version == 12 {
+                ensure_json_text(&mut connection, flavor).await?;
+                continue;
+            }
             if version == 8 {
                 ensure_ready_origin(&mut connection, flavor).await?;
                 continue;
@@ -1025,7 +1165,7 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             .await?;
         let marked = sqlx::query("UPDATE dw_server_schema SET engine=?,version=?,bootstrap_checksum=? WHERE engine=? AND version=? AND bootstrap_checksum=?")
             .bind(DEVELOPMENT_ENGINE)
-            .bind(VERSION)
+            .bind(flavor.version())
             .bind(flavor.checksum())
             .bind(UPGRADING_ENGINE)
             .bind(from)
@@ -1037,7 +1177,7 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         }
         tx.commit().await?;
         verify(&mut connection, flavor).await?;
-        Ok::<_, super::RuntimeError>((flavor.name(), from))
+        Ok::<_, super::RuntimeError>((flavor.name(), from, flavor.version()))
     }
     .await;
     // Named locks are session scoped, including on errors/process death.
@@ -1110,7 +1250,7 @@ impl MySqlStorage {
             // when nothing else exists yet.
             let marked:i64=sqlx::query_scalar("SELECT COUNT(*) FROM dw_server_schema").fetch_one(&mut connection).await?;
             if marked==0 {
-                sqlx::query("INSERT INTO dw_server_schema(engine,version,bootstrap_checksum) VALUES ('rust-initializing',?,?)").bind(VERSION).bind(flavor.checksum()).execute(&mut connection).await?;
+                sqlx::query("INSERT INTO dw_server_schema(engine,version,bootstrap_checksum) VALUES ('rust-initializing',?,?)").bind(flavor.version()).bind(flavor.checksum()).execute(&mut connection).await?;
             }
             let engine:String=sqlx::query_scalar("SELECT engine FROM dw_server_schema").fetch_one(&mut connection).await?;
             if engine=="rust-initializing" {
@@ -1122,11 +1262,11 @@ impl MySqlStorage {
                     // checksum and absence of application data were verified.
                     let migration=flavor.migrator().iter().next().unwrap();
                     connection.execute(migration.sql.clone()).await?;
-                    sqlx::query("UPDATE _sqlx_migrations SET success=TRUE WHERE version=? AND checksum=? AND success=FALSE").bind(VERSION).bind(flavor.checksum()).execute(&mut connection).await?;
+                    sqlx::query("UPDATE _sqlx_migrations SET success=TRUE WHERE version=? AND checksum=? AND success=FALSE").bind(flavor.version()).bind(flavor.checksum()).execute(&mut connection).await?;
                 } else {flavor.migrator().run(&mut connection).await?;}
                 if catalog(&mut connection).await?!=flavor.expected()? {return Err(refuse(StatusCode::CONFLICT,"native_schema_catalog_mismatch"));}
                 let mut tx=connection.begin().await?;
-                sqlx::query("UPDATE dw_server_schema SET engine='rust-development' WHERE engine='rust-initializing' AND version=? AND bootstrap_checksum=?").bind(VERSION).bind(flavor.checksum()).execute(&mut *tx).await?;
+                sqlx::query("UPDATE dw_server_schema SET engine='rust-development' WHERE engine='rust-initializing' AND version=? AND bootstrap_checksum=?").bind(flavor.version()).bind(flavor.checksum()).execute(&mut *tx).await?;
                 tx.commit().await?;
             }
             verify(&mut connection,flavor).await?;
@@ -1233,7 +1373,7 @@ mod tests {
     async fn initializing(connection: &mut MySqlConnection, flavor: Flavor) {
         connection.execute(MARKER_SQL).await.unwrap();
         sqlx::query("INSERT INTO dw_server_schema VALUES ('rust-initializing',?,?)")
-            .bind(VERSION)
+            .bind(flavor.version())
             .bind(flavor.checksum())
             .execute(connection)
             .await
@@ -1258,7 +1398,7 @@ mod tests {
     }
     async fn dirty(connection: &mut MySqlConnection, flavor: Flavor) {
         connection.execute(LEDGER_SQL).await.unwrap();
-        sqlx::query("INSERT INTO _sqlx_migrations VALUES (?, 'interrupted qualification', CURRENT_TIMESTAMP, FALSE, ?, -1)").bind(VERSION).bind(flavor.checksum()).execute(connection).await.unwrap();
+        sqlx::query("INSERT INTO _sqlx_migrations VALUES (?, 'interrupted qualification', CURRENT_TIMESTAMP, FALSE, ?, -1)").bind(flavor.version()).bind(flavor.checksum()).execute(connection).await.unwrap();
     }
 
     #[test]
@@ -2536,6 +2676,32 @@ mod tests {
     }
 
     #[test]
+    fn mysql_version_13_moves_json_to_text_and_mariadb_stays_at_12() {
+        // MySQL's retained version 12 is byte for byte the released one; its
+        // current bootstrap creates exact text columns with enforced checks.
+        assert_eq!(checksum_hex(Flavor::MySql.earlier(12).unwrap().0),
+            include_str!("../../migrations/mysql/0012_checksum.txt").trim());
+        assert_ne!(Flavor::MySql.checksum(), Flavor::MySql.earlier(12).unwrap().0.checksum.as_ref());
+        // MariaDB stores JSON as text already: its bootstrap is unchanged.
+        assert_eq!(Flavor::MariaDb.version(), 12);
+        assert!(Flavor::MariaDb.earlier(12).is_none());
+        assert_eq!(checksum_hex(Flavor::MariaDb.migration()),
+            include_str!("../../migrations/mariadb/0012_checksum.txt").trim());
+        let sql: &str = Flavor::MySql.migration().sql.as_ref();
+        assert_eq!(Flavor::MySql.version(), 13);
+        assert!(!sql.contains("ALTER TABLE `activity_executions`"), "upgrade ALTERs are folded into the bootstrap");
+        assert!(!regex_lite::Regex::new(r"(?i)`?\w+`? json( |,)").unwrap().is_match(sql), "no json column remains");
+        assert_eq!(sql.matches("CHECK (json_valid(").count(), 75);
+        assert_eq!(sql.matches("longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin").count(), 75);
+        let step = Flavor::MySql.step(12).unwrap();
+        assert_eq!(step.matches("ALTER TABLE `").count(), 36);
+        assert_eq!(step.matches("ADD CONSTRAINT `dw_json_text_").count(), 75);
+        assert_eq!(json_text_check_name("activity_executions", "retry_policy"), "dw_json_text_da40cddf645f92a0f5d3");
+        let expected: Catalog = serde_json::from_str(&canonical(include_str!("../../migrations/mysql/0013_catalog.json"))).unwrap();
+        assert_eq!(expected.iter().map(|(_, ddl)| ddl.matches("CHECK (json_valid(").count()).sum::<usize>(), 75);
+    }
+
+    #[test]
     fn version_8_checksums_and_resumable_current_bootstrap_are_distinct() {
         for (flavor, pinned) in [
             (Flavor::MySql, include_str!("../../migrations/mysql/0008_checksum.txt")),
@@ -2685,7 +2851,7 @@ mod tests {
         flavor
     }
 
-    fn upgrade_refused(result: Result<(&'static str, i64)>, expected: &str) {
+    fn upgrade_refused(result: Result<(&'static str, i64, i64)>, expected: &str) {
         match result {
             Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
             Err(error) => panic!("unexpected upgrade error: {error}"),
@@ -2733,7 +2899,7 @@ mod tests {
                 connection.execute(flavor.step(11).unwrap()).await.unwrap();
                 connection.close().await.unwrap();
             }
-            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 11));
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 11, flavor.version()));
             MySqlStorage::check(db.options.clone()).await.unwrap();
             let mut connection = db.connection().await;
             let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
@@ -2744,6 +2910,113 @@ mod tests {
             refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
             db.remove().await;
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_version_12_json_text_upgrade_resumes_and_keeps_rows() {
+        for stage in ["before", "partial", "foreign"] {
+            let db = Database::new().await;
+            let mut connection = db.connection().await;
+            let flavor = Flavor::detect(&mut connection).await.unwrap();
+            connection.close().await.unwrap();
+            let Flavor::MySql = flavor else {
+                // MariaDB stores JSON as text already and stays at 12.
+                assert_eq!(flavor.version(), 12);
+                db.remove().await;
+                return;
+            };
+            retained_version_database(&db, 12).await;
+            let mut connection = db.connection().await;
+            // A row written at 12 holds MySQL's own double; it keeps it.
+            connection.execute(r#"INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload) VALUES ('01HISTORYROW0000000000000A','01RUN0000000000000000000AA',1,'WorkflowStarted','{"x":1.4820142857142857,"y":"λ"}')"#).await.unwrap();
+            let before: String = sqlx::query_scalar("SELECT CAST(payload AS CHAR) FROM workflow_history_events").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(before, r#"{"x": 1.4820142857142855, "y": "λ"}"#);
+            match stage {
+                "before" => {}
+                "partial" => {
+                    // Two table rebuilds committed before the run was interrupted.
+                    connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                    for statement in flavor.step(12).unwrap().split(";\n").filter(|s| s.contains("ALTER TABLE")).take(2) {
+                        let alter = &statement[statement.find("ALTER TABLE").unwrap()..];
+                        connection.execute(AssertSqlSafe(alter.to_owned())).await.unwrap();
+                    }
+                }
+                _ => {
+                    // A table that is neither the 12 nor the 13 definition.
+                    connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                    connection.execute("ALTER TABLE workflow_history_events MODIFY COLUMN payload LONGTEXT").await.unwrap();
+                }
+            }
+            connection.close().await.unwrap();
+            if stage == "before" {
+                refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+            }
+            if stage == "foreign" {
+                upgrade_refused(upgrade(db.options.clone()).await, "native_schema_catalog_mismatch");
+                db.remove().await;
+                continue;
+            }
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 12, 13));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection = db.connection().await;
+            assert_eq!(catalog(&mut connection).await.unwrap(), flavor.expected().unwrap());
+            let after: String = sqlx::query_scalar("SELECT payload FROM workflow_history_events").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(after, before, "the upgrade keeps each stored document as MySQL rendered it");
+            let enforced: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA=DATABASE() AND CONSTRAINT_TYPE='CHECK' AND ENFORCED='YES' AND CONSTRAINT_NAME LIKE 'dw\\_json\\_text\\_%'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(enforced, 75);
+            // New text keeps every digit, and invalid JSON is refused.
+            connection.execute(r#"UPDATE workflow_history_events SET payload='{"x":1.4820142857142857}'"#).await.unwrap();
+            let exact: String = sqlx::query_scalar("SELECT payload FROM workflow_history_events").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(exact, r#"{"x":1.4820142857142857}"#);
+            assert!(connection.execute("UPDATE workflow_history_events SET payload='{not json'").await.is_err());
+            connection.close().await.unwrap();
+            db.remove().await;
+        }
+    }
+
+    /// Server #1016 gate: seeds `DW_JSON_TEXT_TIMING_ROWS` history rows of
+    /// about 1 KiB at schema 12, then times the upgrade to 13. Skipped unless
+    /// the variable is set.
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_json_text_upgrade_timing() {
+        let Ok(rows) = std::env::var("DW_JSON_TEXT_TIMING_ROWS") else { return };
+        let rows: i64 = rows.parse().unwrap();
+        let db = Database::new().await;
+        let mut connection = db.connection().await;
+        let flavor = Flavor::detect(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        let Flavor::MySql = flavor else { db.remove().await; return };
+        retained_version_database(&db, 12).await;
+        let mut connection = db.connection().await;
+        // A seeding helper, dropped before the upgrade so the catalog is exact.
+        connection.execute("CREATE TABLE timing_digits (d INT PRIMARY KEY)").await.unwrap();
+        connection.execute("INSERT INTO timing_digits VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)").await.unwrap();
+        let payload = r#"{"activity_execution_id":"01JZ8Y4K3Q8V6B2N1M0C9X7Z5A","activity_type":"billing.charge-card","sequence":7,"result":{"codec":"avro","blob":"BASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOADBASE64PAYLOAD"},"payload_codec":"avro","attempt_number":1,"activity_attempt_id":"01JZ8Y4K3Q8V6B2N1M0C9X7Z5B","metrics":{"duration_ms":1234.5678901234567,"ratio":0.7071067811865476,"amount":124435.71428571429},"task":{"id":"01JZ8Y4K3Q8V6B2N1M0C9X7Z5C","queue":"default","connection":"default"}}"#;
+        let seeded = std::time::Instant::now();
+        let mut done = 0;
+        while done < rows {
+            let batch = (rows - done).min(100_000);
+            sqlx::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,recorded_at,recorded_at_utc) SELECT LPAD(?+n,26,'0'),LPAD(FLOOR((?+n)/50),26,'0'),MOD(?+n,50)+1,'ActivityCompleted',?,NOW(6),UTC_TIMESTAMP(6) FROM (SELECT a.d+10*b.d+100*c.d+1000*e.d+10000*f.d AS n FROM timing_digits a,timing_digits b,timing_digits c,timing_digits e,timing_digits f) g WHERE n<?")
+                .bind(done).bind(done).bind(done).bind(payload).bind(batch)
+                .execute(&mut connection).await.unwrap();
+            done += batch.min(100_000);
+        }
+        connection.execute("DROP TABLE timing_digits").await.unwrap();
+        connection.execute("ANALYZE TABLE workflow_history_events").await.unwrap();
+        let bytes: i64 = sqlx::query_scalar("SELECT CAST(DATA_LENGTH AS SIGNED) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='workflow_history_events'")
+            .fetch_one(&mut connection).await.unwrap();
+        let version: String = sqlx::query_scalar("SELECT VERSION()").fetch_one(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        let seeding = seeded.elapsed();
+        let started = std::time::Instant::now();
+        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 12, 13));
+        let elapsed = started.elapsed().as_secs_f64();
+        println!("JSON_TEXT_TIMING mysql={version} rows={rows} history_data_bytes={bytes} seed_seconds={:.1} upgrade_seconds={elapsed:.1} seconds_per_million_rows={:.1}",
+            seeding.as_secs_f64(), elapsed * 1_000_000.0 / rows as f64);
+        db.remove().await;
     }
 
     #[tokio::test]
@@ -2771,7 +3044,7 @@ mod tests {
                 assert_eq!(catalog(&mut connection).await.unwrap(), before);
                 connection.close().await.unwrap();
             } else {
-                assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 10));
+                assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 10, flavor.version()));
                 MySqlStorage::check(db.options.clone()).await.unwrap();
                 let mut connection = db.connection().await;
                 let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
@@ -2814,7 +3087,7 @@ mod tests {
                 }
                 connection.close().await.unwrap();
             }
-            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 9));
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 9, flavor.version()));
             MySqlStorage::check(db.options.clone()).await.unwrap();
             let mut connection = db.connection().await;
             let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
@@ -2842,7 +3115,7 @@ INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,namespace,availab
                 connection.execute(flavor.step(8).unwrap()).await.unwrap();
             }
             connection.close().await.unwrap();
-            assert_eq!(upgrade(db.options.clone()).await.unwrap(),(flavor.name(),8));
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(),(flavor.name(),8,flavor.version()));
             MySqlStorage::check(db.options.clone()).await.unwrap();
             let mut connection=db.connection().await;
             let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM workflow_tasks WHERE id='legacy-task' AND status='ready' AND ready_origin_at IS NULL").fetch_one(&mut connection).await.unwrap();
@@ -2858,7 +3131,7 @@ INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,namespace,availab
         let db = Database::new().await;
         let flavor = version_7_database(&db).await;
         refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
-        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 7));
+        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 7, flavor.version()));
         // Opening verifies marker, ledger checksum and the captured catalog
         // of a fresh bootstrap; rows written at version 7 are kept.
         let storage = MySqlStorage::open(db.options.clone()).await.unwrap();
@@ -2873,9 +3146,9 @@ INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,namespace,availab
             .fetch_all(&mut connection)
             .await
             .unwrap();
-        assert_eq!(ledger, [(VERSION, true)]);
+        assert_eq!(ledger, [(flavor.version(), true)]);
         connection.close().await.unwrap();
-        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), VERSION));
+        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), flavor.version(), flavor.version()));
         db.remove().await;
     }
 
@@ -2901,7 +3174,7 @@ INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,namespace,availab
             }
             connection.close().await.unwrap();
             refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_incomplete");
-            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 7), "created {created}");
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), 7, flavor.version()), "created {created}");
             MySqlStorage::open(db.options.clone()).await.unwrap().close().await;
             db.remove().await;
         }

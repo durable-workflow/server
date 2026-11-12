@@ -533,18 +533,6 @@ async fn raw_text(app: &Router, method: &str, path: &str, body: &str) -> (Status
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
-/// The double a backend's JSON column holds for `text`. MySQL's json type
-/// parses doubles itself and can land one ULP off, for PHP and native alike;
-/// MariaDB stores JSON as text, and SQLite and PostgreSQL keep the text.
-async fn json_column_double(database: &TestDatabase, text: &str) -> f64 {
-    if !matches!(database, TestDatabase::MySql { .. }) {
-        return text.parse().unwrap();
-    }
-    let query = format!(r#"SELECT 'value', CAST(JSON_EXTRACT('{{"x":{text}}}', '$.x') AS CHAR)"#);
-    let rows = text_rows(database, "", "", &query).await;
-    rows[0].1.parse().unwrap()
-}
-
 // PHP's json_decode and json_encode give a double back with the digits it
 // came in with. Without serde_json's float_roundtrip, parsing can land one
 // ULP off, so a memo's 1.4820142857142857 was answered as …855.
@@ -575,10 +563,8 @@ async fn memo_doubles_keep_every_digit_through_storage() {
         let exact: f64 = text.parse().unwrap();
         let printed = serde_json::to_string(&exact).unwrap();
         assert!(described.contains(&format!("\"d{index}\":{printed}")), "describe d{index} {text}: {described}");
-        // History payloads live in a JSON column, so they hold the double
-        // that column stores, which the database itself names.
-        let stored = serde_json::to_string(&json_column_double(&database, text).await).unwrap();
-        assert!(history.contains(&format!("\"d{index}\":{stored}")), "history d{index} {text} as {stored}: {history}");
+        // History keeps every digit too, MySQL included (server#1016).
+        assert!(history.contains(&format!("\"d{index}\":{printed}")), "history d{index} {text}: {history}");
     }
     runtime.close().await;
     database.remove().await;

@@ -30,7 +30,7 @@ pub(super) const DEVELOPMENT_ENGINE: &str = "rust-development";
 pub(super) const UPGRADING_ENGINE: &str = "rust-upgrading";
 /// Earlier native schema versions this binary upgrades in place. Release
 /// candidates `3.0.0-rc.1` and `3.0.0-rc.2` shipped version 7.
-pub(super) const UPGRADABLE: &[i64] = &[7, 8, 10, 11];
+pub(super) const UPGRADABLE: &[i64] = &[7, 8, 10, 11, 12];
 
 /// The refusal for a native marker this binary does not open as it is.
 pub(super) fn marker_refusal(engine: &str, version: i64, current: i64) -> RuntimeError {
@@ -131,8 +131,8 @@ pub async fn upgrade_postgres(options: PgConnectOptions) -> Result<Value> {
 /// Upgrade a native MySQL or MariaDB database under the bootstrap named
 /// lock. An interrupted upgrade resumes when the command is run again.
 pub async fn upgrade_mysql(options: MySqlConnectOptions) -> Result<Value> {
-    let (backend, from) = super::mysql::upgrade(options).await?;
-    Ok(report(backend, from, super::mysql::VERSION))
+    let (backend, from, to) = super::mysql::upgrade(options).await?;
+    Ok(report(backend, from, to))
 }
 
 #[cfg(test)]

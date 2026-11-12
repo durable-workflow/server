@@ -7,10 +7,11 @@ import assert from 'node:assert/strict';
 // - published PHP renders a typed double search attribute through PHP's
 //   14-digit `precision` in the run description and the visibility list
 //   (`php_search_attribute_precision`); native keeps every digit;
-// - on MySQL, the json column type parses doubles itself, so history
-//   payloads (WorkflowStarted, heartbeat details) hold MySQL's double for
-//   both implementations (`mysql_json_doubles`, read from MySQL 8.0 with
-//   CAST(... AS JSON)). MariaDB, SQLite and PostgreSQL keep the text.
+// - on MySQL, published PHP's json column type parses doubles itself, so
+//   its history payloads (WorkflowStarted, heartbeat details) hold MySQL's
+//   double (`mysql_json_doubles`, read from MySQL 8.0 with CAST(... AS
+//   JSON)). Native stores JSON as exact text from schema 13 (server#1016),
+//   as MariaDB, SQLite and PostgreSQL keep it.
 // Expectations come from the fixture's texts, never from a server recording.
 const HISTORY_READERS = ['started_memo', 'started_search_attributes', 'heartbeat_details'];
 const ATTRIBUTE_READERS = ['described_search_attributes', 'listed_search_attributes'];
@@ -39,7 +40,8 @@ export function checkJsonDoubles(fixture, observation) {
     assert.ok(Number.isFinite(value) && !Number.isInteger(value), `fixture double ${name} has a fraction`);
     return value;
   };
-  const stored = (name) => storage === 'mysql_json' && Object.hasOwn(definition.mysql_json_doubles, name)
+  const stored = (name) => storage === 'mysql_json' && implementation === null
+    && Object.hasOwn(definition.mysql_json_doubles, name)
     ? Number(definition.mysql_json_doubles[name]) : exact(name);
   const attribute = (name) => implementation === null
     ? Number(exact(name).toPrecision(definition.php_search_attribute_precision)) : exact(name);
