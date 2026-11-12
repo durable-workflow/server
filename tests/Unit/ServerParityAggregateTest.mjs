@@ -166,7 +166,10 @@ test('the fixture jobs run only through the classifier and the result waits for 
   const ids = Object.keys(blocks);
   assert.equal(ids[0], 'changes');
   assert.match(blocks.changes, /^ {4}timeout-minutes: \d+$/m);
-  assert.match(blocks.changes, /run: \$\{\{ steps\.classify\.outputs\.run \}\}/);
+  // A merge group a pull request run already passed exactly skips the fixture
+  // jobs; TestedMergeTest.mjs covers that decision.
+  assert.ok(blocks.changes.split('\n').includes(
+    "      run: ${{ steps.tested.outputs.tested == 'true' && 'false' || steps.classify.outputs.run }}"));
   assert.match(blocks.changes, /run: bash scripts\/conformance\/server-parity\/changes\.sh >> "\$GITHUB_OUTPUT"$/m);
   assert.match(blocks.changes, /full: \$\{\{ steps\.classify\.outputs\.full \}\}/);
   // The root fixture jobs run only through the classifier. Only the cache
@@ -233,6 +236,22 @@ const fixture = (result, run) => ({
   'mysql-execution': {result, outputs: {}},
   'postgres-storage': {result, outputs: {}},
   'execution-and-codec': {result, outputs: {}},
+});
+
+test('the result names an exact tested merge as the reason every fixture job was skipped', () => {
+  const skipped = fixture('skipped', 'false');
+  skipped.changes.outputs.tested = 'true';
+  assert.match(decide(skipped).reason, /^A pull request run already passed this exact merge; every fixture job was skipped/);
+  assert.equal(decide(skipped).pass, true);
+  // Being tested never excuses a fixture job that ran and failed or one that
+  // was skipped while the classifier asked for it.
+  const ran = fixture('skipped', 'true');
+  ran.changes.outputs.tested = 'true';
+  assert.equal(decide(ran).pass, false);
+  const failed = fixture('skipped', 'false');
+  failed.changes.outputs.tested = 'true';
+  failed['mysql-execution'] = {result: 'failure', outputs: {}};
+  assert.equal(decide(failed).pass, false);
 });
 
 test('the result passes when every fixture job passed', () => {

@@ -211,10 +211,14 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
         foreach ([
             'qualification:',
             'name: Feature source qualification',
-            'needs: [preflight, feature]',
+            'needs: [preflight, tested-merge, feature]',
             'if: ${{ always() }}',
             'test "$PREFLIGHT_RESULT" = success',
             'test "$FEATURE_RESULT" = success',
+            // Only a merge group a pull request run already passed exactly
+            // (tests/Unit/TestedMergeTest.mjs) may skip the feature suite.
+            'if [ "$EVENT_NAME" = merge_group ] && [ "$TESTED_MERGE" = true ] && [ "$FEATURE_RESULT" = skipped ]; then',
+            "if: \${{ always() && !cancelled() && needs.tested-merge.outputs.tested != 'true' }}",
         ] as $needle) {
             $this->assertStringContainsString($needle, $this->workflow);
         }

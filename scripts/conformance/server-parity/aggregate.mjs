@@ -3,7 +3,8 @@
 // context as JSON.
 //
 // Passes only when every fixture job passed, or when the classifier reported
-// that no fixture input changed and every fixture job was skipped for that
+// that no fixture input changed, or that a pull request run already passed
+// this exact merge (tested=true), and every fixture job was skipped for that
 // reason. A push to main the merge queue already qualified (full=false)
 // passes when exactly the cache-saving jobs passed and every other job was
 // skipped. A failed, cancelled or unexpectedly skipped job fails the result,
@@ -60,7 +61,10 @@ export function decide(needs) {
   }
   return {
     pass: true,
-    reason: run === 'true' ? `Every fixture job passed: ${summary}.` : `No fixture input changed; every fixture job was skipped: ${summary}.`,
+    reason: run === 'true' ? `Every fixture job passed: ${summary}.`
+      : changes.outputs?.tested === 'true'
+        ? `A pull request run already passed this exact merge; every fixture job was skipped: ${summary}.`
+        : `No fixture input changed; every fixture job was skipped: ${summary}.`,
   };
 }
 
