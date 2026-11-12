@@ -138,11 +138,10 @@ Artifacts land in `build/perf/` by default. The script removes the Compose proje
 
 For the Server #137 HTTP-runtime comparison, dispatch `Server Perf Soak` on
 `main` with an exact `published_server_image` digest, `fixed_envelope=true`,
-and `http_variant=apache`, `swoole`, or `openswoole`. Each dispatch uses the
-same published application, queue worker, scheduler, SDK fixture, workload,
-host plan, and 1-CPU/1-GiB HTTP cap. The Swoole variants build local Octane
-images from the selected published digest with 12 request workers and a
-500-request recycle limit; the official image remains the Apache baseline.
+and `http_variant=apache`, `nginx-fpm`, or `apache-event-fpm`. Each dispatch
+uses the same published application, queue worker, scheduler, SDK fixture,
+workload, host plan, and 1-CPU/1-GiB HTTP cap; the official image remains the
+Apache baseline. The Octane variants were removed in server#677.
 The fixed overlay pins MySQL, Redis, Composer and PHP image digests, caps the
 other services, and sets identical worker/query poll admission limits across
 variants. `server-image.json` records the actual HTTP
