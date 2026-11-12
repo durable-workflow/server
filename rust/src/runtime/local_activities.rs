@@ -981,9 +981,12 @@ store_methods! {
     /// sticky execution (Server #1017): protocol 1.18 or newer, a lease owner
     /// whose registration lists and supports `sticky_execution`, and a claim
     /// naming exactly that worker, the task's run and workflow, and the
-    /// registration's build (else its SDK version).
+    /// registration's build (else its SDK version). Answers the
+    /// registration's stored process metrics for `record_sticky_cache`: the
+    /// completion holds the transition lock, so no other write changes them
+    /// before it records the claim (Server #1171).
     pub(super) async fn guard_sticky_cache(tx: &mut Transaction<'_, DB>, namespace: &str, task: &DB::Row, body: &Value,
-        protocol: Option<&str>, workflow_id: &str) -> Result<()> {
+        protocol: Option<&str>, workflow_id: &str) -> Result<Value> {
         const CAPABILITY: &str = "sticky_execution";
         let task_id = DB::string(task, "id")?;
         let attempt = body["workflow_task_attempt"].as_i64().map_or(Value::Null, Value::from);
@@ -992,7 +995,7 @@ store_methods! {
             return Err(rejected("portable_worker_affinity_protocol_floor_unavailable"));
         }
         let owner = super::text(body, "lease_owner")?;
-        let worker = Self::query("SELECT capabilities,capability_manifest,build_id,sdk_version FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
+        let worker = Self::query("SELECT capabilities,capability_manifest,build_id,sdk_version,process_metrics FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
             .bind(namespace).bind(owner).fetch_optional(&mut **tx).await?;
         let Some(worker) = worker else {
             return Err(rejected("worker_capability_not_supported"));
@@ -1016,14 +1019,17 @@ store_methods! {
         {
             return Err(rejected("sticky_cache_identity_mismatch"));
         }
-        Ok(())
+        Ok(DB::optional_document_row(&worker, "process_metrics")?.filter(Value::is_object).unwrap_or_else(|| json!({})))
     }
 
     /// `applyStickyCacheClaim`: after the accepted completion, in its
     /// transaction, the run keeps the worker's affinity until the claim's
     /// expiry, or loses it when it closed. The worker's reported cache
-    /// metrics are kept with its registration.
-    pub(super) async fn record_sticky_cache(tx: &mut Transaction<'_, DB>, namespace: &str, run_id: &str, task_id: &str, body: &Value) -> Result<()> {
+    /// metrics are kept with its registration. `run_status` is the status the
+    /// completion just left the run in, and `metrics` the registration's
+    /// process metrics `guard_sticky_cache` read in this transaction.
+    pub(super) async fn record_sticky_cache(tx: &mut Transaction<'_, DB>, namespace: &str, run_id: &str, task_id: &str, body: &Value,
+        run_status: &str, mut metrics: Value) -> Result<()> {
         let claim = &body["sticky_cache"];
         if let Some(through) = claim["history_last_sequence"].as_i64() {
             let row = Self::query("SELECT payload FROM workflow_tasks WHERE id=$1").bind(task_id).fetch_one(&mut **tx).await?;
@@ -1033,16 +1039,11 @@ store_methods! {
                 .execute(&mut **tx).await?;
         }
         let owner = super::text(body, "lease_owner")?;
-        let status = Self::query("SELECT status FROM workflow_runs WHERE id=$1").bind(run_id).fetch_one(&mut **tx).await?;
-        let retain = !super::sticky_execution::terminal(&DB::string(&status, "status")?);
+        let retain = !super::sticky_execution::terminal(run_status);
         let until = super::store::now() + chrono::Duration::seconds(claim["ttl_seconds"].as_i64().unwrap_or(0));
         Self::query("UPDATE workflow_runs SET sticky_worker_id=$1,sticky_until=$2 WHERE id=$3")
             .bind(retain.then_some(owner)).bind(DB::optional_time(retain.then_some(until))).bind(run_id)
             .execute(&mut **tx).await?;
-        let mut metrics = Self::query("SELECT process_metrics FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
-            .bind(namespace).bind(owner).fetch_optional(&mut **tx).await?
-            .map(|row| DB::optional_document_row(&row, "process_metrics")).transpose()?.flatten()
-            .filter(Value::is_object).unwrap_or_else(|| json!({}));
         metrics["sticky_cache"] = claim.get("metrics").filter(|value| !value.is_null()).cloned().unwrap_or_else(|| json!([]));
         Self::query("UPDATE workflow_worker_registrations SET process_metrics=$1 WHERE namespace=$2 AND worker_id=$3")
             .bind(DB::document(&metrics)).bind(namespace).bind(owner).execute(&mut **tx).await?;

@@ -749,6 +749,8 @@ mod tests {
         let db = Database::new().await;
         let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_activity_completion_without_readback().await;
+        store.qualify_sticky_completion_statements().await;
+        store.qualify_replay_clock_statements().await;
         store.close().await;
         db.remove().await;
     }
