@@ -69,6 +69,15 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.4.0 / Server 3.6.0 (native)
+
+No schema upgrade from Server 3.5.0: MySQL, MariaDB and PostgreSQL stay at
+native schema 12, so `helm upgrade` only replaces the image, and rolling back
+to 3.5.0 is an image change. From Server 3.4.x or earlier, apply the schema
+upgrade in the Chart 1.3.0 notes below first. Server 3.6.0's runtime base
+fixes CVE-2026-109518. See the
+[3.6.0 release notes](https://github.com/durable-workflow/server/releases/tag/3.6.0).
+
 ### Chart 1.3.0 / Server 3.5.0 (native)
 
 **This upgrade needs an explicit native schema upgrade.** Server 3.5.0 adds one
