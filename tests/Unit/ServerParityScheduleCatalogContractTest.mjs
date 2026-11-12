@@ -32,9 +32,18 @@ function model() {
 }
 const projection = {scope: 'schedule_catalog'};
 
+// Native records only fields that change and no event for the empty update (#1147).
+function nativeHistory(steps) {
+  const history = steps[50].response;
+  history.events = history.events.slice(0, 5);
+  [['overlap_policy', 'note'], ['spec', 'action'], ['memo', 'max_runs', 'remaining_actions'], ['memo']]
+    .forEach((fields, index) => { history.events[index + 1].payload.changed_fields = fields; });
+}
+
 function nativeModel() {
   const observation = model();
   const steps = observation.schedule_catalog.steps;
+  nativeHistory(steps);
   let sequence = 1;
   for (const step of steps) {
     for (const result of step.response.results ?? []) {
@@ -108,6 +117,22 @@ for (const [label, mutate] of [
   });
 }
 
+test('native cannot record published PHP changed fields', () => {
+  const observation = nativeModel();
+  observation.schedule_catalog.steps[50] = model().schedule_catalog.steps[50];
+  assert.throws(() => checkScheduleCatalog(fixture, observation, workflowId, 'rust'), /changed fields/);
+});
+test('native cannot record an event for the unchanged update', () => {
+  const observation = nativeModel();
+  const events = observation.schedule_catalog.steps[50].response.events;
+  events.push({...structuredClone(events.at(-1)), sequence: 6});
+  assert.throws(() => checkScheduleCatalog(fixture, observation, workflowId, 'rust'));
+});
+test('published PHP cannot take the native changed fields', () => {
+  const observation = model();
+  nativeHistory(observation.schedule_catalog.steps);
+  assert.throws(() => checkScheduleCatalog(fixture, observation, workflowId), /changed fields/);
+});
 test('published PHP responses pass', () => assert.deepStrictEqual(checkScheduleCatalog(fixture, model(), workflowId), projection));
 test('a sequence replayed in a new namespace passes', () => {
   const observation = model();

@@ -645,3 +645,49 @@ async fn a_continued_scheduled_run_keeps_its_schedule_origin() {
     assert_eq!(kinds.get(started + 1), Some(&"ScheduleTriggered"), "{kinds:?}");
     assert_eq!(history[started + 1]["payload"], origin["payload"]);
 }
+
+#[tokio::test]
+async fn reapplying_an_unchanged_schedule_records_nothing_and_keeps_its_next_fire() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let config = json!({"spec":{"intervals":[{"every":"P1D"}],"timezone":"UTC"},"action":action(),
+        "overlap_policy":"skip","jitter_seconds":3000,"note":"deploy","memo":null,"search_attributes":null});
+    let mut body = config.clone();
+    body["schedule_id"] = json!("deploy");
+    let created = request(&app, "POST", "/api/schedules", body).await;
+    assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    let before = request(&app, "GET", "/api/schedules/deploy", Value::Null).await.1;
+    let next = before["next_fire_at"].clone();
+    assert!(next.is_string(), "{before}");
+
+    // Deploy tooling re-applies the same configuration on every deploy.
+    for _ in 0..3 {
+        let applied = request(&app, "PUT", "/api/schedules/deploy", config.clone()).await;
+        assert_eq!(applied, (StatusCode::OK, json!({"schedule_id":"deploy","outcome":"updated"})));
+    }
+    let after = request(&app, "GET", "/api/schedules/deploy", Value::Null).await.1;
+    assert_eq!((after["next_fire_at"].clone(), after["updated_at"].clone()), (next.clone(), before["updated_at"].clone()));
+    let events = audit(&app, "deploy").await;
+    assert_eq!(events.iter().map(|event| event["event_type"].clone()).collect::<Vec<_>>(), [json!("ScheduleCreated")]);
+
+    // Metadata-only changes record only themselves and keep the next fire.
+    let noted = request(&app, "PUT", "/api/schedules/deploy",
+        json!({"note":"changed","overlap_policy":"skip","jitter_seconds":3000,"max_runs":4})).await;
+    assert_eq!(noted.0, StatusCode::OK, "{}", noted.1);
+    let events = audit(&app, "deploy").await;
+    let updated = &events.last().unwrap()["payload"];
+    assert_eq!(updated["changed_fields"], json!(["note","max_runs","remaining_actions"]));
+    assert_eq!(updated["next_fire_at"], next);
+    assert_eq!(request(&app, "GET", "/api/schedules/deploy", Value::Null).await.1["next_fire_at"], next);
+
+    // A timing change moves the next fire.
+    let moved = request(&app, "PUT", "/api/schedules/deploy",
+        json!({"spec":{"intervals":[{"every":"PT1H"}],"timezone":"UTC"},"jitter_seconds":0})).await;
+    assert_eq!(moved.0, StatusCode::OK, "{}", moved.1);
+    let events = audit(&app, "deploy").await;
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[2]["payload"]["changed_fields"], json!(["spec","jitter_seconds"]));
+    let moved = request(&app, "GET", "/api/schedules/deploy", Value::Null).await.1["next_fire_at"].clone();
+    assert_ne!(moved, next);
+    assert_eq!(events[2]["payload"]["next_fire_at"], moved);
+}
