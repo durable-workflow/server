@@ -126,8 +126,9 @@ async fn a_redriven_run_cancels_and_terminates_like_php() {
 }
 
 /// A run like `failed_at_second_activity`, started with `start` fields and
-/// with `extra` commands in its first workflow task.
+/// with `extra` commands, one step each, in its first workflow task.
 async fn failed_with(app: &Router, workflow: &str, start: Value, extra: Vec<Value>) -> Value {
+    let failed_step = 2 + extra.len();
     let mut body = json!({"workflow_id":workflow,"workflow_type":"echo","task_queue":"test","input":envelope(Payload::Array(vec![]))});
     for (key, value) in start.as_object().unwrap() {
         body[key] = value.clone();
@@ -148,7 +149,7 @@ async fn failed_with(app: &Router, workflow: &str, start: Value, extra: Vec<Valu
         "activity_attempt_id":activity["activity_attempt_id"],"failure":{"class":"App\\Boom","message":"boom"}})).await;
     assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
     let task = poll(app, "worker", "workflow").await;
-    let done = finish_task(app, &task, json!([{"type":"fail_workflow","message":"gave up","failed_step_sequence":2,
+    let done = finish_task(app, &task, json!([{"type":"fail_workflow","message":"gave up","failed_step_sequence":failed_step,
         "failed_activity_execution_id":activity["activity_execution_id"]}])).await;
     assert_eq!(done.1["run_status"], "failed", "{}", done.1);
     started
@@ -156,7 +157,9 @@ async fn failed_with(app: &Router, workflow: &str, start: Value, extra: Vec<Valu
 
 // Server #980 (Core workflow#985): start-time memos and search attributes
 // carry to the redriven successor. A run whose workflow code upserted one
-// still refuses: native does not reuse upsert steps yet (a later slice).
+// refuses as Core refuses a service worker's run
+// (`FailedRunRedriveEligibility`, fixture redrive-service-unqualified-history):
+// the SDKs are not qualified to replay a reused upsert yet.
 #[tokio::test]
 async fn redrive_carries_start_time_memo_and_search_attributes() {
     let database = TestDatabase::new().await;
@@ -186,12 +189,17 @@ async fn redrive_carries_start_time_memo_and_search_attributes() {
     let (status, body) = request(&app, "POST", "/api/workflows/rd-visible/terminate", json!({"reason":"checked"})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // An upsert by workflow code is still refused before anything is written.
+    // An upsert by workflow code is refused before anything is written.
     let upserted = failed_with(&app, "rd-upserted", json!({}), vec![json!({"type":"upsert_memo",
         "entries":envelope(Payload::Map(std::collections::BTreeMap::from([("note".into(), Payload::String("by code".into()))])))})]).await;
-    let path = format!("/api/workflows/rd-upserted/runs/{}/redrive", upserted["run_id"].as_str().unwrap());
-    let (status, refused) = request(&app, "POST", &path, json!({})).await;
-    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("unsupported_history")), "{refused}");
+    let source = upserted["run_id"].as_str().unwrap();
+    let path = format!("/api/workflows/rd-upserted/runs/{source}");
+    let refused = request(&app, "GET", &path, Value::Null).await.1;
+    assert_eq!(redrive_report(&refused), (json!(false), json!("service_redrive_history_not_qualified")), "{refused}");
+    let (status, refused) = request(&app, "POST", &format!("{path}/redrive"), json!({})).await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("service_redrive_history_not_qualified")), "{refused}");
+    let (_, described) = request(&app, "GET", "/api/workflows/rd-upserted", Value::Null).await;
+    assert_eq!(described["run_id"], json!(source), "{described}");
     runtime.close().await;
     database.remove().await;
 }
@@ -233,6 +241,94 @@ async fn describe_reports_the_redrive_decision() {
     let run = refused["run_id"].as_str().unwrap();
     let (status, body) = request(&app, "POST", &format!("/api/workflows/rd-refused/runs/{run}/redrive"), json!({})).await;
     assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("unrecorded_failure_boundary")), "{body}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Server #980 (Core workflow#991, fixture redrive-reused-markers-clock): side
+// effects and version markers before the failed step are reused in step
+// order, with the source payload plus `reused_from_run_id` and the time the
+// step first ran as `reused_recorded_at`, so the successor's workflow time
+// after each step is the source's. A second redrive keeps that first time.
+#[tokio::test]
+async fn redrive_reuses_side_effects_and_version_markers_at_their_recorded_time() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registered = request(&app, "POST", "/api/worker/register", json!({"worker_id":"worker","task_queue":"test",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["a","b"],
+        "workflow_definition_fingerprints":{"echo":FINGERPRINT}})).await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    let side_effect = envelope(Payload::String("0123456789abcdef".into()));
+    let markers = vec![json!({"type":"record_side_effect","result":side_effect}),
+        json!({"type":"record_version_marker","change_id":"redrive-markers","version":1,"min_supported":-1,"max_supported":1})];
+    let source = failed_with(&app, "rd-markers", json!({}), markers).await;
+    let source_run = source["run_id"].as_str().unwrap().to_owned();
+    // The source's steps ran earlier than the redrive.
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_history_events SET recorded_at='2026-11-03 00:00:00.000000' WHERE workflow_run_id='{source_run}' AND event_type IN ('SideEffectRecorded','VersionMarkerRecorded')"))).await;
+    let source_history = run_history(&app, &json!("rd-markers"), &json!(source_run)).await;
+    let recorded = |history: &Value, kind: &str| history.as_array().unwrap().iter().find(|event| event["event_type"] == kind).unwrap()["payload"].clone();
+    let path = format!("/api/workflows/rd-markers/runs/{source_run}");
+    assert_eq!(redrive_report(&request(&app, "GET", &path, Value::Null).await.1), (json!(true), Value::Null));
+
+    let (status, redriven) = request(&app, "POST", &format!("{path}/redrive"), json!({})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{redriven}");
+    assert_eq!(redriven["resume_step_sequence"], json!(4), "{redriven}");
+    let run = redriven["run_id"].as_str().unwrap().to_owned();
+    let history = run_history(&app, &json!("rd-markers"), &json!(run)).await;
+    assert_eq!(kinds(&history), ["StartAccepted", "WorkflowStarted", "SideEffectRecorded", "VersionMarkerRecorded", "ActivityCompleted"]);
+    let first_ran = json!("2026-11-03T00:00:00+00:00");
+    for (kind, sequence) in [("SideEffectRecorded", 1), ("VersionMarkerRecorded", 2)] {
+        let mut reused = recorded(&history, kind);
+        assert_eq!((reused["sequence"].clone(), reused["reused_from_run_id"].clone(), reused["reused_recorded_at"].clone()),
+            (json!(sequence), json!(source_run), first_ran.clone()), "{kind}: {reused}");
+        // The source payload, without its task and command.
+        let mut original = recorded(&source_history, kind);
+        let fields = original.as_object_mut().unwrap();
+        assert!(fields.remove("task").is_some(), "{kind}: the source records its task");
+        fields.remove("command");
+        for key in ["reused_from_run_id", "reused_recorded_at"] {
+            reused.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(reused, original, "{kind}");
+    }
+    assert_eq!(recorded(&history, "ActivityCompleted")["sequence"], json!(3));
+
+    // The worker replays the reused steps and reschedules only the failed one.
+    let task = poll(&app, "worker", "workflow").await;
+    assert_eq!(task["run_id"], json!(run), "{task}");
+    let replayed: Vec<&str> = task["history_events"].as_array().unwrap().iter().map(|event| event["event_type"].as_str().unwrap()).collect();
+    assert_eq!(replayed, ["StartAccepted", "WorkflowStarted", "SideEffectRecorded", "VersionMarkerRecorded", "ActivityCompleted"]);
+    let resumed = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b","arguments":envelope(Payload::Array(vec![]))}])).await;
+    assert_eq!(resumed.0, StatusCode::OK, "{}", resumed.1);
+    let activity = poll(&app, "worker", "activity").await;
+    assert_eq!(activity["activity_type"], "b", "{activity}");
+    let history = run_history(&app, &json!("rd-markers"), &json!(run)).await;
+    assert_eq!(recorded(&history, "ActivityScheduled")["sequence"], json!(4));
+
+    // The successor fails at the same step again. Its redrive reuses the
+    // markers from it, keeping the time they first ran.
+    let failed = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/fail", activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+        "failure":{"class":"App\\Boom","message":"boom"}})).await;
+    assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
+    let task = poll(&app, "worker", "workflow").await;
+    let done = finish_task(&app, &task, json!([{"type":"fail_workflow","message":"gave up","failed_step_sequence":4,
+        "failed_activity_execution_id":activity["activity_execution_id"]}])).await;
+    assert_eq!(done.1["run_status"], "failed", "{}", done.1);
+    let (status, again) = request(&app, "POST", &format!("/api/workflows/rd-markers/runs/{run}/redrive"), json!({})).await;
+    assert_eq!((status, again["resume_step_sequence"].clone()), (StatusCode::ACCEPTED, json!(4)), "{again}");
+    let history = run_history(&app, &json!("rd-markers"), &again["run_id"]).await;
+    assert_eq!(kinds(&history), ["StartAccepted", "WorkflowStarted", "SideEffectRecorded", "VersionMarkerRecorded", "ActivityCompleted"]);
+    for kind in ["SideEffectRecorded", "VersionMarkerRecorded", "ActivityCompleted"] {
+        let reused = recorded(&history, kind);
+        assert_eq!(reused["reused_from_run_id"], json!(run), "{kind}: {reused}");
+    }
+    for kind in ["SideEffectRecorded", "VersionMarkerRecorded"] {
+        assert_eq!(recorded(&history, kind)["reused_recorded_at"], first_ran, "{kind}");
+    }
+    let (status, body) = request(&app, "POST", "/api/workflows/rd-markers/terminate", json!({"reason":"checked"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     runtime.close().await;
     database.remove().await;
 }
