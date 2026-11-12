@@ -18,7 +18,8 @@ async fn describe_reports_php_actions_and_fields() {
     assert_eq!(
         open["actions"],
         json!({"can_signal":true,"can_query":false,"can_update":false,"can_cancel":true,
-            "can_terminate":true,"can_repair":true,"can_archive":false})
+            "can_terminate":true,"can_repair":true,"can_archive":false,
+            "can_redrive":false,"redrive_blocked_reason":"run_not_failed"})
     );
     assert_eq!(open["memo"], json!([]));
     assert_eq!(open["search_attributes"], json!([]));
@@ -43,7 +44,8 @@ async fn describe_reports_php_actions_and_fields() {
     assert_eq!(
         described(&app, "acted").await["actions"],
         json!({"can_signal":false,"can_query":false,"can_update":false,"can_cancel":false,
-            "can_terminate":false,"can_repair":false,"can_archive":true})
+            "can_terminate":false,"can_repair":false,"can_archive":true,
+            "can_redrive":false,"redrive_blocked_reason":"run_not_failed"})
     );
 }
 

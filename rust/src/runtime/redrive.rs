@@ -3,7 +3,7 @@
 //! activity failed continues in a new run whose history reuses the completed
 //! activities before that step, so its workflow resumes at the failed step.
 use super::laravel_rules::{self, Rule};
-use super::{Result, RuntimeError, backend::Backend, refuse, store::{Store, id, now}};
+use super::{Result, RuntimeError, backend::Backend, refuse, store::{Store, id, now}, transaction::Transaction};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
@@ -28,6 +28,13 @@ fn iso(at: DateTime<Utc>) -> String {
 struct Reused {
     payload: Value,
     recorded_at: DateTime<Utc>,
+}
+
+/// What an accepted redrive continues from.
+struct Decision {
+    resume: i64,
+    reused: Vec<Reused>,
+    started: Value,
 }
 
 /// `FailedRunRedrivePlan::forRun` over the source run's history.
@@ -145,6 +152,92 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// `FailedRunRedriveEligibility::evaluate`: whether redrive accepts this
+    /// source run, and if not, why. Redrive applies it inside its transaction
+    /// (`presented`: compare the worker cohort's definition); describe reads
+    /// the same decision.
+    async fn redrive_decision(&self, tx: &mut Transaction<'_, DB>, source: &DB::Row, current: bool, presented: bool)
+        -> Result<std::result::Result<Decision, &'static str>> {
+        if !current {
+            return Ok(Err("source_run_not_current"));
+        }
+        let source_id = DB::string(source, "id")?;
+        let source_id = source_id.as_str();
+        let mut events = Vec::new();
+        for row in Self::query("SELECT event_type,payload,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence")
+            .bind(source_id).fetch_all(&mut **tx).await?
+        {
+            events.push((DB::string(&row, "event_type")?, DB::document_row(&row, "payload")?, DB::instant(&row, "recorded_at")?));
+        }
+        let (resume, reused) = match plan(&DB::string(source, "status")?, &events) {
+            Ok(plan) => plan,
+            Err(reason) => return Ok(Err(reason)),
+        };
+        // Start-time and inherited memos and search attributes carry to the
+        // successor as they are (server#980). A value workflow code upserted
+        // needs its upsert step reused, which native does not do yet.
+        let memos = Self::scalar("SELECT COUNT(*) FROM workflow_memos WHERE workflow_run_id=$1 AND upserted_at_sequence>0 AND inherited_from_parent=false").bind(source_id).fetch_one(&mut **tx).await?;
+        let attributes = Self::scalar("SELECT COUNT(*) FROM workflow_search_attributes WHERE workflow_run_id=$1 AND upserted_at_sequence>0 AND inherited_from_parent=false").bind(source_id).fetch_one(&mut **tx).await?;
+        if memos + attributes > 0 {
+            return Ok(Err("unsupported_visibility_metadata"));
+        }
+        let child = Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type='child_workflow'")
+            .bind(source_id).fetch_one(&mut **tx).await?;
+        let arguments = DB::optional_string(source, "arguments")?;
+        if child > 0 || arguments.as_deref().is_some_and(|blob| blob.starts_with(super::external_resolution::STORED_PREFIX)) {
+            return Ok(Err("unsupported_source_link_or_payload"));
+        }
+        let at = now();
+        let execution_deadline = DB::optional_instant(source, "execution_deadline_at")?;
+        if execution_deadline.is_some_and(|deadline| at >= deadline) {
+            return Ok(Err("execution_deadline_elapsed"));
+        }
+        let mut started = events.iter().find(|(kind, _, _)| kind == "WorkflowStarted").map(|(_, payload, _)| payload.clone()).unwrap_or(Value::Null);
+        if let Some(fields) = started.as_object_mut() {
+            fields.remove("command");
+            fields.remove("task");
+        }
+        let filled = |value: &Value| !(value.is_null() || value == &json!([]) || value == &json!({}) || value == "" || value == &json!(false));
+        if filled(&started["parent_workflow_run_id"]) {
+            return Ok(Err("unsupported_source_metadata"));
+        }
+        // An external workflow's definition must still match its worker cohort.
+        let workflow_type = DB::string(source, "workflow_type")?;
+        let queue = DB::string(source, "queue")?;
+        let recorded = started["workflow_definition_fingerprint"].as_str().filter(|value| !value.is_empty());
+        if DB::string(source, "workflow_class")? != workflow_type || recorded.is_none() {
+            return Ok(Err("workflow_definition_unavailable_or_changed"));
+        }
+        // Redrive compares the cohort's fingerprint (`ServerWorkflowControlPlane::
+        // redrive`: the source run's own cohort, its build or the unversioned
+        // workers). Describe cannot know which worker will take the run, so it
+        // needs only a recorded one.
+        if presented {
+            let workers = Self::start_workers(tx, &self.namespace, &queue, self.worker_stale_after_seconds).await?;
+            let source_cohort = super::start_definition::Cohort::of_run(DB::optional_string(source, "compatibility")?.as_deref());
+            let cohort = super::start_definition::fingerprint_for(&workers, &workflow_type, &source_cohort);
+            if recorded != cohort.as_deref() {
+                return Ok(Err("workflow_definition_unavailable_or_changed"));
+            }
+        }
+        Ok(Ok(Decision { resume, reused, started }))
+    }
+
+    /// `FailedRunRedriveEligibility::blockedReason` for describe: the reason
+    /// redrive would refuse this run, or `None` when it would accept it.
+    pub(super) async fn redrive_blocked_reason(&self, tx: &mut Transaction<'_, DB>, run: &DB::Row, current: bool)
+        -> Result<Option<&'static str>> {
+        if DB::string(run, "status")? != "failed" {
+            return Ok(Some("run_not_failed"));
+        }
+        let redriven = Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE parent_workflow_run_id=$1 AND link_type='redrive'")
+            .bind(DB::string(run, "id")?).fetch_one(&mut **tx).await?;
+        if redriven > 0 {
+            return Ok(Some("already_redriven"));
+        }
+        Ok(self.redrive_decision(tx, run, current, false).await?.err())
+    }
+
     pub(crate) async fn redrive_run(
         &self,
         workflow_id: &str,
@@ -169,61 +262,18 @@ where
                 "run_id":continued,"command_status":"accepted","outcome":"redriven","workflow_id":workflow_id})));
         }
         let conflict = |reason: &str| Ok(rejected(workflow_id, source_id, reason, StatusCode::CONFLICT));
-        if DB::optional_string(&instance, "current_run_id")?.as_deref() != Some(source_id) {
-            return conflict("source_run_not_current");
-        }
-        let mut events = Vec::new();
-        for row in Self::query("SELECT event_type,payload,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence")
-            .bind(source_id).fetch_all(&mut *tx).await?
-        {
-            events.push((DB::string(&row, "event_type")?, DB::document_row(&row, "payload")?, DB::instant(&row, "recorded_at")?));
-        }
-        let (resume, reused) = match plan(&DB::string(&source, "status")?, &events) {
-            Ok(plan) => plan,
+        let current = DB::optional_string(&instance, "current_run_id")?.as_deref() == Some(source_id);
+        let Decision { resume, reused, started } = match self.redrive_decision(&mut tx, &source, current, true).await? {
+            Ok(decision) => decision,
             Err(reason) => return conflict(reason),
         };
-        // Start-time and inherited memos and search attributes carry to the
-        // successor as they are (server#980). A value workflow code upserted
-        // needs its upsert step reused, which native does not do yet.
-        let memos = Self::scalar("SELECT COUNT(*) FROM workflow_memos WHERE workflow_run_id=$1 AND upserted_at_sequence>0 AND inherited_from_parent=false").bind(source_id).fetch_one(&mut *tx).await?;
-        let attributes = Self::scalar("SELECT COUNT(*) FROM workflow_search_attributes WHERE workflow_run_id=$1 AND upserted_at_sequence>0 AND inherited_from_parent=false").bind(source_id).fetch_one(&mut *tx).await?;
-        if memos + attributes > 0 {
-            return conflict("unsupported_visibility_metadata");
-        }
-        let child = Self::scalar("SELECT COUNT(*) FROM workflow_links WHERE child_workflow_run_id=$1 AND link_type='child_workflow'")
-            .bind(source_id).fetch_one(&mut *tx).await?;
-        let arguments = DB::optional_string(&source, "arguments")?;
-        if child > 0 || arguments.as_deref().is_some_and(|blob| blob.starts_with(super::external_resolution::STORED_PREFIX)) {
-            return conflict("unsupported_source_link_or_payload");
-        }
         let at = now();
         let execution_deadline = DB::optional_instant(&source, "execution_deadline_at")?;
-        if execution_deadline.is_some_and(|deadline| at >= deadline) {
-            return conflict("execution_deadline_elapsed");
-        }
         let run_timeout = DB::optional_number(&source, "run_timeout_seconds")?.filter(|seconds| *seconds > 0);
         let run_deadline = run_timeout.map(|seconds| at + chrono::Duration::seconds(seconds));
-        let mut started = events.iter().find(|(kind, _, _)| kind == "WorkflowStarted").map(|(_, payload, _)| payload.clone()).unwrap_or(Value::Null);
-        if let Some(fields) = started.as_object_mut() {
-            fields.remove("command");
-            fields.remove("task");
-        }
-        let filled = |value: &Value| !(value.is_null() || value == &json!([]) || value == &json!({}) || value == "" || value == &json!(false));
-        if filled(&started["parent_workflow_run_id"]) {
-            return conflict("unsupported_source_metadata");
-        }
-        // An external workflow's definition must still match its worker cohort.
+        let mut started = started;
         let workflow_type = DB::string(&source, "workflow_type")?;
         let queue = DB::string(&source, "queue")?;
-        // `ServerWorkflowControlPlane::redrive`: the source run's own cohort,
-        // its build or the unversioned workers.
-        let workers = Self::start_workers(&mut tx, &self.namespace, &queue, self.worker_stale_after_seconds).await?;
-        let source_cohort = super::start_definition::Cohort::of_run(DB::optional_string(&source, "compatibility")?.as_deref());
-        let cohort = super::start_definition::fingerprint_for(&workers, &workflow_type, &source_cohort);
-        let recorded = started["workflow_definition_fingerprint"].as_str().filter(|value| !value.is_empty());
-        if DB::string(&source, "workflow_class")? != workflow_type || recorded.is_none() || recorded != cohort.as_deref() {
-            return conflict("workflow_definition_unavailable_or_changed");
-        }
         if let Some(request_id) = &request_id {
             let used = Self::scalar("SELECT COUNT(*) FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type='redrive' AND request_id=$2")
                 .bind(workflow_id).bind(request_id.as_str()).fetch_one(&mut *tx).await?;

@@ -962,6 +962,10 @@ where
                 fields.insert("last_progress_at".into(), super::task_queues::json_time(DB::optional_instant(&row, "last_progress_at")?));
                 if let Some(Value::Object(actions)) = fields.get_mut("actions") {
                     actions.values_mut().for_each(|value| *value = json!(false));
+                    // A read-only projection cannot be redriven either.
+                    if actions.contains_key("redrive_blocked_reason") {
+                        actions.insert("redrive_blocked_reason".into(), json!("v1_projection_read_only"));
+                    }
                 }
                 fields.insert("migration_projection".into(), metadata);
                 fields.insert("action_blocked_reason".into(), json!("v1_projection_read_only"));

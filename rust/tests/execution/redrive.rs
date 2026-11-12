@@ -195,3 +195,44 @@ async fn redrive_carries_start_time_memo_and_search_attributes() {
     runtime.close().await;
     database.remove().await;
 }
+
+fn redrive_report(described: &Value) -> (Value, Value) {
+    (described["actions"]["can_redrive"].clone(), described["actions"]["redrive_blocked_reason"].clone())
+}
+
+// Server #980 (Core workflow#990, fixture redrive-eligibility-report):
+// describe reports the decision redrive applies.
+#[tokio::test]
+async fn describe_reports_the_redrive_decision() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registered = request(&app, "POST", "/api/worker/register", json!({"worker_id":"worker","task_queue":"test",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["a","b"],
+        "workflow_definition_fingerprints":{"echo":FINGERPRINT}})).await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    let source = failed_at_second_activity(&app, "rd-report").await;
+    let source_run = source["run_id"].as_str().unwrap();
+    let path = format!("/api/workflows/rd-report/runs/{source_run}");
+    assert_eq!(redrive_report(&request(&app, "GET", &path, Value::Null).await.1), (json!(true), Value::Null));
+    let (status, redriven) = request(&app, "POST", &format!("{path}/redrive"), json!({})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{redriven}");
+    assert_eq!(redrive_report(&request(&app, "GET", &path, Value::Null).await.1), (json!(false), json!("already_redriven")));
+    let successor = request(&app, "GET", "/api/workflows/rd-report", Value::Null).await.1;
+    assert_eq!(redrive_report(&successor), (json!(false), json!("run_not_failed")), "{successor}");
+    let (status, body) = request(&app, "POST", "/api/workflows/rd-report/terminate", json!({"reason":"checked"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A failure without a recorded boundary reports redrive's own refusal.
+    start(&app, "rd-refused").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let (status, body) = finish_task(&app, &task, json!([{"type":"fail_workflow","message":"gave up"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let refused = request(&app, "GET", "/api/workflows/rd-refused", Value::Null).await.1;
+    assert_eq!(redrive_report(&refused), (json!(false), json!("unrecorded_failure_boundary")), "{refused}");
+    let run = refused["run_id"].as_str().unwrap();
+    let (status, body) = request(&app, "POST", &format!("/api/workflows/rd-refused/runs/{run}/redrive"), json!({})).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("unrecorded_failure_boundary")), "{body}");
+    runtime.close().await;
+    database.remove().await;
+}

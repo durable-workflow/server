@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {withoutNativeRedriveActions} from './redrive-actions.mjs';
 
 // Waterline v1 projection import (LegacyV1ProjectionController), recorded
 // against published Server 2.11.1. The fixture's `expected` holds the whole
@@ -6,7 +7,7 @@ import assert from 'node:assert/strict';
 // projected identities, event ids, dedupe keys and export checksums as
 // `{<label>.<token>}` labels, and import and export times as placeholders.
 // Every step compares exactly.
-export function checkWaterlineImport(fixture, observation, workflowId) {
+export function checkWaterlineImport(fixture, observation, workflowId, target) {
   const state = observation.waterline_import;
   const projection = {scope: 'waterline_import'};
   assert.ok(state && typeof state === 'object', 'actual waterline import observation');
@@ -16,7 +17,7 @@ export function checkWaterlineImport(fixture, observation, workflowId) {
     return projection;
   }
   const definition = fixture.waterline_import;
-  const actual = JSON.parse(JSON.stringify(state).replaceAll(workflowId, '{id}'));
+  const actual = withoutNativeRedriveActions(JSON.parse(JSON.stringify(state).replaceAll(workflowId, '{id}')), target, 'waterline import');
   for (const [step, expected] of Object.entries(definition.expected)) {
     assert.deepStrictEqual(actual[step], expected, `waterline import ${step}`);
   }

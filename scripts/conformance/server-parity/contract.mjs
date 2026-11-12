@@ -234,8 +234,8 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
   const serviceEndpoints = fixture.service_endpoints ? checkServiceEndpoints(fixture, observation, workflowId) : null;
   const serviceCalls = fixture.service_calls ? checkServiceCalls(fixture, observation, workflowId) : null;
-  const workflowImport = fixture.workflow_import ? checkWorkflowImport(fixture, observation, workflowId) : null;
-  const waterlineImport = fixture.waterline_import ? checkWaterlineImport(fixture, observation, workflowId) : null;
+  const workflowImport = fixture.workflow_import ? checkWorkflowImport(fixture, observation, workflowId, target) : null;
+  const waterlineImport = fixture.waterline_import ? checkWaterlineImport(fixture, observation, workflowId, target) : null;
   const systemMetrics = fixture.system_metrics ? checkSystemMetrics(fixture, observation, workflowId) : null;
   const operatorDashboardTypes = fixture.operator_dashboard_types ? checkOperatorDashboardTypes(fixture, observation, workflowId) : null;
   const prometheusMetrics = fixture.prometheus_metrics ? checkPrometheusMetrics(fixture, observation, workflowId) : null;
