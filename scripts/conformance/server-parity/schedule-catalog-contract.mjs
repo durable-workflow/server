@@ -26,6 +26,31 @@ const FIRE_TIMES = [[], [], [], [],
 
 const ids = step => step.response.schedules.map(item => item.schedule_id);
 
+// Published PHP's changed fields for alpha's five updates.
+const PHP_CHANGED_FIELDS = [['spec', 'action', 'overlap_policy', 'jitter_seconds', 'note'], ['spec', 'action'],
+  ['spec', 'action', 'memo', 'max_runs', 'remaining_actions'], ['spec', 'action', 'memo', 'search_attributes'],
+  ['spec', 'action']];
+
+/// The reviewed responses for a target. Native records only fields that
+/// change and nothing for an unchanged update (#1147), so alpha's history
+/// takes the fixture's reviewed `native_expected` changed fields and drops
+/// the trailing event of the empty update.
+function expectedFor(fixture, target) {
+  const native = target === 'rust' ? fixture.schedule_catalog.native_expected : undefined;
+  if (!native) return {steps: EXPECTED, changed: PHP_CHANGED_FIELDS};
+  const steps = structuredClone(EXPECTED);
+  const history = steps[50].response;
+  const kept = 1 + native.changed_fields.length;
+  assert.ok(history.events.slice(kept).every(event => event.event_type === 'ScheduleUpdated'),
+    'native drops only the unchanged updates');
+  history.events = history.events.slice(0, kept);
+  history.events.slice(1).forEach((event, index) => {
+    assert.equal(event.event_type, 'ScheduleUpdated', 'native keeps the changing updates');
+    event.payload.changed_fields = native.changed_fields[index];
+  });
+  return {steps, changed: native.changed_fields};
+}
+
 function checkedLastSkip(item, skipped, raw) {
   assert.ok(Object.hasOwn(item, 'last_skip_reason') && Object.hasOwn(item, 'last_skipped_at'),
     'complete schedule last-skip pair');
@@ -144,15 +169,14 @@ export function checkScheduleCatalog(fixture, observation, workflowId, target) {
   assert.equal(steps[27].response.reason, 'unsupported_schedule_visibility_field', 'unknown field refused');
   assert.deepStrictEqual([ids(steps[36]), ids(steps[38])], [[], []], 'search attribute predicates match no schedule');
   assert.equal(steps[41].response.reason, 'stale_schedule_page_token', 'deleted cursor');
-  // Updates merge the stored action and record PHP's changed fields.
+  // Updates merge the stored action and record the changed fields.
   const alpha = steps[49].response;
   assert.deepStrictEqual(alpha.action, {workflow_type: fixture.workflow_type, task_queue: 'catalog-z',
     input: {codec: 'avro', blob: fixture.schedule_catalog.input_blob}, execution_timeout_seconds: 60}, 'merged action');
   assert.deepStrictEqual([alpha.overlap_policy, alpha.state.note, alpha.memo], ['allow_all', 'changed', null], 'updated fields');
+  const expected = expectedFor(fixture, target);
   assert.deepStrictEqual(steps[50].response.events.filter(event => event.event_type === 'ScheduleUpdated')
-    .map(event => event.payload.changed_fields), [['spec', 'action', 'overlap_policy', 'jitter_seconds', 'note'],
-    ['spec', 'action'], ['spec', 'action', 'memo', 'max_runs', 'remaining_actions'], ['spec', 'action', 'memo', 'search_attributes'],
-    ['spec', 'action']], 'changed fields');
+    .map(event => event.payload.changed_fields), expected.changed, 'changed fields');
   assert.deepStrictEqual(ids(steps[51]), ['alpha'], 'updated task queue predicate');
   // Backfills.
   assert.deepStrictEqual(raw.filter(step => step.request.endsWith('/backfill'))
@@ -163,6 +187,6 @@ export function checkScheduleCatalog(fixture, observation, workflowId, target) {
   assert.deepStrictEqual(steps[64].response.results.map(result => result.outcome), ['started', 'started', 'started'],
     'buffering backfills start every occurrence');
   assert.equal(steps[66].response.fires_attempted, 2, 'quota ends the backfill');
-  assert.deepStrictEqual(steps, EXPECTED, 'every response matches the reviewed published PHP responses');
+  assert.deepStrictEqual(steps, expected.steps, 'every response matches the reviewed published PHP responses');
   return {scope: 'schedule_catalog'};
 }

@@ -139,7 +139,11 @@ where
         Ok(json!({"schedule_id":schedule_id,"outcome":"created"}))
     }
 
-    /// `ScheduleManager::update` on a live schedule.
+    /// `ScheduleManager::update` on a live schedule. Only fields whose stored
+    /// value changes count, in column order as Eloquent's dirty tracking
+    /// lists them. Re-applying the same configuration, as deploy tooling
+    /// does, writes nothing and keeps the next fire and its jitter
+    /// (workflow#1089); only a `spec` or `jitter_seconds` change moves it.
     pub(super) async fn update_schedule(
         &self,
         schedule_id: &str,
@@ -149,7 +153,8 @@ where
         let mut tx = self.begin().await?;
         let row = self.schedule_row(&mut tx, schedule_id, false).await?;
         let key = DB::string(&row, "id")?;
-        let mut spec = DB::optional_document_row(&row, "spec")?.unwrap_or_else(|| json!({}));
+        let stored_spec = DB::optional_document_row(&row, "spec")?.unwrap_or_else(|| json!({}));
+        let mut spec = stored_spec.clone();
         if let Some(changed) = changes.spec {
             // PHP leaves this LogicException unhandled (500).
             if let Some(problem) = schedules::spec_problem(&changed) {
@@ -157,7 +162,8 @@ where
             }
             spec = changed;
         }
-        let mut action = DB::optional_document_row(&row, "action")?.unwrap_or_else(|| json!({}));
+        let stored_action = DB::optional_document_row(&row, "action")?.unwrap_or_else(|| json!({}));
+        let mut action = stored_action.clone();
         if let Some(changed) = changes.action {
             // array_merge: the given fields replace the stored ones.
             if let (Some(stored), Some(given)) = (action.as_object_mut(), changed.as_object()) {
@@ -169,53 +175,62 @@ where
             }
             action = schedules::normalize_action_timeouts(&action);
         }
-        let mut changed_fields = vec!["spec", "action"];
-        let mut policy = DB::string(&row, "overlap_policy")?;
-        if let Some(changed) = changes.overlap_policy {
-            changed_fields.push("overlap_policy");
-            policy = changed;
-        }
-        let mut jitter = DB::number(&row, "jitter_seconds")?;
-        if let Some(changed) = changes.jitter_seconds {
-            changed_fields.push("jitter_seconds");
-            jitter = changed;
-        }
-        let mut note = DB::optional_string(&row, "note")?;
-        if let Some(changed) = changes.note {
-            changed_fields.push("note");
-            note = Some(changed);
-        }
-        let mut memo = DB::optional_document_row(&row, "memo")?;
-        if let Some(changed) = changes.memo {
-            changed_fields.push("memo");
-            memo = changed;
-        }
-        if changes.clears_search_attributes {
-            changed_fields.push("search_attributes");
-        }
-        let mut max_runs = DB::optional_number(&row, "max_runs")?;
-        let mut remaining = DB::optional_number(&row, "remaining_actions")?;
+        let stored_policy = DB::string(&row, "overlap_policy")?;
+        let policy = changes.overlap_policy.unwrap_or_else(|| stored_policy.clone());
+        let stored_note = DB::optional_string(&row, "note")?;
+        let note = changes.note.or_else(|| stored_note.clone());
+        let stored_memo = DB::optional_document_row(&row, "memo")?;
+        let memo = changes.memo.unwrap_or_else(|| stored_memo.clone());
+        let stored_attributes = DB::optional_document_row(&row, "search_attributes")?;
+        // An empty `search_attributes` clears them; native refuses others.
+        let attributes = if changes.clears_search_attributes { None } else { stored_attributes.clone() };
+        let stored_jitter = DB::number(&row, "jitter_seconds")?;
+        let jitter = changes.jitter_seconds.unwrap_or(stored_jitter);
+        let stored_max_runs = DB::optional_number(&row, "max_runs")?;
+        let stored_remaining = DB::optional_number(&row, "remaining_actions")?;
+        let (mut max_runs, mut remaining) = (stored_max_runs, stored_remaining);
         if let Some(changed) = changes.max_runs {
-            changed_fields.extend(["max_runs", "remaining_actions"]);
             let fires = DB::number(&row, "fires_count")?;
-            remaining = Some(if remaining.is_none() || changed > fires {
-                changed - fires
-            } else {
-                remaining.unwrap_or_default()
+            remaining = Some(match stored_remaining {
+                Some(stored) if changed <= fires => stored,
+                _ => changed - fires,
             });
             max_runs = Some(changed);
         }
+        let changed_fields: Vec<&str> = [
+            ("spec", spec != stored_spec),
+            ("action", action != stored_action),
+            ("overlap_policy", policy != stored_policy),
+            ("note", note != stored_note),
+            ("memo", memo != stored_memo),
+            ("search_attributes", attributes != stored_attributes),
+            ("jitter_seconds", jitter != stored_jitter),
+            ("max_runs", max_runs != stored_max_runs),
+            ("remaining_actions", remaining != stored_remaining),
+        ]
+        .into_iter()
+        .filter_map(|(field, changed)| changed.then_some(field))
+        .collect();
+        if changed_fields.is_empty() {
+            return Ok(json!({"schedule_id":schedule_id,"outcome":"updated"}));
+        }
         let changed_at = now();
-        let next = schedules::next_fire(&spec, jitter, changed_at)?;
-        Self::query("UPDATE workflow_schedules SET spec=$1,action=$2,overlap_policy=$3,jitter_seconds=$4,note=$5,memo=$6,max_runs=$7,remaining_actions=$8,updated_at=$9 WHERE id=$10")
+        Self::query("UPDATE workflow_schedules SET spec=$1,action=$2,overlap_policy=$3,jitter_seconds=$4,note=$5,memo=$6,search_attributes=$7,max_runs=$8,remaining_actions=$9,updated_at=$10 WHERE id=$11")
             .bind(DB::document(&spec)).bind(DB::document(&action)).bind(policy.as_str()).bind(jitter)
-            .bind(note.as_deref()).bind(memo.as_ref().map(DB::document)).bind(max_runs).bind(remaining)
+            .bind(note.as_deref()).bind(memo.as_ref().map(DB::document)).bind(attributes.as_ref().map(DB::document))
+            .bind(max_runs).bind(remaining)
             .bind(DB::bind_time(changed_at)).bind(&key).execute(&mut *tx).await?;
-        match next {
-            Some(next) => Self::query("UPDATE workflow_schedules SET next_fire_at=$1 WHERE id=$2")
-                .bind(DB::bind_time(next)).bind(&key).execute(&mut *tx).await?,
-            None => Self::query("UPDATE workflow_schedules SET next_fire_at=NULL WHERE id=$1")
-                .bind(&key).execute(&mut *tx).await?,
+        let next = if changed_fields.iter().any(|field| matches!(*field, "spec" | "jitter_seconds")) {
+            let next = schedules::next_fire(&spec, jitter, changed_at)?;
+            match next {
+                Some(next) => Self::query("UPDATE workflow_schedules SET next_fire_at=$1 WHERE id=$2")
+                    .bind(DB::bind_time(next)).bind(&key).execute(&mut *tx).await?,
+                None => Self::query("UPDATE workflow_schedules SET next_fire_at=NULL WHERE id=$1")
+                    .bind(&key).execute(&mut *tx).await?,
+            };
+            next
+        } else {
+            DB::optional_instant(&row, "next_fire_at")?
         };
         Self::append_schedule(
             &mut tx,
