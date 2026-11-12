@@ -6,6 +6,23 @@ use std::borrow::Cow;
 
 use super::{Result, mysql, postgres, schema};
 
+/// Redrive's copy of the source run's memos and search attributes, with the
+/// dialect's quoting of the `key` column.
+macro_rules! memo_redrive_copy {
+    ($key:literal) => {
+        concat!("INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,", $key,
+            ",value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) SELECT $1,workflow_instance_id,",
+            $key, ",value,upserted_at_sequence,inherited_from_parent,$2,$3,portable_value,portable_value_sequence FROM workflow_memos WHERE workflow_run_id=$4")
+    };
+}
+macro_rules! search_attribute_redrive_copy {
+    ($key:literal) => {
+        concat!("INSERT INTO workflow_search_attributes(workflow_run_id,workflow_instance_id,", $key,
+            ",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,created_at,updated_at) SELECT $1,workflow_instance_id,",
+            $key, ",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,$2,$3 FROM workflow_search_attributes WHERE workflow_run_id=$4")
+    };
+}
+
 macro_rules! sqlite_task_candidates_sql {
     ($limit:literal) => {
         concat!(r#"
@@ -163,6 +180,10 @@ pub(super) trait Backend: Database {
     const SEARCH_ATTRIBUTE_DELETE: &str = "DELETE FROM workflow_search_attributes WHERE workflow_run_id=$1 AND \"key\"=$2";
     const SEARCH_ATTRIBUTE_KEY_ROWS: &str = "SELECT a.workflow_run_id,a.\"key\" AS attribute_key,a.type,a.value_string,a.value_keyword,a.value_int,a.value_float,CASE WHEN a.value_bool IS NULL THEN NULL WHEN a.value_bool THEN 1 ELSE 0 END AS value_bool,a.value_datetime,a.value_keyword_list FROM workflow_search_attributes a JOIN workflow_runs r ON r.id=a.workflow_run_id WHERE r.namespace=$1 AND a.\"key\"=$2";
     const SEARCH_ATTRIBUTE_INHERIT: &str = "INSERT INTO workflow_search_attributes(workflow_run_id,workflow_instance_id,\"key\",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,upserted_at_sequence,inherited_from_parent,created_at,updated_at) SELECT $1,$2,\"key\",type,value_string,value_keyword,value_keyword_list,value_int,value_float,value_bool,value_datetime,1,true,$3,$4 FROM workflow_search_attributes WHERE workflow_run_id=$5";
+    /// A redrive successor keeps each source row as it is, its upsert
+    /// sequence and inheritance included (`copyForRedrive`, server#980).
+    const MEMO_REDRIVE_COPY: &str = memo_redrive_copy!("\"key\"");
+    const SEARCH_ATTRIBUTE_REDRIVE_COPY: &str = search_attribute_redrive_copy!("\"key\"");
     // Durable workflow stream items; `offset` is a reserved word.
     const STREAM_ITEM_BY_KEY: &str = "SELECT \"offset\" FROM workflow_durable_stream_items WHERE stream_id=$1 AND idempotency_key=$2 LIMIT 1";
     const STREAM_ITEM_INSERT: &str = "INSERT INTO workflow_durable_stream_items(stream_id,namespace,workflow_run_id,stream_name,\"offset\",idempotency_key,origin,origin_reference,payload,payload_reference,payload_codec,item_type,content_type,emitted_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)";
@@ -686,6 +707,9 @@ impl Backend for MySql {
     // exhausts MySQL's default sort buffer before the size rejection can run.
     const HISTORY_PAGE: &str = "SELECT h.* FROM (SELECT id,sequence,SUM(payload_bytes) OVER (ORDER BY sequence) AS page_bytes FROM (SELECT id,sequence,LENGTH(CAST(payload AS CHAR CHARACTER SET utf8mb4)) AS payload_bytes FROM workflow_history_events FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) WHERE workflow_run_id=? AND sequence>? ORDER BY sequence LIMIT ?) AS sizes) AS page JOIN workflow_history_events h ON h.id=page.id WHERE page.page_bytes<=8388608 ORDER BY page.sequence";
     const WORKER_REGISTRATION_SQL: &str = "INSERT INTO workflow_worker_registrations(namespace,worker_id,task_queue,runtime,sdk_version,build_id,supported_workflow_types,supported_activity_types,capabilities,capability_manifest,last_heartbeat_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE task_queue=VALUES(task_queue),runtime=VALUES(runtime),sdk_version=VALUES(sdk_version),build_id=VALUES(build_id),supported_workflow_types=VALUES(supported_workflow_types),supported_activity_types=VALUES(supported_activity_types),capabilities=VALUES(capabilities),capability_manifest=VALUES(capability_manifest),last_heartbeat_at=VALUES(last_heartbeat_at),updated_at=VALUES(updated_at)";
+    // MySQL quotes the reserved `key` column with backticks.
+    const MEMO_REDRIVE_COPY: &str = memo_redrive_copy!("`key`");
+    const SEARCH_ATTRIBUTE_REDRIVE_COPY: &str = search_attribute_redrive_copy!("`key`");
     fn statement(sql: &'static str) -> Cow<'static, str> {
         // These driver-owned templates already use '?' bindings and contain
         // literal '$.' JSON paths, not PostgreSQL bind placeholders.

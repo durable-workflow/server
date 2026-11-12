@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {withoutNativeRedriveActions} from './redrive-actions.mjs';
 
 // Reviewed history import (EmbeddedV2ImportController), recorded against
 // published Server 2.11.1 and moved to 2.11.8. The fixture's `expected` holds the whole
@@ -13,7 +14,7 @@ import assert from 'node:assert/strict';
 // 2.11.7 looked runs and instances up in every namespace (#765). Core
 // 2.15.12, in Server 2.11.8, refuses both as native does, so the reference
 // records no defect now.
-export function checkWorkflowImport(fixture, observation, workflowId) {
+export function checkWorkflowImport(fixture, observation, workflowId, target) {
   const state = observation.workflow_import;
   const projection = {scope: 'workflow_import'};
   assert.ok(state && typeof state === 'object', 'actual workflow import observation');
@@ -23,7 +24,7 @@ export function checkWorkflowImport(fixture, observation, workflowId) {
     return projection;
   }
   const definition = fixture.workflow_import;
-  const actual = JSON.parse(JSON.stringify(state).replaceAll(workflowId, '{id}'));
+  const actual = withoutNativeRedriveActions(JSON.parse(JSON.stringify(state).replaceAll(workflowId, '{id}')), target, 'workflow import');
   for (const defect of Object.values(definition.published_defects)) {
     const steps = Object.keys(defect.published);
     let published = true;

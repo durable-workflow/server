@@ -322,7 +322,12 @@ where
         fields.insert("wait_kind".into(), json!(wait_kind));
         fields.insert("wait_reason".into(), json!(wait_reason));
         fields.insert("search_attributes".into(), Self::typed_search_attributes(&mut **tx, &run_id).await?);
-        fields.insert("actions".into(), actions(current, terminal, archived, query_servable));
+        let mut actions = actions(current, terminal, archived, query_servable);
+        // Core workflow#990: the redrive decision redrive itself applies.
+        let blocked = self.redrive_blocked_reason(tx, run, current).await?;
+        actions["can_redrive"] = json!(blocked.is_none());
+        actions["redrive_blocked_reason"] = json!(blocked);
+        fields.insert("actions".into(), actions);
         fields.insert("updates_scope".into(), json!("selected_run"));
         fields.insert("updates".into(), json!(Self::update_diagnostics(&mut **tx, &run_id).await?));
         // `terminalFailurePayload`: a failed run's failure, last (Server #967).
