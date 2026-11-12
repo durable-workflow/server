@@ -165,6 +165,108 @@ store_methods! {
         }
     }
 
+    /// Server #1171: a sticky claim reuses the completion's run status and
+    /// the guard's registration read; it rereads neither.
+    pub(super) async fn qualify_sticky_completion_statements(&self) {
+        let input = crate::codec::ValueCodec::new().unwrap()
+            .encode(&crate::codec::Value::Array(vec![])).unwrap();
+        let worker = "sticky-statements-worker";
+        self.register(json!({"worker_id":worker,"task_queue":"sticky-statements","runtime":"php","build_id":"build-1",
+            "supported_workflow_types":["sticky-statements"],"supported_activity_types":["sticky-statements"],
+            "capabilities":["sticky_execution"],"process_metrics":{"memory_bytes":7},
+            "capability_manifest":{"local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+                "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"},
+                "sticky_execution":{"supported":true,"minimum_protocol_version":"1.18"}}}),
+            &super::QueryTaskConfig::default(),Some("1.20")).await.unwrap();
+        let cases = [
+            ("open",json!({"type":"schedule_activity","activity_type":"sticky-statements",
+                "arguments":{"codec":"avro","blob":input}}),"waiting",true),
+            ("closed",json!({"type":"complete_workflow","result":{"codec":"avro","blob":input}}),"completed",false),
+        ];
+        let metrics = json!({"hit":3,"miss":1,"eviction":0,"forced_cold_replay":0});
+        for (name,command,expected,retained) in cases {
+            // The same completion with and without a claim: the claim adds
+            // only its guard read and its two writes.
+            let mut counts = Vec::new();
+            for sticky in [false,true] {
+                let run = self.start(json!({"workflow_id":format!("sticky-statements-{name}-{sticky}"),
+                    "workflow_type":"sticky-statements","task_queue":"sticky-statements","input":{"codec":"avro","blob":input}}),
+                    BTreeMap::new(),None,None).await.unwrap();
+                let run_id = run["run_id"].as_str().unwrap();
+                let task = self.poll(json!({"worker_id":worker,"task_queue":"sticky-statements","timeout_seconds":0}),
+                    "workflow","1.20").await.unwrap()["task"].clone();
+                assert_eq!(task["run_id"],run_id);
+                let mut body = json!({"lease_owner":worker,"workflow_task_attempt":task["workflow_task_attempt"],
+                    "commands":[command.clone()]});
+                if sticky {
+                    body["sticky_cache"] = json!({"worker_id":worker,"workflow_id":task["workflow_id"],"run_id":run_id,
+                        "build_id":"build-1","ttl_seconds":300,"metrics":metrics});
+                }
+                let (answer,count) = super::sql_counts::measure(self.complete_or_checkpoint(
+                    task["task_id"].as_str().unwrap(),body,
+                    std::sync::Arc::new(tokio::sync::Semaphore::new(1)),BTreeMap::new(),None,
+                    super::carried_polls::Config {protocol:Some("1.20"),pages:Default::default(),default_wait:30},
+                    Default::default(),None,None)).await;
+                let answer = answer.unwrap();
+                assert_eq!(answer["recorded"],true,"{answer}");
+                assert_eq!(answer["run_status"],expected);
+                let row = Self::query("SELECT sticky_worker_id FROM workflow_runs WHERE id=$1").bind(run_id)
+                    .fetch_one(&self.pool).await.unwrap();
+                assert_eq!(DB::optional_string(&row,"sticky_worker_id").unwrap().as_deref(),
+                    (sticky && retained).then_some(worker),"{name}/{sticky}");
+                counts.push(count);
+            }
+            let [plain,sticky] = &counts[..] else { unreachable!() };
+            assert_eq!(sticky.count("SELECT status FROM workflow_runs WHERE id=$1"),plain.count("SELECT status FROM workflow_runs WHERE id=$1"),
+                "the claim must reuse the completion's run status: {name}");
+            assert_eq!(sticky.count_prefix("SELECT process_metrics FROM workflow_worker_registrations"),0,
+                "the claim must reuse the guard's registration read: {name}");
+            assert_eq!(sticky.count_prefix("SELECT capabilities,capability_manifest,build_id,sdk_version,process_metrics FROM workflow_worker_registrations"),1);
+            assert_eq!(sticky.count("UPDATE workflow_runs SET sticky_worker_id=$1,sticky_until=$2 WHERE id=$3"),1);
+            assert_eq!(sticky.count("UPDATE workflow_worker_registrations SET process_metrics=$1 WHERE namespace=$2 AND worker_id=$3"),1);
+            assert_eq!(sticky.total(),plain.total()+3,"a claim costs its guard read and two writes: {name}");
+            let row = Self::query("SELECT process_metrics FROM workflow_worker_registrations WHERE worker_id=$1")
+                .bind(worker).fetch_one(&self.pool).await.unwrap();
+            let stored = DB::optional_document_row(&row,"process_metrics").unwrap().unwrap();
+            assert_eq!(stored["sticky_cache"],metrics,"{stored}");
+            assert_eq!(stored["memory_bytes"],7,"the claim keeps the registration's other metrics: {stored}");
+        }
+    }
+
+    /// Server #1171: a workflow task's replay clock reads its opening events
+    /// and the run's redrive count in one statement, and an unmarked start of
+    /// a run some redrive names still proves no clock.
+    pub(super) async fn qualify_replay_clock_statements(&self) {
+        let input = crate::codec::ValueCodec::new().unwrap()
+            .encode(&crate::codec::Value::Array(vec![])).unwrap();
+        const OPENING: &str = "SELECT event_type,payload,workflow_command_id,(SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$1 AND command_type='redrive') AS redriven FROM workflow_history_events WHERE workflow_run_id=$2 AND sequence<=$3 ORDER BY sequence";
+        for redriven in [false,true] {
+            let queue = format!("replay-clock-statements-{redriven}");
+            self.register(json!({"worker_id":queue,"task_queue":queue,"runtime":"php",
+                "supported_workflow_types":["replay-clock-statements"],"supported_activity_types":[]}),
+                &super::QueryTaskConfig::default(),Some("1.20")).await.unwrap();
+            let run = self.start(json!({"workflow_id":queue,"workflow_type":"replay-clock-statements","task_queue":queue,
+                "input":{"codec":"avro","blob":input}}),BTreeMap::new(),None,None).await.unwrap();
+            let run_id = run["run_id"].as_str().unwrap();
+            if redriven {
+                let named = Self::query("UPDATE workflow_commands SET command_type='redrive' WHERE workflow_run_id=$1")
+                    .bind(run_id).execute(&self.pool).await.unwrap();
+                assert!(DB::affected(named) > 0);
+            }
+            let (task,count) = super::sql_counts::measure(self.poll(
+                json!({"worker_id":queue,"task_queue":queue,"timeout_seconds":0}),"workflow","1.20")).await;
+            let task = task.unwrap()["task"].clone();
+            assert_eq!(task["run_id"],run_id);
+            assert_eq!(count.count(OPENING),1);
+            assert_eq!(count.count_prefix("SELECT COUNT(*) FROM workflow_commands"),0,"the redrive count rides with the opening events");
+            if redriven {
+                assert!(task.get("replay_clock").is_none(),"{task}");
+            } else {
+                assert_eq!(task["replay_clock"]["workflow_run_id"],run_id,"{task}");
+            }
+        }
+    }
+
     pub(super) async fn qualify_authored_run_sequences(&self) {
         let input = crate::codec::ValueCodec::new().unwrap()
             .encode(&crate::codec::Value::Array(vec![])).unwrap();
@@ -423,6 +525,8 @@ async fn sqlite_poll_cache_writes_use_one_statement_and_rollback() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::<sqlx::Sqlite>::new(super::sqlite::open(dir.path().join("writes.sqlite").to_str().unwrap()).await.unwrap());
     store.qualify_completion_waiting_status().await;
+    store.qualify_sticky_completion_statements().await;
+    store.qualify_replay_clock_statements().await;
     store.qualify_authored_run_sequences().await;
     store.qualify_transaction_run_tags().await;
     store.qualify_query_poll_cache_writes().await;

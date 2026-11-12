@@ -2921,7 +2921,10 @@ where
     pub(super) async fn replay_clock(connection: &mut DB::Connection, run: &DB::Row) -> Result<Option<Value>> {
         let run_id = DB::string(run, "id")?;
         let instance_id = DB::string(run, "workflow_instance_id")?;
-        let opening = Self::query("SELECT event_type,payload,workflow_command_id FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence<=$2 ORDER BY sequence")
+        // Server #1171: the redrive count an unmarked start needs rides along
+        // as a column, so the common case costs one statement, not two.
+        let opening = Self::query("SELECT event_type,payload,workflow_command_id,(SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$1 AND command_type='redrive') AS redriven FROM workflow_history_events WHERE workflow_run_id=$2 AND sequence<=$3 ORDER BY sequence")
+            .bind(run_id.as_str())
             .bind(run_id.as_str())
             .bind(super::replay_clock::OPENING_EVENTS)
             .fetch_all(&mut *connection)
@@ -2946,11 +2949,7 @@ where
             return Self::redrive_anchor(connection, &run_id, &instance_id, &payload, DB::optional_string(started, "workflow_command_id")?).await;
         }
         // An unmarked start of a run some redrive created is ambiguous.
-        let redriven = Self::scalar("SELECT COUNT(*) FROM workflow_commands WHERE workflow_run_id=$1 AND command_type='redrive'")
-            .bind(run_id.as_str())
-            .fetch_one(&mut *connection)
-            .await?;
-        if redriven > 0 {
+        if DB::number(started, "redriven")? > 0 {
             return Ok(None);
         }
         Ok(DB::optional_instant(run, "started_at")?.map(|started_at| super::replay_clock::carrier(&run_id, started_at, super::replay_clock::RUN_STARTED)))
@@ -3582,10 +3581,11 @@ where
             local = super::local_activities::normalize(commands, protocol)?;
             exceptions = super::local_activities::exceptions(&local, transition_codec.clone()).await?;
         }
-        let sticky = body.get("sticky_cache").is_some_and(|claim| !claim.is_null());
-        if sticky {
-            Self::guard_sticky_cache(&mut tx, self.namespace.as_ref(), &task, &body, protocol, &stream_instance).await?;
-        }
+        let sticky_metrics = if body.get("sticky_cache").is_some_and(|claim| !claim.is_null()) {
+            Some(Self::guard_sticky_cache(&mut tx, self.namespace.as_ref(), &task, &body, protocol, &stream_instance).await?)
+        } else {
+            None
+        };
         if let Some(checkpoint) = checkpoint {
             // Server #994: Core's refused checkpoint for a run that closed
             // after the guard is the same not-recorded receipt.
@@ -3865,8 +3865,8 @@ where
                 None => super::carried_polls::Outcome::Declined,
             }
         };
-        if sticky {
-            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, task_id, &body).await?;
+        if let Some(metrics) = sticky_metrics {
+            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, task_id, &body, &run_status, metrics).await?;
         }
         let transaction = if deferred { Some(tx) } else {
             tx.commit().await?;
