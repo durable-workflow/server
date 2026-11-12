@@ -108,3 +108,35 @@ function projectPostgresScopedDispatch(array $rows): array
 
     return $result;
 }
+
+// Native MySQL schema 13 stores each json column as exact utf8mb4_bin text
+// with an enforced json_valid check (server#1016). For every json column in
+// published PHP's table, map exactly that native definition and its named
+// check back to PHP's json definition. Any other difference still fails.
+function projectMysqlJsonText(array $native, array $php): array
+{
+    $source = array_column($php, 1, 0);
+    foreach ($native as &$row) {
+        [$table, $sql] = $row;
+        if (! isset($source[$table])) {
+            continue;
+        }
+        preg_match_all("/^  `(\\w+)` json( NOT NULL| DEFAULT NULL)( COMMENT '[^']*')?,$/m", $source[$table], $columns, PREG_SET_ORDER);
+        foreach ($columns as $column) {
+            [$line, $name, $null] = $column;
+            $comment = $column[3] ?? '';
+            $pattern = '/^  `'.preg_quote($name, '/').'` longtext( CHARACTER SET utf8mb4)? COLLATE utf8mb4_bin'
+                .($null === ' NOT NULL' ? ' NOT NULL' : '').preg_quote($comment, '/').',$/m';
+            $sql = preg_replace($pattern, $line, $sql, -1, $replaced);
+            $check = ",\n  CONSTRAINT `dw_json_text_".substr(hash('sha256', $table."\0".$name), 0, 20)."` CHECK (json_valid(`{$name}`))";
+            if ($replaced !== 1 || substr_count($sql, $check) !== 1) {
+                throw new RuntimeException("Native JSON text definition mismatch: {$table}.{$name}");
+            }
+            $sql = str_replace($check, '', $sql);
+        }
+        $row[1] = $sql;
+    }
+    unset($row);
+
+    return $native;
+}
