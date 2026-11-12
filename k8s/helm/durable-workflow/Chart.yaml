@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 1.4.0
+version: 1.5.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.6.0"
+appVersion: "3.7.0"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,14 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.6.0"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.7.0"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: "Default image changes from native Server 3.5.0 to 3.6.0. No schema upgrade from 3.5.0: MySQL, MariaDB and PostgreSQL stay at native schema 12, so helm upgrade only replaces the image. Rolling back to 3.5.0 is an image change. From 3.4.x or earlier, run the 3.5.0 schema upgrade first (docs/UPGRADING.md)."
-    - kind: security
-      description: "Server 3.6.0's runtime base moves to the current Debian 12 bookworm-slim image, fixing CVE-2026-109518 (apt 2.6.1); every release is now scanned and a fixable HIGH or CRITICAL finding holds promotion (server#802)."
+      description: "Default image changes from native Server 3.6.0 to 3.7.0. MySQL only needs a schema upgrade, 12 to 13: its 75 json columns become exact-text LONGTEXT with json_valid checks, about 2 minutes of downtime per million history rows. Scale to zero, back up, run helm upgrade with native.schemaUpgrade.enabled=true, scale up; rolling back means restoring the backup. MariaDB, PostgreSQL and SQLite have no schema change, so helm upgrade only replaces the image (docs/UPGRADING.md)."
+    - kind: fixed
+      description: "Server 3.7.0: MySQL stores JSON documents exactly, so doubles in history, memos, search attributes and heartbeat details come back bit for bit (server#1016)."
     - kind: added
-      description: "Server 3.6.0: read an update's outcome later (server#1131), replay-safe entry clock on workflow tasks (server#1132), activity retries resume from the last heartbeat (server#1139), replay-blocked runs in operator metrics (server#1154). https://github.com/durable-workflow/server/releases/tag/3.6.0"
+      description: "Server 3.7.0: redrive keeps start-time memos and search attributes, and describe reports can_redrive and redrive_blocked_reason (server#980). https://github.com/durable-workflow/server/releases/tag/3.7.0"
