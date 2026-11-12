@@ -12,6 +12,22 @@ use axum::{
 };
 use serde_json::{Value, json};
 
+/// How many payloads' worth of bytes one completion that carries workflow
+/// commands may send (Server #1136, .github#228). Each command's arguments
+/// still meet the payload limit inside the completion; this bounds only the
+/// request as a whole, so a fan-out whose commands are each within the limits
+/// is not refused as one oversized body.
+const COMPLETION_PAYLOADS: usize = 16;
+
+/// A request that completes a workflow task with commands.
+fn carries_commands(method: &Method, path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    *method == Method::POST
+        && matches!(parts.as_slice(), ["", "api", "worker", "workflow-tasks", task, "complete"] if !task.is_empty())
+        || *method == Method::POST
+            && matches!(parts.as_slice(), ["", "api", "worker", "activity-tasks", task, "continuation", "complete"] if !task.is_empty())
+}
+
 /// `server.limits.max_payload_bytes`.
 pub(super) fn max_payload_bytes() -> usize {
     ["DW_MAX_PAYLOAD_BYTES", "WORKFLOW_MAX_PAYLOAD_BYTES"]
@@ -26,7 +42,8 @@ pub(super) async fn enforce(request: Request, next: Next) -> Response {
     if request.method() == Method::POST && path == "/api/external-payloads/v1" {
         return next.run(request).await;
     }
-    let max = max_payload_bytes();
+    let completion = carries_commands(request.method(), &path);
+    let max = if completion { max_payload_bytes().saturating_mul(COMPLETION_PAYLOADS) } else { max_payload_bytes() };
     let worker = path == "/api/worker" || path.starts_with("/api/worker/");
     let declared = request
         .headers()
@@ -38,8 +55,17 @@ pub(super) async fn enforce(request: Request, next: Next) -> Response {
         let parts = parts.clone();
         async move { super::http::admission_error(Request::from_parts(parts, Body::empty()), worker, status, body).await }
     };
-    let too_large = || json!({"message": format!("Request payload exceeds the maximum allowed size of {max} bytes."),
-        "reason": "payload_too_large", "limit": max});
+    let too_large = || {
+        let mut body = json!({"message": format!("Request payload exceeds the maximum allowed size of {max} bytes."),
+            "reason": "payload_too_large", "limit": max});
+        if completion {
+            body["limit_kind"] = json!("workflow_task_completion_bytes");
+            body["message"] = json!(format!(
+                "Workflow task completion exceeds the maximum allowed size of {max} bytes. Each command's arguments may be up to {} bytes; offload larger payloads or split the work across workflow tasks.",
+                max_payload_bytes()));
+        }
+        body
+    };
     if declared.is_some_and(|declared| declared > max as u64) {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, too_large()).await;
     }

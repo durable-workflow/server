@@ -2774,6 +2774,20 @@ where
                 }
                 claim["retry_policy"] =
                     DB::optional_document_row(&activity, "retry_policy")?.unwrap_or(Value::Null);
+                // Server #1139 (.github#218): a retry attempt claimed by a
+                // worker that resumes from heartbeats carries the execution's
+                // latest heartbeat details from its earlier attempts.
+                let resumes = DB::optional_document_row(&worker, "capabilities")?.as_ref().and_then(Value::as_array)
+                    .is_some_and(|listed| listed.iter().any(|item| item.as_str() == Some(HEARTBEAT_RESUME)));
+                if resumes {
+                    let (details, at) = if attempt > 1 {
+                        Self::last_heartbeat(tx, &run_id, &activity_id).await?
+                    } else {
+                        (Value::Null, Value::Null)
+                    };
+                    claim["last_heartbeat_details"] = details;
+                    claim["last_heartbeat_at"] = at;
+                }
                 // PHP omits the field when the activity has no deadline.
                 let deadlines = super::activity_deadlines::deadlines_view::<DB>(&activity)?;
                 if !deadlines.is_null() {
@@ -4874,6 +4888,23 @@ where
 
     /// A new ready task. As PHP in poll mode, a task it dispatches is stamped
     /// dispatched when created; one it leaves to pollers is not.
+    /// The latest heartbeat details an earlier attempt of `activity_id`
+    /// recorded, and when, from the run's newest heartbeat events. Nulls
+    /// when none of them recorded details.
+    async fn last_heartbeat(tx: &mut Transaction<'_, DB>, run_id: &str, activity_id: &str) -> Result<(Value, Value)> {
+        let rows = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ActivityHeartbeatRecorded' ORDER BY sequence DESC LIMIT $2")
+            .bind(run_id).bind(HEARTBEAT_RESUME_SCAN).fetch_all(&mut **tx).await?;
+        for row in rows {
+            let payload = DB::document_row(&row, "payload")?;
+            if payload["activity_execution_id"].as_str() == Some(activity_id)
+                && !payload["progress"]["details"].is_null()
+            {
+                return Ok((payload["progress"]["details"].clone(), payload["heartbeat_at"].clone()));
+            }
+        }
+        Ok((Value::Null, Value::Null))
+    }
+
     pub(super) async fn create_task_dispatched(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -5822,6 +5853,12 @@ pub(super) fn replayed_poll(mut replay: Value, encoding: Option<&'static str>) -
     Ok(replay)
 }
 
+/// The worker capability and server capability for resuming an activity
+/// attempt from the execution's last heartbeat details (Server #1139).
+pub(super) const HEARTBEAT_RESUME: &str = "activity_heartbeat_resume";
+/// How many of the run's newest heartbeat events a retry claim reads.
+const HEARTBEAT_RESUME_SCAN: i64 = 1000;
+
 pub(crate) fn capabilities() -> Value {
     static TEMPLATE: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
     let mut value = TEMPLATE.get_or_init(capabilities_template).clone();
@@ -5839,7 +5876,7 @@ fn capabilities_template() -> Value {
         "workflow_memo_updates": false, "cooperative_cancellation": true, "prepared_local_activities": false,
         "prepared_local_activity_groups": false, "prepared_local_activity_cancellation_policies": [],
         "worker_sessions": super::worker_sessions::capability(), "worker_session_verbs": ["create", "heartbeat", "close"],
-        "sticky_execution": super::sticky_execution::describe(), "sticky_history_suffix": super::sticky_execution::suffix_capability(), "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
+        "sticky_execution": super::sticky_execution::describe(), "sticky_history_suffix": super::sticky_execution::suffix_capability(), "activity_heartbeat_resume": {"supported": true, "version": 1}, "local_activities": super::local_activities::manifest(), "message_streams": super::message_streams::worker_capability(),
         "update_validation_tasks": true, "synchronous_update_validation": super::update_validation::capability(),
         "workflow_updates": true, "query_tasks": true, "query_task_authority":true, "query_task_poll_request_idempotency": true,
         "claimed_task_ready_age": true, "activity_lease_renewal": true, "activity_cancellation_acknowledgement": true,

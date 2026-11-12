@@ -64,3 +64,29 @@ async fn bodies_are_checked_before_authentication_like_php() {
     let (status, _, answer) = raw(&app, "/api/workflows", Some("application/vnd.api+json"), b"{}".to_vec(), false).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
 }
+
+// Server #1136 (.github#228): a fan-out whose commands are each within the
+// payload limit completes even when the whole completion is over it; a
+// completion over the aggregate limit is refused with a typed 413.
+#[tokio::test]
+async fn a_large_fan_out_completion_is_not_refused_as_one_body() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "fan-out", json!(["echo"]), json!(["act"])).await;
+    start(&app, "fan-out").await;
+    let task = poll(&app, "fan-out", "workflow").await;
+    let argument = envelope(Payload::Array(vec![Payload::String("x".repeat(10 * 1024))]));
+    let commands: Vec<Value> = (0..300).map(|_| json!({"type":"schedule_activity","activity_type":"act","arguments":argument})).collect();
+    let body = completion(&task, Value::Array(commands));
+    assert!(body.to_string().len() > 2 * 1024 * 1024, "the completion exceeds one payload limit");
+    let (status, answer) = finish_task(&app, &task, body["commands"].clone()).await;
+    assert_eq!(status, StatusCode::OK, "{}", answer.to_string().chars().take(400).collect::<String>());
+
+    let huge = format!("{{\"lease_owner\":\"fan-out\",\"workflow_task_attempt\":1,\"commands\":[],\"pad\":\"{}\"}}", "x".repeat(33 * 1024 * 1024));
+    let (status, _, answer) = raw(&app, &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
+        Some("application/json"), huge.into_bytes(), true).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{answer}");
+    assert_eq!(answer["reason"], "payload_too_large", "{answer}");
+    assert_eq!(answer["limit_kind"], "workflow_task_completion_bytes", "{answer}");
+    assert_eq!(answer["limit"], 32 * 1024 * 1024, "{answer}");
+}

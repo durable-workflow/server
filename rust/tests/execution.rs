@@ -87,6 +87,8 @@ mod activity_failure_fields;
 mod query_worker_results;
 #[path = "execution/rejected_updates.rs"]
 mod rejected_updates;
+#[path = "execution/heartbeat_resume.rs"]
+mod heartbeat_resume;
 #[path = "execution/sticky_execution.rs"]
 mod sticky_execution;
 #[path = "execution/early_update_contracts.rs"]
@@ -210,6 +212,8 @@ mod command_batches;
 mod child_open_parent_task;
 #[path = "execution/update_routing.rs"]
 mod update_routing;
+#[path = "execution/update_reads.rs"]
+mod update_reads;
 #[path = "execution/replay_clock.rs"]
 mod replay_clock;
 #[path = "execution/command_payloads.rs"]

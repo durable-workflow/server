@@ -185,6 +185,10 @@ pub fn router(runtime: Runtime) -> Router {
             post(update_run),
         )
         .route(
+            "/api/workflows/{workflow_id}/updates/{update_id}",
+            get(read_update),
+        )
+        .route(
             "/api/workflows/{workflow_id}/runs/{run_id}/query/{query_name}",
             post(query_run),
         )
@@ -985,7 +989,9 @@ fn workflow_route(rest: &str) -> Option<Allowed> {
         | [_, "runs", _, "streams"]
         | [_, "runs", _, "streams", _]
         | [_, "nexus-operations"]
-        | [_, "runs", _, "nexus-operations"] => Some(READ),
+        | [_, "runs", _, "nexus-operations"]
+        // A retained update's receipt, read in the request's namespace.
+        | [_, "updates", _] => Some(READ),
         // A run's durable streams are rows in the request's namespace.
         [_, "runs", _, "streams", _, "items"] => Some(READ_WRITE),
         [_, "runs", _, "streams", _, "close"] => Some(WRITE),
@@ -1749,6 +1755,16 @@ async fn update_current(
         .update_workflow(&workflow_id, None, &name, without_trace_carrier(body), Some(context))
         .await
         .map_err(|error| super::control_plane::Operation::Update(&name).refusal(error, &workflow_id, None))?;
+    Ok((status, Json(result)))
+}
+
+async fn read_update(
+    Extension(runtime): Extension<Runtime>,
+    Path((workflow_id, update_id)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let query = Value::Object(query.into_iter().map(|(field, value)| (field, Value::String(value))).collect());
+    let (status, result) = runtime.read_update(&workflow_id, &update_id, &query).await?;
     Ok((status, Json(result)))
 }
 
