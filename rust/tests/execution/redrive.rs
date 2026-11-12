@@ -139,3 +139,74 @@ async fn a_redriven_run_cancels_and_terminates_like_php() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// A run like `failed_at_second_activity`, started with `start` fields and
+/// with `extra` commands in its first workflow task.
+async fn failed_with(app: &Router, workflow: &str, start: Value, extra: Vec<Value>) -> Value {
+    let mut body = json!({"workflow_id":workflow,"workflow_type":"echo","task_queue":"test","input":envelope(Payload::Array(vec![]))});
+    for (key, value) in start.as_object().unwrap() {
+        body[key] = value.clone();
+    }
+    let (status, started) = request(app, "POST", "/api/workflows", body).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let task = poll(app, "worker", "workflow").await;
+    let mut commands = extra;
+    commands.push(json!({"type":"schedule_activity","activity_type":"a","arguments":envelope(Payload::Array(vec![]))}));
+    let (status, body) = finish_task(app, &task, json!(commands)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    complete_activity(app, &poll(app, "worker", "activity").await).await;
+    let task = poll(app, "worker", "workflow").await;
+    finish_task(app, &task, json!([{"type":"schedule_activity","activity_type":"b","arguments":envelope(Payload::Array(vec![]))}])).await;
+    let activity = poll(app, "worker", "activity").await;
+    let path = format!("/api/worker/activity-tasks/{}/fail", activity["task_id"].as_str().unwrap());
+    let failed = request(app, "POST", &path, json!({"lease_owner":activity["lease_owner"],
+        "activity_attempt_id":activity["activity_attempt_id"],"failure":{"class":"App\\Boom","message":"boom"}})).await;
+    assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
+    let task = poll(app, "worker", "workflow").await;
+    let done = finish_task(app, &task, json!([{"type":"fail_workflow","message":"gave up","failed_step_sequence":2,
+        "failed_activity_execution_id":activity["activity_execution_id"]}])).await;
+    assert_eq!(done.1["run_status"], "failed", "{}", done.1);
+    started
+}
+
+// Server #980 (Core workflow#985): start-time memos and search attributes
+// carry to the redriven successor. A run whose workflow code upserted one
+// still refuses: native does not reuse upsert steps yet (a later slice).
+#[tokio::test]
+async fn redrive_carries_start_time_memo_and_search_attributes() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registered = request(&app, "POST", "/api/worker/register", json!({"worker_id":"worker","task_queue":"test",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["a","b"],"capabilities":["memo_upserts"],
+        "workflow_definition_fingerprints":{"echo":FINGERPRINT}})).await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    let (status, body) = request(&app, "POST", "/api/search-attributes", json!({"name":"Region","type":"keyword"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let visibility = json!({"memo":{"customer":"Taylor","attempt_note":"first deploy"},"search_attributes":{"Region":"us-east"}});
+    let source = failed_with(&app, "rd-visible", visibility, vec![]).await;
+    let source_run = source["run_id"].as_str().unwrap();
+    let (status, redriven) = request(&app, "POST", &format!("/api/workflows/rd-visible/runs/{source_run}/redrive"), json!({})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{redriven}");
+    let run = redriven["run_id"].as_str().unwrap();
+    let (status, described) = request(&app, "GET", &format!("/api/workflows/rd-visible/runs/{run}"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    assert_eq!(described["memo"], json!({"customer":"Taylor","attempt_note":"first deploy"}), "{described}");
+    assert_eq!(described["search_attributes"]["Region"], "us-east", "{described}");
+    let history = run_history(&app, &json!("rd-visible"), &json!(run)).await;
+    assert_eq!(history[1]["payload"]["memo"], json!({"customer":"Taylor","attempt_note":"first deploy"}));
+    let listed = request(&app, "GET", "/api/workflows?query=Region%20%3D%20%22us-east%22", Value::Null).await.1;
+    assert_eq!(listed["workflows"].as_array().unwrap().iter().filter(|w| w["run_id"] == json!(run)).count(), 1, "{listed}");
+
+    let (status, body) = request(&app, "POST", "/api/workflows/rd-visible/terminate", json!({"reason":"checked"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // An upsert by workflow code is still refused before anything is written.
+    let upserted = failed_with(&app, "rd-upserted", json!({}), vec![json!({"type":"upsert_memo",
+        "entries":envelope(Payload::Map(std::collections::BTreeMap::from([("note".into(), Payload::String("by code".into()))])))})]).await;
+    let path = format!("/api/workflows/rd-upserted/runs/{}/redrive", upserted["run_id"].as_str().unwrap());
+    let (status, refused) = request(&app, "POST", &path, json!({})).await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("unsupported_history")), "{refused}");
+    runtime.close().await;
+    database.remove().await;
+}

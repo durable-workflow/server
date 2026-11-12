@@ -182,8 +182,11 @@ where
             Ok(plan) => plan,
             Err(reason) => return conflict(reason),
         };
-        let memos = Self::scalar("SELECT COUNT(*) FROM workflow_memos WHERE workflow_run_id=$1").bind(source_id).fetch_one(&mut *tx).await?;
-        let attributes = Self::scalar("SELECT COUNT(*) FROM workflow_search_attributes WHERE workflow_run_id=$1").bind(source_id).fetch_one(&mut *tx).await?;
+        // Start-time and inherited memos and search attributes carry to the
+        // successor as they are (server#980). A value workflow code upserted
+        // needs its upsert step reused, which native does not do yet.
+        let memos = Self::scalar("SELECT COUNT(*) FROM workflow_memos WHERE workflow_run_id=$1 AND upserted_at_sequence>0 AND inherited_from_parent=false").bind(source_id).fetch_one(&mut *tx).await?;
+        let attributes = Self::scalar("SELECT COUNT(*) FROM workflow_search_attributes WHERE workflow_run_id=$1 AND upserted_at_sequence>0 AND inherited_from_parent=false").bind(source_id).fetch_one(&mut *tx).await?;
         if memos + attributes > 0 {
             return conflict("unsupported_visibility_metadata");
         }
@@ -206,7 +209,7 @@ where
             fields.remove("task");
         }
         let filled = |value: &Value| !(value.is_null() || value == &json!([]) || value == &json!({}) || value == "" || value == &json!(false));
-        if filled(&started["memo"]) || filled(&started["search_attributes"]) || filled(&started["parent_workflow_run_id"]) {
+        if filled(&started["parent_workflow_run_id"]) {
             return conflict("unsupported_source_metadata");
         }
         // An external workflow's definition must still match its worker cohort.
@@ -233,6 +236,9 @@ where
         Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,visibility_labels,compatibility,connection,priority,fairness_key,fairness_weight,last_command_sequence) SELECT $1,workflow_instance_id,workflow_type,workflow_class,$2,'pending',payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,$3,$4,$5,$6,namespace,$7,business_key,visibility_labels,compatibility,connection,priority,fairness_key,fairness_weight,1 FROM workflow_runs WHERE id=$8")
             .bind(&run_id).bind(run_number).bind(DB::optional_time(run_deadline)).bind(DB::bind_time(at)).bind(DB::bind_time(at))
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(source_id).execute(&mut *tx).await?;
+        for sql in [DB::MEMO_REDRIVE_COPY, DB::SEARCH_ATTRIBUTE_REDRIVE_COPY] {
+            Self::query(sql).bind(&run_id).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(source_id).execute(&mut *tx).await?;
+        }
         let command_id = id();
         Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,requested_workflow_run_id,resolved_workflow_run_id,command_type,target_scope,source,status,outcome,workflow_type,payload_codec,command_sequence,accepted_at,applied_at,context,request_id) VALUES ($1,$2,$3,$4,$5,'redrive','run','control_plane','accepted','redriven',$6,'avro',1,$7,$8,$9,$10)")
             .bind(&command_id).bind(workflow_id).bind(&run_id).bind(source_id).bind(&run_id).bind(&workflow_type)
