@@ -420,6 +420,8 @@ table; commands admitted earlier have no digest. Stop the native nodes, back up
 the database and run `schema-upgrade` before starting this binary on an
 earlier schema; rolling back means restoring the backup.
 
+Schedule dispatch summaries add a nullable scalar on `workflow_schedules`: SQLite schema 14, PostgreSQL and MariaDB 15, MySQL 16. Existing rows remain unknown, without an array scan or backfill. New dispatches and buffer mutations maintain the summary atomically. This step also requires stopped nodes, a backup and `schema-upgrade`; restore the backup to roll back. The wire states and bounds are documented in [Schedules](../docs/server-reference.md#schedules).
+
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,
 workflow/activity polling, workflow lease renewal and both completion paths.

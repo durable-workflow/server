@@ -713,11 +713,24 @@ impl Flavor {
     /// version 13 creates each JSON document column as exact text directly,
     /// as its upgrade ALTERs it.
     fn bootstrap_sql(self, sql: &str) -> String {
-        match self {
+        let sql = match self {
             Self::MySql => json_text_bootstrap_sql(&bootstrap_sql_v11(sql)),
             Self::MariaDb => bootstrap_sql_v11(sql),
-        }
+        };
+        dispatch_summary_bootstrap_sql(sql)
     }
+}
+
+/// Fresh initialization can resume after any implicit DDL commit. Create the
+/// final schedule table directly so a resumed bootstrap never repeats ALTER.
+/// Retained predecessor bootstraps do not contain this new step and stay exact.
+fn dispatch_summary_bootstrap_sql(mut sql: String) -> String {
+    let alter = "ALTER TABLE workflow_schedules ADD COLUMN dispatch_summary TEXT NULL;";
+    if !sql.contains(alter) { return sql; }
+    let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_schedules` (").expect("compiled schedule table");
+    let end = start + sql[start..].find("  PRIMARY KEY").expect("compiled schedule primary key");
+    sql.insert_str(end, "  `dispatch_summary` text DEFAULT NULL,\n");
+    sql.replace(alter, "")
 }
 
 /// The exact text definition and enforced check for each MySQL `json`
@@ -3187,6 +3200,19 @@ mod tests {
             let previous: &str = flavor.earlier(command_intents_step(flavor)).unwrap().0.sql.as_ref();
             assert!(!previous.contains("dw_command_intents"));
             assert!(flavor.step(command_intents_step(flavor)).unwrap().contains("CREATE TABLE dw_command_intents ("));
+        }
+    }
+
+    #[test]
+    fn dispatch_summary_bootstraps_create_final_tables_without_repeated_alters() {
+        for flavor in [Flavor::MySql, Flavor::MariaDb] {
+            let current: &str = flavor.migration().sql.as_ref();
+            assert_eq!(current.matches("`dispatch_summary` text DEFAULT NULL").count(), 1);
+            assert!(!current.contains("ALTER TABLE workflow_schedules ADD COLUMN dispatch_summary"));
+            let previous: &str = flavor.earlier(dispatch_summary_step(flavor)).unwrap().0.sql.as_ref();
+            assert!(!previous.contains("dispatch_summary"));
+            assert_eq!(dispatch_summary_bootstrap_sql(previous.to_owned()), previous);
+            assert!(flavor.step(dispatch_summary_step(flavor)).unwrap().contains("ALTER TABLE workflow_schedules"));
         }
     }
 
