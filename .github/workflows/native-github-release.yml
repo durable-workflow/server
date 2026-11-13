@@ -13,8 +13,10 @@ name: Native GitHub Release
 # The Release is titled with the plain version. A candidate is a prerelease;
 # a final release is Latest only when the live latest alias names its index
 # in both registries. The job holds the rolling-alias lock, so no alias
-# moves between that read and the write. An existing Release is left as it
-# is.
+# moves between that read and the write. A final release's body is the
+# identity table plus docs/releases/<version>.md from the tag commit (#1111).
+# An existing Release is left as it is; repair_legacy_notes only replaces an
+# exact identity-only body from the earlier writer with the tagged notes.
 on:
   workflow_dispatch:
     inputs:
@@ -35,6 +37,11 @@ on:
         description: 'Final releases require the exact qualification manifest used for alias promotion; candidates leave empty'
         required: false
         type: string
+      repair_legacy_notes:
+        description: 'Replace an existing identity-only body (written before #1111) with the tagged notes; nothing else changes'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -82,4 +89,5 @@ jobs:
           RELEASE_RUN_ID: ${{ inputs.release_run_id }}
           RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
           PROMOTION_EVIDENCE: ${{ inputs.promotion_evidence }}
+          REPAIR_LEGACY_NOTES: ${{ inputs.repair_legacy_notes }}
         run: bash scripts/ci/native-release-github-release.sh

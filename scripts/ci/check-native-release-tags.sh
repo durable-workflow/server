@@ -292,11 +292,24 @@ commit=0123456789abcdef0123456789abcdef01234567
 cat > "$scratch/gh" <<'FAKE'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "release view") [[ -n "${EXISTING:-}" ]] || exit 1; printf '%s\n' "$EXISTING"; exit 0 ;;
-  "release create")
+  "release view")
+    [[ -n "${EXISTING:-}" ]] || exit 1
+    if [[ -s "$GH_NOTES" && "${EDIT_STICKS:-yes}" == yes ]] && grep -q -- '^release edit ' "$GH_LOG"; then
+      jq -c --rawfile body "$GH_NOTES" '.body = $body' <<<"$EXISTING"
+    else printf '%s\n' "$EXISTING"; fi
+    exit 0 ;;
+  "release create"|"release edit")
     printf '%s\n' "$*" >> "$GH_LOG"
     while [[ $# -gt 0 && "$1" != --notes ]]; do shift; done
     printf '%s' "${2:-}" > "$GH_NOTES"; exit 0 ;;
+  "api -H")
+    [[ "$3" == 'Accept: application/vnd.github.raw' && "$4" == "repos/example/server/contents/docs/releases/"*".md?ref=$COMMIT" ]] || exit 1
+    [[ "${TAGGED_NOTES-default}" != missing ]] || exit 1
+    version=${4#repos/example/server/contents/docs/releases/}; version=${version%%.md\?*}
+    if [[ "${TAGGED_NOTES-default}" == default ]]; then
+      printf '# Durable Workflow Server %s (native)\n\nSee the [upgrade](3.0.0.md#upgrade), the\n[chart guide](../../k8s/UPGRADING.md), [this](#changes) and [PR 1](https://github.com/example/server/pull/1).\n' "$version"
+    else printf '%s\n' "$TAGGED_NOTES"; fi
+    exit 0 ;;
   "attestation verify")
     printf '%s\n' "$*" >> "$GH_ATTEST_LOG"
     [[ "${ATTEST:-ok}" == ok ]] || exit 1
@@ -345,11 +358,15 @@ chmod +x "$scratch/python3"
 newer_index=sha256:$(printf '%064d' 0 | tr 0 b)
 gh_release() { # release tag, latest state [, VAR=value ...] -> the Latest choice
   local tag=$1 state=$2; shift 2
-  : > "$scratch/gh_calls"; : > "$scratch/gh_attest"
+  : > "$scratch/gh_calls"; : > "$scratch/gh_attest"; : > "$scratch/gh_notes"
   env -i PATH="$scratch:$PATH" GH="$scratch/gh" GH_LOG="$scratch/gh_calls" GH_ATTEST_LOG="$scratch/gh_attest" GH_NOTES="$scratch/gh_notes" \
     DOCKER="$scratch/release-docker" "${images[@]}" GITHUB_REPOSITORY=example/server \
     RELEASE_TAG="$tag" RELEASE_RUN_ID=41 RELEASE_RUN_ATTEMPT=1 PROMOTION_EVIDENCE=synthetic-selected-evidence RUN_ID=41 COMMIT="$commit" INDEX="$index" LATEST_STATE="$state" "$@" \
     bash scripts/ci/native-release-github-release.sh >/dev/null 2>&1 || { echo FAILED; return; }
+  if grep -q -- '^release edit ' "$scratch/gh_calls"; then
+    grep -c -- '^release ' "$scratch/gh_calls" | grep -qx 1 || { echo FAILED; return; }
+    printf 'edit %s\n' "$(grep -oE -- '--latest=(true|false)$' "$scratch/gh_calls")"; return
+  fi
   grep -q -- '^release create ' "$scratch/gh_calls" || { echo none; return; }
   grep -q -- '--verify-tag --title ' "$scratch/gh_calls" || { echo FAILED; return; }
   tr '\n' ' ' < "$scratch/gh_calls" | grep -oE -- '--prerelease|--latest(=false)?( |$)' | tr -d ' ' | paste -sd' ' -
@@ -396,6 +413,39 @@ want_release "existing release with another title" "$(gh_release 3.1.0 "$ours" L
 want_release "existing final marked prerelease" "$(gh_release 3.1.0 "$ours" LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false true "$notes_final")")" "$failed"
 want_release "existing final the alias owns but not Latest" "$(gh_release 3.1.0 "$ours" LATEST_TAG=3.0.2 EXISTING="$(existing 3.1.0 3.1.0 false false "$notes_final")")" "$failed"
 want_release "existing backport marked Latest" "$(gh_release 3.0.2 "$theirs" LATEST_TAG=3.0.2 EXISTING="$(existing 3.0.2 3.0.2 false false "$notes_backport")")" "$failed"
+# A final Release carries docs/releases/<version>.md from the tag commit
+# (Server #1111), with relative links resolved against the immutable tag.
+base=https://github.com/example/server/blob/3.1.0
+grep -qx '# Durable Workflow Server 3.1.0 (native)' <<<"$notes_final" || fail "a final Release must carry its tagged notes."
+[[ "$(head -n1 <<<"$notes_final")" == 'Durable Workflow Server 3.1.0.' ]] || fail "the identity table must come first."
+for link in "]($base/docs/releases/3.0.0.md#upgrade)" "]($base/k8s/UPGRADING.md)" "](#changes)" "](https://github.com/example/server/pull/1)"; do
+  grep -qF -- "$link" <<<"$notes_final" || fail "tagged notes must contain the link $link."
+done
+! grep -q '# Durable Workflow Server' <<<"$notes_candidate" || fail "a candidate keeps the identity table alone."
+gh_release native-3.0.2 "$ours" >/dev/null
+! grep -q '# Durable Workflow Server' "$scratch/gh_notes" || fail "a historical native- tag keeps the identity table alone."
+want_release "final without tagged notes" "$(gh_release 3.1.0 "$ours" TAGGED_NOTES=missing)" "$failed"
+[[ ! -s "$scratch/gh_calls" ]] || fail "Release was created without its tagged notes."
+want_release "tagged notes for another version" "$(gh_release 3.1.0 "$ours" TAGGED_NOTES='# Durable Workflow Server 3.0.9 (native)')" "$failed"
+want_release "tagged notes linking outside the repository" "$(gh_release 3.1.0 "$ours" TAGGED_NOTES=$'# Durable Workflow Server 3.1.0 (native)\n\n[x](../../../x.md)')" "$failed"
+[[ ! -s "$scratch/gh_calls" ]] || fail "Release was created with a link outside the repository."
+# REPAIR_LEGACY_NOTES replaces only an exact identity-only body, keeps
+# Latest where it stands, and reads the result back.
+legacy_final=${notes_final%%$'\n\n# Durable Workflow Server'*}
+legacy_backport=${notes_backport%%$'\n\n# Durable Workflow Server'*}
+want_release "legacy body, no repair asked" "$(gh_release 3.1.0 "$ours" LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$legacy_final")")" "$failed"
+want_release "legacy body repaired, Latest kept" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$legacy_final")")" "edit --latest=true"
+[[ "$(cat "$scratch/gh_notes")" == "$notes_final" ]] || fail "the repair must publish exactly the tagged notes."
+want_release "legacy backport repaired, not Latest" "$(gh_release 3.0.2 "$theirs" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.0.2 3.0.2 false false "$legacy_backport")")" "edit --latest=false"
+want_release "complete body with repair asked" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$notes_final")")" "none"
+want_release "repair of other notes" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$legacy_final extra")")" "$failed"
+want_release "repair with another title" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 native-3.1.0 false false "$legacy_final")")" "$failed"
+want_release "repair of a draft" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 true false "$legacy_final")")" "$failed"
+want_release "repair where Latest is wrong" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.0.2 EXISTING="$(existing 3.1.0 3.1.0 false false "$legacy_final")")" "$failed"
+[[ ! -s "$scratch/gh_notes" ]] || fail "a refused repair must not edit the Release."
+want_release "repair that does not read back" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true EDIT_STICKS=no LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$legacy_final")")" "$failed"
+want_release "repair without tagged notes" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true TAGGED_NOTES=missing LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$legacy_final")")" "$failed"
+want_release "candidate has nothing to repair" "$(gh_release 3.1.0-rc.1 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.0.2 EXISTING="$(existing 3.1.0-rc.1 3.1.0-rc.1 false true "$notes_candidate")")" "none"
 # The bindings come first: an existing Release does not excuse a failed one.
 want_release "existing release, unverifiable provenance" "$(gh_release 3.1.0 "$ours" ATTEST=fail LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$notes_final")")" "$failed"
 want_release "existing release, commit off main" "$(gh_release 3.1.0 "$ours" COMPARE=diverged LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$notes_final")")" "$failed"

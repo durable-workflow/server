@@ -17,11 +17,13 @@
 # across this step, so no alias moves between the read and the write. A
 # release candidate is a prerelease and never Latest. An existing Release
 # that records exactly this verified release is left unchanged, so a rerun
-# cannot move Latest either; any other existing Release is refused. Any
-# failed read stops the step before it writes.
+# cannot move Latest either; any other existing Release is refused, except
+# that REPAIR_LEGACY_NOTES=true replaces an exact identity-only body with the
+# tagged notes. Any failed read stops the step before it writes.
 #
 # Env: RELEASE_TAG, RELEASE_RUN_ID, GITHUB_REPOSITORY, GHCR_IMAGE,
-# DOCKERHUB_IMAGE. GH and DOCKER override the gh and docker commands.
+# DOCKERHUB_IMAGE, optional REPAIR_LEGACY_NOTES. GH and DOCKER override the
+# gh and docker commands.
 set -euo pipefail
 source scripts/ci/native-registry-absence.sh
 fail() { printf 'GitHub Release failed: %s\n' "$1" >&2; exit 1; }
@@ -59,24 +61,69 @@ if [[ "$version" != *-* ]]; then
   done
 fi
 
-notes=$(printf 'Durable Workflow Server %s.\n\n| | |\n| --- | --- |\n| Git tag | `%s` → `%s` |\n| Image index | `%s` in `%s` and `%s` |\n| Release run | https://github.com/%s/actions/runs/%s |\n' \
+identity=$(printf 'Durable Workflow Server %s.\n\n| | |\n| --- | --- |\n| Git tag | `%s` → `%s` |\n| Image index | `%s` in `%s` and `%s` |\n| Release run | https://github.com/%s/actions/runs/%s |\n' \
   "$version" "$tag" "$commit" "$index" "$DOCKERHUB_IMAGE" "$GHCR_IMAGE" "$repo" "$run_id")
+# A final release publishes its tagged notes (Server #1111): the identity
+# table, then docs/releases/<version>.md read from the verified tag commit,
+# never from later main. Relative links resolve against the immutable tag so
+# they work on the Release page. Candidates and the frozen historical
+# native-X.Y.Z tags keep the identity table alone. Missing or mismatched
+# notes refuse before any write.
+notes=$identity
+if [[ "$version" != *-* && "$tag" != native-* ]]; then
+  tagged=$("$gh_bin" api -H 'Accept: application/vnd.github.raw' \
+    "repos/$repo/contents/docs/releases/$version.md?ref=$commit") \
+    || fail "cannot read docs/releases/$version.md at $commit."
+  [[ "$(head -n1 <<<"$tagged")" == "# Durable Workflow Server $version (native)" ]] \
+    || fail "docs/releases/$version.md at $commit does not start with its release heading."
+  # shellcheck disable=SC2016 # Perl, not shell, expands these.
+  tagged=$(BASE="https://github.com/$repo/blob/$tag" perl -pe '
+      sub resolve { my @out; for (split m{/}, "docs/releases/$_[0]") {
+          if ($_ eq "..") { return undef unless @out; pop @out } elsif ($_ ne "." && $_ ne "") { push @out, $_ } }
+        return join "/", @out }
+      s{\]\((?![A-Za-z][A-Za-z0-9+.-]*:|#|/)([^)\s]+)\)}{ my $p = resolve($1);
+        defined $p ? "]($ENV{BASE}/$p)" : die "link $1 leaves the repository\n" }ge' <<<"$tagged") \
+    || fail "docs/releases/$version.md at $commit has a link outside the repository."
+  notes=$(printf '%s\n\n%s\n' "$identity" "$tagged")
+fi
 # An existing Release is accepted only when it is exactly the Release this
 # step would publish: published (not a draft), tag, plain title, candidate
 # state and these exact notes, and Latest exactly when the live alias says
-# so, read under the same lock. It is never edited, so a rerun cannot move
-# Latest; any other Release stops the step.
+# so, read under the same lock. Any other Release stops the step.
+#
+# REPAIR_LEGACY_NOTES=true is the one edit: when everything else matches and
+# the body is exactly the identity table an earlier writer published without
+# notes, only the body is replaced with these notes and read back. Latest is
+# passed as it already stands, so the repair cannot move it.
 if existing=$("$gh_bin" release view "$tag" --repo "$repo" --json tagName,name,isDraft,isPrerelease,body 2>/dev/null); then
   candidate=false
   [[ "$version" == *-* ]] && candidate=true
-  jq -e --arg tag "$tag" --arg title "$version" --argjson candidate "$candidate" --arg notes "$notes" '
-      .tagName == $tag and .name == $title and .isDraft == false and .isPrerelease == $candidate
-      and ((.body // "") | sub("\\s+$"; "")) == ($notes | sub("\\s+$"; ""))' \
-    <<<"$existing" >/dev/null \
-    || fail "Release $tag exists but is not exactly this verified release (draft, tag, title, candidate state or notes)."
+  matches() { # expected body
+    jq -e --arg tag "$tag" --arg title "$version" --argjson candidate "$candidate" --arg notes "$1" '
+        .tagName == $tag and .name == $title and .isDraft == false and .isPrerelease == $candidate
+        and ((.body // "") | gsub("\r"; "") | sub("\\s+$"; "")) == ($notes | sub("\\s+$"; ""))' \
+      <<<"$existing" >/dev/null
+  }
+  repair=false
+  if ! matches "$notes"; then
+    if [[ "${REPAIR_LEGACY_NOTES:-}" == true && "$notes" != "$identity" ]] && matches "$identity"; then
+      repair=true
+    else
+      fail "Release $tag exists but is not exactly this verified release (draft, tag, title, candidate state or notes)."
+    fi
+  fi
   current=$("$gh_bin" api "repos/$repo/releases/latest" --jq .tag_name) || fail "cannot read the Latest Release."
   if [[ "$latest" == true && "$current" != "$tag" ]] || [[ "$latest" != true && "$current" == "$tag" ]]; then
     fail "Release $tag exists, but Latest is $current where the latest alias calls for $([[ "$latest" == true ]] && echo "$tag" || echo "another release")."
+  fi
+  if [[ "$repair" == true ]]; then
+    "$gh_bin" release edit "$tag" --repo "$repo" --notes "$notes" "--latest=$latest" >/dev/null \
+      || fail "cannot replace the legacy notes of Release $tag."
+    existing=$("$gh_bin" release view "$tag" --repo "$repo" --json tagName,name,isDraft,isPrerelease,body) \
+      || fail "cannot read Release $tag back."
+    matches "$notes" || fail "Release $tag did not read back with its tagged notes."
+    printf 'Release %s now carries its tagged notes.\n' "$tag"
+    exit 0
   fi
   printf 'Release %s is exactly this verified release; left unchanged.\n' "$tag"
   exit 0
