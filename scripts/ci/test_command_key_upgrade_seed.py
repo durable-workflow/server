@@ -53,7 +53,7 @@ class OriginTests(unittest.TestCase):
         for port in [1, 1234, 65535]:
             self.assertEqual(seed.SeedClient(f"http://127.0.0.1:{port}").url, f"http://127.0.0.1:{port}")
         for value in ["http://user:pass@127.0.0.1:1234", "http://127.0.0.1:1234?next=http://example.invalid",
-                      "http://127.0.0.1:1234#fragment", "http://127.0.0.1:01234", "http://127.0.0.1:0",
+                      "http://127.0.0.1:1234#fragment", "http://127.0.0.1:01234", "http://127.0.0.1:1١", "http://127.0.0.1:0",
                       "http://127.0.0.1:65536", "http://127.0.0.1:1234/", "http://127.0.0.1:1234/api",
                       "http://127.0.0.1", "http://localhost:1234", "https://127.0.0.1:1234",
                       "http://example.invalid:1234", " HTTP://127.0.0.1:1234", "http://127.0.0.1:1234\n"]:
@@ -70,8 +70,9 @@ class OriginTests(unittest.TestCase):
 
     def test_redirect_is_refused_without_contacting_its_target(self):
         with server(redirect=True) as (origin, calls):
+            client = seed.SeedClient(origin)
             with self.assertRaisesRegex(ValueError, "got 302"):
-                seed.SeedClient(origin).request("GET", "/api/cluster/info")
+                client.request("GET", "/api/cluster/info")
             self.assertEqual(calls, ["/api/cluster/info"])
 
 
