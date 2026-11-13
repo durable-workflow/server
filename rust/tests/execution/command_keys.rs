@@ -198,6 +198,9 @@ async fn unicode_request_keys_use_the_character_limit_and_keep_retry_identity() 
             assert!(key.len() > 255);
             let original = request(&app, "POST", &path, input(1, Some(&key))).await;
             assert_eq!(original.0, StatusCode::ACCEPTED, "{kind}: {}", original.1);
+            assert_eq!(original.1["request_id"], key);
+            assert_eq!((original.1["retained"].clone(), original.1["intent_verified"].clone()),
+                (json!(false), json!(true)), "{}", original.1);
             let before = table_counts(&database).await;
             let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
             let replies = futures_util::future::join_all((0..4).map(|_| {
@@ -207,6 +210,7 @@ async fn unicode_request_keys_use_the_character_limit_and_keep_retry_identity() 
                 assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
                 assert_eq!(reply["command_id"], original.1["command_id"]);
                 assert_eq!(reply["run_id"], original.1["run_id"]);
+                assert_eq!(reply["request_id"], key);
                 assert_eq!((reply["retained"].clone(), reply["intent_verified"].clone()),
                     (json!(true), json!(true)), "{reply}");
                 if kind == "update" {
@@ -276,6 +280,7 @@ async fn legacy_updates_read_back_unverified_intent_after_restart_close_and_cont
             }
             assert_eq!((reply["retained"].clone(), reply["intent_verified"].clone()),
                 (json!(true), json!(false)), "{reply}");
+            assert_eq!(reply["request_id"], "legacy-update-key");
             if close.is_some() {
                 assert_eq!(reply["update_status"], "completed", "{reply}");
                 assert_eq!(reply["result"], Value::Null, "completed null remains an outcome");
@@ -319,6 +324,7 @@ async fn legacy_signals_do_not_honor_a_changed_target_or_fabricate_intent_equali
     assert_eq!(retry.1["command_id"], original.1["command_id"]);
     assert_eq!(retry.1["run_id"], original.1["run_id"]);
     assert_eq!((retry.1["retained"].clone(), retry.1["intent_verified"].clone()), (json!(true), json!(false)));
+    assert_eq!(retry.1["request_id"], "legacy-signal-key");
     let target = "/api/workflows/legacy-signal/runs/00000000000000000000000000/signal/finish";
     assert_conflict(&request(&app, "POST", target, input(1, Some("legacy-signal-key"))).await, &original.1, "target");
     assert_eq!(table_counts(&database).await, before);

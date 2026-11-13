@@ -770,9 +770,10 @@ where
         tx.commit().await?;
         self.wake.notify_waiters();
         let (status, mut response) = self.wait_update(&update_id, wait_for, timeout, codec).await?;
-        if let Some((_, digest)) = keyed {
-            response["retained"] = json!(true);
-            response["intent_verified"] = json!(digest.is_some());
+        if let Some(key) = key {
+            response["request_id"] = json!(key);
+            response["retained"] = json!(keyed.is_some());
+            response["intent_verified"] = json!(keyed.as_ref().is_none_or(|(_, digest)| digest.is_some()));
         }
         Ok((status, response))
     }
