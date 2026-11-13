@@ -145,6 +145,69 @@
           "WorkflowTerminated"
         ]
       }
+    },
+    "native_divergence": "run-close-settles-open-work",
+    "native_expected": {
+      "condition_complete": {
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ConditionWaitOpened",
+          "TimerScheduled",
+          "TimerCancelled",
+          "WorkflowCompleted"
+        ]
+      },
+      "condition_fail": {
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ConditionWaitOpened",
+          "TimerScheduled",
+          "TimerCancelled",
+          "WorkflowFailed"
+        ]
+      },
+      "condition_continue": {
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "ConditionWaitOpened",
+          "TimerScheduled",
+          "TimerCancelled",
+          "WorkflowContinuedAsNew"
+        ]
+      },
+      "signal_complete": {
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "SignalWaitOpened",
+          "TimerScheduled",
+          "TimerCancelled",
+          "WorkflowCompleted"
+        ]
+      },
+      "signal_fail": {
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "SignalWaitOpened",
+          "TimerScheduled",
+          "TimerCancelled",
+          "WorkflowFailed"
+        ]
+      },
+      "signal_continue": {
+        "history": [
+          "StartAccepted",
+          "WorkflowStarted",
+          "SignalWaitOpened",
+          "TimerScheduled",
+          "TimerCancelled",
+          "WorkflowContinuedAsNew"
+        ]
+      }
     }
   }
 }
