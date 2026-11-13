@@ -245,7 +245,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const repairPass = fixture.repair_pass ? checkRepairPass(fixture, observation, workflowId) : null;
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
   const namespaceDeletePayloads = fixture.namespace_delete_payloads ? checkNamespaceDeletePayloads(fixture, observation, workflowId) : null;
-  const updateValidation = fixture.update_validation ? checkUpdateValidation(fixture, observation, workflowId) : null;
+  const updateValidation = fixture.update_validation ? checkUpdateValidation(fixture, observation, workflowId, target) : null;
   const messageStreams = fixture.message_streams ? checkMessageStreams(fixture, observation, workflowId) : null;
   const workflowStreamWrites = fixture.workflow_stream_writes ? checkWorkflowStreamWrites(fixture, observation, workflowId) : null;
   const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId, target) : null;

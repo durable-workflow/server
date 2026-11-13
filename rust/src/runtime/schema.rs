@@ -865,6 +865,8 @@ mod tests {
         let mut connection = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path).create_if_missing(true)).await.unwrap();
         Migrator::with_migrations(vec![earlier_migration(12).unwrap().clone()]).run(&mut connection).await.unwrap();
         sqlx::query("INSERT INTO dw_query_cache VALUES ('kept','original',1)").execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,command_type,source,status,request_id) VALUES ('legacy-signal','legacy-workflow','legacy-run','signal','control_plane','accepted','RawSignalKey'),('legacy-update','legacy-workflow','legacy-run','update','control_plane','accepted','RawUpdateKey')")
+            .execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
         assert_eq!(reason(super::super::sqlite::open(path.to_str().unwrap()).await).await, "native_schema_upgrade_required");
         let report = super::super::schema_upgrade::upgrade_sqlite(path.to_str().unwrap()).await.unwrap();
@@ -872,6 +874,9 @@ mod tests {
         let pool = super::super::sqlite::open(path.to_str().unwrap()).await.unwrap();
         let kept: String = sqlx::query_scalar("SELECT value FROM dw_query_cache WHERE key='kept'").fetch_one(&pool).await.unwrap();
         assert_eq!(kept, "original");
+        let keys: Vec<(String, String, String)> = sqlx::query_as("SELECT command_type,request_id,workflow_run_id FROM workflow_commands WHERE workflow_instance_id='legacy-workflow' ORDER BY command_type")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(keys, vec![("signal".into(),"RawSignalKey".into(),"legacy-run".into()),("update".into(),"RawUpdateKey".into(),"legacy-run".into())]);
         let intents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dw_command_intents").fetch_one(&pool).await.unwrap();
         assert_eq!(intents, 0);
         sqlx::query("ALTER TABLE dw_command_intents ADD COLUMN extra TEXT").execute(&pool).await.unwrap();

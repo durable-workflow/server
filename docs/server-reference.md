@@ -645,6 +645,29 @@ workflow-task command payload.
 dedicated matching-role loop should skip a pass rather than duplicate work
 already covered by another matching-role process holding the repair throttle.
 
+The native completion transport correction for [#1136](https://github.com/durable-workflow/server/issues/1136)
+adds `limits.max_workflow_task_completion_bytes` to cluster discovery. It is the
+actual cap on the complete encoded JSON HTTP request body for workflow-task
+completion and activity continuation completion, including envelopes, metadata
+and commands. The default is 33,554,432 bytes. `limits.max_payload_bytes` remains
+the per-value and ordinary API request limit; a decoded argument sum does not
+measure completion wire size. SDKs use the explicit optional field for those
+two completion routes and preserve their conservative fallback when it is absent.
+A positive integer smaller than the ordinary cap is still authoritative for
+completion. Explicit malformed, null, zero, negative or non-integer values
+refuse completion planning before upload or submission; ordinary routes ignore
+this unused field.
+
+A completion over that cap returns HTTP 413 with `reason: payload_too_large`,
+`limit_kind: workflow_task_completion_bytes` and the actual byte `limit`, before
+any workflow state changes. The server discards at most 64 MiB of remaining
+upload data for at most two seconds before closing the HTTP/1 connection. This
+lets ordinary within-budget uploads finish sending and receive the typed refusal;
+clients that exceed either discard bound can still encounter a transport failure.
+The [shared size vectors](../resources/platform-protocol-specs/workflow-task-completion-limits-v1-vectors.json)
+cover exact and over-cap bodies on both completion routes. Published SDK worker
+qualification remains required before claiming this correction delivered.
+
 ### Namespaces
 - `GET /api/namespaces` — List namespaces
 - `POST /api/namespaces` — Create namespace
@@ -698,7 +721,7 @@ a key is the only command it admits:
   The intent is Core's CommandIntent v1 digest over the command type, name,
   typed arguments and explicit run target, so `1`, `1.0` and `"1"` differ and
   map key order does not matter. The receipt is found before any run gate, so a
-  retry after the run closed or continued as new still gets it. A signal
+  retry after the run closed or continued as new still gets it. A retained
   receipt carries `retained: true` and `intent_verified: true`.
 - The same key with a different name, arguments or run target is refused with
   `409`, `reason: "request_id_conflict"` and `outcome:
@@ -713,8 +736,17 @@ a key is the only command it admits:
   Both live as long as the command does. When retention prunes a run's details,
   its commands' keys and digests go with them, and a later request under that
   key is a new command.
-- An update receipt written before 3.9.0 has no recorded intent. It is read back
-  only when the update name matches, and its arguments are not compared.
+- A receipt written before intent digests were introduced has no recorded
+  intent. An exact raw-key retry reads back the original command only when
+  the name matches and any explicit run target is the original run. It carries
+  `retained: true` and `intent_verified: false`. Arguments are not compared;
+  the readback does not establish that the retry's input equals the original.
+- An ambiguous raw-key or hashed-key match is refused with
+  `409 request_id_ambiguous`, `intent_verified: false` and `retryable: false`,
+  without selecting a receipt or writing anything. This includes a legacy
+  raw key that looks like another key's hash token and database collation
+  collisions. Inspect the original command before using a new key; do not
+  retry an ambiguous key automatically.
 
 Before 3.9.0, a repeated signal `request_id` recorded a second signal, and an
 update retried with changed arguments returned the original receipt.

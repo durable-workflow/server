@@ -416,7 +416,11 @@ signal or update `request_id` becomes a durable command key on its workflow
 instance: a retry with the same intent returns the original receipt, and a
 different intent is refused with `409 request_id_conflict`. The table records
 each keyed command's CommandIntent v1 digest. The upgrade creates one empty
-table; commands admitted earlier have no digest. Stop the native nodes, back up
+table; commands admitted earlier have no digest. Their compatible retries read
+back the original with `retained: true` and `intent_verified: false`. A changed
+name or explicit run target is refused, and an ambiguous raw/hash identity gets
+nonretryable `409 request_id_ambiguous` without selecting a receipt or writing
+anything. Stop the native nodes, back up
 the database and run `schema-upgrade` before starting this binary on an
 earlier schema; rolling back means restoring the backup.
 

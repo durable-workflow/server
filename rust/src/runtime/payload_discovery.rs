@@ -104,6 +104,7 @@ pub(super) fn limits() -> Result<Value> {
     let attributes = super::search_attribute_upserts::Limits::from_env()?;
     Ok(json!({
         "max_payload_bytes": super::payload_limits::max_payload_bytes(),
+        "max_workflow_task_completion_bytes": super::payload_limits::max_completion_bytes(),
         "max_memo_bytes": super::schedules::max_memo_bytes(),
         "max_search_attributes": super::search_attributes::configured_limit()?,
         "max_search_attribute_key_length": attributes.key_length,
