@@ -462,6 +462,7 @@ async fn finish(connection: &mut MySqlConnection, run: &Run<'_>) -> Result<()> {
     mysql::ensure_json_text(connection, run.flavor).await?;
     mysql::ensure_task_queue_pauses(connection, run.flavor).await?;
     mysql::ensure_command_intents(connection, run.flavor).await?;
+    mysql::ensure_dispatch_summary(connection, run.flavor).await?;
     connection.execute(LEDGER_SQL).await?;
     let migration = run.flavor.migration();
     let mut tx = connection.begin().await?;

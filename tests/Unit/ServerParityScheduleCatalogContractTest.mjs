@@ -77,6 +77,21 @@ function nativeModel() {
       item.last_skipped_at = '2026-11-05T12:00:01.123456Z';
     }
   }
+  const lastBySchedule = new Map();
+  for (const step of steps) {
+    if (step.status === 200 && step.request.endsWith('/backfill')) {
+      for (const result of step.response.results) lastBySchedule.set(step.response.schedule_id, result);
+    }
+    const rows = step.response.schedules ?? (Object.hasOwn(step.response, 'spec') && step.response.schedule_id ? [step.response] : []);
+    for (const item of rows) {
+      const last = lastBySchedule.get(item.schedule_id);
+      item.dispatch_summary = {version: 1, state: last ? 'known' : 'never', buffered_actions_count: 0,
+        last_outcome: last ? {id: String(sequence++).padStart(26, '0'), outcome: last.outcome,
+          recorded_at: '2026-11-05T12:00:01.123456Z', reason: last.outcome === 'started' ? null : 'status_not_triggerable',
+          workflow_instance_id: last.outcome === 'started' ? last.workflow_id : null,
+          workflow_run_id: last.outcome === 'started' ? (item.current_run?.run_id ?? '01ARZ3NDEKTSV4RRFFQ69G5FAX') : null} : null};
+    }
+  }
   return observation;
 }
 
@@ -90,6 +105,14 @@ test('native target cannot omit all new summary fields', () => {
   assert.throws(() => checkScheduleCatalog(fixture, model(), workflowId, 'rust'), /complete schedule list summary/);
 });
 for (const [label, mutate] of [
+  ['missing dispatch summary', o => { delete o.schedule_catalog.steps[4].response.schedules[0].dispatch_summary; }],
+  ['partial dispatch summary', o => { delete o.schedule_catalog.steps[4].response.schedules[0].dispatch_summary.last_outcome; }],
+  ['unsupported dispatch summary', o => { o.schedule_catalog.steps[4].response.schedules[0].dispatch_summary.version = 2; }],
+  ['invented never dispatch', o => { o.schedule_catalog.steps[71].response.schedules.find(item => item.schedule_id === 'beta').dispatch_summary = {version: 1, state: 'never', last_outcome: null, buffered_actions_count: 0}; }],
+  ['wrong dispatch workflow', o => { o.schedule_catalog.steps[71].response.schedules[0].dispatch_summary.last_outcome.workflow_instance_id = '01ARZ3NDEKTSV4RRFFQ69G5FAX'; }],
+  ['wrong dispatch reason', o => { o.schedule_catalog.steps[71].response.schedules.find(item => item.schedule_id === 'beta').dispatch_summary.last_outcome.reason = 'other'; }],
+  ['partial detail dispatch', o => { delete o.schedule_catalog.steps[59].response.dispatch_summary.buffered_actions_count; }],
+  ['invented buffer count', o => { o.schedule_catalog.steps[4].response.schedules[0].dispatch_summary.buffered_actions_count = '0'; }],
   ['partial summary', o => { delete o.schedule_catalog.steps[4].response.schedules[0].failures_count; }],
   ['wrong failure count', o => { o.schedule_catalog.steps[4].response.schedules[0].failures_count = 1; }],
   ['wrong skip count', o => { o.schedule_catalog.steps[71].response.schedules[1].skipped_trigger_count = 0; }],

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {checkedPolicyDispatchSummaries} from './schedule-dispatch-summary-contract.mjs';
 import {readFileSync} from 'node:fs';
 
 // Published PHP's reviewed, normalized responses to every step.
@@ -48,7 +49,7 @@ function statusDifferences(steps) {
     [`step ${index} ${step.request}: ${step.status}, expected ${STATUSES[index]}: ${JSON.stringify(step.response).slice(0, 400)}`]);
 }
 
-export function checkSchedulePolicies(fixture, observation, workflowId) {
+export function checkSchedulePolicies(fixture, observation, workflowId, target) {
   const state = observation.schedule_policies;
   assert.ok(state && typeof state === 'object', 'actual schedule policy observation');
   if (observation.mode === 'embedded') {
@@ -63,7 +64,8 @@ export function checkSchedulePolicies(fixture, observation, workflowId) {
   assert.ok(Number.isInteger(state.retries) && state.retries >= 0, 'recorded lock retries');
   const raw = state.steps;
   const names = {[namespace]: '@namespace', [state.queue]: '@queue'};
-  const steps = raw.map(step => ({request: step.request, status: step.status, response: normalized(step.response, names)}));
+  const steps = checkedPolicyDispatchSummaries(raw, target)
+    .map(step => ({request: step.request, status: step.status, response: normalized(step.response, names)}));
   assert.deepStrictEqual(steps.map(step => step.status), STATUSES,
     `schedule step statuses (${steps.length} of ${STATUSES.length} steps)\n${statusDifferences(steps).join('\n')}`);
   const at = request => steps.filter(step => step.request === request);
