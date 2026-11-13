@@ -62,6 +62,7 @@ async fn cluster_info_discovers_runtime_payload_storage_like_php() {
         assert_eq!(storage["transport"], info["worker_protocol"]["server_capabilities"]["runtime_external_payload_transport"],
             "{name} namespace transport is the worker capability");
         assert_eq!(info["limits"]["max_payload_bytes"], 2_097_152);
+        assert_eq!(info["limits"]["max_workflow_task_completion_bytes"], 33_554_432);
         assert_eq!(info["limits"]["max_memo_bytes"], 262_144);
         assert_eq!(info["limits"]["max_search_attributes"], 100);
         assert_eq!(info["default_namespace"], "default");
