@@ -138,6 +138,7 @@ mod schedule_backfill;
 #[cfg(test)]
 mod schedule_burst_tests;
 mod schedule_execution;
+mod schedule_dispatch_summary;
 mod schedule_http;
 mod run_diagnostics;
 mod task_queue_build_ids;
