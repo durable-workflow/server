@@ -55,7 +55,7 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
     let timer = |history: &Value, kind: &str| history.as_array().unwrap().iter()
         .find(|event| event["event_type"] == kind).unwrap().clone();
     let original_fired = timer(&original, "TimerFired");
-    let original_clock = chrono::DateTime::parse_from_rfc3339(original_fired["recorded_at"].as_str().unwrap())
+    let original_clock = chrono::DateTime::parse_from_rfc3339(original_fired["timestamp"].as_str().expect("public history timestamp"))
         .unwrap().format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
     let counts = table_counts(&database).await;
     let mut predecessor = source_run.to_owned();
