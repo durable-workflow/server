@@ -69,6 +69,36 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.7.1 / Server 3.9.2 (native)
+
+Chart 1.7.1 selects the native Server 3.9.2 corrective image. From Server
+3.9.0 or 3.9.1, no schema step is required: back up the database and external
+payload storage, stop the Server replicas, apply the new chart/image and
+verify readiness, reported version and worker registration. An explicit
+`image.tag` or `image.digest` override must select the intended qualified image too.
+
+From 3.8.x or earlier, follow the schema-upgrade procedure below using the
+3.9.2 image. The backend versions and restore-required rollback boundary are
+unchanged. A rollback to 3.9.1 uses the same schema but restores its Unicode-key
+and receipt-metadata defects and removes the observation-owner hardening.
+
+Server 3.9.2 accepts the existing 255-Unicode-code-point command-key boundary
+for multibyte keys. Fresh keyed signal/accepted-update receipts echo the literal
+`request_id` with `retained:false` and `intent_verified:true`; retained receipts
+echo their key while preserving original identities and legacy unverified
+intent. The body key remains distinct from the tracing header. Conflicts and
+ambiguous identity matches still refuse without writes.
+
+An enabled storage-admission observation must belong to root or the effective
+Server UID. Check the actual container mapping before rollout. Trusted parent
+directories remain an operator requirement; the runtime does not validate
+ancestors. This patch adds no draining-upload allowance or Cloud adoption.
+The encoded completion budget and bounded refusal delivery are unchanged.
+Installed client/physical upgrade acceptance under shared #216 and #228 stays
+separate. The MariaDB reliability investigation #1204 remains open.
+
+See [Server 3.9.2 release notes](../../../../docs/releases/3.9.2.md).
+
 ### Chart 1.7.0 / Server 3.9.1 (native)
 
 **From 3.8.x or earlier, every backend needs an explicit native schema upgrade.** Server 3.9.1 includes
