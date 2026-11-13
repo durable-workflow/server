@@ -178,7 +178,10 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
                 }
                 // This completed retry is still the published SDK call. It must
                 // return the original result despite the different arguments.
-                $result = $client->updateWorkflow($workflowId, $fixture['update_name'], [$fixture['duplicate_update_value']],
+                // Native refuses other arguments under the key (Server #934),
+                // so its retry repeats the original ones after proving that.
+                $result = $client->updateWorkflow($workflowId, $fixture['update_name'], parityRetryArguments($client, $workflowId,
+                    $fixture, $pendingUpdate['arguments'], $pendingUpdate['request_id'], $handle->selectedRunId, null),
                     requestId: $pendingUpdate['request_id'], runId: $handle->selectedRunId);
                 $updates[] = [...$pendingUpdate, 'result' => $result, 'typed_result' => typedValue($result),
                     'history_before_result' => $history,
@@ -194,7 +197,8 @@ function httpObservation(array $fixture, string $workflowId, string $namespace, 
                 $accepted = $client->updateWorkflow($workflowId, $fixture['update_name'], [$value],
                     waitFor: 'accepted', requestId: $requestId, runId: $handle->selectedRunId);
                 $historyAccepted = $client->workflowHistory($workflowId, $handle->selectedRunId, 100)['events'];
-                $duplicate = $client->updateWorkflow($workflowId, $fixture['update_name'], [$fixture['duplicate_update_value']],
+                $duplicate = $client->updateWorkflow($workflowId, $fixture['update_name'],
+                    parityRetryArguments($client, $workflowId, $fixture, [$value], $requestId, $handle->selectedRunId, 'accepted'),
                     waitFor: 'accepted', requestId: $requestId, runId: $handle->selectedRunId);
                 $pendingUpdate = ['name' => $fixture['update_name'], 'request_id' => $requestId,
                     'arguments' => [$value], 'typed_arguments' => typedValue([$value]), 'before' => $before,
@@ -1382,4 +1386,32 @@ try {
 } catch (Throwable $error) {
     fwrite(STDERR, $error::class.': '.$error->getMessage()."\n");
     exit(1);
+}
+
+/**
+ * The arguments a parity retry sends under an existing update request id.
+ * Published PHP returns the original receipt for different arguments; native
+ * refuses them with request_id_conflict and writes nothing (Server #934), so
+ * against native the probe first proves that refusal and then retries with
+ * the original arguments, which returns the same original receipt.
+ *
+ * @param list<mixed> $original
+ * @return list<mixed>
+ */
+function parityRetryArguments(object $client, string $workflowId, array $fixture, array $original, string $requestId,
+    ?string $runId, ?string $waitFor): array
+{
+    if (getenv('DW_PARITY_TARGET') !== 'rust') {
+        return [$fixture['duplicate_update_value']];
+    }
+    try {
+        $client->updateWorkflow($workflowId, $fixture['update_name'], [$fixture['duplicate_update_value']],
+            ...($waitFor === null ? [] : ['waitFor' => $waitFor]), requestId: $requestId, runId: $runId);
+    } catch (Throwable $error) {
+        if (str_contains($error->getMessage(), 'request_id was already used for a different update')) {
+            return $original;
+        }
+        throw $error;
+    }
+    throw new RuntimeException('Native accepted a request id reused with different update arguments.');
 }

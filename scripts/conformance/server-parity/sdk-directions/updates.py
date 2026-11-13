@@ -47,7 +47,10 @@ async def main(arguments, fixture):
         async with Client(url, token=os.environ.get("DW_PARITY_TOKEN"), namespace="default") as client:
             if phase.startswith(("update-", "duplicate-pending-", "duplicate-completed-")):
                 index = int(phase[-1]) - 1
-                value = (fixture["update_values"][index] if phase.startswith("update-")
+                # Native refuses a request id reused with other arguments
+                # (Server #934), so its retries repeat the original ones.
+                value = (fixture["update_values"][index]
+                         if phase.startswith("update-") or os.environ.get("DW_PARITY_TARGET") == "rust"
                          else fixture["duplicate_update_value"])
                 request_id = workflow_id + ":update:" + str(index)
                 expects_failure = "sdk_update_failure" in fixture and index == 0

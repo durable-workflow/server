@@ -104,7 +104,7 @@ export function checkSdkUpdateDirectionPackages(fixture, observation, selected) 
   checkSdkUpdateDirectionArtifacts(fixture, selected);
   checkPublishedSdkPackages(observation, selected, observation.sdk_update_direction);
 }
-export function checkSdkUpdateDirection(fixture, observation, workflowId) {
+export function checkSdkUpdateDirection(fixture, observation, workflowId, target) {
   if (!fixture.sdk_update_direction) return null;
   checkSdkUpdateDirectionArtifacts(fixture, artifactsFor(fixture));
   const fails = Boolean(fixture.sdk_update_failure);
@@ -161,7 +161,9 @@ export function checkSdkUpdateDirection(fixture, observation, workflowId) {
         continue;
       }
       const number = Number(phase.phase.slice(-1)) - 1;
-      const original = phase.phase.startsWith('update-');
+      // Native refuses a request id reused with other arguments (Server
+      // #934), so its retries repeat the original arguments.
+      const original = phase.phase.startsWith('update-') || target === 'rust';
       const author = direction.phases[number === 0 ? 3 : 7];
       assert.equal(phase.update_sent, true); assert.equal(phase.client_finished, true);
       assert.equal(phase.request_id, workflowId + ':update:' + number);
