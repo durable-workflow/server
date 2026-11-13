@@ -51,9 +51,9 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
     assert_eq!(finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b",
         "arguments":envelope(Payload::Array(vec![]))}])).await.0, StatusCode::OK);
     fail_redrive_activity(&app, 3).await;
-    // Clock authority is each recorded event, with full precision, rather
-    // than the run-row timestamp or a whole-second rendering. Pin an ordered
-    // historical clock after executing the real timer and activity lifecycle.
+    // Consumed clocks use full event precision; the initial anchor uses the
+    // persisted run start. Pin distinct ordered times after executing the
+    // real timer and activity lifecycle so those authorities cannot alias.
     let recorded = run_history(&app, &source["workflow_id"], &source["run_id"]).await;
     let clock_base = chrono::DateTime::parse_from_rfc3339("2026-11-03T00:00:00.123456+00:00").unwrap();
     for event in recorded.as_array().unwrap() {
@@ -62,6 +62,9 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
         database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_history_events SET recorded_at='{}' WHERE workflow_run_id='{source_run}' AND sequence={sequence}",
             at.format("%Y-%m-%d %H:%M:%S%.6f")))).await;
     }
+    let original_start = clock_base - chrono::Duration::seconds(1);
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_runs SET started_at='{}' WHERE id='{source_run}'",
+        original_start.format("%Y-%m-%d %H:%M:%S%.6f")))).await;
     runtime.close().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
@@ -94,7 +97,8 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
         assert_eq!(scheduled["timer_id"], fired["timer_id"]);
         assert_eq!(fired["reused_from_run_id"], predecessor);
         assert_eq!(clock(&fired["reused_recorded_at"]), original_clock);
-        assert_eq!(clock(&history[1]["payload"]["replayed_started_at"]), clock(&timer(&original, "WorkflowStarted")["timestamp"]));
+        assert_eq!(clock(&history[1]["payload"]["replayed_started_at"]), original_start);
+        assert_ne!(original_start, clock(&timer(&original, "WorkflowStarted")["timestamp"]));
         assert_eq!(clock(&history[2]["payload"]["reused_recorded_at"]), clock(&timer(&original, "ActivityCompleted")["timestamp"]));
         for (kind, actual) in [("TimerScheduled", &scheduled), ("TimerFired", &fired)] {
             let mut expected = timer(&original, kind)["payload"].clone();
