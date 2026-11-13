@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {nativeDivergence} from './native-divergences.mjs';
 
 // Published PHP's reviewed, normalized responses to every step.
 const EXPECTED = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityExpected/signals-before-worker.json', import.meta.url)));
@@ -24,7 +25,7 @@ export const STATUSES = [201, 202, 202, 202, 202, 422, 200, 409, 422, 404, 200];
 const EVENTS = ['StartAccepted', 'WorkflowStarted', 'SignalReceived', 'SignalReceived', 'SignalReceived', 'SignalReceived',
   'TerminateRequested', 'WorkflowTerminated', 'SignalRejected', 'SignalRejected', 'SignalRejected', 'SignalRejected'];
 
-export function checkSignalsBeforeWorker(fixture, observation, workflowId) {
+export function checkSignalsBeforeWorker(fixture, observation, workflowId, target) {
   const state = observation.signals_before_worker;
   assert.ok(state && typeof state === 'object', 'actual signals-before-worker observation');
   if (observation.mode === 'embedded') {
@@ -49,6 +50,12 @@ export function checkSignalsBeforeWorker(fixture, observation, workflowId) {
   // This fixture covers signal admission: the start response and history
   // payloads are compared by their own fixtures.
   const compared = steps.slice(1, 10);
-  assert.deepStrictEqual(compared, EXPECTED, 'every response matches the reviewed published PHP responses');
+  const expected = structuredClone(EXPECTED);
+  if (nativeDivergence(target, 'command-key-receipt-metadata')) {
+    // Only the first signal carries a caller key. Keep every original field
+    // and all unkeyed/refused responses equal to the frozen PHP recording.
+    Object.assign(expected[0].response, {request_id: 'before-worker-1', retained: false, intent_verified: true});
+  }
+  assert.deepStrictEqual(compared, expected, 'every response matches the reviewed target contract');
   return {scope: 'signals_before_worker'};
 }

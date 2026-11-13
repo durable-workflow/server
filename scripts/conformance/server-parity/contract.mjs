@@ -250,7 +250,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const workflowStreamWrites = fixture.workflow_stream_writes ? checkWorkflowStreamWrites(fixture, observation, workflowId) : null;
   const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId, target) : null;
   const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId, target) : null;
-  const signalsBeforeWorker = fixture.signals_before_worker ? checkSignalsBeforeWorker(fixture, observation, workflowId) : null;
+  const signalsBeforeWorker = fixture.signals_before_worker ? checkSignalsBeforeWorker(fixture, observation, workflowId, target) : null;
   const workerListing = fixture.worker_listing ? checkWorkerListing(fixture, observation, workflowId) : null;
   const workerReplacement = fixture.worker_replacement ? checkWorkerReplacement(fixture, observation, workflowId) : null;
   const operatorMetrics = fixture.operator_metrics ? checkOperatorMetrics(fixture, observation, workflowId) : null;
