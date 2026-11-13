@@ -166,6 +166,7 @@ const NATIVE_CLEANUP: &[&str] = &[
     "DELETE FROM dw_service_call_deadlines WHERE namespace=$1",
     "DELETE FROM dw_run_command_contracts WHERE namespace=$1",
     "DELETE FROM dw_task_queue_pauses WHERE namespace=$1",
+    "DELETE FROM dw_command_intents WHERE namespace=$1",
 ];
 
 /// The namespace's payload columns that can hold an external reference, each

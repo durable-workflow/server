@@ -12,9 +12,10 @@ use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 /// The native schema version on MySQL. Version 13 stores JSON documents as
 /// exact text (server#1016); MariaDB already stores them as text and stayed
 /// at 12. Each then adds task queue pauses (server#577): MySQL 14, MariaDB
-/// 13. `Flavor::version` selects the one a server needs.
-pub const MYSQL_VERSION: i64 = 14;
-pub const MARIADB_VERSION: i64 = 13;
+/// 13, and keyed command intents (server#934): MySQL 15, MariaDB 14.
+/// `Flavor::version` selects the one a server needs.
+pub const MYSQL_VERSION: i64 = 15;
+pub const MARIADB_VERSION: i64 = 14;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -69,7 +70,9 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0013_json_text.sql"),
                 "\n",
-                include_str!("../../migrations/mysql/0014_task_queue_pauses.sql")
+                include_str!("../../migrations/mysql/0014_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0015_command_intents.sql")
                 ),
             ),
             Self::MariaDb => (
@@ -95,14 +98,16 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mariadb/0012_run_command_contracts.sql"),
                 "\n",
-                include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql")
+                include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0014_command_intents.sql")
                 ),
             ),
         };
         slot.get_or_init(|| {
             let description = match self {
-                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses",
-                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses",
+                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses and keyed command intents",
+                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents",
             };
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 self.version(),
@@ -125,8 +130,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0014_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0013_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0015_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0014_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -221,6 +226,8 @@ impl Flavor {
         static MARIA_11: OnceLock<Migration> = OnceLock::new();
         static MYSQL_13: OnceLock<Migration> = OnceLock::new();
         static MARIA_12: OnceLock<Migration> = OnceLock::new();
+        static MYSQL_14: OnceLock<Migration> = OnceLock::new();
+        static MARIA_13: OnceLock<Migration> = OnceLock::new();
         let description = "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines and service admission counters";
         let earlier = |slot: &'static OnceLock<Migration>, version, description: &'static str, sql: &'static str| {
             slot.get_or_init(|| {
@@ -228,6 +235,72 @@ impl Flavor {
             })
         };
         match (self, version) {
+            (Self::MySql, 14) => Some((
+                MYSQL_14.get_or_init(|| Migration::new(
+                    14,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(json_text_bootstrap_sql(&bootstrap_sql_v11(concat!(
+                include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0013_json_text.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0014_task_queue_pauses.sql")
+            )))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mysql/0014_catalog.json"),
+            )),
+            (Self::MariaDb, 13) => Some((
+                MARIA_13.get_or_init(|| Migration::new(
+                    13,
+                    "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses".into(),
+                    MigrationType::Simple,
+                    AssertSqlSafe(bootstrap_sql_v11(concat!(
+                include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql")
+            ))).into_sql_str(),
+                    false,
+                )),
+                include_str!("../../migrations/mariadb/0013_catalog.json"),
+            )),
             (Self::MySql, 13) => Some((
                 MYSQL_13.get_or_init(|| Migration::new(
                     13,
@@ -529,6 +602,8 @@ impl Flavor {
             (Self::MySql, 12) => Some(include_str!("../../migrations/mysql/0013_json_text.sql")),
             (Self::MySql, 13) => Some(include_str!("../../migrations/mysql/0014_task_queue_pauses.sql")),
             (Self::MariaDb, 12) => Some(include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql")),
+            (Self::MySql, 14) => Some(include_str!("../../migrations/mysql/0015_command_intents.sql")),
+            (Self::MariaDb, 13) => Some(include_str!("../../migrations/mariadb/0014_command_intents.sql")),
             _ => None,
         }
     }
@@ -676,16 +751,33 @@ fn task_queue_pauses_step(flavor: Flavor) -> i64 {
     }
 }
 
-/// Creating the task queue pause table commits on its own. A resumed upgrade
-/// or takeover accepts only the exact new definition once it exists.
-pub(super) async fn ensure_task_queue_pauses(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
-    let sql = flavor.step(task_queue_pauses_step(flavor)).expect("compiled task queue pauses");
+/// The step that creates the keyed command intent table (server#934):
+/// MySQL's from 14, MariaDB's from 13.
+fn command_intents_step(flavor: Flavor) -> i64 {
+    match flavor {
+        Flavor::MySql => 14,
+        Flavor::MariaDb => 13,
+    }
+}
+
+/// Creating one native table commits on its own. A resumed upgrade or
+/// takeover accepts only the exact current definition once it exists.
+async fn ensure_native_table(connection: &mut MySqlConnection, flavor: Flavor, step: i64, name: &str) -> Result<()> {
+    let sql = flavor.step(step).expect("compiled native table step");
     connection.execute(AssertSqlSafe(sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "))).await?;
-    let table = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "dw_task_queue_pauses");
+    let table = |rows: Catalog| rows.into_iter().find(|(table, _)| table == name);
     if table(catalog(connection).await?) != table(flavor.expected()?) {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
     }
     Ok(())
+}
+
+pub(super) async fn ensure_task_queue_pauses(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    ensure_native_table(connection, flavor, task_queue_pauses_step(flavor), "dw_task_queue_pauses").await
+}
+
+pub(super) async fn ensure_command_intents(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    ensure_native_table(connection, flavor, command_intents_step(flavor), "dw_command_intents").await
 }
 
 /// An implicit-commit step may already have committed before interruption.
@@ -1213,6 +1305,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         for version in from..flavor.version() {
             if version == task_queue_pauses_step(flavor) {
                 ensure_task_queue_pauses(&mut connection, flavor).await?;
+                continue;
+            }
+            if version == command_intents_step(flavor) {
+                ensure_command_intents(&mut connection, flavor).await?;
                 continue;
             }
             if version == 12 {
@@ -2819,7 +2915,7 @@ mod tests {
         assert_eq!(checksum_hex(Flavor::MariaDb.earlier(12).unwrap().0),
             include_str!("../../migrations/mariadb/0012_checksum.txt").trim());
         let sql: &str = Flavor::MySql.migration().sql.as_ref();
-        assert_eq!(Flavor::MySql.version(), 14);
+        assert_eq!(Flavor::MySql.version(), 15);
         assert!(!sql.contains("ALTER TABLE `activity_executions`"), "upgrade ALTERs are folded into the bootstrap");
         assert!(!regex_lite::Regex::new(r"(?i)`?\w+`? json( |,)").unwrap().is_match(sql), "no json column remains");
         assert_eq!(sql.matches("CHECK (json_valid(").count(), 75);
@@ -2991,12 +3087,29 @@ mod tests {
     }
 
     #[test]
+    fn command_intent_bootstraps_keep_the_previous_checksums() {
+        // server#934: MySQL 14 and MariaDB 13 stay byte for byte the released
+        // bootstraps; the current ones add only the command intent table.
+        assert_eq!(checksum_hex(Flavor::MySql.earlier(14).unwrap().0),
+            include_str!("../../migrations/mysql/0014_checksum.txt").trim());
+        assert_eq!(checksum_hex(Flavor::MariaDb.earlier(13).unwrap().0),
+            include_str!("../../migrations/mariadb/0013_checksum.txt").trim());
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (15, 14));
+        for flavor in [Flavor::MySql, Flavor::MariaDb] {
+            let sql: &str = flavor.migration().sql.as_ref();
+            assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_command_intents (").count(), 1);
+            let previous: &str = flavor.earlier(command_intents_step(flavor)).unwrap().0.sql.as_ref();
+            assert!(!previous.contains("dw_command_intents"));
+            assert!(flavor.step(command_intents_step(flavor)).unwrap().contains("CREATE TABLE dw_command_intents ("));
+        }
+    }
+
+    #[test]
     fn task_queue_pause_bootstraps_keep_the_previous_checksums() {
         // server#577: MySQL 13 and MariaDB 12 stay byte for byte the released
         // bootstraps; the current ones add only the pause table.
         assert_eq!(checksum_hex(Flavor::MySql.earlier(13).unwrap().0),
             include_str!("../../migrations/mysql/0013_checksum.txt").trim());
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (14, 13));
         for flavor in [Flavor::MySql, Flavor::MariaDb] {
             let sql: &str = flavor.migration().sql.as_ref();
             assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_task_queue_pauses (").count(), 1);
@@ -3028,6 +3141,38 @@ mod tests {
             let sql = flavor.migration().sql.as_ref();
             assert_eq!(sql.matches("KEY `dw_workflow_tasks_scoped_dispatch`").count(), 1);
             assert!(!sql.contains("CREATE INDEX dw_workflow_tasks_scoped_dispatch"));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_command_intents_upgrade_resumes() {
+        // server#934: MySQL 14 -> 15 and MariaDB 13 -> 14 add only the intent table.
+        for stage in ["before", "committed"] {
+            let db = Database::new().await;
+            let mut connection = db.connection().await;
+            let from = command_intents_step(Flavor::detect(&mut connection).await.unwrap());
+            connection.close().await.unwrap();
+            let flavor = retained_version_database(&db, from).await;
+            if stage == "before" {
+                refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+            } else {
+                // The table DDL committed before the interrupted upgrade recorded it.
+                let mut connection = db.connection().await;
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                connection.execute(flavor.step(from).unwrap()).await.unwrap();
+                connection.close().await.unwrap();
+            }
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection = db.connection().await;
+            let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(kept, format!("seeded at version {from}"));
+            assert_eq!(catalog(&mut connection).await.unwrap(), flavor.expected().unwrap());
+            connection.execute("ALTER TABLE dw_command_intents ADD COLUMN extra TEXT NULL").await.unwrap();
+            connection.close().await.unwrap();
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+            db.remove().await;
         }
     }
 

@@ -82,6 +82,8 @@ pub(super) fn capabilities() -> Value {
         "embedded_v2_import",
         "waterline_v1_projection",
         super::task_queue_pauses::CAPABILITY,
+        // Server #934: a signal or update request_id is a durable command key.
+        "command_request_keys",
     ];
     // Manifests PHP publishes beside these flags; native publishes none of them.
     let unpublished = [
@@ -214,9 +216,11 @@ mod tests {
             assert!(caps.get(name).is_some(), "{name}");
         }
         // PHP's names plus native's child turn, occurrence-id reopen,
-        // occurrence deadline, update outcome reads and task queue pauses.
-        assert_eq!(caps.as_object().unwrap().len(), 61);
+        // occurrence deadline, update outcome reads, task queue pauses and
+        // command request keys.
+        assert_eq!(caps.as_object().unwrap().len(), 62);
         assert_eq!(caps["task_queue_activity_dispatch_pause"], json!(true));
+        assert_eq!(caps["command_request_keys"], json!(true));
         assert_eq!(caps["update_outcome_reads"], json!(true));
         assert_eq!(caps["child_workflow_start_turn"], json!(true));
         assert_eq!(caps["condition_wait_idempotent_reopen"], json!(true));

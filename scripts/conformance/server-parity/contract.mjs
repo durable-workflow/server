@@ -264,7 +264,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const sdkTimerAuthor = checkSdkTimerAuthor(fixture, observation, workflowId);
   const sdkSignalDirection = checkSdkSignalDirection(fixture, observation, workflowId);
   const sdkQueryDirection = checkSdkQueryDirection(fixture, observation, workflowId);
-  const sdkUpdateDirection = checkSdkUpdateDirection(fixture, observation, workflowId);
+  const sdkUpdateDirection = checkSdkUpdateDirection(fixture, observation, workflowId, target);
   const cooperative = fixture.cooperative_cancellation
     ? checkCooperativeCancellation(fixture, observation, identities, projectedEvents, instantNanoseconds) : null;
   if (fixture.child_cancellation) {

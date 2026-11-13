@@ -29,6 +29,7 @@ on:
       - resources/platform-protocol-specs/carried-poll-v1-vectors.json
       - tests/Fixtures/ActivityMetadataProjection/**
       - tests/Fixtures/CodecRegression/**
+      - tests/Fixtures/CommandIntent/**
       - tests/Fixtures/HistoryBudget/**
       - tests/Fixtures/ScheduleVisibilityQuery/system-fields.json
       - tests/Fixtures/ServerUpgrade/**
