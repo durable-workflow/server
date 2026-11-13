@@ -32,6 +32,23 @@ check 0 push-clean "$first..$second"
 check 0 pr-clean "$first..$second"
 check 0 root-commit "-1 $first"
 
+# A tracked Claude local settings file is refused at any depth (.github#355);
+# a similarly named file is not.
+mkdir -p .claude nested/.claude
+printf '{}\n' > .claude/settings.json
+git add .claude/settings.json
+check 0 claude-shared-settings ''
+for path in .claude/settings.local.json nested/.claude/settings.local.json; do
+  printf '{}\n' > "$path"
+  git add -f "$path"
+  check 1 "claude-local-settings:$path" ''
+  git rm --quiet --cached "$path"
+  rm "$path"
+done
+git rm --quiet --cached .claude/settings.json
+rm -r .claude nested
+check 0 claude-local-settings-removed ''
+
 # Construct the forbidden metadata marker without placing it in public source.
 marker="$(printf '\x4c\x6f\x6f\x70\x2d\x49\x44\x3a')"
 git commit --quiet --allow-empty -m "$marker synthetic metadata test"
