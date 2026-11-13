@@ -644,12 +644,10 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(["python3", "capacity_adapter.py", "worker"], command[-3:])
         self.assertNotIn("--interactive", command)
         self.assertIn("capacity-worker", command)
-        self.assertTrue(
-            any(
-                value.startswith("/tmp/durable-workflow-capacity-workers/")
-                for value in command
-            )
+        self.assertRegex(
+            runner._container_worker_pid_file(adapter, environment), r"^[0-9a-f]{24}\.pid$"
         )
+        self.assertIn(runner._container_worker_pid_file(adapter, environment), command)
         self.assertTrue(
             any(
                 value == "DURABLE_WORKFLOW_TASK_QUEUE=capacity-smoke"
@@ -681,53 +679,62 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         )
 
     def test_worker_pid_files_are_private_and_exclusive(self) -> None:
-        # Server #1051: run the exact container scripts with the local sh.
-        def worker(pidfile: Path) -> subprocess.CompletedProcess[str]:
+        # Server #1051: run the exact container scripts with the local sh,
+        # with TMPDIR standing in for the container's temp directory.
+        def run(script: str, temp: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
-                ["sh", "-c", capacity_matrix.WORKER_PIDFILE_SCRIPT, "capacity-worker", str(pidfile), "true"],
+                ["sh", "-c", script, "capacity-worker", *arguments],
                 text=True, capture_output=True, check=False,
+                env={"PATH": os.environ.get("PATH", ""), "TMPDIR": str(temp)},
             )
 
-        def cleanup(pidfile: Path) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                ["sh", "-c", capacity_matrix.WORKER_CLEANUP_SCRIPT, "capacity-worker-cleanup", str(pidfile)],
-                text=True, capture_output=True, check=False,
-            )
+        def worker(temp: Path, name: str) -> subprocess.CompletedProcess[str]:
+            return run(capacity_matrix.WORKER_PIDFILE_SCRIPT, temp, name, "true")
+
+        def cleanup(temp: Path, name: str) -> subprocess.CompletedProcess[str]:
+            return run(capacity_matrix.WORKER_CLEANUP_SCRIPT, temp, name)
 
         with tempfile.TemporaryDirectory() as scratch:
-            root = Path(scratch)
-            pidfile = root / "workers" / "worker.pid"
-            started = worker(pidfile)
+            temp = Path(scratch) / "temp"
+            temp.mkdir()
+            directory = temp / "durable-workflow-capacity-workers"
+            pidfile = directory / "worker.pid"
+            started = worker(temp, "worker.pid")
             self.assertEqual(0, started.returncode, started.stderr)
-            self.assertEqual(0o700, pidfile.parent.stat().st_mode & 0o777)
+            self.assertEqual(0o700, directory.stat().st_mode & 0o777)
             self.assertEqual(0o600, pidfile.stat().st_mode & 0o777)
             recorded = pidfile.read_text()
             self.assertRegex(recorded, r"^\d+ \d+\n$")
 
             # A second start with the same identity refuses; nothing is overwritten.
-            self.assertEqual(43, worker(pidfile).returncode)
+            self.assertEqual(43, worker(temp, "worker.pid").returncode)
             self.assertEqual(recorded, pidfile.read_text())
 
             # The recorded process has exited, so cleanup only removes the file.
-            self.assertEqual(0, cleanup(pidfile).returncode)
+            self.assertEqual(0, cleanup(temp, "worker.pid").returncode)
             self.assertFalse(pidfile.exists())
-            self.assertEqual(0, cleanup(pidfile).returncode, "a missing pid file is already clean")
+            self.assertEqual(0, cleanup(temp, "worker.pid").returncode, "a missing pid file is already clean")
+
+            # Only a plain file name is accepted.
+            for name in ("", "../escape.pid", ".hidden", "a/b.pid"):
+                self.assertEqual(42, worker(temp, name).returncode, name)
 
             # A symlinked directory or pid file is refused, never followed.
-            target = root / "elsewhere"
+            target = Path(scratch) / "elsewhere"
             target.mkdir(mode=0o700)
-            (root / "linked").symlink_to(target)
-            self.assertEqual(42, worker(root / "linked" / "worker.pid").returncode)
+            linked = Path(scratch) / "linked-temp"
+            linked.mkdir()
+            (linked / "durable-workflow-capacity-workers").symlink_to(target)
+            self.assertEqual(42, worker(linked, "worker.pid").returncode)
             self.assertEqual([], list(target.iterdir()))
-            planted = pidfile.parent / "planted.pid"
-            planted.symlink_to(target / "victim")
-            self.assertEqual(42, cleanup(planted).returncode)
+            (directory / "planted.pid").symlink_to(target / "victim")
+            self.assertEqual(42, cleanup(temp, "planted.pid").returncode)
             self.assertFalse((target / "victim").exists())
 
-            # A started process with a different recorded start is left alone.
+            # A live process with a different recorded start is left alone.
             with open(pidfile, "x") as handle:
                 handle.write(f"{os.getpid()} 1\n")
-            self.assertEqual(41, cleanup(pidfile).returncode)
+            self.assertEqual(41, cleanup(temp, "worker.pid").returncode)
             self.assertTrue(pidfile.exists())
 
     def test_git_is_resolved_without_path(self) -> None:

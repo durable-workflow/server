@@ -38,29 +38,32 @@ SUITE_ROOT = capacity_suite.SUITE_ROOT
 DEFAULT_COLLECTOR = SUITE_ROOT / "collectors/local-docker/collector.json"
 DEFAULT_SMOKE = SUITE_ROOT / "topologies/local-docker/smoke.json"
 
-# Container worker lifecycle files (Server #1051). They live in one private
+# Container worker lifecycle files (Server #1051). Each script takes only the
+# file name and keeps it in one private directory under the container's temp
 # directory: created 0700, and used only when it is a real directory owned by
 # the adapter user, so another user cannot plant or redirect a pid file. Each
 # file is created exclusively (noclobber), so a stale or planted file refuses
 # the start instead of being overwritten. Cleanup checks the same ownership
 # and still kills only the process whose recorded start time matches.
-WORKER_PIDFILE_DIRECTORY = "/tmp/durable-workflow-capacity-workers"
 _PIDFILE_CUSTODY = (
-    'dir="${pidfile%/*}"; '
+    'case "$1" in ""|.*|*/*) exit 42;; esac; '
+    'dir="${TMPDIR:-/tmp}/durable-workflow-capacity-workers"; pidfile="$dir/$1"; '
+)
+_PIDFILE_DIRECTORY_OWNED = (
     '{ [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ]; } || exit 42; '
 )
 WORKER_PIDFILE_SCRIPT = (
-    'pidfile="$1"; shift; umask 077; '
-    'mkdir -m 700 "${pidfile%/*}" 2>/dev/null; '
-    + _PIDFILE_CUSTODY
+    _PIDFILE_CUSTODY
+    + 'shift; umask 077; mkdir -m 700 "$dir" 2>/dev/null; '
+    + _PIDFILE_DIRECTORY_OWNED
     + 'start="$(awk \'{print $22}\' "/proc/$$/stat")"; '
     'set -C; printf "%s %s\\n" "$$" "$start" >"$pidfile" || exit 43; set +C; '
     'exec "$@"'
 )
 WORKER_CLEANUP_SCRIPT = (
-    'pidfile="$1"; '
-    'if [ ! -e "$pidfile" ] && [ ! -L "$pidfile" ]; then exit 0; fi; '
-    + _PIDFILE_CUSTODY
+    _PIDFILE_CUSTODY
+    + 'if [ ! -e "$pidfile" ] && [ ! -L "$pidfile" ]; then exit 0; fi; '
+    + _PIDFILE_DIRECTORY_OWNED
     + '{ [ -f "$pidfile" ] && [ ! -L "$pidfile" ] && [ -O "$pidfile" ]; } || exit 42; '
     'read -r pid expected_start <"$pidfile"; '
     'if [ -r "/proc/$pid/stat" ]; then '
@@ -891,7 +894,7 @@ class CellRunner:
             )
         )
         digest = hashlib.sha256(identity.encode()).hexdigest()[:24]
-        return f"{WORKER_PIDFILE_DIRECTORY}/{digest}.pid"
+        return f"{digest}.pid"
 
     def _container_worker_cleanup_command(
         self,
