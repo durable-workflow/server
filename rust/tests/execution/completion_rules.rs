@@ -65,6 +65,41 @@ async fn completions_follow_php_s_transport_rules() {
     database.remove().await;
 }
 
+// Server #607: a name a command writes is bounded by its column, counted in
+// characters. An over-long one is a typed 422 that names the field, before
+// any write; a name at the bound commits on every backend.
+#[tokio::test]
+async fn command_names_longer_than_their_columns_are_refused_before_any_write() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "worker", json!(["echo"]), json!(["a"])).await;
+    start(&app, "names").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let before = table_counts(&database).await;
+    let long = |length: usize| "n".repeat(length);
+    for (command, field, most) in [
+        (json!({"type":"schedule_activity","activity_type":long(256)}), "activity_type", 255),
+        (json!({"type":"schedule_activity","activity_type":"a","queue":long(256)}), "queue", 255),
+        (json!({"type":"start_child_workflow","workflow_type":long(256)}), "workflow_type", 255),
+        (json!({"type":"start_child_workflow","workflow_type":"child","queue":long(192)}), "queue", 191),
+        (json!({"type":"open_signal_wait","signal_name":long(256)}), "signal_name", 255),
+    ] {
+        let (_, errors) = refused(&app, &task, completion(&task, json!([command]))).await;
+        assert_eq!(errors[format!("commands.0.{field}")],
+            json!([format!("The commands.0.{field} field must not be greater than {most} characters.")]), "{command}");
+    }
+    assert_eq!(table_counts(&database).await, before, "a refused completion writes nothing");
+
+    // At the bound, the names fit their columns and the task commits.
+    let (status, body) = finish_task(&app, &task,
+        json!([{"type":"schedule_activity","activity_type":long(255),"queue":long(255),
+            "arguments":envelope(Payload::Array(vec![]))}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    runtime.close().await;
+    database.remove().await;
+}
+
 // PHP's command normalizer takes a bare string payload as the Avro blob
 // itself, and continue-as-new arguments that are plain values as no
 // arguments, so the next run keeps the current input.
