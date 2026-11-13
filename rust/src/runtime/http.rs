@@ -411,6 +411,9 @@ pub fn router(runtime: Runtime) -> Router {
         .layer(middleware::from_fn(empty_list_body))
         // `payload_limits` reads and bounds every body first.
         .layer(DefaultBodyLimit::disable())
+        // Storage admission runs after authentication, role, protocol and
+        // namespace checks (Server #951).
+        .layer(middleware::from_fn_with_state(runtime.clone(), storage_admission_guard))
         .layer(middleware::from_fn_with_state(runtime.clone(), guard))
         .layer(middleware::from_fn(super::payload_limits::enforce))
         .with_state(runtime)
@@ -1152,6 +1155,35 @@ pub(super) async fn admission_error(
     response
 }
 
+/// PHP's `EnforceStorageAdmission`: under storage pressure a request is
+/// refused before its handler unless its class still runs in that state.
+async fn storage_admission_guard(State(runtime): State<Runtime>, request: Request, next: Next) -> Response {
+    use super::storage_admission::{self as admission, Admission};
+    let class = admission::classify(request.method(), request.uri().path());
+    if class == Admission::Always {
+        return next.run(request).await;
+    }
+    let snapshot = runtime.storage_admission().snapshot();
+    if admission::admits(class, &snapshot) {
+        return next.run(request).await;
+    }
+    let path = request.uri().path();
+    let worker = path == "/api/worker" || path.starts_with("/api/worker/");
+    let (request, poll_request_id) = if class == Admission::Poll {
+        let (parts, body) = request.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap_or_default();
+        let poll_request_id = serde_json::from_slice::<Value>(&bytes).ok()
+            .and_then(|body| body.get("poll_request_id").and_then(Value::as_str).map(str::to_owned));
+        (Request::from_parts(parts, axum::body::Body::from(bytes)), poll_request_id)
+    } else {
+        (request, None)
+    };
+    let body = admission::refusal(&snapshot, class, poll_request_id.as_deref());
+    let mut response = admission_error(request, worker, StatusCode::SERVICE_UNAVAILABLE, body).await;
+    response.headers_mut().insert("retry-after", HeaderValue::from(admission::RETRY_AFTER_SECONDS));
+    response
+}
+
 async fn health(Extension(runtime): Extension<Runtime>) -> Response {
     let database = runtime.database_live().await;
     (if database { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE },
@@ -1159,13 +1191,20 @@ async fn health(Extension(runtime): Extension<Runtime>) -> Response {
 }
 
 async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
-    let ready = runtime.schema_ready().await;
-    let mut database = json!({"status": if ready { "ok" } else { "failed" },
+    let database_ready = runtime.schema_ready().await;
+    let mut database = json!({"status": if database_ready { "ok" } else { "failed" },
         "mode": "schema_read", "write_capacity_verified": false});
     // As PHP does, only a reachable database reports what its TLS guarantees.
-    if ready {
+    if database_ready {
         database["tls"] = crate::database_tls::current();
     }
+    let mut checks = json!({"database": database});
+    // Storage pressure makes the server not ready for new work (#951).
+    let storage = runtime.storage_admission().snapshot();
+    if storage.enabled {
+        checks["storage_admission"] = storage.describe();
+    }
+    let ready = database_ready && storage.accepts_new_work();
     (
         if ready {
             StatusCode::OK
@@ -1176,7 +1215,7 @@ async fn ready(Extension(runtime): Extension<Runtime>) -> Response {
             let (development, qualification) = super::cluster_info::build_identity();
             Json(json!({
             "status": if ready { "ready" } else { "not_ready" }, "development": development,
-            "checks": {"database": database},
+            "checks": checks,
             "qualification": qualification}))
         },
     )

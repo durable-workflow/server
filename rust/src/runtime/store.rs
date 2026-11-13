@@ -188,6 +188,9 @@ pub(super) struct Store<DB: Backend> {
     pub(super) repair_pass_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     pub(super) poll_sweep_config: super::poll_sweeps::Config,
     pub(super) poll_sweeps: Arc<super::poll_sweeps::Sweeps>,
+    /// The storage pressure observation (Server #951), shared by every
+    /// namespace's store, the request guard and the maintenance loop.
+    pub(super) storage_admission: Arc<super::storage_admission::StorageAdmission>,
     // A per-store source-test clock for deterministic claim arithmetic. All
     // production claims continue to sample the existing canonical clock.
     #[cfg(test)]
@@ -350,6 +353,7 @@ where
             repair_pass_at: Arc::default(),
             poll_sweep_config: super::poll_sweeps::Config::default(),
             poll_sweeps: Arc::default(),
+            storage_admission: Arc::default(),
             #[cfg(test)]
             test_claim_at: None,
             #[cfg(test)]
@@ -377,6 +381,7 @@ where
             repair_pass_at: self.repair_pass_at.clone(),
             poll_sweep_config: self.poll_sweep_config,
             poll_sweeps: self.poll_sweeps.clone(),
+            storage_admission: self.storage_admission.clone(),
             #[cfg(test)]
             test_claim_at: self.test_claim_at,
             #[cfg(test)]
@@ -2127,6 +2132,15 @@ where
         let mut pace = super::poll_readiness::ReadPace::new();
         let worker_id = text(&body, "worker_id")?;
         loop {
+            // A waiting poll rechecks storage admission before each probe
+            // and claims nothing under pressure (Server #951).
+            let pressure = self.storage_admission.snapshot();
+            if !pressure.accepts_new_work() {
+                let mut response = super::storage_admission::refusal(&pressure, super::storage_admission::Admission::Poll,
+                    body.get("poll_request_id").and_then(Value::as_str));
+                response.as_object_mut().expect("refusal object").remove("request_admitted");
+                return Err(super::RuntimeError::Protocol { status: StatusCode::SERVICE_UNAVAILABLE, response });
+            }
             // Register the notification before probing.
             let wake = self.wake.notified();
             let first_probe = std::mem::take(&mut first);

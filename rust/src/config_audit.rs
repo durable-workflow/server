@@ -516,7 +516,6 @@ const DEFAULT_NAMESPACE: &str = "native serves `default` to requests that name n
 const POLL_DISPATCH: &str = "native hands tasks only to polling workers";
 const MEMO_RECOVERY: &str = "native has no memo migration recovery mode";
 const EXTERNAL_EXECUTOR: &str = "native has no external executor configuration";
-const STORAGE_ADMISSION: &str = "native has no storage admission file";
 /// The parity harness looks for this exact wording.
 const AUTH: &str = "unsupported development authentication configuration";
 const FORWARDED: &str = "native never trusts forwarded attribution headers";
@@ -662,9 +661,9 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_SIGNATURE_KEY", legacy: Some("WORKFLOW_SERVER_SIGNATURE_KEY"), disposition: Ignored },
     Setting { name: "DW_SQLITE_CLAIM_LOCK_TTL_SECONDS", legacy: Some("WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_TTL_SECONDS"), disposition: Ignored },
     Setting { name: "DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS", legacy: Some("WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_WAIT_SECONDS"), disposition: Ignored },
-    Setting { name: "DW_STORAGE_ADMISSION_FILE", legacy: None, disposition: Refused(Empty, STORAGE_ADMISSION) },
-    Setting { name: "DW_STORAGE_ADMISSION_MAX_AGE_SECONDS", legacy: None, disposition: Ignored },
-    Setting { name: "DW_STORAGE_ADMISSION_SOURCE", legacy: None, disposition: Refused(Empty, STORAGE_ADMISSION) },
+    Setting { name: "DW_STORAGE_ADMISSION_FILE", legacy: None, disposition: Honored },
+    Setting { name: "DW_STORAGE_ADMISSION_MAX_AGE_SECONDS", legacy: None, disposition: Honored },
+    Setting { name: "DW_STORAGE_ADMISSION_SOURCE", legacy: None, disposition: Honored },
     Setting { name: "DW_TASK_DISPATCH_MODE", legacy: Some("WORKFLOW_V2_TASK_DISPATCH_MODE"), disposition: Refused(Exact(&["poll"]), POLL_DISPATCH) },
     Setting { name: "DW_TASK_QUEUE_ADMISSION_OVERRIDES", legacy: Some("WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES"), disposition: Refused(EmptyObject, TASK_ADMISSION) },
     Setting { name: "DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS", legacy: Some("WORKFLOW_SERVER_TRUST_FORWARDED_ATTRIBUTION_HEADERS"), disposition: Refused(FilterBool(false), FORWARDED) },
