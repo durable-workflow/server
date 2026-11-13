@@ -70,6 +70,22 @@ history pruning, and payload cleanup do not start a new pass under pressure.
 
 ## Deployment Requirements
 
+### Admission observation file
+
+Publish the observation as a regular file owned by root or the Server's
+effective UID, with group and other write permissions disabled (for example,
+`0644` or `0600`). For containers, use the ownership as seen inside the Server
+container. Keep the collector's atomic replacement in the same trusted directory
+and preserve those owner and mode requirements on every replacement.
+
+Every parent directory must be controlled by root or the Server's user and must
+not be writable by untrusted users. Avoid symlinked parent components. A private
+directory such as `/run/durable-workflow` is suitable when provisioned with that
+ownership and access policy. The native reader refuses a symlink in the final
+component and checks the opened file descriptor; it does not establish trust in
+the ancestor directories. File checks cannot protect an operator-selected path
+whose parent can be replaced by another user.
+
 ### External Completion Payloads
 
 When discovery advertises `upload.completion_context`, a worker may retry a

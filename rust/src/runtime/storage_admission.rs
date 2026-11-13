@@ -117,7 +117,8 @@ fn read(settings: &Settings, now: i64) -> Snapshot {
     if !(1..=300).contains(&settings.max_age_seconds) {
         return Snapshot::UNAVAILABLE;
     }
-    let Some(value) = observation(path) else {
+    // The observation must come from root or this process's effective user.
+    let Some(value) = observation(path, unsafe { libc::geteuid() }) else {
         return Snapshot::UNAVAILABLE;
     };
     let state = match value.get("state").and_then(Value::as_str) {
@@ -146,16 +147,19 @@ fn read(settings: &Settings, now: i64) -> Snapshot {
     }
 }
 
-/// A bounded regular file, never a FIFO, device or symlink, nor one another
-/// user could replace. The final path component is opened without following
+/// A bounded regular file owned by root or the reader, never a FIFO, device
+/// or symlink, nor writable by another user. Trusted parent directories remain
+/// an operator requirement. The final path component is opened without following
 /// a symlink and without blocking on a FIFO, and every check is made on that
 /// same descriptor, so nothing can be swapped in between a check and the read.
-fn observation(path: &str) -> Option<Value> {
+fn observation(path: &str, reader_uid: u32) -> Option<Value> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new().read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path).ok()?;
     let opened = file.metadata().ok()?;
-    if !opened.file_type().is_file() || opened.len() > MAX_BYTES || opened.mode() & 0o022 != 0 {
+    if !opened.file_type().is_file() || opened.len() > MAX_BYTES || opened.mode() & 0o022 != 0
+        || (opened.uid() != 0 && opened.uid() != reader_uid)
+    {
         return None;
     }
     let mut bytes = Vec::with_capacity(MAX_BYTES as usize);
@@ -336,6 +340,40 @@ mod tests {
         unavailable(&Settings { file: None, ..base.clone() });
         unavailable(&Settings { max_age_seconds: 0, ..base.clone() });
         unavailable(&Settings { max_age_seconds: 301, ..base.clone() });
+    }
+
+    #[test]
+    fn observation_owner_must_be_root_or_the_reader() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pressure.json");
+        let path_text = path.to_str().unwrap();
+        let reader_uid = unsafe { libc::geteuid() };
+        write(&path, &record("normal", NOW, "{}"));
+        assert!(read(&settings(&path), NOW).accepts_new_work());
+
+        if reader_uid == 0 {
+            // In the privileged container, exercise a real foreign-owned
+            // descriptor through the production snapshot path as well.
+            std::os::unix::fs::chown(&path, Some(65534), None).unwrap();
+            assert_eq!(read(&settings(&path), NOW), Snapshot::UNAVAILABLE);
+        }
+        let owner_uid = std::fs::metadata(&path).unwrap().uid();
+        assert_ne!(owner_uid, 0);
+        // This also exercises the descriptor policy on unprivileged runners,
+        // without requiring permission to change an inode's owner.
+        let other_uid = if owner_uid == 1 { 2 } else { 1 };
+        assert!(observation(path_text, owner_uid).is_some());
+        assert!(observation(path_text, other_uid).is_none());
+
+        if reader_uid == 0 {
+            std::os::unix::fs::chown(&path, Some(0), None).unwrap();
+            // A root-owned observation is trusted by a non-root reader too.
+            assert!(observation(path_text, other_uid).is_some());
+            assert!(read(&settings(&path), NOW).accepts_new_work());
+        }
+        // Atomic producer replacement restores the actual reader's ownership.
+        write(&path, &record("draining", NOW, "{}"));
+        assert_eq!(read(&settings(&path), NOW).state, State::Draining);
     }
 
     #[test]
