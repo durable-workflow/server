@@ -42,7 +42,7 @@ image:
   # scripts/ci/sync-source-release.mjs. Do not edit this default.
   # A tag must match the runtime: 3.x (or latest) for native, 2.x for php.
   # The chart refuses a mismatch at render time.
-  tag: "3.9.2"
+  tag: "3.10.0"
   # Optional digest pin. When set, takes precedence over tag for change control.
   # Example: "sha256:abc123..."
   # The chart cannot see which runtime a digest names. Pin a native digest
