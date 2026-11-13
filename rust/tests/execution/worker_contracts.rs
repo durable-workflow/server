@@ -213,3 +213,79 @@ async fn signals_follow_php_admission_with_and_without_a_recorded_contract() {
     drop(app);
     database.remove().await;
 }
+
+async fn observed_contract(app: &Router, started: &Value) -> Value {
+    let path = format!("/api/workflows/{}/runs/{}/observation",
+        started["workflow_id"].as_str().unwrap(), started["run_id"].as_str().unwrap());
+    let (status, body) = request(app, "GET", &path, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["command_contract"].clone()
+}
+
+// Server #436, native part: numeric-string names keep their exact spelling
+// (PHP once turned array keys like "17" into integers), the start records the
+// contract of the selected build's worker only, and bounded observation tells
+// an explicitly empty declaration from a missing one.
+#[tokio::test]
+async fn numeric_names_selected_builds_and_bounded_observation_keep_the_declared_contract() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let numeric = ["0", "17", "017"];
+    let mut body = json!({"worker_id":"numeric-worker","task_queue":"test","runtime":"python",
+        "supported_workflow_types":numeric,"supported_activity_types":[],"workflow_command_contracts":{}});
+    for name in numeric {
+        body["workflow_command_contracts"][name] = json!({"query_contracts":[{"name":name,"parameters":[]}],"signals":[name]});
+    }
+    let (status, receipt) = request(&app, "POST", "/api/worker/register", body).await;
+    assert_eq!(status, StatusCode::CREATED, "{receipt}");
+    for name in numeric {
+        let (status, started) = request(&app, "POST", "/api/workflows", json!({"workflow_id":format!("numeric-{name}"),
+            "workflow_type":name,"task_queue":"test","input":envelope(Payload::Array(vec![]))})).await;
+        assert_eq!(status, StatusCode::CREATED, "{started}");
+        let payload = snapshot(&app, &started).await;
+        assert_eq!(payload["workflow_type"], json!(name), "{payload}");
+        assert_eq!(payload["declared_queries"], json!([name]), "{payload}");
+        assert_eq!(payload["declared_signals"], json!([name]), "{payload}");
+        let observed = observed_contract(&app, &started).await;
+        assert_eq!(observed["source"], "durable_history", "{observed}");
+        assert_eq!(observed["query_targets"].as_array().map(Vec::len), Some(1), "{observed}");
+    }
+
+    // Two builds declare different contracts for one type; the promoted
+    // build's worker is the only source of the start's snapshot.
+    for (worker, build, query) in [("build-a", "a", "from_a"), ("build-b", "b", "from_b")] {
+        let (status, receipt) = request(&app, "POST", "/api/worker/register", json!({"worker_id":worker,"task_queue":"test",
+            "runtime":"python","build_id":build,"supported_workflow_types":["echo"],"supported_activity_types":[],
+            "workflow_command_contracts":{"echo":{"queries":[query]}}})).await;
+        assert_eq!(status, StatusCode::CREATED, "{receipt}");
+    }
+    let (status, promoted) = request(&app, "POST", "/api/task-queues/test/build-ids/promote", json!({"build_id":"b"})).await;
+    assert_eq!(status, StatusCode::OK, "{promoted}");
+    let routed = start(&app, "routed-contract").await;
+    let payload = snapshot(&app, &routed).await;
+    assert_eq!(payload["compatibility"], "b", "{payload}");
+    assert_eq!(payload["declared_queries"], json!(["from_b"]), "{payload}");
+
+    // Explicit empty is durable history; a missing declaration is unavailable.
+    let (status, receipt) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"build-b","task_queue":"test",
+        "runtime":"python","build_id":"b","supported_workflow_types":["echo"],"supported_activity_types":[],
+        "workflow_command_contracts":{"echo":{}}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{receipt}");
+    let empty = start(&app, "observed-empty").await;
+    assert_empty(&snapshot(&app, &empty).await);
+    let observed = observed_contract(&app, &empty).await;
+    assert_eq!((observed["source"].clone(), observed["backfill_needed"].clone()), (json!("durable_history"), json!(false)), "{observed}");
+    // A build whose worker never declared a contract leaves it unavailable.
+    let (status, receipt) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"build-c","task_queue":"test",
+        "runtime":"python","build_id":"c","supported_workflow_types":["echo"],"supported_activity_types":[]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{receipt}");
+    let (status, promoted) = request(&app, "POST", "/api/task-queues/test/build-ids/promote", json!({"build_id":"c"})).await;
+    assert_eq!(status, StatusCode::OK, "{promoted}");
+    let missing = start(&app, "observed-missing").await;
+    assert!(snapshot(&app, &missing).await.get("declared_queries").is_none());
+    let observed = observed_contract(&app, &missing).await;
+    assert_eq!((observed["source"].clone(), observed["backfill_needed"].clone()), (json!("unavailable"), json!(true)), "{observed}");
+    runtime.close().await;
+    database.remove().await;
+}
