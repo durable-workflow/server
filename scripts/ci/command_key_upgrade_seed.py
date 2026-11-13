@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write real 3.8 API receipts for the separately qualified legacy upgrade cell.
 
-Run with the published Python SDK installed for its official Avro codec. This
+Run with ``python -I`` and the published Python SDK installed for its Avro codec. This
 does not run an SDK Worker or transform database rows. Stop the disposable
 baseline Server and back up its database before the manifest's upgrade step.
 Published 3.8 retains ordinary update keys; its ordinary signal rows have no
@@ -9,22 +9,68 @@ stored caller key and are controls, not physical legacy-key readback proof.
 """
 
 import argparse
+import base64
 import hashlib
+import importlib
+import importlib.machinery
 import importlib.metadata
 import json
 from pathlib import Path
 import re
+import sys
 from urllib.error import HTTPError
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+
+CODEC_VERSION = "2.17.1"
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        return None
+
+
+def installed_codec():
+    """Check package resolution and RECORD hashes before importing SDK code."""
+    if not sys.flags.isolated:
+        raise ValueError("run the seed driver with python -I, without cwd/PYTHONPATH imports")
+    distribution = importlib.metadata.distribution("durable-workflow")
+    if distribution.version != CODEC_VERSION:
+        raise ValueError("seed codec must be installed durable-workflow " + CODEC_VERSION)
+    expected = {}
+    for relative in ["durable_workflow/__init__.py", "durable_workflow/serializer.py"]:
+        files = [item for item in distribution.files or [] if str(item) == relative]
+        if len(files) != 1 or files[0].hash is None or files[0].hash.mode != "sha256":
+            raise ValueError("installed codec has no unique SHA256 RECORD entry")
+        path = Path(distribution.locate_file(files[0])).resolve(strict=True)
+        actual = hashlib.sha256(path.read_bytes()).digest()
+        if base64.urlsafe_b64encode(actual).decode().rstrip("=") != files[0].hash.value:
+            raise ValueError("installed codec bytes differ from their distribution RECORD")
+        expected[relative] = (path, actual.hex())
+    package = importlib.machinery.PathFinder.find_spec("durable_workflow", sys.path)
+    if package is None or package.origin is None or Path(package.origin).resolve() != expected["durable_workflow/__init__.py"][0]:
+        raise ValueError("codec package is shadowed outside its installed distribution")
+    spec = importlib.machinery.PathFinder.find_spec("durable_workflow.serializer", package.submodule_search_locations)
+    if spec is None or spec.origin is None or Path(spec.origin).resolve() != expected["durable_workflow/serializer.py"][0]:
+        raise ValueError("serializer is shadowed outside its installed distribution")
+    for name, relative in [("durable_workflow", "durable_workflow/__init__.py"),
+                           ("durable_workflow.serializer", "durable_workflow/serializer.py")]:
+        if name in sys.modules and Path(getattr(sys.modules[name], "__file__", "")).resolve() != expected[relative][0]:
+            raise ValueError("preloaded codec module is outside its installed distribution")
+    serializer = importlib.import_module("durable_workflow.serializer")
+    if Path(serializer.__file__).resolve() != expected["durable_workflow/serializer.py"][0]:
+        raise ValueError("imported serializer differs from the checked distribution")
+    return serializer, {"name": "durable-workflow", "version": distribution.version,
+                        "serializer_sha256": expected["durable_workflow/serializer.py"][1]}
 
 
 class SeedClient:
     def __init__(self, url):
-        parsed = urlparse(url)
-        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port or parsed.path:
+        match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", url)
+        if match is None or int(match[1]) > 65535:
             raise ValueError("seed URL must be an explicit disposable http://127.0.0.1:port")
-        self.url = url
+        self.url = "http://127.0.0.1:" + str(int(match[1]))
+        self.opener = build_opener(ProxyHandler({}), NoRedirect())
         self.protocol = None
 
     def request(self, method, path, body=None, expected=200):
@@ -36,7 +82,7 @@ class SeedClient:
             headers["X-Durable-Workflow-Control-Plane-Version"] = "2"
         data = None if body is None else json.dumps(body).encode()
         try:
-            response = urlopen(Request(self.url + path, data=data, headers=headers, method=method), timeout=30)
+            response = self.opener.open(Request(self.url + path, data=data, headers=headers, method=method), timeout=30)
         except HTTPError as error:
             response = error
         with response:
@@ -63,13 +109,11 @@ class SeedClient:
 
 
 def seed(client, prefix, manifest):
+    serializer, codec_identity = installed_codec()
     info = client.request("GET", "/api/cluster/info")
     if info.get("version") != manifest["physical_upgrade"]["baseline"]["tag"]:
         raise ValueError("physical seed must run on the manifest's published baseline version")
     client.protocol = info["worker_protocol"]["version"]
-    # Import only for the codec. All seed admissions below use raw producer APIs.
-    from durable_workflow import serializer
-
     arguments = serializer.envelope([manifest["legacy_readback"]["original_input"]], codec="avro")
     null = serializer.envelope(None, codec="avro")
     for value, envelope in [([1], arguments), (None, null)]:
@@ -120,8 +164,10 @@ def seed(client, prefix, manifest):
                           "path": path, "original_body": body, "receipt": receipt, "history": history})
     return {"schema": "durable-workflow.command-key-physical-seed.v1",
             "scope": "Real baseline API admissions; not a synthetic transform, upgrade result or SDK Worker proof.",
-            "baseline": manifest["physical_upgrade"]["baseline"], "advertised_protocol": client.protocol,
-            "codec_package": {"name": "durable-workflow", "version": importlib.metadata.version("durable-workflow")},
+            "expected_external_baseline": manifest["physical_upgrade"]["baseline"],
+            "external_identity_scope": "Image digest and source require verification by the outer runner; this driver does not observe them.",
+            "observed_cluster": {"version": info["version"], "worker_protocol": client.protocol},
+            "codec_package": codec_identity,
             "cases": cases}
 
 
