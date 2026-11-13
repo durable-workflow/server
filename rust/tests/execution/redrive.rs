@@ -51,12 +51,30 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
     assert_eq!(finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b",
         "arguments":envelope(Payload::Array(vec![]))}])).await.0, StatusCode::OK);
     fail_redrive_activity(&app, 3).await;
+    // Consumed clocks use full event precision; the initial anchor uses the
+    // persisted run start. Pin distinct ordered times after executing the
+    // real timer and activity lifecycle so those authorities cannot alias.
+    let recorded = run_history(&app, &source["workflow_id"], &source["run_id"]).await;
+    let clock_base = chrono::DateTime::parse_from_rfc3339("2026-11-03T00:00:00.123456+00:00").unwrap();
+    for event in recorded.as_array().unwrap() {
+        let sequence = event["sequence"].as_i64().unwrap();
+        let at = clock_base + chrono::Duration::seconds(sequence);
+        database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_history_events SET recorded_at='{}' WHERE workflow_run_id='{source_run}' AND sequence={sequence}",
+            at.format("%Y-%m-%d %H:%M:%S%.6f")))).await;
+    }
+    let original_start = clock_base - chrono::Duration::seconds(1);
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_runs SET started_at='{}' WHERE id='{source_run}'",
+        original_start.format("%Y-%m-%d %H:%M:%S%.6f")))).await;
+    runtime.close().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
     let original = run_history(&app, &source["workflow_id"], &source["run_id"]).await;
     let timer = |history: &Value, kind: &str| history.as_array().unwrap().iter()
         .find(|event| event["event_type"] == kind).unwrap().clone();
     let original_fired = timer(&original, "TimerFired");
-    let original_clock = chrono::DateTime::parse_from_rfc3339(original_fired["timestamp"].as_str().expect("public history timestamp"))
-        .unwrap().format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
+    let clock = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str().expect("public replay clock timestamp")).unwrap();
+    let original_clock = clock(&original_fired["timestamp"]);
+    assert_eq!(original_clock.timestamp_subsec_micros(), 123456);
     let counts = table_counts(&database).await;
     let mut predecessor = source_run.to_owned();
     let mut previous_timer = original_fired["payload"]["timer_id"].clone();
@@ -78,7 +96,10 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
         assert_ne!(scheduled["timer_id"], previous_timer);
         assert_eq!(scheduled["timer_id"], fired["timer_id"]);
         assert_eq!(fired["reused_from_run_id"], predecessor);
-        assert_eq!(fired["reused_recorded_at"], original_clock);
+        assert_eq!(clock(&fired["reused_recorded_at"]), original_clock);
+        assert_eq!(clock(&history[1]["payload"]["replayed_started_at"]), original_start);
+        assert_ne!(original_start, clock(&timer(&original, "WorkflowStarted")["timestamp"]));
+        assert_eq!(clock(&history[2]["payload"]["reused_recorded_at"]), clock(&timer(&original, "ActivityCompleted")["timestamp"]));
         for (kind, actual) in [("TimerScheduled", &scheduled), ("TimerFired", &fired)] {
             let mut expected = timer(&original, kind)["payload"].clone();
             for field in ["task", "command", "timer_id"] {
@@ -105,6 +126,7 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
         assert_eq!(run_history(&app, &source["workflow_id"], &source["run_id"]).await, original);
         let task = poll(&app, "worker", "workflow").await;
         assert_eq!(task["run_id"], accepted["run_id"]);
+        assert_eq!(clock(&task["replay_clock"]["started_at"]), original_start);
         assert_eq!(finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b",
             "arguments":envelope(Payload::Array(vec![]))}])).await.0, StatusCode::OK);
         previous_timer = fired["timer_id"].clone();
@@ -374,7 +396,7 @@ async fn redrive_reuses_side_effects_and_version_markers_at_their_recorded_time(
     let source = failed_with(&app, "rd-markers", json!({}), markers).await;
     let source_run = source["run_id"].as_str().unwrap().to_owned();
     // The source's steps ran earlier than the redrive.
-    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_history_events SET recorded_at='2026-11-03 00:00:00.000000' WHERE workflow_run_id='{source_run}' AND event_type IN ('SideEffectRecorded','VersionMarkerRecorded')"))).await;
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_history_events SET recorded_at='2026-11-03 00:00:00.654321' WHERE workflow_run_id='{source_run}' AND event_type IN ('SideEffectRecorded','VersionMarkerRecorded')"))).await;
     let source_history = run_history(&app, &json!("rd-markers"), &json!(source_run)).await;
     let recorded = |history: &Value, kind: &str| history.as_array().unwrap().iter().find(|event| event["event_type"] == kind).unwrap()["payload"].clone();
     let path = format!("/api/workflows/rd-markers/runs/{source_run}");
@@ -386,7 +408,7 @@ async fn redrive_reuses_side_effects_and_version_markers_at_their_recorded_time(
     let run = redriven["run_id"].as_str().unwrap().to_owned();
     let history = run_history(&app, &json!("rd-markers"), &json!(run)).await;
     assert_eq!(kinds(&history), ["StartAccepted", "WorkflowStarted", "SideEffectRecorded", "VersionMarkerRecorded", "ActivityCompleted"]);
-    let first_ran = json!("2026-11-03T00:00:00+00:00");
+    let first_ran = json!("2026-11-03T00:00:00.654321+00:00");
     for (kind, sequence) in [("SideEffectRecorded", 1), ("VersionMarkerRecorded", 2)] {
         let mut reused = recorded(&history, kind);
         assert_eq!((reused["sequence"].clone(), reused["reused_from_run_id"].clone(), reused["reused_recorded_at"].clone()),

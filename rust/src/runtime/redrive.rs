@@ -25,6 +25,12 @@ fn iso(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
 }
 
+/// Replay clocks retain the persisted instant's precision. Deadline formatting
+/// remains separate; rounding a clock changes workflow decisions on replay.
+fn replay_time(at: DateTime<Utc>) -> String {
+    at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, false)
+}
+
 /// One step the new run reuses: an `ActivityCompleted`, or a marker step
 /// (`SideEffectRecorded`, `VersionMarkerRecorded`, `MemoUpserted`,
 /// `SearchAttributesUpserted`), or a fired plain timer without its source
@@ -409,7 +415,7 @@ where
         Self::append(&mut tx, &run_id, "StartAccepted", json!({"workflow_command_id":command_id,"workflow_instance_id":workflow_id,
             "workflow_run_id":run_id,"workflow_class":workflow_type,"workflow_type":workflow_type,"outcome":"redriven"}), None, Some(&command_id)).await?;
         let source_started = DB::optional_instant(&source, "started_at")?;
-        let replayed = started["replayed_started_at"].as_str().map(str::to_owned).or_else(|| source_started.map(iso));
+        let replayed = started["replayed_started_at"].as_str().map(str::to_owned).or_else(|| source_started.map(replay_time));
         if !started.is_object() {
             started = json!({});
         }
@@ -425,7 +431,7 @@ where
         // order. A step reused more than once keeps the time it first ran.
         for step in reused {
             let payload = &step.payload;
-            let recorded_at = payload["reused_recorded_at"].as_str().map(str::to_owned).unwrap_or_else(|| iso(step.recorded_at));
+            let recorded_at = payload["reused_recorded_at"].as_str().map(str::to_owned).unwrap_or_else(|| replay_time(step.recorded_at));
             if let Some(mut scheduled) = step.scheduled_payload {
                 // This timer already fired. Reuse its two events with one new
                 // identity, without inserting a timer row or runnable task.
