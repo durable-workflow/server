@@ -87,9 +87,11 @@ const COMMAND: &[(&str, &[Check])] = &[
     ("cancellation_cleanup.scope_id", &[SOME, REQ, STR, max(255)]),
     ("cancellation_cleanup.request_id", &[CLEANUP, STR, max(255)]),
     ("cancellation_cleanup.delivery_history_event_id", &[CLEANUP, STR, max(255)]),
-    ("activity_type", &[NUL, STR]),
-    ("connection", &[NUL, STR]),
-    ("queue", &[NUL, STR]),
+    // The open wait projection stores it as workflow_run_waits.target_type,
+    // varchar(191) (Server #607).
+    ("activity_type", &[NUL, STR, max(191)]),
+    ("connection", &[NUL, STR, max(255)]),
+    ("queue", &[NUL, STR, max(255)]),
     ("retry_policy", &[NUL, ARR]),
     ("retry_policy.max_attempts", &[NUL, INT, min(1)]),
     ("retry_policy.backoff_seconds", &[NUL, ARR]),
@@ -129,7 +131,7 @@ const COMMAND: &[(&str, &[Check])] = &[
     ("worker_session.allow_reacquire_after_failure", &[NUL, BOOL]),
     ("execution_timeout_seconds", &[NUL, INT, min(1)]),
     ("run_timeout_seconds", &[NUL, INT, min(1)]),
-    ("workflow_type", &[NUL, STR]),
+    ("workflow_type", &[NUL, STR, max(255)]),
     ("delay_seconds", &[NUL, INT, min(0)]),
     ("message", &[NUL, STR]),
     ("timeout_kind", &[NUL, STR, one_of(TIMEOUT_KINDS)]),
@@ -151,10 +153,11 @@ const COMMAND: &[(&str, &[Check])] = &[
     ("non_retryable", &[NUL, BOOL]),
     ("parent_close_policy", &[NUL, STR]),
     ("cancellation_policy", &[NUL, STR, one_of(&["try_cancel", "wait_cancellation_completed", "abandon"])]),
-    ("condition_key", &[NUL, STR]),
-    ("condition_definition_fingerprint", &[NUL, STR]),
+    ("condition_key", &[NUL, STR, max(191)]),
+    ("condition_definition_fingerprint", &[NUL, STR, max(191)]),
     ("condition_wait_occurrence_id", &[NUL, STR]),
-    ("signal_name", &[NUL, STR]),
+    // An open signal wait stores it as workflow_run_waits.target_name, varchar(191).
+    ("signal_name", &[NUL, STR, max(191)]),
     ("timeout_seconds", &[NUL, INT, min(0)]),
     ("endpoint_name", &[NUL, STR, max(191)]),
     ("service_name", &[NUL, STR, max(191)]),
@@ -644,6 +647,16 @@ pub(super) fn normalizer_checks(index: usize, command: &Value) -> Result<()> {
             found.push((format!("commands.{index}.timeout_seconds"),
                 vec![format!("Open {wait} wait timeout_seconds must be a non-negative integer when provided.")]));
         }
+        // A child's type and queue are also stored on its call row,
+        // varchar(191) (Server #607); the shared rules only bound them at 255.
+        "start_child_workflow" => {
+            for field in ["workflow_type", "queue"] {
+                if command.get(field).and_then(Value::as_str).is_some_and(|name| name.chars().count() > 191) {
+                    found.push((format!("commands.{index}.{field}"),
+                        vec![format!("The commands.{index}.{field} field must not be greater than 191 characters.")]));
+                }
+            }
+        }
         "record_version_marker" => {
             let mut messages = Vec::new();
             if !command.get("change_id").and_then(Value::as_str).is_some_and(|id| !id.trim().is_empty()) {
@@ -925,6 +938,35 @@ mod tests {
             json!(["The commands.0.workflow_stream.retention_seconds field must not be greater than 2592000."]));
         assert!(checked(stream("max_pending_items", 10_000)).is_ok());
         assert!(checked(stream("retention_seconds", 2_592_000)).is_ok());
+    }
+
+    /// Server #607: a name a command writes is bounded by its column, in
+    /// characters, so a long name is a typed 422 rather than a database error.
+    #[test]
+    fn command_names_are_bounded_by_their_columns() {
+        for (kind, field, most) in [("schedule_activity", "activity_type", 191), ("schedule_activity", "queue", 255),
+            ("schedule_activity", "connection", 255), ("start_child_workflow", "workflow_type", 255),
+            ("continue_as_new", "workflow_type", 255), ("open_signal_wait", "signal_name", 191),
+            ("open_condition_wait", "condition_key", 191), ("open_condition_wait", "condition_definition_fingerprint", 191)] {
+            let command = |length: usize| base(json!([{"type": kind, field: "é".repeat(length)}]));
+            assert_eq!(refusal(command(most + 1))["errors"][format!("commands.0.{field}")],
+                json!([format!("The commands.0.{field} field must not be greater than {most} characters.")]), "{kind} {field}");
+            // The bound counts characters, as the columns do, not bytes.
+            assert!(checked(command(most)).is_ok(), "{kind} {field} at {most}");
+        }
+        // A child's type and queue are also stored on its varchar(191) call row.
+        for field in ["workflow_type", "queue"] {
+            let child = |length: usize| {
+                let mut command = json!({"type": "start_child_workflow", "workflow_type": "c", "queue": "q"});
+                command[field] = json!("n".repeat(length));
+                command
+            };
+            let error = format!("{:?}", normalizer_checks(2, &child(192)).unwrap_err());
+            assert!(error.contains(&format!("The commands.2.{field} field must not be greater than 191 characters.")), "{error}");
+            assert!(normalizer_checks(2, &child(191)).is_ok());
+        }
+        let activity = json!({"type": "schedule_activity", "activity_type": "a", "queue": "q".repeat(255)});
+        assert!(normalizer_checks(0, &activity).is_ok());
     }
 
     #[test]
