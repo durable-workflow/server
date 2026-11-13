@@ -1062,7 +1062,12 @@ capabilities, before mapping it onto pollable activity tasks. The carrier
 must also resolve an `auth_ref` for non-loopback targets; only loopback HTTP
 development targets may omit auth. Effective auth remains redacted in cluster
 diagnostics and activity poll responses.
-retry policy is transport-only: it may repeat transient HTTP delivery before a
+The Server never sends the HTTP request itself. A process you run must poll
+the activity queue, read `task.external_executor`, call the endpoint and
+report the result through the normal complete/fail paths. If nothing polls
+the queue, the activity task waits. A Server-side dispatcher will be built
+when users need it (#527).
+The carrier retry policy is transport-only: it may repeat transient HTTP delivery before a
 result is reported, while durable activity retry remains owned by the
 server/runtime after complete/fail reporting.
 For leased invocable mappings, `task.external_executor.dispatch` also exposes
