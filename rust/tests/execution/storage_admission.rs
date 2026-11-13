@@ -6,6 +6,10 @@ use super::*;
 use durable_workflow_server::runtime::storage_admission::Settings;
 use std::os::unix::fs::PermissionsExt;
 
+/// The test's freshness bound: long enough that a slow CI database never ages
+/// fresh evidence mid-test, and the stale case publishes just past it.
+const MAX_AGE_SECONDS: i64 = 300;
+
 struct Observation {
     _directory: tempfile::TempDir,
     path: std::path::PathBuf,
@@ -19,7 +23,7 @@ impl Observation {
     }
 
     fn settings(&self) -> Settings {
-        Settings { file: Some(self.path.to_str().unwrap().to_owned()), source: Some("cell-a".into()), max_age_seconds: 5 }
+        Settings { file: Some(self.path.to_str().unwrap().to_owned()), source: Some("cell-a".into()), max_age_seconds: MAX_AGE_SECONDS }
     }
 
     /// The producer's atomic replacement.
@@ -149,7 +153,7 @@ async fn fenced_and_untrusted_evidence_keep_only_reads() {
 
     // A stale observation is unavailable, never healthy, and readiness says so
     // while health keeps its database meaning.
-    observation.publish("normal", 6);
+    observation.publish("normal", MAX_AGE_SECONDS + 1);
     assert_refused(&raw(&app, "POST", &path, completion(&task, json!([{"type":"complete_workflow"}]))).await,
         "storage_admission_unavailable", "fenced");
     let ready = raw(&app, "GET", "/api/ready", Value::Null).await;
