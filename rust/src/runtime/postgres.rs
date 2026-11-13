@@ -1996,12 +1996,19 @@ mod tests {
     async fn qualification_version_13_command_intents_upgrade_preserves_rows() {
         let db = Database::new().await;
         version_database(&db, 13).await;
+        let mut connection = db.connection().await;
+        sqlx::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,command_type,source,status,request_id) VALUES ('legacy-signal','legacy-workflow','legacy-run','signal','control_plane','accepted','RawSignalKey'),('legacy-update','legacy-workflow','legacy-run','update','control_plane','accepted','RawUpdateKey')")
+            .execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
         refused(PostgresStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
         assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), 13);
         PostgresStorage::check(db.options.clone()).await.unwrap();
         let mut connection = db.connection().await;
         let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
         assert_eq!(kept, "seeded at version 13");
+        let keys: Vec<(String, String, String)> = sqlx::query_as("SELECT command_type,request_id,workflow_run_id FROM workflow_commands WHERE workflow_instance_id='legacy-workflow' ORDER BY command_type")
+            .fetch_all(&mut connection).await.unwrap();
+        assert_eq!(keys, vec![("signal".into(),"RawSignalKey".into(),"legacy-run".into()),("update".into(),"RawUpdateKey".into(),"legacy-run".into())]);
         let intents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dw_command_intents").fetch_one(&mut connection).await.unwrap();
         assert_eq!(intents, 0);
         sqlx::query("ALTER TABLE dw_command_intents ADD COLUMN extra text").execute(&mut connection).await.unwrap();

@@ -170,12 +170,14 @@ async fn validators_approve_and_reject_updates_before_acceptance() {
     // Retries return the recorded receipts; an undeclared validator is not asked.
     let (status, retained) = request(&app, "POST", "/api/workflows/validated/update/approve_me", update_body(3, Some("r1"))).await;
     assert_eq!((status, retained["update_id"].clone()), (StatusCode::ACCEPTED, json!(id)));
+    assert_eq!((retained["retained"].clone(), retained["intent_verified"].clone()), (json!(true), json!(true)), "{retained}");
     // Server #934: other arguments under the same request id conflict.
     let (status, conflict) = request(&app, "POST", "/api/workflows/validated/update/approve_me", update_body(99, Some("r1"))).await;
     assert_eq!((status, conflict["reason"].clone()), (StatusCode::CONFLICT, json!("request_id_conflict")), "{conflict}");
     let (status, retained) = request(&app, "POST", "/api/workflows/validated/update/reject_me", update_body(2, Some("r2"))).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{retained}");
     assert_eq!(retained["reason"], "update_validator_rejected");
+    assert_eq!((retained["retained"].clone(), retained["intent_verified"].clone()), (json!(true), json!(false)), "{retained}");
     assert_eq!(retained["validation_errors"], json!({"v":["too small"]}));
     let (status, plain) = request(&app, "POST", "/api/workflows/validated/update/plain", update_body(4, Some("p1"))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{plain}");

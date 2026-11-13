@@ -2,9 +2,18 @@
   "schema": "durable-workflow.server-parity-native-divergences/v1",
   "divergences": [
     {
+      "id": "retained-command-intent-readback",
+      "issue": "https://github.com/durable-workflow/server/issues/934",
+      "since": "native 3.9.1",
+      "applies_to": ["update-validation"],
+      "published_php": "A retained update receipt has no explicit retained or intent_verified fields.",
+      "native": "Retried update receipts explicitly identify retention and whether a recorded intent proves equality. A pre-intent legacy receipt is returned with intent_verified false rather than fabricated equality.",
+      "harness": "The update-validation contract requires retained true and intent_verified true on native's retained approval, and retained true with intent_verified false on the raw-key rejection that has no digest. Original receipt fields, PHP recordings and frozen fixtures are unchanged. Legacy unverified readback, ambiguity and zero writes are covered by all-backend execution regressions."
+    },
+    {
       "id": "completion-byte-limit-discovery",
       "issue": "https://github.com/durable-workflow/server/issues/1136",
-      "since": "native #1136 source correction",
+      "since": "native 3.9.1",
       "applies_to": ["cluster-info"],
       "published_php": "The limits object does not advertise a separate workflow task completion request-body budget.",
       "native": "limits.max_workflow_task_completion_bytes advertises the actual enforced wire-request cap for workflow and activity continuation completions, independently of per-value limits.",
