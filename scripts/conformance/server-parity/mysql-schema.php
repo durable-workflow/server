@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__.'/ready-origin-schema.php';
+require_once __DIR__.'/dispatch-summary-schema.php';
 
 // Physical fixture inspection only. This is not a database backup procedure.
 if (! in_array($argc, [3, 4], true) || ! in_array($argv[1], ['dump', 'catalog', 'snapshot', 'compare'], true)) {
@@ -108,7 +109,7 @@ if ($argc !== 4) {
 }
 $pdo->exec('ROLLBACK');
 $pdo = connection($argv[3]);
-$native = array_values(array_filter(projectMysqlJsonText(projectMysqlScopedDispatch(projectMysqlReadyOrigin(catalog($pdo))), $php), static fn (array $row): bool => ! in_array($row[0], ['dw_server_schema', '_sqlx_migrations', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_session_holders', 'dw_stream_reclaims', 'dw_service_call_deadlines', 'dw_service_admission_counters', 'dw_external_payload_deletions', 'dw_run_command_contracts', 'dw_task_queue_pauses', 'dw_command_intents'], true)));
+$native = array_values(array_filter(projectMysqlDispatchSummary(projectMysqlJsonText(projectMysqlScopedDispatch(projectMysqlReadyOrigin(catalog($pdo))), $php)), static fn (array $row): bool => ! in_array($row[0], ['dw_server_schema', '_sqlx_migrations', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_session_holders', 'dw_stream_reclaims', 'dw_service_call_deadlines', 'dw_service_admission_counters', 'dw_external_payload_deletions', 'dw_run_command_contracts', 'dw_task_queue_pauses', 'dw_command_intents'], true)));
 $pdo->exec('ROLLBACK');
 // Native polling uses an additional index on an existing table. Retain all
 // original column, index and constraint definitions in the comparison.

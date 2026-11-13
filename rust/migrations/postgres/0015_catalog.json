@@ -601,39 +601,39 @@
     "column",
     "dw_command_intents.1",
     {
-      "name": "command_id",
-      "type": "character varying(26)",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": "default",
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "command_id",
+      "not_null": true,
+      "type": "character varying(26)"
     }
   ],
   [
     "column",
     "dw_command_intents.2",
     {
-      "name": "namespace",
-      "type": "text",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": "default",
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "namespace",
+      "not_null": true,
+      "type": "text"
     }
   ],
   [
     "column",
     "dw_command_intents.3",
     {
-      "name": "intent_digest",
-      "type": "character varying(71)",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": "default",
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "intent_digest",
+      "not_null": true,
+      "type": "character varying(71)"
     }
   ],
   [
@@ -1017,130 +1017,130 @@
     "column",
     "dw_service_admission_counters.1",
     {
-      "name": "cache_key",
-      "type": "text",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": "default",
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "cache_key",
+      "not_null": true,
+      "type": "text"
     }
   ],
   [
     "column",
     "dw_service_admission_counters.2",
     {
-      "name": "amount",
-      "type": "bigint",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": null,
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "amount",
+      "not_null": true,
+      "type": "bigint"
     }
   ],
   [
     "column",
     "dw_service_admission_counters.3",
     {
-      "name": "expires_at",
-      "type": "timestamp(6) without time zone",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": null,
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "expires_at",
+      "not_null": true,
+      "type": "timestamp(6) without time zone"
     }
   ],
   [
     "column",
     "dw_service_call_deadlines.1",
     {
-      "name": "service_call_id",
-      "type": "text",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": "default",
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "service_call_id",
+      "not_null": true,
+      "type": "text"
     }
   ],
   [
     "column",
     "dw_service_call_deadlines.2",
     {
-      "name": "namespace",
-      "type": "text",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": "default",
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "namespace",
+      "not_null": true,
+      "type": "text"
     }
   ],
   [
     "column",
     "dw_service_call_deadlines.3",
     {
-      "name": "call_deadline_at",
-      "type": "timestamp(6) without time zone",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": null,
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "call_deadline_at",
+      "not_null": true,
+      "type": "timestamp(6) without time zone"
     }
   ],
   [
     "column",
     "dw_stream_reclaims.1",
     {
-      "name": "stream_id",
-      "type": "bigint",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": null,
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "stream_id",
+      "not_null": true,
+      "type": "bigint"
     }
   ],
   [
     "column",
     "dw_stream_reclaims.2",
     {
-      "name": "namespace",
-      "type": "text",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": "default",
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "namespace",
+      "not_null": true,
+      "type": "text"
     }
   ],
   [
     "column",
     "dw_stream_reclaims.3",
     {
-      "name": "workflow_run_id",
-      "type": "text",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": "default",
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "workflow_run_id",
+      "not_null": true,
+      "type": "text"
     }
   ],
   [
     "column",
     "dw_stream_reclaims.4",
     {
-      "name": "reclaim_at",
-      "type": "timestamp(6) without time zone",
-      "default": null,
-      "identity": "",
-      "not_null": true,
       "collation": null,
-      "generated": ""
+      "default": null,
+      "generated": "",
+      "identity": "",
+      "name": "reclaim_at",
+      "not_null": true,
+      "type": "timestamp(6) without time zone"
     }
   ],
   [
@@ -12455,10 +12455,10 @@
     "constraint",
     "dw_command_intents.dw_command_intents_pkey",
     {
-      "deferred": false,
-      "validated": true,
       "deferrable": false,
-      "definition": "PRIMARY KEY (command_id)"
+      "deferred": false,
+      "definition": "PRIMARY KEY (command_id)",
+      "validated": true
     }
   ],
   [
@@ -12515,30 +12515,30 @@
     "constraint",
     "dw_service_admission_counters.dw_service_admission_counters_pkey",
     {
-      "deferred": false,
-      "validated": true,
       "deferrable": false,
-      "definition": "PRIMARY KEY (cache_key)"
+      "deferred": false,
+      "definition": "PRIMARY KEY (cache_key)",
+      "validated": true
     }
   ],
   [
     "constraint",
     "dw_service_call_deadlines.dw_service_call_deadlines_pkey",
     {
-      "deferred": false,
-      "validated": true,
       "deferrable": false,
-      "definition": "PRIMARY KEY (service_call_id)"
+      "deferred": false,
+      "definition": "PRIMARY KEY (service_call_id)",
+      "validated": true
     }
   ],
   [
     "constraint",
     "dw_stream_reclaims.dw_stream_reclaims_pkey",
     {
-      "deferred": false,
-      "validated": true,
       "deferrable": false,
-      "definition": "PRIMARY KEY (stream_id)"
+      "deferred": false,
+      "definition": "PRIMARY KEY (stream_id)",
+      "validated": true
     }
   ],
   [
@@ -13628,22 +13628,22 @@
     "index",
     "dw_command_intents_namespace",
     {
-      "ready": true,
-      "valid": true,
-      "unique": false,
+      "definition": "CREATE INDEX dw_command_intents_namespace ON public.dw_command_intents USING btree (namespace)",
       "primary": false,
-      "definition": "CREATE INDEX dw_command_intents_namespace ON public.dw_command_intents USING btree (namespace)"
+      "ready": true,
+      "unique": false,
+      "valid": true
     }
   ],
   [
     "index",
     "dw_command_intents_pkey",
     {
-      "ready": true,
-      "valid": true,
-      "unique": true,
+      "definition": "CREATE UNIQUE INDEX dw_command_intents_pkey ON public.dw_command_intents USING btree (command_id)",
       "primary": true,
-      "definition": "CREATE UNIQUE INDEX dw_command_intents_pkey ON public.dw_command_intents USING btree (command_id)"
+      "ready": true,
+      "unique": true,
+      "valid": true
     }
   ],
   [
@@ -13749,66 +13749,66 @@
     "index",
     "dw_service_admission_counters_expiry",
     {
-      "ready": true,
-      "valid": true,
-      "unique": false,
+      "definition": "CREATE INDEX dw_service_admission_counters_expiry ON public.dw_service_admission_counters USING btree (expires_at)",
       "primary": false,
-      "definition": "CREATE INDEX dw_service_admission_counters_expiry ON public.dw_service_admission_counters USING btree (expires_at)"
+      "ready": true,
+      "unique": false,
+      "valid": true
     }
   ],
   [
     "index",
     "dw_service_admission_counters_pkey",
     {
-      "ready": true,
-      "valid": true,
-      "unique": true,
+      "definition": "CREATE UNIQUE INDEX dw_service_admission_counters_pkey ON public.dw_service_admission_counters USING btree (cache_key)",
       "primary": true,
-      "definition": "CREATE UNIQUE INDEX dw_service_admission_counters_pkey ON public.dw_service_admission_counters USING btree (cache_key)"
+      "ready": true,
+      "unique": true,
+      "valid": true
     }
   ],
   [
     "index",
     "dw_service_call_deadlines_due",
     {
-      "ready": true,
-      "valid": true,
-      "unique": false,
+      "definition": "CREATE INDEX dw_service_call_deadlines_due ON public.dw_service_call_deadlines USING btree (call_deadline_at, service_call_id)",
       "primary": false,
-      "definition": "CREATE INDEX dw_service_call_deadlines_due ON public.dw_service_call_deadlines USING btree (call_deadline_at, service_call_id)"
+      "ready": true,
+      "unique": false,
+      "valid": true
     }
   ],
   [
     "index",
     "dw_service_call_deadlines_pkey",
     {
-      "ready": true,
-      "valid": true,
-      "unique": true,
+      "definition": "CREATE UNIQUE INDEX dw_service_call_deadlines_pkey ON public.dw_service_call_deadlines USING btree (service_call_id)",
       "primary": true,
-      "definition": "CREATE UNIQUE INDEX dw_service_call_deadlines_pkey ON public.dw_service_call_deadlines USING btree (service_call_id)"
+      "ready": true,
+      "unique": true,
+      "valid": true
     }
   ],
   [
     "index",
     "dw_stream_reclaims_due",
     {
-      "ready": true,
-      "valid": true,
-      "unique": false,
+      "definition": "CREATE INDEX dw_stream_reclaims_due ON public.dw_stream_reclaims USING btree (namespace, reclaim_at, stream_id)",
       "primary": false,
-      "definition": "CREATE INDEX dw_stream_reclaims_due ON public.dw_stream_reclaims USING btree (namespace, reclaim_at, stream_id)"
+      "ready": true,
+      "unique": false,
+      "valid": true
     }
   ],
   [
     "index",
     "dw_stream_reclaims_pkey",
     {
-      "ready": true,
-      "valid": true,
-      "unique": true,
+      "definition": "CREATE UNIQUE INDEX dw_stream_reclaims_pkey ON public.dw_stream_reclaims USING btree (stream_id)",
       "primary": true,
-      "definition": "CREATE UNIQUE INDEX dw_stream_reclaims_pkey ON public.dw_stream_reclaims USING btree (stream_id)"
+      "ready": true,
+      "unique": true,
+      "valid": true
     }
   ],
   [
@@ -18018,15 +18018,15 @@
     "relation",
     "dw_command_intents",
     {
+      "access_method": "heap",
+      "force_row_security": false,
       "kind": "r",
-      "view": null,
       "options": null,
       "partition": false,
+      "partition_key": null,
       "persistence": "p",
       "row_security": false,
-      "access_method": "heap",
-      "partition_key": null,
-      "force_row_security": false
+      "view": null
     }
   ],
   [
@@ -18108,45 +18108,45 @@
     "relation",
     "dw_service_admission_counters",
     {
+      "access_method": "heap",
+      "force_row_security": false,
       "kind": "r",
-      "view": null,
       "options": null,
       "partition": false,
+      "partition_key": null,
       "persistence": "p",
       "row_security": false,
-      "access_method": "heap",
-      "partition_key": null,
-      "force_row_security": false
+      "view": null
     }
   ],
   [
     "relation",
     "dw_service_call_deadlines",
     {
+      "access_method": "heap",
+      "force_row_security": false,
       "kind": "r",
-      "view": null,
       "options": null,
       "partition": false,
+      "partition_key": null,
       "persistence": "p",
       "row_security": false,
-      "access_method": "heap",
-      "partition_key": null,
-      "force_row_security": false
+      "view": null
     }
   ],
   [
     "relation",
     "dw_stream_reclaims",
     {
+      "access_method": "heap",
+      "force_row_security": false,
       "kind": "r",
-      "view": null,
       "options": null,
       "partition": false,
+      "partition_key": null,
       "persistence": "p",
       "row_security": false,
-      "access_method": "heap",
-      "partition_key": null,
-      "force_row_security": false
+      "view": null
     }
   ],
   [
