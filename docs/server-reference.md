@@ -653,6 +653,10 @@ and commands. The default is 33,554,432 bytes. `limits.max_payload_bytes` remain
 the per-value and ordinary API request limit; a decoded argument sum does not
 measure completion wire size. SDKs use the explicit optional field for those
 two completion routes and preserve their conservative fallback when it is absent.
+A positive integer smaller than the ordinary cap is still authoritative for
+completion. Explicit malformed, null, zero, negative or non-integer values
+refuse completion planning before upload or submission; ordinary routes ignore
+this unused field.
 
 A completion over that cap returns HTTP 413 with `reason: payload_too_large`,
 `limit_kind: workflow_task_completion_bytes` and the actual byte `limit`, before

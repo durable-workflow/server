@@ -49,5 +49,97 @@
     "limit_kind": "workflow_task_completion_bytes",
     "limit": 33554432
   },
-  "scope": "Size admission alone. Authentication, lease fences, per-value Avro limits and command validation still apply; no durable work is admitted by a size refusal."
+  "scope": "Size admission alone. Authentication, lease fences, per-value Avro limits and command validation still apply; no durable work is admitted by a size refusal.",
+  "negotiation_cases": [
+    {
+      "id": "absent",
+      "limits": {
+        "max_payload_bytes": 2097152
+      },
+      "expected": "ordinary_fallback"
+    },
+    {
+      "id": "positive",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": 33554432
+      },
+      "expected": "completion_cap",
+      "completion_cap": 33554432
+    },
+    {
+      "id": "positive-smaller",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": 1024
+      },
+      "expected": "completion_cap",
+      "completion_cap": 1024
+    },
+    {
+      "id": "null",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": null
+      },
+      "expected": "refuse_completion_planning_before_upload_or_submission"
+    },
+    {
+      "id": "zero",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": 0
+      },
+      "expected": "refuse_completion_planning_before_upload_or_submission"
+    },
+    {
+      "id": "negative",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": -1
+      },
+      "expected": "refuse_completion_planning_before_upload_or_submission"
+    },
+    {
+      "id": "float",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": 32.5
+      },
+      "expected": "refuse_completion_planning_before_upload_or_submission"
+    },
+    {
+      "id": "string",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": "33554432"
+      },
+      "expected": "refuse_completion_planning_before_upload_or_submission"
+    },
+    {
+      "id": "bool",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": true
+      },
+      "expected": "refuse_completion_planning_before_upload_or_submission"
+    },
+    {
+      "id": "object",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": {}
+      },
+      "expected": "refuse_completion_planning_before_upload_or_submission"
+    },
+    {
+      "id": "array",
+      "limits": {
+        "max_payload_bytes": 2097152,
+        "max_workflow_task_completion_bytes": []
+      },
+      "expected": "refuse_completion_planning_before_upload_or_submission"
+    }
+  ],
+  "negotiation_scope": "Only workflow-task completion and activity-continuation completion consume this field. Ordinary routes ignore it. Explicit invalid values refuse planning without upload/submission; absence preserves the existing conservative fallback."
 }
