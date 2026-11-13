@@ -75,6 +75,8 @@ mod worker_incarnations;
 
 #[path = "execution/command_keys.rs"]
 mod command_keys;
+#[path = "execution/grouped_condition_waits.rs"]
+mod grouped_condition_waits;
 #[path = "execution/storage_admission.rs"]
 mod storage_admission;
 #[path = "execution/worker_contracts.rs"]

@@ -3560,7 +3560,8 @@ where
                     }
                 }
                 "open_condition_wait" => {
-                    reject_fields(
+                    // Server #1142: a condition wait may be an all() member.
+                    super::selections::fields(
                         command,
                         &[
                             "type",
@@ -4238,6 +4239,18 @@ where
             sequence += 1;
             let mut payload = command.clone();
             payload.as_object_mut().unwrap().remove("type");
+            // Server #1142: a grouped condition wait records its normalized
+            // group (Core `payloadForPath`) at its member's own sequence. A
+            // grouped physical reopen keeps the original position under a new
+            // sequence; that is not qualified on native yet.
+            let group = if direct { json!({}) } else { super::selections::metadata(command, "condition")? };
+            if group.get("parallel_group_id").is_some() {
+                if matches!(anchor, super::wait_timeouts::OccurrenceAnchor::Reopen(_)) {
+                    return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "development_parallel_group_unqualified"));
+                }
+                super::selections::check_sequence(&group, sequence)?;
+            }
+            super::selections::replace_group(&mut payload, &group);
             // Match PHP's optional occurrence payload: retain authored
             // nonempty strings and omit null/empty legacy values.
             if !direct
@@ -4676,7 +4689,8 @@ where
                 .await?;
             let task_id = DB::string(&task, "id")?;
             let task_payload = DB::document_row(&task, "payload")?;
-            let metadata = super::selections::metadata(&task_payload, "timer")?;
+            let member = if task_payload.get("condition_wait_id").is_some() { "condition" } else { "timer" };
+            let metadata = super::selections::metadata(&task_payload, member)?;
             let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":super::cancellation_scopes::iso(fire_at),"fired_at":fired_at});
             if task_payload.get("signal_wait_id").is_some() {
                 payload["timer_kind"] = json!("signal_timeout");
