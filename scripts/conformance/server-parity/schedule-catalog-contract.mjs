@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {checkDispatchSummary} from './schedule-dispatch-summary-contract.mjs';
 import {readFileSync} from 'node:fs';
 import {normalized} from './schedule-policies-contract.mjs';
 
@@ -84,6 +85,29 @@ function checkedLastSkip(item, skipped, raw) {
 // Keep the frozen PHP response contract intact. Native's additive fields are
 // checked against the preceding HTTP backfill results before projecting them
 // away for comparison with an older published PHP server.
+function checkedDispatchSummary(item, state, target) {
+  if (target !== 'rust' && !Object.hasOwn(item, 'dispatch_summary')) return;
+  const summary = item.dispatch_summary;
+  checkDispatchSummary(summary);
+  assert.equal(summary.buffered_actions_count, 0, 'fixture has no buffered actions');
+  if (!state?.last) {
+    assert.deepStrictEqual(summary, {version: 1, state: 'never', last_outcome: null, buffered_actions_count: 0},
+      'new schedule has never dispatched');
+    return;
+  }
+  assert.equal(summary.state, 'known', 'fixture dispatch must be known');
+  const last = summary.last_outcome;
+  assert.equal(last.outcome, state.last.outcome, 'last dispatch follows committed HTTP outcomes');
+  if (last.outcome === 'started') {
+    assert.equal(last.reason, null);
+    assert.equal(last.workflow_instance_id, state.last.workflow_id, 'dispatch names its actual started workflow');
+    if (item.current_run) assert.equal(last.workflow_run_id, item.current_run.run_id, 'dispatch names the original pending run');
+  } else {
+    assert.deepStrictEqual([last.workflow_instance_id, last.workflow_run_id], [null, null]);
+    assert.equal(last.reason, 'status_not_triggerable', 'fixture paused schedule dispatch reason');
+  }
+}
+
 function checkedListSummaries(raw, target) {
   const known = new Map();
   return raw.map(step => {
@@ -91,19 +115,29 @@ function checkedListSummaries(raw, target) {
       const id = step.response.schedule_id;
       const state = known.get(id) ?? {failures: 0, skipped: 0, latest: null};
       for (const result of step.response.results) {
+        state.last = result;
         if (result.outcome === 'started') state.latest = result.workflow_id;
         if (result.outcome === 'skipped') state.skipped++;
         if (result.outcome === 'failed') state.failures++;
       }
       known.set(id, state);
     }
-    if (!Array.isArray(step.response.schedules)) return step;
+    if (!Array.isArray(step.response.schedules)) {
+      if (step.status === 200 && Object.hasOwn(step.response, 'spec') && step.response.schedule_id) {
+        checkedDispatchSummary(step.response, known.get(step.response.schedule_id), target);
+        const {dispatch_summary, ...response} = step.response;
+        return {...step, response};
+      }
+      return step;
+    }
     const schedules = step.response.schedules.map(item => {
       const fields = ['failures_count', 'skipped_trigger_count', 'latest_workflow_instance_id', 'current_run'];
       const present = fields.filter(field => Object.hasOwn(item, field));
       if (target !== 'rust' && present.length === 0) return item;
       assert.deepStrictEqual(present, fields, 'complete schedule list summary');
       const state = known.get(item.schedule_id) ?? {failures: 0, skipped: 0, latest: null};
+      checkedDispatchSummary(item, state, target);
+      fields.push('dispatch_summary');
       const skipFields = ['last_skip_reason', 'last_skipped_at'];
       if (target === 'rust' || skipFields.some(field => Object.hasOwn(item, field))) {
         checkedLastSkip(item, state.skipped, raw);

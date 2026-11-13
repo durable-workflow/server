@@ -11,13 +11,58 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 13;
+pub(super) const VERSION: i64 = 14;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
+            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries".into(),
+            MigrationType::Simple,
+            concat!(
+                include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0011_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0013_command_intents.sql"), "\n", include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql")
+            )
+            .into_sql_str(),
+            false,
+        )])
+    })
+}
+
+/// The cumulative bootstrap an earlier native version recorded, byte for
+/// byte, so `schema-upgrade` recognises that version by its checksum. The
+/// step files themselves never change once released.
+fn earlier_migration(version: i64) -> Option<&'static Migration> {
+    static V7: OnceLock<Migration> = OnceLock::new();
+    static V8: OnceLock<Migration> = OnceLock::new();
+    static V9: OnceLock<Migration> = OnceLock::new();
+    static V10: OnceLock<Migration> = OnceLock::new();
+    static V11: OnceLock<Migration> = OnceLock::new();
+    static V12: OnceLock<Migration> = OnceLock::new();
+    static V13: OnceLock<Migration> = OnceLock::new();
+    match version {
+        13 => Some(V13.get_or_init(|| Migration::new(
+            13,
             "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts and task queue activity dispatch pauses and keyed command intents".into(),
             MigrationType::Simple,
             concat!(
@@ -45,21 +90,8 @@ fn migrator() -> &'static Migrator {
             )
             .into_sql_str(),
             false,
-        )])
-    })
-}
+        ))),
 
-/// The cumulative bootstrap an earlier native version recorded, byte for
-/// byte, so `schema-upgrade` recognises that version by its checksum. The
-/// step files themselves never change once released.
-fn earlier_migration(version: i64) -> Option<&'static Migration> {
-    static V7: OnceLock<Migration> = OnceLock::new();
-    static V8: OnceLock<Migration> = OnceLock::new();
-    static V9: OnceLock<Migration> = OnceLock::new();
-    static V10: OnceLock<Migration> = OnceLock::new();
-    static V11: OnceLock<Migration> = OnceLock::new();
-    static V12: OnceLock<Migration> = OnceLock::new();
-    match version {
         12 => Some(
             V12.get_or_init(|| Migration::new(
                 12,
@@ -220,6 +252,7 @@ fn step(version: i64) -> Option<&'static str> {
         10 => Some(include_str!("../../migrations/sqlite/0011_run_command_contracts.sql")),
         11 => Some(include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql")),
         12 => Some(include_str!("../../migrations/sqlite/0013_command_intents.sql")),
+        13 => Some(include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql")),
         _ => None,
     }
 }
@@ -330,7 +363,7 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0013_command_intents.sql")
+                include_str!("../../migrations/sqlite/0013_command_intents.sql"), "\n", include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql")
         ),
     )
 }
