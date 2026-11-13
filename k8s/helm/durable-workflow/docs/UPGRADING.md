@@ -69,11 +69,13 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
-### Chart 1.8.0 / Server 3.10.0 (native)
+### Chart 2.0.0 / Server 3.10.0 (native)
 
 **Every backend needs an explicit native schema upgrade from 3.9.x.** Chart
-1.8.0 selects native Server 3.10.0 and retains the existing values and resource
-contract. An explicit `image.tag` or `image.digest` override must select the
+2.0.0 selects native Server 3.10.0 and retains the existing values and resource
+contract. The chart major advances because changing its default image requires
+operator action on every backend under this guide's existing semver rule.
+An explicit `image.tag` or `image.digest` override must select the
 intended qualified image too. The PHP Server remains 2.11.8.
 
 | Backend | Schema step |

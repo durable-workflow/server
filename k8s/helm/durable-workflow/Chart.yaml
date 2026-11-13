@@ -5,7 +5,7 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 1.8.0
+version: 2.0.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
