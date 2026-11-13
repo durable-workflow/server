@@ -645,6 +645,29 @@ workflow-task command payload.
 dedicated matching-role loop should skip a pass rather than duplicate work
 already covered by another matching-role process holding the repair throttle.
 
+The native completion transport correction for [#1136](https://github.com/durable-workflow/server/issues/1136)
+adds `limits.max_workflow_task_completion_bytes` to cluster discovery. It is the
+actual cap on the complete encoded JSON HTTP request body for workflow-task
+completion and activity continuation completion, including envelopes, metadata
+and commands. The default is 33,554,432 bytes. `limits.max_payload_bytes` remains
+the per-value and ordinary API request limit; a decoded argument sum does not
+measure completion wire size. SDKs use the explicit optional field for those
+two completion routes and preserve their conservative fallback when it is absent.
+A positive integer smaller than the ordinary cap is still authoritative for
+completion. Explicit malformed, null, zero, negative or non-integer values
+refuse completion planning before upload or submission; ordinary routes ignore
+this unused field.
+
+A completion over that cap returns HTTP 413 with `reason: payload_too_large`,
+`limit_kind: workflow_task_completion_bytes` and the actual byte `limit`, before
+any workflow state changes. The server discards at most 64 MiB of remaining
+upload data for at most two seconds before closing the HTTP/1 connection. This
+lets ordinary within-budget uploads finish sending and receive the typed refusal;
+clients that exceed either discard bound can still encounter a transport failure.
+The [shared size vectors](../resources/platform-protocol-specs/workflow-task-completion-limits-v1-vectors.json)
+cover exact and over-cap bodies on both completion routes. Published SDK worker
+qualification remains required before claiming this correction delivered.
+
 ### Namespaces
 - `GET /api/namespaces` — List namespaces
 - `POST /api/namespaces` — Create namespace

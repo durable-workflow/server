@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {nativeDivergence} from './native-divergences.mjs';
+
+const completionVectors = JSON.parse(readFileSync(new URL('../../../resources/platform-protocol-specs/workflow-task-completion-limits-v1-vectors.json', import.meta.url), 'utf8'));
 
 // The transport manifest a server advertises. Published PHP advertises the
 // fixture's manifest exactly. Native (`implementation: "rust"`) advertises it
@@ -45,7 +49,10 @@ export function checkClusterInfo(fixture, observation, workflowId) {
   assert.deepStrictEqual(Object.keys(state.discovery), Object.keys(definition.namespaces), 'every namespace read');
   for (const [key, discovery] of Object.entries(state.discovery)) {
     assert.equal(discovery.status, 200, `${key} cluster info`);
-    assert.deepStrictEqual(discovery.limits, definition.limits, `${key} request limits`);
+    const expectedLimits = nativeDivergence(implementation, 'completion-byte-limit-discovery')
+      ? {...definition.limits, max_workflow_task_completion_bytes: completionVectors.default_limits.max_workflow_task_completion_bytes}
+      : definition.limits;
+    assert.deepStrictEqual(discovery.limits, expectedLimits, `${key} request limits`);
     assert.equal(discovery.default_namespace, definition.default_namespace, `${key} default namespace`);
     assert.equal(discovery.server_id_is_text, true, `${key} server identity`);
     assert.deepStrictEqual(discovery.transport_capability, transport, `${key} transport capability`);

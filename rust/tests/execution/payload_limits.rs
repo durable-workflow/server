@@ -1,4 +1,8 @@
 use super::*;
+use futures_util::{StreamExt, stream};
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Sends `body` raw, with an optional content type and without credentials
 /// unless `authorized`, and returns the status, headers and JSON answer.
@@ -65,6 +69,89 @@ async fn bodies_are_checked_before_authentication_like_php() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
 }
 
+// A router-only response test cannot see a TCP reset while the caller is
+// still writing. Both common request framings must deliver the actual 413.
+#[tokio::test]
+async fn oversized_completions_finish_the_upload_and_deliver_the_typed_tcp_refusal() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.unwrap();
+    });
+    let before = table_counts(&database).await;
+    for chunked in [false, true] {
+        let wire = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+            let length = 36 * 1024 * 1024;
+            let framing = if chunked { "Transfer-Encoding: chunked\r\n".to_owned() }
+                else { format!("Content-Length: {length}\r\n") };
+            client.write_all(format!("POST /api/worker/workflow-tasks/fixture-task/complete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n{framing}Connection: close\r\n\r\n").as_bytes()).await.unwrap();
+            let chunk = vec![b'x'; 64 * 1024];
+            for _ in 0..length/chunk.len() {
+                if chunked { client.write_all(format!("{:X}\r\n", chunk.len()).as_bytes()).await.unwrap(); }
+                client.write_all(&chunk).await.expect("the refusal must not reset an ordinary in-flight upload");
+                if chunked { client.write_all(b"\r\n").await.unwrap(); }
+            }
+            if chunked { client.write_all(b"0\r\n\r\n").await.unwrap(); }
+            let mut response = Vec::new();
+            client.take(1024 * 1024).read_to_end(&mut response).await.expect("the typed refusal must be readable");
+            String::from_utf8(response).unwrap()
+        }).await.expect("bounded upload/refusal round trip");
+        assert!(wire.starts_with("HTTP/1.1 413"), "{}", wire.chars().take(300).collect::<String>());
+        for field in ["\"reason\":\"payload_too_large\"", "\"limit_kind\":\"workflow_task_completion_bytes\"", "\"limit\":33554432"] {
+            assert!(wire.contains(field), "missing {field}");
+        }
+    }
+    assert_eq!(table_counts(&database).await, before, "size refusals admit no durable work");
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), server).await.unwrap().unwrap();
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn oversized_body_discard_has_a_byte_budget_and_does_not_collect_the_upload() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let observed = Arc::new(AtomicUsize::new(0));
+    let count = observed.clone();
+    let chunk = axum::body::Bytes::from(vec![b'x'; 1024 * 1024]);
+    let incoming = stream::repeat_with(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        Ok::<_, std::io::Error>(chunk.clone())
+    }).take(200);
+    let response = app.oneshot(Request::builder().method("POST").uri("/api/workflows")
+        .header("content-length", 200 * 1024 * 1024).body(Body::from_stream(incoming)).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let answer = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&answer).unwrap()["reason"], "payload_too_large");
+    let consumed = observed.load(Ordering::SeqCst);
+    assert!(consumed > 0 && consumed <= 65, "unbounded refused body consumption: {consumed} MiB");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn a_stalled_oversized_body_cannot_hold_the_refusal_open_indefinitely() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let incoming = stream::pending::<Result<axum::body::Bytes, std::io::Error>>();
+    let response = app.oneshot(Request::builder().method("POST").uri("/api/workflows")
+        .header("content-length", 200 * 1024 * 1024).body(Body::from_stream(incoming)).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let bytes = tokio::time::timeout(Duration::from_secs(5), to_bytes(response.into_body(), 1024 * 1024))
+        .await.expect("refusal discard deadline").unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap()["reason"], "payload_too_large");
+    runtime.close().await;
+    database.remove().await;
+}
+
 // Server #1136 (.github#228): a fan-out whose commands are each within the
 // payload limit completes even when the whole completion is over it; a
 // completion over the aggregate limit is refused with a typed 413.
@@ -89,4 +176,45 @@ async fn a_large_fan_out_completion_is_not_refused_as_one_body() {
     assert_eq!(answer["reason"], "payload_too_large", "{answer}");
     assert_eq!(answer["limit_kind"], "workflow_task_completion_bytes", "{answer}");
     assert_eq!(answer["limit"], 32 * 1024 * 1024, "{answer}");
+}
+
+// Portable wire-size vectors are shared with SDK planners. A valid JSON body
+// at the exact cap reaches authentication; the next byte is a typed refusal.
+#[tokio::test]
+async fn completion_wire_budget_matches_the_shared_discovery_vectors() {
+    let vectors: Value = serde_json::from_str(include_str!("../../../resources/platform-protocol-specs/workflow-task-completion-limits-v1-vectors.json")).unwrap();
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (_, info) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
+    for (field, expected) in vectors["default_limits"].as_object().unwrap() {
+        assert_eq!(&info["limits"][field], expected, "discovery {field}");
+    }
+    let before = table_counts(&database).await;
+    for case in vectors["wire_cases"].as_array().unwrap() {
+        let routes: Vec<&str> = if case["route_kind"] == "completion" {
+            vectors["completion_routes"].as_array().unwrap().iter().map(|route| route.as_str().unwrap()).collect()
+        } else { vec![vectors["ordinary_route"].as_str().unwrap()] };
+        let length = case["wire_bytes"].as_u64().unwrap() as usize;
+        for route in routes {
+            let mut body = vec![b'x'; length];
+            body[0] = b'"';
+            body[length - 1] = b'"';
+            let (status, _, response) = raw(&app, route, Some("application/json"), body, false).await;
+            if case["size_admitted"] == true {
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "{} {route}: {response}", case["id"]);
+            } else {
+                assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{} {route}: {response}", case["id"]);
+                assert_eq!(response["reason"], vectors["oversized_response"]["reason"]);
+                if case["route_kind"] == "completion" {
+                    for field in ["limit_kind", "limit"] {
+                        assert_eq!(response[field], vectors["oversized_response"][field], "{field}");
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(table_counts(&database).await, before);
+    runtime.close().await;
+    database.remove().await;
 }
