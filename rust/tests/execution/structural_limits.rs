@@ -142,7 +142,10 @@ async fn updates_over_a_structural_limit_are_rejected_durably_like_php() {
     // A retried request returns the original rejection with its limit.
     let (status, retried) = request(&app, "POST", path, json!({"input":oversized(),"request_id":"big"})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{retried}");
-    assert_eq!(retried, big);
+    let mut retained = big.clone();
+    retained["retained"] = json!(true);
+    retained["intent_verified"] = json!(false);
+    assert_eq!(retried, retained, "the original raw-key rejection is explicitly unverified");
 
     let (status, accepted) = request(&app, "POST", path, json!({"input":note("a"),"wait_for":"accepted"})).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");

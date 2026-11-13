@@ -402,11 +402,6 @@ where
             .begin()
             .await
             .map_err(|error| at_update_lookup(error, UpdateLookup::AdmissionOwnership))?;
-        // The referenced object now belongs to the update; a refusal rolls
-        // the claim back with everything else.
-        if let Some(prepared) = external {
-            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
-        }
         let instance = Self::query("SELECT current_run_id,last_message_sequence FROM workflow_instances WHERE id=$1 AND namespace=$2")
             .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
@@ -418,12 +413,25 @@ where
             Some(key) => Self::retained_command(&mut tx, workflow_id, "update", key).await?,
             None => None,
         };
+        // A retained answer must not acquire the retry's payload reference.
+        if keyed.is_none()
+            && let Some(prepared) = external
+        {
+            self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
+        }
         if let (Some((command, retained)), Some(digest)) = (&keyed, digest.as_deref())
             && super::command_intent::compare(retained.as_deref(), digest) == super::command_intent::Intent::Different
         {
             return Err(super::command_intent::conflict(workflow_id, "update", &DB::string(command, "id")?,
                 DB::optional_string(command, "outcome")?.as_deref(),
                 vec![if selected_run.is_some() { "target_or_arguments" } else { "arguments" }]));
+        }
+        if let Some((command, None)) = &keyed
+            && let Some(selected) = selected_run
+            && selected != DB::string(command, "workflow_run_id")?
+        {
+            return Err(super::command_intent::conflict(workflow_id, "update", &DB::string(command, "id")?,
+                DB::optional_string(command, "outcome")?.as_deref(), vec!["target"]));
         }
         if keyed.is_none() && selected_run.is_some_and(|selected| selected != run_id) {
             return Err(refuse(
@@ -761,7 +769,12 @@ where
         // A completion wait owns neither the transaction nor a pool connection.
         tx.commit().await?;
         self.wake.notify_waiters();
-        self.wait_update(&update_id, wait_for, timeout, codec).await
+        let (status, mut response) = self.wait_update(&update_id, wait_for, timeout, codec).await?;
+        if let Some((_, digest)) = keyed {
+            response["retained"] = json!(true);
+            response["intent_verified"] = json!(digest.is_some());
+        }
+        Ok((status, response))
     }
 
     /// Reads a retained update by id without admitting anything (#1131).
