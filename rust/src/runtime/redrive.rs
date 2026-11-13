@@ -1,7 +1,7 @@
 //! Redriving a failed run, as published PHP's `DefaultWorkflowControlPlane::
 //! redrive` and `FailedRunRedrivePlan` do: a run that failed right after an
 //! activity failed continues in a new run whose history reuses the completed
-//! activities, side effects and version markers before that step, so its
+//! activities, side effects, version markers and fired plain timers before that step, so its
 //! workflow resumes at the failed step.
 use super::laravel_rules::{self, Rule};
 use super::{Result, RuntimeError, backend::Backend, refuse, store::{Store, id, now}, transaction::Transaction};
@@ -27,11 +27,13 @@ fn iso(at: DateTime<Utc>) -> String {
 
 /// One step the new run reuses: an `ActivityCompleted`, or a marker step
 /// (`SideEffectRecorded`, `VersionMarkerRecorded`, `MemoUpserted`,
-/// `SearchAttributesUpserted`) without its source task and command.
+/// `SearchAttributesUpserted`), or a fired plain timer without its source
+/// identity, task and command. Timers retain both halves of their history pair.
 struct Reused {
     kind: String,
     payload: Value,
     recorded_at: DateTime<Utc>,
+    scheduled_payload: Option<Value>,
 }
 
 /// The marker steps `FailedRunRedrivePlan::forRun` reuses as recorded.
@@ -41,6 +43,13 @@ const MARKERS: [&str; 4] = ["SideEffectRecorded", "VersionMarkerRecorded", "Memo
 fn external(result: &Value) -> bool {
     ["external_payload", "external_storage"].iter().any(|key| result.get(key).is_some_and(|value| !value.is_null()))
         || result.as_str().is_some_and(|blob| blob.starts_with(super::external_resolution::STORED_PREFIX))
+}
+
+/// Core's `isPlainTimer`: group, scope, cleanup and timeout timers have their
+/// own outstanding dependencies and cannot be copied as an ordinary sleep.
+fn plain_timer(payload: &Value) -> bool {
+    payload.is_object() && ["timer_kind", "cancellation_cleanup", "cancellation_scope_id", "parallel_group_id",
+        "condition_wait_id", "signal_wait_id"].iter().all(|field| payload[*field].is_null())
 }
 
 /// What an accepted redrive continues from.
@@ -59,6 +68,7 @@ fn plan(status: &str, events: &[(String, Value, DateTime<Utc>)]) -> std::result:
     let mut failure: Option<&Value> = None;
     let mut steps: BTreeMap<i64, Vec<(&str, &Value, DateTime<Utc>)>> = BTreeMap::new();
     let mut markers: BTreeMap<i64, (&str, &Value, DateTime<Utc>)> = BTreeMap::new();
+    let mut timers: BTreeMap<i64, Vec<(&str, &Value, DateTime<Utc>)>> = BTreeMap::new();
     let mut last_activity: Option<(&str, &Value)> = None;
     for (kind, payload, recorded_at) in events {
         if failure.is_some() {
@@ -83,6 +93,15 @@ fn plan(status: &str, events: &[(String, Value, DateTime<Utc>)]) -> std::result:
                 }
                 markers.insert(sequence, (kind, payload, *recorded_at));
             }
+            "TimerScheduled" | "TimerFired" => {
+                let Some(sequence) = payload["sequence"].as_i64().filter(|sequence| started && *sequence >= 1) else {
+                    return Err("invalid_step_sequence");
+                };
+                if !plain_timer(payload) {
+                    return Err("unsupported_timer");
+                }
+                timers.entry(sequence).or_default().push((kind, payload, *recorded_at));
+            }
             "ActivityScheduled" | "ActivityStarted" | "ActivityHeartbeatRecorded" | "ActivityCompleted" | "ActivityFailed" => {
                 if payload["execution_mode"] == "local" || payload["local_activity"] == true {
                     return Err("unsupported_local_activity");
@@ -105,14 +124,17 @@ fn plan(status: &str, events: &[(String, Value, DateTime<Utc>)]) -> std::result:
     if failure["failed_step_kind"] != "activity" {
         return Err("unrecorded_failure_boundary");
     }
-    // A marker takes its own step before the failed one.
-    if markers.keys().any(|sequence| *sequence >= boundary) {
+    // Reused markers and timers each take one step before the failed activity.
+    if markers.keys().chain(timers.keys()).any(|sequence| *sequence >= boundary) {
         return Err("invalid_failed_step");
+    }
+    if timers.keys().any(|sequence| steps.contains_key(sequence) || markers.contains_key(sequence)) {
+        return Err("duplicate_step_sequence");
     }
     if markers.keys().any(|sequence| steps.contains_key(sequence)) {
         return Err("duplicate_step_sequence");
     }
-    if (steps.len() + markers.len()) as i64 != boundary {
+    if (steps.len() + markers.len() + timers.len()) as i64 != boundary {
         return Err("activity_sequence_gap");
     }
     let mut reused = Vec::new();
@@ -125,7 +147,27 @@ fn plan(status: &str, events: &[(String, Value, DateTime<Utc>)]) -> std::result:
                 fields.remove("task");
                 fields.remove("command");
             }
-            reused.push(Reused { kind: (*kind).to_owned(), payload, recorded_at: *recorded_at });
+            reused.push(Reused { kind: (*kind).to_owned(), payload, recorded_at: *recorded_at, scheduled_payload: None });
+            continue;
+        }
+        if let Some(events) = timers.get(&sequence) {
+            let [("TimerScheduled", scheduled, _), ("TimerFired", fired, recorded_at)] = events.as_slice() else {
+                return Err("incomplete_timer_step");
+            };
+            if !scheduled["timer_id"].is_string() || scheduled["timer_id"] != fired["timer_id"] {
+                return Err("incomplete_timer_step");
+            }
+            let mut scheduled = (*scheduled).clone();
+            let mut fired = (*fired).clone();
+            for payload in [&mut scheduled, &mut fired] {
+                if let Some(fields) = payload.as_object_mut() {
+                    for key in ["task", "command", "timer_id"] {
+                        fields.remove(key);
+                    }
+                }
+            }
+            reused.push(Reused { kind: "TimerFired".to_owned(), payload: fired, recorded_at: *recorded_at,
+                scheduled_payload: Some(scheduled) });
             continue;
         }
         let Some(events) = steps.get(&sequence) else {
@@ -170,7 +212,7 @@ fn plan(status: &str, events: &[(String, Value, DateTime<Utc>)]) -> std::result:
         if !payload["result"]["blob"].is_string() {
             return Err("missing_activity_result");
         }
-        reused.push(Reused { kind: "ActivityCompleted".to_owned(), payload: payload.clone(), recorded_at });
+        reused.push(Reused { kind: "ActivityCompleted".to_owned(), payload: payload.clone(), recorded_at, scheduled_payload: None });
     }
     match last_activity {
         Some(("ActivityFailed", payload)) if payload["sequence"].as_i64() == Some(boundary) => Ok((boundary, reused)),
@@ -384,6 +426,19 @@ where
         for step in reused {
             let payload = &step.payload;
             let recorded_at = payload["reused_recorded_at"].as_str().map(str::to_owned).unwrap_or_else(|| iso(step.recorded_at));
+            if let Some(mut scheduled) = step.scheduled_payload {
+                // This timer already fired. Reuse its two events with one new
+                // identity, without inserting a timer row or runnable task.
+                let timer_id = id();
+                scheduled["timer_id"] = json!(timer_id);
+                Self::append(&mut tx, &run_id, "TimerScheduled", scheduled, None, None).await?;
+                let mut fired = step.payload;
+                fired["timer_id"] = json!(timer_id);
+                fired["reused_from_run_id"] = json!(source_id);
+                fired["reused_recorded_at"] = json!(recorded_at);
+                Self::append(&mut tx, &run_id, "TimerFired", fired, None, None).await?;
+                continue;
+            }
             if step.kind != "ActivityCompleted" {
                 let mut marker = step.payload.clone();
                 marker["reused_from_run_id"] = json!(source_id);
@@ -439,7 +494,7 @@ mod tests {
         assert_eq!(plan("failed", &unbounded).err(), Some("unrecorded_failure_boundary"));
         let mut timer = history.clone();
         timer.insert(2, event("TimerScheduled", json!({"sequence":1})));
-        assert_eq!(plan("failed", &timer).err(), Some("unsupported_history"));
+        assert_eq!(plan("failed", &timer).err(), Some("duplicate_step_sequence"));
         let mut external = history.clone();
         external[3] = event("ActivityCompleted", json!({"sequence":1,"activity_type":"a","result":{"codec":"avro","external_payload":{}}}));
         assert_eq!(plan("failed", &external).err(), Some("external_activity_result_not_supported"));
@@ -501,6 +556,7 @@ mod tests {
         assert_eq!(reused[0].kind, "ActivityCompleted");
         assert_eq!(reused[1].kind, "TimerFired");
         assert_eq!(reused[1].payload, json!({"sequence":2,"delay_seconds":5}));
+        assert_eq!(reused[1].scheduled_payload, Some(json!({"sequence":2,"delay_seconds":5})));
         assert_eq!(reused[1].recorded_at, history[3].2);
         assert_eq!(history, original);
     }
