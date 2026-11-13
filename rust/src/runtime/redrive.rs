@@ -1,8 +1,8 @@
-//! Redriving a failed run, as published PHP's `DefaultWorkflowControlPlane::
-//! redrive` and `FailedRunRedrivePlan` do: a run that failed right after an
-//! activity failed continues in a new run whose history reuses the completed
-//! activities, side effects, version markers and fired plain timers before that step, so its
-//! workflow resumes at the failed step.
+//! Failed-run redrive follows Core's `DefaultWorkflowControlPlane::redrive`
+//! and `FailedRunRedrivePlan`: a run that failed right after an activity
+//! failed continues in a new run whose history reuses completed activities,
+//! side effects, version markers and fired plain timers before that step.
+//! The workflow resumes at the failed step.
 use super::laravel_rules::{self, Rule};
 use super::{Result, RuntimeError, backend::Backend, refuse, store::{Store, id, now}, transaction::Transaction};
 use axum::http::StatusCode;
@@ -421,7 +421,7 @@ where
             started[key] = value;
         }
         Self::append(&mut tx, &run_id, "WorkflowStarted", started, None, Some(&command_id)).await?;
-        // `FailedRunRedrivePlan::successorEvents`: each reused step in step
+        // Core's redrive writer copies each reused step in step
         // order. A step reused more than once keeps the time it first ran.
         for step in reused {
             let payload = &step.payload;
