@@ -516,7 +516,6 @@ const DEFAULT_NAMESPACE: &str = "native serves `default` to requests that name n
 const POLL_DISPATCH: &str = "native hands tasks only to polling workers";
 const MEMO_RECOVERY: &str = "native has no memo migration recovery mode";
 const EXTERNAL_EXECUTOR: &str = "native has no external executor configuration";
-const STORAGE_ADMISSION: &str = "native has no storage admission file";
 /// The parity harness looks for this exact wording.
 const AUTH: &str = "unsupported development authentication configuration";
 const FORWARDED: &str = "native never trusts forwarded attribution headers";
@@ -662,9 +661,9 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_SIGNATURE_KEY", legacy: Some("WORKFLOW_SERVER_SIGNATURE_KEY"), disposition: Ignored },
     Setting { name: "DW_SQLITE_CLAIM_LOCK_TTL_SECONDS", legacy: Some("WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_TTL_SECONDS"), disposition: Ignored },
     Setting { name: "DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS", legacy: Some("WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_WAIT_SECONDS"), disposition: Ignored },
-    Setting { name: "DW_STORAGE_ADMISSION_FILE", legacy: None, disposition: Refused(Empty, STORAGE_ADMISSION) },
-    Setting { name: "DW_STORAGE_ADMISSION_MAX_AGE_SECONDS", legacy: None, disposition: Ignored },
-    Setting { name: "DW_STORAGE_ADMISSION_SOURCE", legacy: None, disposition: Refused(Empty, STORAGE_ADMISSION) },
+    Setting { name: "DW_STORAGE_ADMISSION_FILE", legacy: None, disposition: Honored },
+    Setting { name: "DW_STORAGE_ADMISSION_MAX_AGE_SECONDS", legacy: None, disposition: Honored },
+    Setting { name: "DW_STORAGE_ADMISSION_SOURCE", legacy: None, disposition: Honored },
     Setting { name: "DW_TASK_DISPATCH_MODE", legacy: Some("WORKFLOW_V2_TASK_DISPATCH_MODE"), disposition: Refused(Exact(&["poll"]), POLL_DISPATCH) },
     Setting { name: "DW_TASK_QUEUE_ADMISSION_OVERRIDES", legacy: Some("WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES"), disposition: Refused(EmptyObject, TASK_ADMISSION) },
     Setting { name: "DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS", legacy: Some("WORKFLOW_SERVER_TRUST_FORWARDED_ATTRIBUTION_HEADERS"), disposition: Refused(FilterBool(false), FORWARDED) },
@@ -1124,6 +1123,37 @@ mod tests {
             "Legacy env var WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE is still honored but deprecated — rename to DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE.",
         ]);
         assert_eq!(report.refusal(), None);
+    }
+
+    /// #504: DW_MAX_HISTORY_EVENTS is documented as having no effect. If native
+    /// starts reading it, this fails so the contract and docs change with it.
+    #[test]
+    fn max_history_events_stays_unread() {
+        let setting = SETTINGS.iter().find(|setting| setting.name == "DW_MAX_HISTORY_EVENTS").unwrap();
+        assert!(matches!(setting.disposition, Ignored));
+        fn visit(dir: &std::path::Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let source = std::fs::read_to_string(&path).unwrap();
+                    let source = match path.file_name().is_some_and(|name| name == "config_audit.rs") {
+                        // Only the code above the tests counts here.
+                        true => source.split("#[cfg(test)]").next().unwrap().to_owned(),
+                        false => source,
+                    };
+                    let hits = source.matches("_MAX_HISTORY_EVENTS\"").count();
+                    if hits > 0 {
+                        found.push(format!("{} {hits}", path.file_name().unwrap().to_string_lossy()));
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        visit(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")), &mut found);
+        // The disposition line names the variable and its legacy alias.
+        assert_eq!(found, ["config_audit.rs 2"]);
     }
 
     #[test]

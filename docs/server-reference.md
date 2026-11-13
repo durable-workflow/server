@@ -1084,7 +1084,12 @@ capabilities, before mapping it onto pollable activity tasks. The carrier
 must also resolve an `auth_ref` for non-loopback targets; only loopback HTTP
 development targets may omit auth. Effective auth remains redacted in cluster
 diagnostics and activity poll responses.
-retry policy is transport-only: it may repeat transient HTTP delivery before a
+The Server never sends the HTTP request itself. A process you run must poll
+the activity queue, read `task.external_executor`, call the endpoint and
+report the result through the normal complete/fail paths. If nothing polls
+the queue, the activity task waits. A Server-side dispatcher will be built
+when users need it (#527).
+The carrier retry policy is transport-only: it may repeat transient HTTP delivery before a
 result is reported, while durable activity retry remains owned by the
 server/runtime after complete/fail reporting.
 For leased invocable mappings, `task.external_executor.dispatch` also exposes
@@ -1320,8 +1325,9 @@ Run detail exposes `history_event_count`, `history_size_bytes`,
 pressure. The default warning is 8,000 events, 4 MiB of serialized history,
 or fan-out of 160. Continue-as-new is recommended at 10,000 events, 5 MiB,
 or fan-out of 200. Reaching any one dimension changes the pressure state.
-`DW_MAX_HISTORY_EVENTS=50000` is an enforcement ceiling, not the target for
-routine workflow code.
+The Server does not cap history per run. `DW_MAX_HISTORY_EVENTS` has no
+effect: no Server release has read it, so setting it does not limit anything.
+Continue-as-new from workflow code is what bounds a long-lived history.
 
 Plan a continuation when a run reaches `approaching`. Carry the state needed
 by the next run explicitly through the SDK's continue-as-new command, and
@@ -1927,7 +1933,7 @@ every operator-facing variable the server honors.
 | `DW_ACTIVITY_TASK_TIMEOUT` | `300` | Default activity-task lease timeout (seconds). |
 | `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_HEARTBEAT_INTERVAL_SECONDS * 3, 30)` | Seconds before a worker heartbeat is considered stale. |
 | `DW_WORKER_HEARTBEAT_INTERVAL_SECONDS` | `10` | Cadence in seconds advertised to SDK workers for fleet heartbeats. |
-| `DW_MAX_HISTORY_EVENTS` | `50000` | Max history events per run before continue-as-new is enforced. |
+| `DW_MAX_HISTORY_EVENTS` | `50000` | Has no effect. No Server release reads it and history per run is not capped. Bound long histories with continue-as-new. |
 | `DW_HISTORY_RETENTION_DAYS` | `30` | Default retention for closed-run history (namespaces can override). |
 | `DW_MAX_PAYLOAD_BYTES` | `2097152` | Max serialized bytes for a single payload. |
 | `DW_EXTERNAL_PAYLOAD_MAX_BYTES` | `67108864` | Max encoded bytes accepted by the authenticated runtime external-payload transport. |

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import platform
 import re
 import subprocess
@@ -2589,10 +2590,31 @@ def _reference_observations(
     return observations
 
 
+# System Git installs, checked in order. The capacity tools never resolve Git
+# through PATH (Server #1051); CAPACITY_GIT names another absolute binary.
+GIT_CANDIDATES = ("/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git")
+
+
+def git_executable() -> str:
+    configured = os.environ.get("CAPACITY_GIT", "").strip()
+    for candidate in (configured,) if configured else GIT_CANDIDATES:
+        path = Path(candidate)
+        if path.is_absolute() and path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    raise FileNotFoundError(
+        "CAPACITY_GIT must name an absolute, executable Git binary"
+        if configured
+        else "no Git executable at " + ", ".join(GIT_CANDIDATES)
+    )
+
+
 def _git_revision() -> str:
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL
+            [git_executable(), "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return "unknown-local-revision"

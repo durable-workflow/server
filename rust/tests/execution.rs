@@ -75,6 +75,8 @@ mod worker_incarnations;
 
 #[path = "execution/command_keys.rs"]
 mod command_keys;
+#[path = "execution/storage_admission.rs"]
+mod storage_admission;
 #[path = "execution/worker_contracts.rs"]
 mod worker_contracts;
 

@@ -49,6 +49,18 @@ pathspec=(
   ':!var'
 )
 
+# Claude project-local settings are personal configuration and must never be
+# tracked (durable-workflow/.github#355). Only the path is printed; the file is
+# never read.
+while IFS= read -r -d '' file; do
+  case "$file" in
+    .claude/settings.local.json | */.claude/settings.local.json)
+      printf 'public-boundary: refused tracked %s\n' "$file" >&2
+      status=1
+      ;;
+  esac
+done < <(git ls-files -z)
+
 for pattern in "${file_patterns[@]}"; do
   while IFS=: read -r file line _; do
     [[ -n "${file:-}" ]] || continue
