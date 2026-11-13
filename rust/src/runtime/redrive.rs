@@ -63,7 +63,6 @@ struct Decision {
     resume: i64,
     reused: Vec<Reused>,
     started: Value,
-    started_recorded_at: DateTime<Utc>,
 }
 
 /// `FailedRunRedrivePlan::forRun` over the source run's history.
@@ -292,10 +291,7 @@ where
         if execution_deadline.is_some_and(|deadline| at >= deadline) {
             return Ok(Err("execution_deadline_elapsed"));
         }
-        let Some((mut started, started_recorded_at)) = events.iter().find(|(kind, _, _)| kind == "WorkflowStarted")
-            .map(|(_, payload, at)| (payload.clone(), *at)) else {
-            return Ok(Err("missing_terminal_history"));
-        };
+        let mut started = events.iter().find(|(kind, _, _)| kind == "WorkflowStarted").map(|(_, payload, _)| payload.clone()).unwrap_or(Value::Null);
         if let Some(fields) = started.as_object_mut() {
             fields.remove("command");
             fields.remove("task");
@@ -336,7 +332,7 @@ where
         if upserts {
             return Ok(Err("service_redrive_history_not_qualified"));
         }
-        Ok(Ok(Decision { resume, reused, started, started_recorded_at }))
+        Ok(Ok(Decision { resume, reused, started }))
     }
 
     /// `FailedRunRedriveEligibility::blockedReason` for describe: the reason
@@ -379,7 +375,7 @@ where
         }
         let conflict = |reason: &str| Ok(rejected(workflow_id, source_id, reason, StatusCode::CONFLICT));
         let current = DB::optional_string(&instance, "current_run_id")?.as_deref() == Some(source_id);
-        let Decision { resume, reused, started, started_recorded_at } = match self.redrive_decision(&mut tx, &source, current, true).await? {
+        let Decision { resume, reused, started } = match self.redrive_decision(&mut tx, &source, current, true).await? {
             Ok(decision) => decision,
             Err(reason) => return conflict(reason),
         };
@@ -418,8 +414,8 @@ where
             .bind(&run_id).bind(run_number).bind(DB::bind_time(at)).bind(workflow_id).execute(&mut *tx).await?;
         Self::append(&mut tx, &run_id, "StartAccepted", json!({"workflow_command_id":command_id,"workflow_instance_id":workflow_id,
             "workflow_run_id":run_id,"workflow_class":workflow_type,"workflow_type":workflow_type,"outcome":"redriven"}), None, Some(&command_id)).await?;
-        let replayed = started["replayed_started_at"].as_str().map(str::to_owned)
-            .unwrap_or_else(|| replay_time(started_recorded_at));
+        let source_started = DB::optional_instant(&source, "started_at")?;
+        let replayed = started["replayed_started_at"].as_str().map(str::to_owned).or_else(|| source_started.map(replay_time));
         if !started.is_object() {
             started = json!({});
         }
