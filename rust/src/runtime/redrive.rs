@@ -480,4 +480,77 @@ mod tests {
         missing.remove(3);
         assert_eq!(plan("failed", &missing).err(), Some("activity_sequence_gap"));
     }
+
+    fn fired_timer_history() -> Vec<(String, Value, DateTime<Utc>)> {
+        vec![event("WorkflowStarted", json!({})),
+            event("ActivityCompleted", json!({"sequence":1,"activity_type":"a","result":{"blob":"x"}})),
+            event("TimerScheduled", json!({"sequence":2,"timer_id":"source-timer","delay_seconds":5,
+                "task":{"id":"scheduled-task"},"command":{"id":"scheduled-command"}})),
+            event("TimerFired", json!({"sequence":2,"timer_id":"source-timer","delay_seconds":5,
+                "task":{"id":"fired-task"},"command":{"id":"fired-command"}})),
+            event("ActivityFailed", json!({"sequence":3,"activity_type":"b"})),
+            event("WorkflowFailed", json!({"failed_step_sequence":3,"failed_step_kind":"activity"}))]
+    }
+
+    #[test]
+    fn plan_reuses_a_complete_plain_timer_in_step_order() {
+        let history = fired_timer_history();
+        let original = history.clone();
+        let (resume, reused) = plan("failed", &history).unwrap();
+        assert_eq!((resume, reused.len()), (3, 2));
+        assert_eq!(reused[0].kind, "ActivityCompleted");
+        assert_eq!(reused[1].kind, "TimerFired");
+        assert_eq!(reused[1].payload, json!({"sequence":2,"delay_seconds":5}));
+        assert_eq!(reused[1].recorded_at, history[3].2);
+        assert_eq!(history, original);
+    }
+
+    #[test]
+    fn plan_refuses_non_plain_or_incomplete_timers_like_core() {
+        let history = fired_timer_history();
+        for index in [2, 3] {
+            for field in ["timer_kind", "cancellation_cleanup", "cancellation_scope_id", "parallel_group_id",
+                "condition_wait_id", "signal_wait_id"] {
+                for value in [json!(false), json!(""), json!("condition")] {
+                    let mut changed = history.clone();
+                    changed[index].1[field] = value;
+                    assert_eq!(plan("failed", &changed).err(), Some("unsupported_timer"), "{field}");
+                }
+                let mut changed = history.clone();
+                changed[index].1[field] = Value::Null;
+                assert!(plan("failed", &changed).is_ok(), "null {field}");
+            }
+            let mut missing = history.clone();
+            missing.remove(index);
+            assert_eq!(plan("failed", &missing).err(), Some("incomplete_timer_step"));
+            let mut duplicate = history.clone();
+            duplicate.insert(index, history[index].clone());
+            assert_eq!(plan("failed", &duplicate).err(), Some("incomplete_timer_step"));
+            for value in [Value::Null, json!(5), json!("another-timer")] {
+                let mut changed = history.clone();
+                changed[index].1["timer_id"] = value;
+                assert_eq!(plan("failed", &changed).err(), Some("incomplete_timer_step"));
+            }
+            for value in [Value::Null, json!(0), json!("2")] {
+                let mut changed = history.clone();
+                changed[index].1["sequence"] = value;
+                assert_eq!(plan("failed", &changed).err(), Some("invalid_step_sequence"));
+            }
+        }
+        let mut reversed = history.clone();
+        reversed.swap(2, 3);
+        assert_eq!(plan("failed", &reversed).err(), Some("incomplete_timer_step"));
+        for (sequence, expected) in [(1, "duplicate_step_sequence"), (3, "invalid_failed_step")] {
+            let mut changed = history.clone();
+            changed[2].1["sequence"] = json!(sequence);
+            changed[3].1["sequence"] = json!(sequence);
+            assert_eq!(plan("failed", &changed).err(), Some(expected));
+        }
+        let mut collision = history.clone();
+        collision.insert(2, event("VersionMarkerRecorded", json!({"sequence":2})));
+        assert_eq!(plan("failed", &collision).err(), Some("duplicate_step_sequence"));
+        let mut gap = history.clone();
+        gap.remove(1);
+        assert_eq!(plan("failed", &gap).err(), Some("activity_sequence_gap"));
+    }
 }
