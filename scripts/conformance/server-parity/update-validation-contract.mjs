@@ -41,7 +41,7 @@ export function normalizeUpdateValidation(state, workflowId) {
   return walk(steps);
 }
 
-export function checkUpdateValidation(fixture, observation, workflowId) {
+export function checkUpdateValidation(fixture, observation, workflowId, target) {
   const state = observation.update_validation;
   assert.ok(state && typeof state === 'object', 'actual update validation observation');
   const expected = fixture.update_validation.expected;
@@ -57,7 +57,7 @@ export function checkUpdateValidation(fixture, observation, workflowId) {
       `update validation ${step} waited for the validation timeout (${seconds} seconds)`);
   }
   const actual = normalizeUpdateValidation(state, workflowId);
-  const retainedIntent = nativeDivergence(observation.target, 'retained-command-intent-readback');
+  const retainedIntent = nativeDivergence(target, 'retained-command-intent-readback');
   assert.deepStrictEqual(Object.keys(actual), Object.keys(expected), 'update validation steps');
   for (const step of Object.keys(expected)) {
     // Native's duplicate approval and raw-key rejection explicitly report

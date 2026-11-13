@@ -15,25 +15,25 @@ test('published PHP passes', () => {
 });
 
 test('native retained receipts explicitly report intent proof under their named divergence', () => {
-  const actual = {...observation(), target: 'rust'};
+  const actual = observation();
   const response = actual.update_validation.retained_approval.response;
   response.retained = true;
   response.intent_verified = true;
   actual.update_validation.retained_rejection.response.retained = true;
   actual.update_validation.retained_rejection.response.intent_verified = false;
-  assert.deepStrictEqual(checkUpdateValidation(fixture, actual, workflowId), projection);
+  assert.deepStrictEqual(checkUpdateValidation(fixture, actual, workflowId, 'rust'), projection);
   for (const field of ['retained', 'intent_verified']) {
     response[field] = false;
-    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), /retained_approval/);
+    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), /retained_approval/);
     delete response[field];
-    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), /retained_approval/);
+    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), /retained_approval/);
     response[field] = true;
   }
   actual.update_validation.retained_rejection.response.intent_verified = true;
-  assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), /retained_rejection/);
+  assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), /retained_rejection/);
   actual.update_validation.retained_rejection.response.intent_verified = false;
   actual.update_validation.approved_update.response.retained = true;
-  assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), /approved_update/);
+  assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), /approved_update/);
 });
 
 test('embedded explicitly declares update validation inapplicable', () => {
@@ -83,6 +83,6 @@ for (const [label, mutate, message] of [
   test(`rejects ${label}`, () => {
     const actual = observation();
     mutate(actual.update_validation);
-    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), message);
+    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), message);
   });
 }

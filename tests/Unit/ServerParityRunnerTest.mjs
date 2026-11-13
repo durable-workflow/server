@@ -38,6 +38,22 @@ function record(suffix = '') {
   return {schema: 'durable-workflow.server-parity-record/v1', target: `target${suffix}`, outcome: 'pass', runner_revision: 'a'.repeat(40), fixture_hashes: {'one-activity.json': 'fixture-sha'}, artifacts: {sdk_php: '2.2.6'}, cases: [{fixture_id: fixture.id, fixture, observation: raw, projection: checkObservation(fixture, raw, 'test-one-activity')}]};
 }
 
+test('the recorder forwards its native target to retained update validation checks', () => {
+  const updateFixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/update-validation.json', import.meta.url)));
+  const updateState = JSON.parse(readFileSync(new URL('../Fixtures/ServerParityExpected/update-validation-observation.json', import.meta.url), 'utf8').replaceAll('uv-probe-3', 'test-one-activity'));
+  const combined = {...fixture, update_validation: updateFixture.update_validation};
+  const raw = {...observation(), mode: 'http', update_validation: updateState};
+  // The implementation target belongs to the recording, never the probe observation.
+  raw.update_validation.workflow_id = `${raw.workflow_id}-uv`;
+  for (const step of ['retained_approval', 'retained_rejection']) {
+    raw.update_validation[step].response.retained = true;
+    raw.update_validation[step].response.intent_verified = step === 'retained_approval';
+  }
+  assert.deepEqual(checkObservation(combined, raw, raw.workflow_id, undefined, 'rust').update_validation,
+    {scope: 'update_validation', steps: Object.keys(updateFixture.update_validation.expected).length});
+  assert.throws(() => checkObservation(combined, raw, raw.workflow_id, undefined, 'php'), /retained_approval/);
+});
+
 test('comparison binds identical recordings to the selected source artifact manifest', () => {
   const records = [record(), record('-other-database')];
   compareCorpusRecords(records, {'one-activity.json': 'fixture-sha'}, reviewed, {sdk_php: '2.2.6'});
