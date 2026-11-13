@@ -126,6 +126,11 @@
     }
   },
   "physical_upgrade": {
+    "api_seed_driver": "scripts/ci/command_key_upgrade_seed.py",
+    "baseline_key_authority": {
+      "update": "Published 3.8 API admissions retain the raw caller request_id. These are physical legacy-key upgrade seeds.",
+      "signal": "Published 3.8 ordinary signal rows have request_id NULL; only bridge identities are stored. After upgrade preserve exact rows, identity and business outcome as compatibility only, not retained caller-key recovery. Do not manufacture a raw signal key, retained/intent metadata or equality."
+    },
     "scope": "Separate actual old-image admission and schema-upgrade cell. Do not substitute the synthetic transform or minimal orphan command-row schema tests.",
     "baseline": {
       "tag": "3.8.0",
