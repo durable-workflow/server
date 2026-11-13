@@ -586,7 +586,7 @@ return [
         // --- History / retention / limits ------------------------------
 
         'DW_MAX_HISTORY_EVENTS' => [
-            'description' => 'Maximum history events per workflow run before continue-as-new is enforced.',
+            'description' => 'Has no effect. No Server release reads it and history per run is not capped; bound long histories with continue-as-new.',
             'default' => '50000',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_MAX_HISTORY_EVENTS',

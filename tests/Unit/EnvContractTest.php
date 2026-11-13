@@ -381,4 +381,43 @@ class EnvContractTest extends TestCase
             );
         }
     }
+
+    /**
+     * DW_MAX_HISTORY_EVENTS is documented as having no effect (#504). No
+     * Server release has read it. If code starts reading the variable or its
+     * config key, this fails so the contract and docs change with it.
+     */
+    public function test_max_history_events_stays_unread(): void
+    {
+        $roots = ['app', 'bootstrap', 'config', 'database', 'routes', 'vendor/durable-workflow/workflow/src'];
+        $found = [];
+
+        foreach ($roots as $root) {
+            $directory = self::$repoRoot.'/'.$root;
+            if (! is_dir($directory)) {
+                continue;
+            }
+            $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS));
+            foreach ($files as $file) {
+                if ($file->getExtension() !== 'php') {
+                    continue;
+                }
+                $source = (string) file_get_contents($file->getPathname());
+                $count = preg_match_all('/max_events_per_run|(?:DW|WORKFLOW)_MAX_HISTORY_EVENTS/', $source);
+                if ($count > 0) {
+                    $found[substr($file->getPathname(), strlen(self::$repoRoot) + 1)] = $count;
+                }
+            }
+        }
+
+        // config/server.php maps both names to the key on one line; the
+        // contract names the variable and its legacy alias. Nothing else.
+        ksort($found);
+        $this->assertSame(
+            ['config/dw-contract.php' => 2, 'config/server.php' => 3],
+            $found,
+            'Something now reads DW_MAX_HISTORY_EVENTS; change its contract and docs with it (#504)',
+        );
+        $this->assertStringStartsWith('Has no effect.', self::$contract['vars']['DW_MAX_HISTORY_EVENTS']['description']);
+    }
 }
