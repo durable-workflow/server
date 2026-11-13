@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {nativeDivergence} from './native-divergences.mjs';
 
 // Synchronous update validation, as published Server 2.11.1 serves it. Every
 // recorded step must equal the reviewed fixture after three normalizations:
@@ -56,9 +57,15 @@ export function checkUpdateValidation(fixture, observation, workflowId) {
       `update validation ${step} waited for the validation timeout (${seconds} seconds)`);
   }
   const actual = normalizeUpdateValidation(state, workflowId);
+  const retainedIntent = nativeDivergence(observation.target, 'retained-command-intent-readback');
   assert.deepStrictEqual(Object.keys(actual), Object.keys(expected), 'update validation steps');
   for (const step of Object.keys(expected)) {
-    assert.deepStrictEqual(actual[step], expected[step], `update validation ${step}`);
+    // Native's duplicate approval and raw-key rejection explicitly report
+    // whether an intent proof exists. Every original receipt field stays exact.
+    const wanted = retainedIntent && ['retained_approval', 'retained_rejection'].includes(step)
+      ? {...expected[step], response: {...expected[step].response, retained: true, intent_verified: step === 'retained_approval'}}
+      : expected[step];
+    assert.deepStrictEqual(actual[step], wanted, `update validation ${step}`);
   }
   return {scope: 'update_validation', steps: Object.keys(expected).length};
 }

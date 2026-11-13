@@ -14,6 +14,28 @@ test('published PHP passes', () => {
   assert.deepStrictEqual(checkUpdateValidation(fixture, observation(), workflowId), projection);
 });
 
+test('native retained receipts explicitly report intent proof under their named divergence', () => {
+  const actual = {...observation(), target: 'rust'};
+  const response = actual.update_validation.retained_approval.response;
+  response.retained = true;
+  response.intent_verified = true;
+  actual.update_validation.retained_rejection.response.retained = true;
+  actual.update_validation.retained_rejection.response.intent_verified = false;
+  assert.deepStrictEqual(checkUpdateValidation(fixture, actual, workflowId), projection);
+  for (const field of ['retained', 'intent_verified']) {
+    response[field] = false;
+    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), /retained_approval/);
+    delete response[field];
+    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), /retained_approval/);
+    response[field] = true;
+  }
+  actual.update_validation.retained_rejection.response.intent_verified = true;
+  assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), /retained_rejection/);
+  actual.update_validation.retained_rejection.response.intent_verified = false;
+  actual.update_validation.approved_update.response.retained = true;
+  assert.throws(() => checkUpdateValidation(fixture, actual, workflowId), /approved_update/);
+});
+
 test('embedded explicitly declares update validation inapplicable', () => {
   assert.deepStrictEqual(checkUpdateValidation(fixture, {mode: 'embedded',
     update_validation: {applicable: false, reason: 'embedded_has_no_http_update_validation'}}, workflowId), projection);
