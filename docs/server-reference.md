@@ -709,6 +709,10 @@ a key is the only command it admits:
   Send the original input to recover the receipt, or use a new key.
 - A refused signal (for example `run_not_active` or `unknown_signal`) does not
   reserve its key; retrying it is evaluated again.
+- The key is stored hashed and the intent as its digest, never the arguments.
+  Both live as long as the command does. When retention prunes a run's details,
+  its commands' keys and digests go with them, and a later request under that
+  key is a new command.
 - An update receipt written before 3.9.0 has no recorded intent. It is read back
   only when the update name matches, and its arguments are not compared.
 

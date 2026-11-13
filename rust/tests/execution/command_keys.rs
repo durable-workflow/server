@@ -150,3 +150,32 @@ async fn update_retries_with_different_arguments_are_conflicts() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// Retention removes a pruned run's request-key digests with its commands, so
+/// an argument digest never outlives the command it guards. Another run's
+/// digest stays, and the pruned report keeps PHP's keys.
+#[tokio::test]
+async fn retention_prunes_request_key_digests_with_their_commands() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let pruned = start(&app, "pruned-keys").await;
+    start(&app, "kept-keys").await;
+    for workflow in ["pruned-keys", "kept-keys"] {
+        let sent = signal(&app, workflow, "finish", input(1, Some("retained-key"))).await;
+        assert_eq!(sent.0, StatusCode::ACCEPTED, "{}", sent.1);
+    }
+    const INTENTS: &str = "SELECT COUNT(*) FROM dw_command_intents";
+    assert_eq!(task_retry::rows(&database, INTENTS).await, 2);
+
+    let (status, body) = request(&app, "POST", "/api/workflows/pruned-keys/terminate", json!({"reason":"close"})).await;
+    assert!(status.is_success(), "{body}");
+    let (status, report) = request(&app, "POST", "/api/system/retention/pass",
+        json!({"run_ids":[pruned["run_id"]]})).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["pruned"], 1, "{report}");
+    assert!(!report.to_string().contains("intent"), "the report keeps PHP's keys: {report}");
+    assert_eq!(task_retry::rows(&database, INTENTS).await, 1, "only the pruned run's digest is gone");
+    const KEPT: &str = "SELECT COUNT(*) FROM dw_command_intents i JOIN workflow_commands c ON c.id=i.command_id WHERE c.workflow_instance_id='kept-keys'";
+    assert_eq!(task_retry::rows(&database, KEPT).await, 1, "the other run keeps its digest");
+}
