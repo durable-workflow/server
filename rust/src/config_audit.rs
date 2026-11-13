@@ -1126,6 +1126,37 @@ mod tests {
         assert_eq!(report.refusal(), None);
     }
 
+    /// #504: DW_MAX_HISTORY_EVENTS is documented as having no effect. If native
+    /// starts reading it, this fails so the contract and docs change with it.
+    #[test]
+    fn max_history_events_stays_unread() {
+        let setting = SETTINGS.iter().find(|setting| setting.name == "DW_MAX_HISTORY_EVENTS").unwrap();
+        assert!(matches!(setting.disposition, Ignored));
+        fn visit(dir: &std::path::Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let source = std::fs::read_to_string(&path).unwrap();
+                    let source = match path.file_name().is_some_and(|name| name == "config_audit.rs") {
+                        // Only the code above the tests counts here.
+                        true => source.split("#[cfg(test)]").next().unwrap().to_owned(),
+                        false => source,
+                    };
+                    let hits = source.matches("_MAX_HISTORY_EVENTS\"").count();
+                    if hits > 0 {
+                        found.push(format!("{} {hits}", path.file_name().unwrap().to_string_lossy()));
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        visit(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")), &mut found);
+        // The disposition line names the variable and its legacy alias.
+        assert_eq!(found, ["config_audit.rs 2"]);
+    }
+
     #[test]
     fn unknown_and_legacy_names_warn_and_strict_mode_refuses_them() {
         let values = [
