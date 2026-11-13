@@ -2,6 +2,18 @@
   "schema": "durable-workflow.server-parity-native-divergences/v1",
   "divergences": [
     {
+      "id": "command-key-receipt-metadata",
+      "issue": "https://github.com/durable-workflow/server/issues/934",
+      "since": "native 3.9.2",
+      "applies_to": [
+        "signals-before-worker",
+        "update-validation"
+      ],
+      "published_php": "Keyed signal and update receipts do not echo the caller request_id or identify fresh admission with retained false and intent_verified true.",
+      "native": "Fresh keyed admissions echo the literal caller key with retained false and intent_verified true. Retained receipts echo the same key and retain their existing intent-proof markers, including false for legacy receipts without a digest.",
+      "harness": "The signals-before-worker comparator requires exact metadata only on its keyed admission. Update validation requires exact caller keys and fresh markers on approved/plain/completed-wait admissions and preserves true/false intent evidence on retained approval/raw-key rejection. Every original receipt field and all other responses remain exact. Frozen PHP fixtures and observations are unchanged."
+    },
+    {
       "id": "retained-command-intent-readback",
       "issue": "https://github.com/durable-workflow/server/issues/934",
       "since": "native 3.9.1",
