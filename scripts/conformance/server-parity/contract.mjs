@@ -248,7 +248,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const updateValidation = fixture.update_validation ? checkUpdateValidation(fixture, observation, workflowId, target) : null;
   const messageStreams = fixture.message_streams ? checkMessageStreams(fixture, observation, workflowId) : null;
   const workflowStreamWrites = fixture.workflow_stream_writes ? checkWorkflowStreamWrites(fixture, observation, workflowId) : null;
-  const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId) : null;
+  const schedulePolicies = fixture.schedule_policies ? checkSchedulePolicies(fixture, observation, workflowId, target) : null;
   const scheduleCatalog = fixture.schedule_catalog ? checkScheduleCatalog(fixture, observation, workflowId, target) : null;
   const signalsBeforeWorker = fixture.signals_before_worker ? checkSignalsBeforeWorker(fixture, observation, workflowId, target) : null;
   const workerListing = fixture.worker_listing ? checkWorkerListing(fixture, observation, workflowId) : null;

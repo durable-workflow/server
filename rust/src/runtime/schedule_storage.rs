@@ -107,13 +107,13 @@ where
         let created_at = now();
         let next = schedules::next_fire(&definition.spec, definition.jitter_seconds, created_at)?;
         let key = id();
-        Self::query("INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,memo,jitter_seconds,max_runs,remaining_actions,fires_count,failures_count,skipped_trigger_count,note,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,0,0,0,$11,$12,$13)")
+        Self::query("INSERT INTO workflow_schedules(id,schedule_id,namespace,spec,action,status,overlap_policy,memo,jitter_seconds,max_runs,remaining_actions,fires_count,failures_count,skipped_trigger_count,note,created_at,updated_at,dispatch_summary) VALUES ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,0,0,0,$11,$12,$13,$14)")
             .bind(&key).bind(&schedule_id).bind(self.namespace.as_ref())
             .bind(DB::document(&definition.spec)).bind(DB::document(&definition.action))
             .bind(&definition.overlap_policy).bind(definition.memo.as_ref().map(DB::document))
             .bind(definition.jitter_seconds).bind(definition.max_runs).bind(definition.max_runs)
             .bind(definition.note.as_deref())
-            .bind(DB::bind_time(created_at)).bind(DB::bind_time(created_at)).execute(&mut *tx).await?;
+            .bind(DB::bind_time(created_at)).bind(DB::bind_time(created_at)).bind(super::schedule_dispatch_summary::Summary::never().encoded()).execute(&mut *tx).await?;
         if let Some(next) = next {
             Self::query("UPDATE workflow_schedules SET next_fire_at=$1 WHERE id=$2")
                 .bind(DB::bind_time(next))
@@ -378,6 +378,7 @@ where
             .map(|action| schedules::normalize_action_timeouts(&action));
         Ok(json!({
             "schedule_id":DB::string(row,"schedule_id")?,
+            "dispatch_summary":super::schedule_dispatch_summary::Summary::wire(DB::optional_string(row,"dispatch_summary").ok().flatten()),
             "spec":DB::optional_document_row(row,"spec")?,
             "action":action,
             "overlap_policy":DB::string(row,"overlap_policy")?,

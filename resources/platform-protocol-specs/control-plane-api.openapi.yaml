@@ -1217,10 +1217,74 @@ components:
               spec: { type: [object, "null"], additionalProperties: true }
               action: { type: [object, "null"], additionalProperties: true }
               search_attributes: { type: [object, "null"], additionalProperties: true }
+              dispatch_summary: { $ref: "#/components/schemas/ScheduleDispatchSummary" }
               created_at: { type: string, format: date-time }
               updated_at: { type: string, format: date-time }
         schedule_count: { type: integer, minimum: 0, maximum: 200 }
         next_page_token: { type: [string, "null"] }
+    ScheduleDispatchSummary:
+      description: >-
+        Native bounded dispatch authority, also at the top level of describe.
+        Older producers omit this member. Partial, null or unsupported objects
+        supply no v1 authority. A valid unavailable object overrides legacy
+        outcome evidence. A later describe owns its entire summary.
+      type: object
+      additionalProperties: false
+      required: [version, state, last_outcome, buffered_actions_count]
+      properties:
+        version: { type: integer, const: 1 }
+        state: { type: string, enum: [known, never, unavailable] }
+        last_outcome:
+          oneOf:
+            - { $ref: "#/components/schemas/ScheduleDispatchOutcome" }
+            - { type: "null" }
+        buffered_actions_count: { type: [integer, "null"], minimum: 0, maximum: 9007199254740991 }
+      oneOf:
+        - properties:
+            state: { const: known }
+            last_outcome: { $ref: "#/components/schemas/ScheduleDispatchOutcome" }
+            buffered_actions_count: { type: integer }
+        - properties:
+            state: { const: never }
+            last_outcome: { type: "null" }
+            buffered_actions_count: { const: 0 }
+        - properties:
+            state: { const: unavailable }
+            last_outcome: { type: "null" }
+            buffered_actions_count: { type: "null" }
+    ScheduleDispatchOutcome:
+      description: >-
+        Last committed dispatch, independently of current execution status.
+        Reason strings retain all text within 64 Unicode scalars and 256 UTF-8
+        bytes. Oversized or incomplete outcomes produce unavailable, without
+        changing the underlying scheduling operation. The complete summary is
+        at most 4096 serialized UTF-8 bytes.
+      type: object
+      additionalProperties: false
+      required: [id, outcome, recorded_at, reason, workflow_instance_id, workflow_run_id]
+      properties:
+        id: { type: string, pattern: "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" }
+        outcome: { type: string, enum: [started, buffered, skipped, failed] }
+        recorded_at: { type: string, format: date-time, pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$' }
+        reason: { type: [string, "null"], maxLength: 64 }
+        workflow_instance_id: { type: [string, "null"], pattern: "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" }
+        workflow_run_id: { type: [string, "null"], pattern: "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" }
+      oneOf:
+        - properties:
+            outcome: { const: started }
+            reason: { type: "null" }
+            workflow_instance_id: { type: string }
+            workflow_run_id: { type: string }
+        - properties:
+            outcome: { const: buffered }
+            reason: { type: "null" }
+            workflow_instance_id: { type: "null" }
+            workflow_run_id: { type: "null" }
+        - properties:
+            outcome: { enum: [skipped, failed] }
+            reason: { type: string }
+            workflow_instance_id: { type: "null" }
+            workflow_run_id: { type: "null" }
     ScheduleListError:
       type: object
       additionalProperties: true
