@@ -46,6 +46,22 @@ and instructions to retain the same poll request ID. Already-waiting polls
 recheck admission before each new probe. Never treat pressure as an activity
 failure or blindly repeat side effects after an ambiguous acknowledgement.
 
+### Native Server
+
+Native Server 3.9.0 and later honor the same three settings, file format and
+states (Server #951). Every check re-opens the file. Under `draining`, existing
+leases may still complete, fail, heartbeat or renew; this covers workflow,
+activity, query, update-validation, local-activity, cancellation-scope and
+worker-session operations. Starts, signals, updates, queries, registrations,
+uploads, polls and other mutations are refused. A long poll that is already
+waiting answers with the poll refusal at its next probe, within 250 ms of the
+change. The built-in maintenance loop (timers, schedules, repair, timeouts and
+retention) starts no pass under pressure. Native does not yet serve the draining
+completion-upload allowance described below. Under `draining` an upload is
+refused like any other, so a worker holds its result, keeps its lease with
+heartbeats and uploads after pressure clears. Discovery does not advertise
+`upload.completion_context`.
+
 `/api/ready` reports pressure as not ready; `/api/health` retains its database
 connectivity meaning. `php artisan server:storage-status --json` reports the
 current observation and exits nonzero when new work is paused. The queue daemon

@@ -86,6 +86,14 @@ impl TimerScheduler {
         }
     }
     fn start(&self, storage: Arc<Storage>) {
+        // Under storage pressure no maintenance pass starts (Server #951): no
+        // timer, schedule, repair, timeout or retention turn adds writes.
+        let admission = match &*storage {
+            Storage::Sqlite(store) => store.storage_admission.clone(),
+            Storage::Postgres(store) => store.storage_admission.clone(),
+            Storage::MySql(store) => store.storage_admission.clone(),
+        };
+        let retention_admission = admission.clone();
         // With the maintenance loop on, closed runs past their namespace's
         // retention are pruned every minute, whatever workers are connected.
         let mut retention_stop = self.stop.subscribe();
@@ -97,7 +105,7 @@ impl TimerScheduler {
                 tokio::select! {
                     _ = retention_stop.changed() => break,
                     _ = tokio::time::sleep(interval) => {
-                        if !retention_enabled.load(Ordering::Relaxed) {
+                        if !retention_enabled.load(Ordering::Relaxed) || !retention_admission.snapshot().accepts_new_work() {
                             continue;
                         }
                         let result = match &*retention_storage {
@@ -121,6 +129,9 @@ impl TimerScheduler {
                 tokio::select! {
                     _ = stop.changed() => break,
                     _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                        if !admission.snapshot().accepts_new_work() {
+                            continue;
+                        }
                         // One bounded batch per tick. A failed database turn is
                         // retried from durable state, without logging payloads.
                         // Timer and schedule transactions share the cross-node lock with
@@ -232,6 +243,21 @@ impl Runtime {
         self
     }
 
+    /// Replaces the storage admission settings (Server #951) for this
+    /// runtime's request guard, polls and maintenance loop.
+    pub fn with_storage_admission(self, settings: super::storage_admission::Settings) -> Self {
+        self.storage_admission().set(settings);
+        self
+    }
+
+    pub(super) fn storage_admission(&self) -> Arc<super::storage_admission::StorageAdmission> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.storage_admission.clone(),
+            Storage::Postgres(store) => store.storage_admission.clone(),
+            Storage::MySql(store) => store.storage_admission.clone(),
+        }
+    }
+
     pub fn with_auth_options(mut self, anonymous: bool, runtime_credentials: bool) -> Self {
         self.auth = AuthOptions { anonymous, runtime_credentials };
         self
@@ -283,6 +309,7 @@ impl Runtime {
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
+        store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
         Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
     }
 
@@ -305,6 +332,7 @@ impl Runtime {
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
+        store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
         Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
     }
 
@@ -327,6 +355,7 @@ impl Runtime {
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
+        store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
         Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
     }
 

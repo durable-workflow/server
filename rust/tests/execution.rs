@@ -73,6 +73,8 @@ mod selected_run_signals;
 #[path = "execution/worker_incarnations.rs"]
 mod worker_incarnations;
 
+#[path = "execution/storage_admission.rs"]
+mod storage_admission;
 #[path = "execution/worker_contracts.rs"]
 mod worker_contracts;
 
