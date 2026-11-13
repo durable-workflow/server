@@ -213,8 +213,20 @@ PHP;
     $state['approve_unknown'] = $complete('01ZZZZZZZZZZZZZZZZZZZZZZZZ', 'approve', $fence($worker, 1));
 
     // Retries return recorded receipts; an update without a validator is
-    // admitted as before.
-    $state['retained_approval'] = $update($id, 'approve_me', $input(99, 'r1'));
+    // admitted as before. Published PHP returns the receipt for different
+    // arguments under the key; native refuses them (named divergence
+    // request-id-reuse-conflict, Server #934), so against native the probe
+    // proves that refusal and then retries with the original arguments.
+    $retainedArguments = 99;
+    if (in_array('request-id-reuse-conflict', explode(',', (string) getenv('DW_PARITY_NATIVE_DIVERGENCES')), true)) {
+        $refused = $update($id, 'approve_me', $input(99, 'r1'));
+        if ($refused['status'] !== 409 || ($refused['response']['reason'] ?? null) !== 'request_id_conflict'
+            || ($refused['response']['retained'] ?? null) !== true) {
+            throw new RuntimeException('Native did not refuse a request id reused with different update arguments.');
+        }
+        $retainedArguments = 3;
+    }
+    $state['retained_approval'] = $update($id, 'approve_me', $input($retainedArguments, 'r1'));
     $state['retained_rejection'] = $update($id, 'reject_me', $input(2, 'r2'));
     $state['plain'] = $update($id, 'plain', $input(4, 'p1'));
     $state['history'] = $history($id, $main['run_id']);

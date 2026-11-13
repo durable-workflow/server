@@ -172,7 +172,8 @@ export function checkSdkUpdateDirection(fixture, observation, workflowId, target
       // Named divergence request-id-reuse-conflict (native-divergences.json,
       // Server #934): native refuses a request id reused with other
       // arguments, so its retries repeat the original arguments.
-      const original = phase.phase.startsWith('update-') || nativeDivergence(target, 'request-id-reuse-conflict');
+      const original = phase.phase.startsWith('update-');
+      const sameArguments = original || nativeDivergence(target, 'request-id-reuse-conflict');
       const author = direction.phases[number === 0 ? 3 : 7];
       assert.equal(phase.update_sent, true); assert.equal(phase.client_finished, true);
       assert.equal(phase.request_id, workflowId + ':update:' + number);
@@ -185,8 +186,8 @@ export function checkSdkUpdateDirection(fixture, observation, workflowId, target
       const completed = observation.events.filter(item => item.event_type === 'UpdateCompleted')[number];
       assert.equal(wire.response.command_id, accepted.payload.workflow_command_id);
       assert.equal(wire.response.update_id, accepted.payload.update_id);
-      assert.deepEqual(wire.decoded_input, [original ? fixture.update_values[number] : fixture.duplicate_update_value]);
-      assert.deepEqual(wire.typed_decoded_input, {type: 'list', value: [original ? fixture.typed_update_values[number]
+      assert.deepEqual(wire.decoded_input, [sameArguments ? fixture.update_values[number] : fixture.duplicate_update_value]);
+      assert.deepEqual(wire.typed_decoded_input, {type: 'list', value: [sameArguments ? fixture.typed_update_values[number]
         : {type: 'map', value: {message: {type: 'string', value: 'duplicate must not apply'}}}]});
       if (failed) {
         assert.equal(wire.response.outcome, 'update_failed');

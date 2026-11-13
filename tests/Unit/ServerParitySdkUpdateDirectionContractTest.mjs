@@ -16,7 +16,7 @@ const typedResult = (fixture, index) => ({type: 'map', value: {
   value: fixture.typed_update_values[index], applied: {type: 'int64', value: String(index + 1 - (fixture.sdk_update_failure ? 1 : 0))},
 }});
 const transport = {client_cancelled: false, request_body_complete: true, upstream_request_started: true, transport_error: null};
-function model(fixture, mode = 'http') {
+function model(fixture, mode = 'http', target = 'php') {
   const fails = Boolean(fixture.sdk_update_failure);
   const handlerFailure = {php: {exception_type: 'RuntimeException', exception_class: 'RuntimeException', message: 'parity update handler failure λ'},
     python: {exception_type: 'ValueError', exception_class: 'builtins.ValueError', message: 'update handler failed: parity update handler failure λ'},
@@ -108,6 +108,8 @@ function model(fixture, mode = 'http') {
     const receipts = [];
     for (const index of indexes) {
       const phase = phases[index], original = phase.phase.startsWith('update-');
+      // Native retries repeat the original arguments (request-id-reuse-conflict).
+      const sameArguments = original || target === 'rust';
       const failed = fails && number === 0;
       const value = {value: fixture.update_values[number], applied: number + 1 - (fails ? 1 : 0)};
       const response = {workflow_id: workflowId, run_id: runId, update_name: 'set_payload', update_status: 'completed',
@@ -115,7 +117,7 @@ function model(fixture, mode = 'http') {
         result: null, result_envelope: envelope('update-result-' + number)};
       if (failed) Object.assign(response, {update_status: 'failed', outcome: 'update_failed', reason: null,
         failure_id: 'original-failure', failure_message: handlerFailure.message, result_envelope: null});
-      const request = {input: envelope(original ? 'original-value-' + number : 'duplicate-value'),
+      const request = {input: envelope(sameArguments ? 'original-value-' + number : 'duplicate-value'),
         request_id: workflowId + ':update:' + number, wait_for: 'completed'};
       Object.assign(phase, {client_finished: true, update_sent: true, request_id: request.request_id,
         client_result: spec.client === 'python' ? {...response, result: value} : value,
@@ -129,8 +131,8 @@ function model(fixture, mode = 'http') {
       }
       const wire = {...transport, request_observation_id: 1, method: 'POST',
         path: '/api/workflows/' + workflowId + '/update/set_payload', status: failed ? 422 : 200, request, response,
-        decoded_input: [original ? fixture.update_values[number] : fixture.duplicate_update_value],
-        typed_decoded_input: {type: 'list', value: [original ? fixture.typed_update_values[number]
+        decoded_input: [sameArguments ? fixture.update_values[number] : fixture.duplicate_update_value],
+        typed_decoded_input: {type: 'list', value: [sameArguments ? fixture.typed_update_values[number]
           : {type: 'map', value: {message: {type: 'string', value: 'duplicate must not apply'}}}]},
         decoded_result: value, typed_decoded_result: typedResult(fixture, number)};
       if (failed) { delete wire.decoded_result; delete wire.typed_decoded_result; }
@@ -183,6 +185,23 @@ for (const author of languages) for (const client of languages) {
     checkSdkUpdateDirectionPackages(fixture, observation, artifacts);
     assert.deepEqual(checkSdkUpdateDirection(fixture, observation, 'update-model'),
       {two_ordered_updates: true, pending_and_completed_deduplication: true, exact_typed_completion: true});
+  });
+}
+for (const fixture of [fixtureFor('php', 'rust'), failureFixtureFor('rust', 'python')]) {
+  const id = fixture.id;
+  test(id + ' native retries repeat the original arguments under request-id-reuse-conflict', () => {
+    const observation = model(fixture, 'http', 'rust');
+    assert.equal(checkSdkUpdateDirection(fixture, observation, 'update-model', 'rust').pending_and_completed_deduplication, true);
+    // Pending duplicates keep their own submission snapshot on native too.
+    const pending = observation.sdk_update_direction.phases.find(phase => phase.phase === 'duplicate-pending-1');
+    assert.equal(pending.acceptance_snapshot, undefined);
+    assert.ok(pending.submission_snapshot);
+  });
+  test(id + ' a native recording that retries with other arguments is refused', () => {
+    assert.throws(() => checkSdkUpdateDirection(fixture, model(fixture, 'http'), 'update-model', 'rust'));
+  });
+  test(id + ' a PHP recording that retries with the original arguments is refused', () => {
+    assert.throws(() => checkSdkUpdateDirection(fixture, model(fixture, 'http', 'rust'), 'update-model', 'php'));
   });
 }
 const fixture = fixtureFor('python', 'python');
