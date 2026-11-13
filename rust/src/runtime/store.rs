@@ -1329,19 +1329,27 @@ where
         key: &str,
     ) -> Result<Option<(DB::Row, Option<String>)>> {
         let token = super::command_intent::key_token(command_type, key);
-        let Some(row) = Self::query("SELECT * FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND (request_id=$3 OR request_id=$4) ORDER BY CASE WHEN request_id=$5 THEN 0 ELSE 1 END LIMIT 1")
-            .bind(workflow_id).bind(command_type).bind(&token).bind(key).bind(&token)
-            .fetch_optional(&mut **tx).await?
-        else {
-            return Ok(None);
-        };
-        // A case-insensitive collation can match another raw key.
-        if DB::optional_string(&row, "request_id")?.is_none_or(|stored| stored != token && stored != key) {
-            return Ok(None);
+        // The unique request lookup index bounds this to at most two rows.
+        // A raw legacy key can itself look like another key's token. Never
+        // choose one representation, or another key under a DB collation.
+        let mut rows = Self::query("SELECT * FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND (request_id=$3 OR request_id=$4)")
+            .bind(workflow_id).bind(command_type).bind(&token).bind(key)
+            .fetch_all(&mut **tx).await?;
+        if rows.len() > 1 {
+            return Err(super::command_intent::ambiguous_key(workflow_id));
         }
+        let Some(row) = rows.pop() else { return Ok(None) };
+        let stored = DB::optional_string(&row, "request_id")?;
         let digest = Self::query("SELECT intent_digest FROM dw_command_intents WHERE command_id=$1")
             .bind(DB::string(&row, "id")?).fetch_optional(&mut **tx).await?
             .map(|intent| DB::string(&intent, "intent_digest")).transpose()?;
+        // A digest identifies a token-era row. Without one only the exact
+        // raw key can identify a legacy receipt; a token-shaped raw key is
+        // otherwise indistinguishable from an incomplete modern receipt.
+        let expected = if digest.is_some() { token.as_str() } else { key };
+        if stored.as_deref() != Some(expected) {
+            return Err(super::command_intent::ambiguous_key(workflow_id));
+        }
         Ok(Some((row, digest)))
     }
 
@@ -1372,7 +1380,14 @@ where
         let signal = Self::query("SELECT signal_name FROM workflow_signal_records WHERE workflow_command_id=$1")
             .bind(&command_id).fetch_optional(&mut **tx).await?;
         let retained_name = signal.as_ref().map(|row| DB::string(row, "signal_name")).transpose()?;
+        let run = DB::string(command, "workflow_run_id")?;
         let intent = super::command_intent::compare(retained, digest);
+        if intent == super::command_intent::Intent::Unverified
+            && run_id.is_some_and(|requested| requested != run)
+        {
+            return Err(super::command_intent::conflict(workflow_id, "signal", &command_id,
+                DB::optional_string(command, "outcome")?.as_deref(), vec!["target"]));
+        }
         if intent == super::command_intent::Intent::Different
             || intent == super::command_intent::Intent::Unverified && retained_name.as_deref() != Some(name)
         {
@@ -1386,7 +1401,6 @@ where
             return Err(super::command_intent::conflict(workflow_id, "signal", &command_id,
                 DB::optional_string(command, "outcome")?.as_deref(), parts));
         }
-        let run = DB::string(command, "workflow_run_id")?;
         Ok(json!({"workflow_id":workflow_id,"run_id":run,"resolved_run_id":run,"requested_run_id":null,"signal_name":retained_name.unwrap_or_else(|| name.to_owned()),
             "command_id":command_id,"command_sequence":DB::optional_number(command, "command_sequence")?,"workflow_type":DB::optional_string(command, "workflow_type")?,
             "command_status":DB::string(command, "status")?,"command_source":"control_plane","target_scope":"instance",

@@ -15,7 +15,7 @@ const observation = (implementation = null) => {
   const policies = Object.fromEntries(Object.entries(definition.policies).map(([key, policy]) =>
     [key, {status: 200, response: {name: names[key], external_payload_storage: structuredClone(policy)}}]));
   const discovery = Object.fromEntries(Object.keys(definition.namespaces).map(key => [key, {
-    status: 200, implementation, limits: structuredClone(definition.limits),
+    status: 200, implementation, limits: {...structuredClone(definition.limits), ...(implementation === 'rust' ? {max_workflow_task_completion_bytes: 33554432} : {})},
     default_namespace: 'default', server_id_is_text: true, transport_capability: structuredClone(transport),
     namespace: {name: names[key], ...definition.rows[key],
       external_payload_storage: {...structuredClone(definition.storage_envelope), ...definition.storage[key], transport: structuredClone(transport)}},
@@ -71,6 +71,9 @@ for (const [label, implementation, mutate] of [
   ['a missing namespace reported as existing', 'rust', state => { read(state, 'missing').namespace.exists = true; }],
   ['another namespace read', 'rust', state => { read(state, 'available').namespace.name = 'default'; }],
   ['a namespace transport unlike the capability', 'rust', state => { read(state, 'available').namespace.external_payload_storage.transport.limits.max_payload_bytes = 1; }],
+  ['native missing its completion budget', 'rust', state => { delete read(state, 'available').limits.max_workflow_task_completion_bytes; }],
+  ['native advertising the per-value cap as its completion cap', 'rust', state => { read(state, 'available').limits.max_workflow_task_completion_bytes = 2097152; }],
+  ['PHP acquiring an unreviewed completion budget', null, state => { read(state, 'available').limits.max_workflow_task_completion_bytes = 33554432; }],
   ['another request limit', null, state => { read(state, 'missing').limits.max_payload_bytes = 1048576; }],
   ['an exposed provider', 'rust', state => { read(state, 'available').namespace.external_payload_storage.provider_details_exposed = true; }],
   ['a lost policy', 'rust', state => { state.policies.disabled.status = 422; }],

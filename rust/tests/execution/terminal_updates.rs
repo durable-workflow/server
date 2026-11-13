@@ -498,6 +498,9 @@ async fn terminal_updates_preserve_completed_receipts_and_another_active_run() {
         request(&app, "POST", first_path, input("resolved")).await,
         original_receipt
     );
+    let mut retained_other = other_update.1.clone();
+    retained_other["retained"] = json!(true);
+    retained_other["intent_verified"] = json!(true);
     assert_eq!(
         request(
             &app,
@@ -507,7 +510,7 @@ async fn terminal_updates_preserve_completed_receipts_and_another_active_run() {
         )
         .await
         .1,
-        other_update.1
+        retained_other
     );
     assert_eq!(finish_task(&app,&other_task,json!([{"type":"complete_update","update_id":other_update.1["update_id"],"result":envelope(Payload::Long(17))}])).await.0,StatusCode::OK);
     let history = run_history(&app, &first["workflow_id"], &first["run_id"]).await;

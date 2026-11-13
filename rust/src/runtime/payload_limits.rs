@@ -4,13 +4,15 @@
 //! refused with PHP's JSON error, in the worker or control-plane envelope.
 //! The external payload upload keeps its own transport rules.
 use axum::{
-    body::{Body, to_bytes},
+    body::{Body, BodyDataStream},
     extract::Request,
     http::{Method, StatusCode, header},
     middleware::Next,
     response::Response,
 };
 use serde_json::{Value, json};
+use futures_util::{StreamExt, stream};
+use std::time::Duration;
 
 /// How many payloads' worth of bytes one completion that carries workflow
 /// commands may send (Server #1136, .github#228). Each command's arguments
@@ -18,6 +20,10 @@ use serde_json::{Value, json};
 /// request as a whole, so a fan-out whose commands are each within the limits
 /// is not refused as one oversized body.
 const COMPLETION_PAYLOADS: usize = 16;
+// Refusals must let ordinary clients finish their current upload before the
+// HTTP/1 connection closes. Bound both discarded traffic and slow senders.
+const REFUSAL_DRAIN_BYTES: usize = 64 * 1024 * 1024;
+const REFUSAL_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A request that completes a workflow task with commands.
 fn carries_commands(method: &Method, path: &str) -> bool {
@@ -37,13 +43,39 @@ pub(super) fn max_payload_bytes() -> usize {
         .unwrap_or(2 * 1024 * 1024)
 }
 
+pub(super) fn max_completion_bytes() -> usize {
+    max_payload_bytes().saturating_mul(COMPLETION_PAYLOADS)
+}
+
+fn oversized_response(response: Response, mut incoming: BodyDataStream) -> Response {
+    let (mut parts, body) = response.into_parts();
+    parts.headers.insert(header::CONNECTION, axum::http::HeaderValue::from_static("close"));
+    let response_stream = stream::once(async move {
+        let drain = async {
+            let mut consumed = 0_usize;
+            while let Some(Ok(chunk)) = incoming.next().await {
+                consumed = consumed.saturating_add(chunk.len());
+                if consumed >= REFUSAL_DRAIN_BYTES {
+                    break;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(REFUSAL_DRAIN_TIMEOUT, drain).await;
+        // Keep the request body alive until the discard finishes. Dropping
+        // it with bytes in flight makes Hyper close its read side and can
+        // turn the typed 413 into a client write/read transport failure.
+        body.into_data_stream()
+    }).flatten();
+    Response::from_parts(parts, Body::from_stream(response_stream))
+}
+
 pub(super) async fn enforce(request: Request, next: Next) -> Response {
     let path = request.uri().path().to_owned();
     if request.method() == Method::POST && path == "/api/external-payloads/v1" {
         return next.run(request).await;
     }
     let completion = carries_commands(request.method(), &path);
-    let max = if completion { max_payload_bytes().saturating_mul(COMPLETION_PAYLOADS) } else { max_payload_bytes() };
+    let max = if completion { max_completion_bytes() } else { max_payload_bytes() };
     let worker = path == "/api/worker" || path.starts_with("/api/worker/");
     let declared = request
         .headers()
@@ -51,6 +83,7 @@ pub(super) async fn enforce(request: Request, next: Next) -> Response {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u64>().ok());
     let (parts, body) = request.into_parts();
+    let mut incoming = body.into_data_stream();
     let refuse = |status: StatusCode, body: Value| {
         let parts = parts.clone();
         async move { super::http::admission_error(Request::from_parts(parts, Body::empty()), worker, status, body).await }
@@ -67,13 +100,18 @@ pub(super) async fn enforce(request: Request, next: Next) -> Response {
         body
     };
     if declared.is_some_and(|declared| declared > max as u64) {
-        return refuse(StatusCode::PAYLOAD_TOO_LARGE, too_large()).await;
+        return oversized_response(refuse(StatusCode::PAYLOAD_TOO_LARGE, too_large()).await, incoming);
     }
-    let Ok(bytes) = to_bytes(body, max.saturating_add(1)).await else {
-        return refuse(StatusCode::PAYLOAD_TOO_LARGE, too_large()).await;
-    };
-    if bytes.len() > max {
-        return refuse(StatusCode::PAYLOAD_TOO_LARGE, too_large()).await;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = incoming.next().await {
+        let Ok(chunk) = chunk else {
+            return oversized_response(refuse(StatusCode::PAYLOAD_TOO_LARGE, too_large()).await, incoming);
+        };
+        if chunk.len() > max.saturating_sub(bytes.len()) {
+            drop(bytes);
+            return oversized_response(refuse(StatusCode::PAYLOAD_TOO_LARGE, too_large()).await, incoming);
+        }
+        bytes.extend_from_slice(&chunk);
     }
     let has_body = !bytes.is_empty() || declared.is_some_and(|declared| declared > 0);
     if matches!(parts.method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE) && has_body {

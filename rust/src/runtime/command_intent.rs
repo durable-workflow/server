@@ -109,6 +109,18 @@ pub(super) fn compare(retained: Option<&str>, candidate: &str) -> Intent {
     }
 }
 
+/// A raw legacy identity and a hashed identity cannot be selected safely.
+/// Refuse without exposing either key or inventing an intent comparison.
+pub(super) fn ambiguous_key(workflow_id: &str) -> super::RuntimeError {
+    super::RuntimeError::Protocol {
+        status: axum::http::StatusCode::CONFLICT,
+        response: serde_json::json!({"workflow_id":workflow_id,"reason":"request_id_ambiguous",
+            "outcome":"rejected_request_id_ambiguous","command_status":"rejected",
+            "rejection_reason":"request_id_ambiguous","retained":true,"intent_verified":false,"retryable":false,
+            "message":"The request_id matches an ambiguous retained command identity. Inspect the original command before using a new request_id."}),
+    }
+}
+
 /// The refusal for a key reused with a different command intent. Nothing is
 /// written; the key keeps its original receipt.
 pub(super) fn conflict(workflow_id: &str, command_type: &str, retained_command_id: &str, retained_outcome: Option<&str>,

@@ -179,3 +179,188 @@ async fn retention_prunes_request_key_digests_with_their_commands() {
     const KEPT: &str = "SELECT COUNT(*) FROM dw_command_intents i JOIN workflow_commands c ON c.id=i.command_id WHERE c.workflow_instance_id='kept-keys'";
     assert_eq!(task_retry::rows(&database, KEPT).await, 1, "the other run keeps its digest");
 }
+
+/// The pre-3.9 writer stored a raw request_id and no intent row. Preserve
+/// that exact shape without rewriting the original command or its history.
+async fn legacy_key(database: &TestDatabase, command: &Value, key: &str) {
+    let id = command["command_id"].as_str().unwrap();
+    assert!(id.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+    assert!(key.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-:_".contains(&byte)));
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "DELETE FROM dw_command_intents WHERE command_id='{id}'"))).await;
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "UPDATE workflow_commands SET request_id='{key}' WHERE id='{id}'"))).await;
+}
+
+#[tokio::test]
+async fn legacy_updates_read_back_unverified_intent_after_restart_close_and_continuation() {
+    for close in [None, Some("complete_workflow"), Some("continue_as_new")] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        update_worker(&app, "legacy-worker").await;
+        let started = start(&app, "legacy-update").await;
+        open_update_wait(&app, "legacy-worker").await;
+        let path = "/api/workflows/legacy-update/update/set";
+        let original = request(&app, "POST", path, input(1, Some("legacy-update-key"))).await;
+        assert_eq!(original.0, StatusCode::ACCEPTED, "{}", original.1);
+        legacy_key(&database, &original.1, "legacy-update-key").await;
+        if let Some(close) = close {
+            let task = poll(&app, "legacy-worker", "workflow").await;
+            let done = finish_task(&app, &task, json!([
+                {"type":"complete_update","update_id":original.1["update_id"],"result":envelope(Payload::Null)},
+                {"type":close,"result":envelope(Payload::Null)}])).await;
+            assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+        }
+        runtime.close().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        let before = table_counts(&database).await;
+        let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        // Unknown old arguments cannot establish equality. Read back the
+        // original with that fact explicit, even for concurrent retries.
+        let replies = futures_util::future::join_all((0..4).map(|_| {
+            request(&app, "POST", path, input(999, Some("legacy-update-key")))
+        })).await;
+        for (status, reply) in replies {
+            assert!(status.is_success(), "{reply}");
+            for field in ["command_id", "update_id", "run_id", "accepted_at"] {
+                assert_eq!(reply[field], original.1[field], "{field}: {reply}");
+            }
+            assert_eq!((reply["retained"].clone(), reply["intent_verified"].clone()),
+                (json!(true), json!(false)), "{reply}");
+            if close.is_some() {
+                assert_eq!(reply["update_status"], "completed", "{reply}");
+                assert_eq!(reply["result"], Value::Null, "completed null remains an outcome");
+            }
+        }
+        let original_target = format!("/api/workflows/legacy-update/runs/{}/update/set", started["run_id"].as_str().unwrap());
+        let selected = request(&app, "POST", &original_target, input(999, Some("legacy-update-key"))).await;
+        assert!(selected.0.is_success(), "{}", selected.1);
+        assert_eq!(selected.1["update_id"], original.1["update_id"]);
+        assert_eq!(selected.1["intent_verified"], false);
+        let changed_target = "/api/workflows/legacy-update/runs/00000000000000000000000000/update/set";
+        assert_conflict(&request(&app, "POST", changed_target, input(1, Some("legacy-update-key"))).await,
+            &original.1, "target");
+        let changed_name = path.replace("/set", "/other");
+        assert_conflict(&request(&app, "POST", &changed_name, input(1, Some("legacy-update-key"))).await,
+            &original.1, "name");
+        assert_eq!(table_counts(&database).await, before, "all retries and refusals write nothing");
+        assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, history);
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+#[tokio::test]
+async fn legacy_signals_do_not_honor_a_changed_target_or_fabricate_intent_equality() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    update_worker(&app, "legacy-worker").await;
+    let started = start(&app, "legacy-signal").await;
+    let original = signal(&app, "legacy-signal", "finish", input(1, Some("legacy-signal-key"))).await;
+    assert_eq!(original.0, StatusCode::ACCEPTED, "{}", original.1);
+    legacy_key(&database, &original.1, "legacy-signal-key").await;
+    let task = poll(&app, "legacy-worker", "workflow").await;
+    let done = finish_task(&app, &task, json!([{"type":"continue_as_new"}])).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    let before = table_counts(&database).await;
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let retry = signal(&app, "legacy-signal", "finish", input(999, Some("legacy-signal-key"))).await;
+    assert_eq!(retry.0, StatusCode::ACCEPTED, "{}", retry.1);
+    assert_eq!(retry.1["command_id"], original.1["command_id"]);
+    assert_eq!(retry.1["run_id"], original.1["run_id"]);
+    assert_eq!((retry.1["retained"].clone(), retry.1["intent_verified"].clone()), (json!(true), json!(false)));
+    let target = "/api/workflows/legacy-signal/runs/00000000000000000000000000/signal/finish";
+    assert_conflict(&request(&app, "POST", target, input(1, Some("legacy-signal-key"))).await, &original.1, "target");
+    assert_eq!(table_counts(&database).await, before);
+    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, history);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn raw_and_token_identity_collisions_are_refused_without_selecting_a_receipt() {
+    use sha2::{Digest, Sha256};
+    let hash: String = Sha256::digest(b"token-key").iter().map(|byte| format!("{byte:02x}")).collect();
+    for (kind, action) in [("signal", "signal/finish"), ("update", "update/set")] {
+        let token = format!("{kind}-v1:{hash}");
+        for shape in ["two-rows", "legacy-token", "modern-raw"] {
+            let database = TestDatabase::new().await;
+            let runtime = database.open().await.unwrap();
+            let app = router(runtime.clone());
+            update_worker(&app, "collision-worker").await;
+            let started = start(&app, "key-collision").await;
+            if kind == "update" {
+                open_update_wait(&app, "collision-worker").await;
+            }
+            let path = format!("/api/workflows/key-collision/{action}");
+            let original = request(&app, "POST", &path, input(1, Some("token-key"))).await;
+            assert_eq!(original.0, StatusCode::ACCEPTED, "{}", original.1);
+            let key = if shape == "modern-raw" {
+                token.as_str()
+            } else if shape == "legacy-token" {
+                // A legacy caller deliberately used the bytes of another key's
+                // modern token; those bytes are not proof of the modern key.
+                legacy_key(&database, &original.1, &token).await;
+                "token-key"
+            } else {
+                let legacy = request(&app, "POST", &path, input(2, Some("second-key"))).await;
+                assert_eq!(legacy.0, StatusCode::ACCEPTED, "{}", legacy.1);
+                legacy_key(&database, &legacy.1, "token-key").await;
+                "token-key"
+            };
+            let before = table_counts(&database).await;
+            let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+            let refused = request(&app, "POST", &path, input(1, Some(key))).await;
+            assert_eq!(refused.0, StatusCode::CONFLICT, "{shape}: {}", refused.1);
+            assert_eq!(refused.1["reason"], "request_id_ambiguous", "{shape}: {}", refused.1);
+            assert_eq!(refused.1["intent_verified"], false);
+            assert_eq!(refused.1["retryable"], false, "{shape}: {}", refused.1);
+            assert!(refused.1["command_id"].is_null(), "no candidate is selected: {}", refused.1);
+            assert_eq!(table_counts(&database).await, before);
+            assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, history);
+            runtime.close().await;
+            database.remove().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn legacy_key_case_collisions_never_return_another_keys_receipt() {
+    for action in ["signal/finish", "update/set"] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        update_worker(&app, "case-worker").await;
+        let started = start(&app, "case-keys").await;
+        if action == "update/set" {
+            open_update_wait(&app, "case-worker").await;
+        }
+        let path = format!("/api/workflows/case-keys/{action}");
+        let original = request(&app, "POST", &path, input(1, Some("CaseSensitive"))).await;
+        assert_eq!(original.0, StatusCode::ACCEPTED, "{}", original.1);
+        legacy_key(&database, &original.1, "CaseSensitive").await;
+        let before = table_counts(&database).await;
+        let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        let exact = request(&app, "POST", &path, input(99, Some("CaseSensitive"))).await;
+        assert_eq!(exact.1["command_id"], original.1["command_id"]);
+        assert_eq!(exact.1["intent_verified"], false);
+        let other = request(&app, "POST", &path, input(1, Some("casesensitive"))).await;
+        if matches!(&database, TestDatabase::MySql { .. }) {
+            // The default MySQL/MariaDB collation sees a raw-key match.
+            // Refuse safely instead of reporting equality for other bytes.
+            assert_eq!(other.0, StatusCode::CONFLICT, "{}", other.1);
+            assert_eq!(other.1["reason"], "request_id_ambiguous");
+            assert_eq!(other.1["retryable"], false);
+            assert_eq!(table_counts(&database).await, before);
+            assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, history);
+        } else {
+            assert_eq!(other.0, StatusCode::ACCEPTED, "{}", other.1);
+            assert_ne!(other.1["command_id"], original.1["command_id"]);
+        }
+        runtime.close().await;
+        database.remove().await;
+    }
+}
