@@ -688,12 +688,30 @@ signal, query, update, cancel, terminate, repair, and archive; they only forward
 when `{runId}` is the current run and reject historical-run commands with `409`
 and `reason: "historical_run_command_rejected"`.
 
-An update `request_id` identifies a retained update command within the workflow
-instance, rather than a new operation selected by the URL's update name. Retrying
-that key returns the original receipt, including its `update_name`, `run_id`, and
-`update_id`, without creating another update. This can return a receipt from an
-earlier run after continue-as-new. Historical-run command routes still refuse
-before receipt lookup.
+A signal or update `request_id` is a durable command key on the workflow
+instance (native Server 3.9.0 and later, advertised as
+`capabilities.command_request_keys`). The first accepted signal or update under
+a key is the only command it admits:
+
+- A retry with the same command intent returns the original receipt, including
+  its `command_id`, `run_id` and, for an update, `update_id`. It writes nothing.
+  The intent is Core's CommandIntent v1 digest over the command type, name,
+  typed arguments and explicit run target, so `1`, `1.0` and `"1"` differ and
+  map key order does not matter. The receipt is found before any run gate, so a
+  retry after the run closed or continued as new still gets it. A signal
+  receipt carries `retained: true` and `intent_verified: true`.
+- The same key with a different name, arguments or run target is refused with
+  `409`, `reason: "request_id_conflict"` and `outcome:
+  "rejected_request_id_conflict"`. The response names the part that differs in
+  `conflict` and the original command in `retained_command_id`. Nothing is
+  written, and the key keeps its original receipt.
+- A refused signal (for example `run_not_active` or `unknown_signal`) does not
+  reserve its key; retrying it is evaluated again.
+- An update receipt written before 3.9.0 has no recorded intent. It is read back
+  only when the update name matches, and its arguments are not compared.
+
+Before 3.9.0, a repeated signal `request_id` recorded a second signal, and an
+update retried with changed arguments returned the original receipt.
 
 For this Server API, the body `request_id` is the caller key. `X-Request-Id`
 and `X-Correlation-Id` are audit correlation only. Omitting the body key admits
@@ -707,13 +725,11 @@ Drain and restart all direct database writers together when upgrading to the
 new token format. After new updates are admitted, an older writer is not a safe
 rollback target. Remote SDK clients need no change for this key correction.
 
-Retained receipts do not verify equality with newly submitted arguments. Keep
-one key for retries of the same logical operation and use a new key for a new
-operation; inspect the returned identity before treating it as the requested
-update. `wait_for: "accepted"` confirms admission, while `wait_for: "completed"`
-requests the retained completion result. This PHP admission correction is
-tracked in [#493](https://github.com/durable-workflow/server/issues/493); older
-affected releases can return HTTP 500 when a key is reused for another name.
+Keep one key for retries of the same logical operation and use a new key for a
+new operation. `wait_for: "accepted"` confirms admission, while `wait_for:
+"completed"` requests the retained completion result. The PHP Server 2.x line
+does not compare arguments for a reused update key and does not deduplicate
+signals.
 
 A completion wait holds the request open, so the server bounds it. An update's
 `wait_timeout_seconds` must be an integer from 1 to 60, on the update route and

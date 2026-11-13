@@ -410,6 +410,15 @@ keeps its attempt counts and activity deadlines keep running
 upgrade creates one empty table. Stop the native nodes, back up the database
 and run `schema-upgrade` before starting this binary on an earlier schema;
 rolling back means restoring the backup.
+Keyed command intents (Server #934) add the native-only table
+`dw_command_intents`: SQLite schema 13, PostgreSQL and MariaDB 14, MySQL 15. A
+signal or update `request_id` becomes a durable command key on its workflow
+instance: a retry with the same intent returns the original receipt, and a
+different intent is refused with `409 request_id_conflict`. The table records
+each keyed command's CommandIntent v1 digest. The upgrade creates one empty
+table; commands admitted earlier have no digest. Stop the native nodes, back up
+the database and run `schema-upgrade` before starting this binary on an
+earlier schema; rolling back means restoring the backup.
 
 Implemented paths cover health/schema readiness, limited capability discovery,
 workflow start/describe/paginated history, worker registration/heartbeat/removal,
