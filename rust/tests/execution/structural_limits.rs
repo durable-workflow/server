@@ -143,6 +143,7 @@ async fn updates_over_a_structural_limit_are_rejected_durably_like_php() {
     let (status, retried) = request(&app, "POST", path, json!({"input":oversized(),"request_id":"big"})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{retried}");
     let mut retained = big.clone();
+    retained["request_id"] = json!("big");
     retained["retained"] = json!(true);
     retained["intent_verified"] = json!(false);
     assert_eq!(retried, retained, "the original raw-key rejection is explicitly unverified");

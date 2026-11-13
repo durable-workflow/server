@@ -105,15 +105,16 @@ async fn retained_update_retries_never_claim_a_distinct_external_input_reference
         assert_ne!(retry_input["reference_id"], original_input["reference_id"]);
         assert_eq!(unclaimed(&database).await, 1);
         let before = admission_snapshot(&database).await;
-        let (status, mut repeated) = json_request(&app, "POST", path, "operator-token",
+        let (status, repeated) = json_request(&app, "POST", path, "operator-token",
             json!({"request_id":"external-retry-key","wait_for":"accepted",
                 "input":{"codec":"avro","external_payload":retry_input}})).await;
         assert_eq!(status, StatusCode::ACCEPTED, "{repeated}");
         assert_eq!(repeated["retained"], true);
         assert_eq!(repeated["intent_verified"], !legacy);
-        repeated.as_object_mut().unwrap().remove("retained");
-        repeated.as_object_mut().unwrap().remove("intent_verified");
-        assert_eq!(repeated, original, "the original receipt is unchanged");
+        let mut expected = original.clone();
+        expected["retained"] = json!(true);
+        expected["intent_verified"] = json!(!legacy);
+        assert_eq!(repeated, expected, "every original receipt field is preserved");
         assert_eq!(unclaimed(&database).await, 1, "the retry input is still owned by its uploader");
         assert_eq!(admission_snapshot(&database).await, before, "a retained retry changes no stored row");
         runtime.close().await;

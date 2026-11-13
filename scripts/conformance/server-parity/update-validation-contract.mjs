@@ -58,13 +58,21 @@ export function checkUpdateValidation(fixture, observation, workflowId, target) 
   }
   const actual = normalizeUpdateValidation(state, workflowId);
   const retainedIntent = nativeDivergence(target, 'retained-command-intent-readback');
+  const receiptMetadata = nativeDivergence(target, 'command-key-receipt-metadata');
+  const keyedReceipts = {approved_update: 'r1', plain: 'p1', completed_wait: 'r4',
+    retained_approval: 'r1', retained_rejection: 'r2'};
   assert.deepStrictEqual(Object.keys(actual), Object.keys(expected), 'update validation steps');
   for (const step of Object.keys(expected)) {
     // Native's duplicate approval and raw-key rejection explicitly report
     // whether an intent proof exists. Every original receipt field stays exact.
-    const wanted = retainedIntent && ['retained_approval', 'retained_rejection'].includes(step)
+    let wanted = retainedIntent && ['retained_approval', 'retained_rejection'].includes(step)
       ? {...expected[step], response: {...expected[step].response, retained: true, intent_verified: step === 'retained_approval'}}
       : expected[step];
+    if (receiptMetadata && Object.hasOwn(keyedReceipts, step)) {
+      const retained = step.startsWith('retained_');
+      wanted = {...wanted, response: {...wanted.response, request_id: keyedReceipts[step],
+        retained, intent_verified: step !== 'retained_rejection'}};
+    }
     assert.deepStrictEqual(actual[step], wanted, `update validation ${step}`);
   }
   return {scope: 'update_validation', steps: Object.keys(expected).length};

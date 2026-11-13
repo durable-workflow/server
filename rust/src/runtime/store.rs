@@ -1048,7 +1048,7 @@ where
             ));
         }
         if body.get("request_id").is_some_and(|value| {
-            !value.is_null() && value.as_str().is_none_or(|text| text.len() > 255)
+            !value.is_null() && value.as_str().is_none_or(|text| text.chars().count() > 255)
         }) {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -1079,7 +1079,9 @@ where
         if let (Some(key), Some(digest)) = (key, digest.as_deref())
             && let Some((command, retained)) = Self::retained_command(&mut tx, workflow_id, "signal", key).await?
         {
-            return Self::retained_signal(&mut tx, workflow_id, name, run_id, digest, &command, retained.as_deref()).await;
+            let mut response = Self::retained_signal(&mut tx, workflow_id, name, run_id, digest, &command, retained.as_deref()).await?;
+            response["request_id"] = json!(key);
+            return Ok(response);
         }
         if run_id.is_some_and(|selected| selected != current_run) {
             return Err(refuse(
@@ -1251,9 +1253,13 @@ where
         }
         tx.commit().await?;
         self.wake.notify_waiters();
-        Ok(
-            json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,"requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,"workflow_type":DB::string(&run, "workflow_type")?,"command_status":"accepted","command_source":"control_plane","target_scope":"instance","outcome":"signal_received","reason":null,"rejection_reason":null,"validation_errors":[]}),
-        )
+        let mut response = json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,"requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,"workflow_type":DB::string(&run, "workflow_type")?,"command_status":"accepted","command_source":"control_plane","target_scope":"instance","outcome":"signal_received","reason":null,"rejection_reason":null,"validation_errors":[]});
+        if let Some(key) = key {
+            response["request_id"] = json!(key);
+            response["retained"] = json!(false);
+            response["intent_verified"] = json!(true);
+        }
+        Ok(response)
     }
 
     /// A refused signal's durable admission record: its rejected command,
