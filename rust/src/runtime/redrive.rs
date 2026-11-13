@@ -25,6 +25,12 @@ fn iso(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
 }
 
+/// Replay clocks retain the event's fractional boundary. Deadline formatting
+/// remains separate; rounding a clock changes workflow decisions on replay.
+fn replay_time(at: DateTime<Utc>) -> String {
+    at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, false)
+}
+
 /// One step the new run reuses: an `ActivityCompleted`, or a marker step
 /// (`SideEffectRecorded`, `VersionMarkerRecorded`, `MemoUpserted`,
 /// `SearchAttributesUpserted`), or a fired plain timer without its source
@@ -57,6 +63,7 @@ struct Decision {
     resume: i64,
     reused: Vec<Reused>,
     started: Value,
+    started_recorded_at: DateTime<Utc>,
 }
 
 /// `FailedRunRedrivePlan::forRun` over the source run's history.
@@ -285,7 +292,10 @@ where
         if execution_deadline.is_some_and(|deadline| at >= deadline) {
             return Ok(Err("execution_deadline_elapsed"));
         }
-        let mut started = events.iter().find(|(kind, _, _)| kind == "WorkflowStarted").map(|(_, payload, _)| payload.clone()).unwrap_or(Value::Null);
+        let Some((mut started, started_recorded_at)) = events.iter().find(|(kind, _, _)| kind == "WorkflowStarted")
+            .map(|(_, payload, at)| (payload.clone(), *at)) else {
+            return Ok(Err("missing_terminal_history"));
+        };
         if let Some(fields) = started.as_object_mut() {
             fields.remove("command");
             fields.remove("task");
@@ -326,7 +336,7 @@ where
         if upserts {
             return Ok(Err("service_redrive_history_not_qualified"));
         }
-        Ok(Ok(Decision { resume, reused, started }))
+        Ok(Ok(Decision { resume, reused, started, started_recorded_at }))
     }
 
     /// `FailedRunRedriveEligibility::blockedReason` for describe: the reason
@@ -369,7 +379,7 @@ where
         }
         let conflict = |reason: &str| Ok(rejected(workflow_id, source_id, reason, StatusCode::CONFLICT));
         let current = DB::optional_string(&instance, "current_run_id")?.as_deref() == Some(source_id);
-        let Decision { resume, reused, started } = match self.redrive_decision(&mut tx, &source, current, true).await? {
+        let Decision { resume, reused, started, started_recorded_at } = match self.redrive_decision(&mut tx, &source, current, true).await? {
             Ok(decision) => decision,
             Err(reason) => return conflict(reason),
         };
@@ -408,8 +418,8 @@ where
             .bind(&run_id).bind(run_number).bind(DB::bind_time(at)).bind(workflow_id).execute(&mut *tx).await?;
         Self::append(&mut tx, &run_id, "StartAccepted", json!({"workflow_command_id":command_id,"workflow_instance_id":workflow_id,
             "workflow_run_id":run_id,"workflow_class":workflow_type,"workflow_type":workflow_type,"outcome":"redriven"}), None, Some(&command_id)).await?;
-        let source_started = DB::optional_instant(&source, "started_at")?;
-        let replayed = started["replayed_started_at"].as_str().map(str::to_owned).or_else(|| source_started.map(iso));
+        let replayed = started["replayed_started_at"].as_str().map(str::to_owned)
+            .unwrap_or_else(|| replay_time(started_recorded_at));
         if !started.is_object() {
             started = json!({});
         }
@@ -425,7 +435,7 @@ where
         // order. A step reused more than once keeps the time it first ran.
         for step in reused {
             let payload = &step.payload;
-            let recorded_at = payload["reused_recorded_at"].as_str().map(str::to_owned).unwrap_or_else(|| iso(step.recorded_at));
+            let recorded_at = payload["reused_recorded_at"].as_str().map(str::to_owned).unwrap_or_else(|| replay_time(step.recorded_at));
             if let Some(mut scheduled) = step.scheduled_payload {
                 // This timer already fired. Reuse its two events with one new
                 // identity, without inserting a timer row or runnable task.
