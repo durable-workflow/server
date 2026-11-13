@@ -69,6 +69,13 @@ pub(super) const PRUNED: &[(&str, &str, usize)] = &[
     ("run_summary_deleted", "DELETE FROM workflow_run_summaries WHERE id=$1", 1),
 ];
 
+/// Native's request-key intent digests for the commands `commands_deleted`
+/// removes (Server #934). Not part of PHP's report, so it is not in
+/// [`PRUNED`]; it runs before that list, while the commands still name them,
+/// so an argument digest never outlives its command.
+pub(super) const COMMAND_INTENTS_PRUNED: &str = "DELETE FROM dw_command_intents WHERE command_id IN (SELECT id FROM workflow_commands WHERE workflow_run_id=$1 OR requested_workflow_run_id=$2 OR resolved_workflow_run_id=$3)";
+pub(super) const COMMAND_INTENTS_PRUNED_BINDS: usize = 3;
+
 /// PHP's terminal run statuses.
 pub(super) fn terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled" | "terminated")
@@ -350,6 +357,7 @@ mod tests {
             placeholders(sql, *binds);
         }
         placeholders(REFERENCE_VALUES, REFERENCE_VALUE_BINDS);
+        placeholders(COMMAND_INTENTS_PRUNED, COMMAND_INTENTS_PRUNED_BINDS);
         placeholders(RETAINED_SQL, RETAINED_BINDS.len());
     }
 

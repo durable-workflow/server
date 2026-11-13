@@ -393,6 +393,8 @@ where
         // A bridge update's request id is its bridge identity, which no
         // caller may send.
         let request_id = bridge.map(|key| key.identity.as_str()).or_else(|| request["request_id"].as_str());
+        let key = if bridge.is_none() { super::command_intent::caller_key(&request) } else { None };
+        let digest = key.map(|_| super::command_intent::digest("update", name, &prepared.values, selected_run));
         // PHP waits for acceptance unless the request asks for completion.
         let wait_for = request["wait_for"].as_str().unwrap_or("accepted");
         let timeout = super::laravel_validation::integer(&request["wait_timeout_seconds"]);
@@ -409,7 +411,21 @@ where
             .bind(workflow_id).bind(self.namespace.as_ref()).fetch_optional(&mut *tx).await?
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let run_id = DB::string(&instance, "current_run_id")?;
-        if selected_run.is_some_and(|selected| selected != run_id) {
+        // Server #934: a caller key's receipt is found before any run gate, so
+        // a retry after the run closed or continued as new gets its original
+        // answer. A different intent under the key is refused unwritten.
+        let keyed = match key {
+            Some(key) => Self::retained_command(&mut tx, workflow_id, "update", key).await?,
+            None => None,
+        };
+        if let (Some((command, retained)), Some(digest)) = (&keyed, digest.as_deref())
+            && super::command_intent::compare(retained.as_deref(), digest) == super::command_intent::Intent::Different
+        {
+            return Err(super::command_intent::conflict(workflow_id, "update", &DB::string(command, "id")?,
+                DB::optional_string(command, "outcome")?.as_deref(),
+                vec![if selected_run.is_some() { "target_or_arguments" } else { "arguments" }]));
+        }
+        if keyed.is_none() && selected_run.is_some_and(|selected| selected != run_id) {
             return Err(refuse(
                 StatusCode::CONFLICT,
                 "historical_run_command_rejected",
@@ -422,7 +438,10 @@ where
                 "The workflow advanced to a different run before validation could be committed.");
             return Ok((status, validation_response(failure, wait_for, context.as_ref(), name)));
         }
-        let existing = if let Some(request_id) = request_id {
+        let existing = if let Some((command, _)) = &keyed {
+            Self::query("SELECT u.id,u.update_name,u.workflow_run_id,c.context FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_instance_id=u.workflow_instance_id WHERE c.id=$1")
+                .bind(DB::string(command, "id")?).fetch_optional(&mut *tx).await?
+        } else if let Some(request_id) = request_id.filter(|_| bridge.is_some()) {
             Self::query("SELECT u.id,u.update_name,u.workflow_run_id,c.context FROM workflow_updates u JOIN workflow_commands c ON c.id=u.workflow_command_id AND c.workflow_instance_id=u.workflow_instance_id WHERE c.workflow_instance_id=$1 AND c.command_type='update' AND c.request_id=$2")
                 .bind(workflow_id).bind(request_id).fetch_optional(&mut *tx).await?
         } else {
@@ -446,8 +465,17 @@ where
         let update_id = if let Some(existing) = existing {
             // Look up the original receipt before validating changed arguments
             // or admitting another mutation. No result or event is rewritten.
-            if DB::string(&existing, "update_name")? != name
-                || DB::string(&existing, "workflow_run_id")? != run_id
+            // A caller key's verified intent already matched above, across
+            // runs; a receipt from before intent digests must keep its name.
+            // A bridge key keeps its own run binding.
+            let keyed_receipt = keyed.is_some();
+            if keyed_receipt && DB::string(&existing, "update_name")? != name {
+                let (command, _) = keyed.as_ref().expect("keyed receipt");
+                return Err(super::command_intent::conflict(workflow_id, "update", &DB::string(command, "id")?,
+                    DB::optional_string(command, "outcome")?.as_deref(), vec!["name"]));
+            }
+            if !keyed_receipt && (DB::string(&existing, "update_name")? != name
+                || DB::string(&existing, "workflow_run_id")? != run_id)
             {
                 return Err(refuse(
                     StatusCode::CONFLICT,
@@ -686,7 +714,11 @@ where
             Self::query("INSERT INTO workflow_commands(id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,command_type,source,status,workflow_type,payload_codec,payload,command_sequence,message_sequence,accepted_at,context,request_id) VALUES ($1,$2,$3,$4,'update','control_plane','accepted',$5,'avro',$6,$7,$8,$9,$10,$11)")
                 .bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(DB::string(&run, "workflow_type")?)
                 .bind(&prepared.command).bind(command_sequence).bind(message_sequence).bind(DB::bind_time(accepted_at))
-                .bind(DB::document(&context.clone().unwrap_or_else(|| json!({"request":{"request_id":request_id},"update_name":name})))).bind(request_id).execute(&mut *tx).await?;
+                .bind(DB::document(&context.clone().unwrap_or_else(|| json!({"request":{"request_id":request_id},"update_name":name}))))
+                .bind(key.map(|key| super::command_intent::key_token("update", key)).as_deref().or(request_id)).execute(&mut *tx).await?;
+            if let Some(digest) = digest.as_deref() {
+                Self::record_command_intent(&mut tx, &command_id, self.namespace.as_ref(), digest).await?;
+            }
             Self::query("INSERT INTO workflow_updates(id,workflow_command_id,workflow_instance_id,workflow_run_id,resolved_workflow_run_id,update_name,status,command_sequence,payload_codec,arguments,accepted_at) VALUES ($1,$2,$3,$4,$5,$6,'accepted',$7,'avro',$8,$9)")
                 .bind(&update_id).bind(&command_id).bind(workflow_id).bind(&run_id).bind(&run_id).bind(name).bind(command_sequence)
                 .bind(&prepared.arguments).bind(DB::bind_time(accepted_at)).execute(&mut *tx).await?;

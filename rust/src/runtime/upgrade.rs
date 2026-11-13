@@ -159,6 +159,7 @@ pub(super) fn native_relation(name: &str) -> bool {
             | "dw_external_payload_deletions"
             | "dw_run_command_contracts"
             | "dw_task_queue_pauses"
+            | "dw_command_intents"
     )
 }
 
@@ -189,6 +190,8 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_run_command_contracts_pkey"
                 | "dw_run_command_contracts_namespace"
                 | "dw_task_queue_pauses_pkey"
+                | "dw_command_intents_pkey"
+                | "dw_command_intents_namespace"
         )
 }
 

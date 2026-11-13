@@ -1510,6 +1510,12 @@ where
         deleted.insert("run_deleted".into(), json!(0));
         // Planned before the run's own summary goes, as PHP plans it.
         let streams = Self::stream_retention_plan(&mut tx, self.namespace.as_ref(), run_id, &DB::string(&run, "workflow_instance_id")?).await?;
+        // Request-key digests go with their commands, before the commands do.
+        let mut intents = Self::query(retention::COMMAND_INTENTS_PRUNED);
+        for _ in 0..retention::COMMAND_INTENTS_PRUNED_BINDS {
+            intents = intents.bind(run_id);
+        }
+        intents.execute(&mut *tx).await?;
         for (key, sql, binds) in retention::PRUNED {
             let mut query = Self::query(sql);
             for _ in 0..*binds {

@@ -6,6 +6,14 @@ const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/Serve
 const failureArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-update-failures/artifacts.json', import.meta.url)));
 const artifactsFor = fixture => fixture.sdk_update_failure ? failureArtifacts : artifacts;
 const languages = ['php', 'python', 'rust'];
+
+const divergences = JSON.parse(readFileSync(new URL('./native-divergences.json', import.meta.url), 'utf8'));
+/// Whether a reviewed native divergence applies to this recording target.
+function nativeDivergence(target, id) {
+  assert(divergences.divergences.some(divergence => divergence.id === id), `unregistered native divergence ${id}`);
+  return target === 'rust';
+}
+
 const phases = ['original', 'update-1', 'duplicate-pending-1', 'resumed-1', 'duplicate-completed-1',
   'update-2', 'duplicate-pending-2', 'resumed-2', 'duplicate-completed-2', 'signal', 'replacement'];
 const nonempty = value => assert(typeof value === 'string' && value.length > 0);
@@ -104,7 +112,7 @@ export function checkSdkUpdateDirectionPackages(fixture, observation, selected) 
   checkSdkUpdateDirectionArtifacts(fixture, selected);
   checkPublishedSdkPackages(observation, selected, observation.sdk_update_direction);
 }
-export function checkSdkUpdateDirection(fixture, observation, workflowId) {
+export function checkSdkUpdateDirection(fixture, observation, workflowId, target) {
   if (!fixture.sdk_update_direction) return null;
   checkSdkUpdateDirectionArtifacts(fixture, artifactsFor(fixture));
   const fails = Boolean(fixture.sdk_update_failure);
@@ -161,7 +169,11 @@ export function checkSdkUpdateDirection(fixture, observation, workflowId) {
         continue;
       }
       const number = Number(phase.phase.slice(-1)) - 1;
+      // Named divergence request-id-reuse-conflict (native-divergences.json,
+      // Server #934): native refuses a request id reused with other
+      // arguments, so its retries repeat the original arguments.
       const original = phase.phase.startsWith('update-');
+      const sameArguments = original || nativeDivergence(target, 'request-id-reuse-conflict');
       const author = direction.phases[number === 0 ? 3 : 7];
       assert.equal(phase.update_sent, true); assert.equal(phase.client_finished, true);
       assert.equal(phase.request_id, workflowId + ':update:' + number);
@@ -174,8 +186,8 @@ export function checkSdkUpdateDirection(fixture, observation, workflowId) {
       const completed = observation.events.filter(item => item.event_type === 'UpdateCompleted')[number];
       assert.equal(wire.response.command_id, accepted.payload.workflow_command_id);
       assert.equal(wire.response.update_id, accepted.payload.update_id);
-      assert.deepEqual(wire.decoded_input, [original ? fixture.update_values[number] : fixture.duplicate_update_value]);
-      assert.deepEqual(wire.typed_decoded_input, {type: 'list', value: [original ? fixture.typed_update_values[number]
+      assert.deepEqual(wire.decoded_input, [sameArguments ? fixture.update_values[number] : fixture.duplicate_update_value]);
+      assert.deepEqual(wire.typed_decoded_input, {type: 'list', value: [sameArguments ? fixture.typed_update_values[number]
         : {type: 'map', value: {message: {type: 'string', value: 'duplicate must not apply'}}}]});
       if (failed) {
         assert.equal(wire.response.outcome, 'update_failed');

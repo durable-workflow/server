@@ -705,6 +705,26 @@ node never upgrades at startup; it refuses an older schema with
 `native_schema_newer_than_binary`. Restore the backup to go back. Details are
 in [schema upgrades](../rust/README.md#native-schema-upgrades).
 
+## Behavior that differs from PHP 2.x
+
+Native follows published PHP 2.x except where a difference is reviewed and
+named. These are the ones a client moving from 2.x can observe:
+
+- **A reused signal or update `request_id` (native 3.9.0 and later, Server
+  #934).** PHP 2.x records a second signal for a repeated signal `request_id`,
+  and returns the original update receipt when an update `request_id` is
+  retried with different arguments. Native treats the key as one command per
+  workflow instance. A retry with the same intent returns the original receipt
+  and writes nothing. A different name, different arguments or a different run
+  target under the same key is refused with `409`, `reason:
+  "request_id_conflict"` and `outcome: "rejected_request_id_conflict"`. That
+  409 means the caller reused a key for different input: do not retry it
+  unchanged. Use the original input to recover the receipt, or use a new key
+  for a new command. Embedded Workflow releases with typed command intents
+  (workflow#877) behave like native. The parity harness records this as the
+  named divergence `request-id-reuse-conflict`
+  (`scripts/conformance/server-parity/native-divergences.json`).
+
 ## Design
 
 The rest of this page records how the takeover works and why. The commands

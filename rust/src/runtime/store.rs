@@ -1071,6 +1071,16 @@ where
         {
             return Ok(json!({"workflow_id":workflow_id,"run_id":run,"outcome":"deduped_existing_command"}));
         }
+        // Server #934: an accepted signal reserves its caller key on this
+        // instance. A retry, before or after the run closes or continues as
+        // new, is answered from that receipt before any run gate.
+        let key = if bridge.is_none() { super::command_intent::caller_key(&body) } else { None };
+        let digest = key.map(|_| super::command_intent::digest("signal", name, &prepared.values, run_id));
+        if let (Some(key), Some(digest)) = (key, digest.as_deref())
+            && let Some((command, retained)) = Self::retained_command(&mut tx, workflow_id, "signal", key).await?
+        {
+            return Self::retained_signal(&mut tx, workflow_id, name, run_id, digest, &command, retained.as_deref()).await;
+        }
         if run_id.is_some_and(|selected| selected != current_run) {
             return Err(refuse(
                 StatusCode::CONFLICT,
@@ -1231,10 +1241,14 @@ where
             return Err(super::RuntimeError::Protocol { status, response });
         }
         let workflow_type = DB::string(&run, "workflow_type")?;
+        let token = key.map(|key| super::command_intent::key_token("signal", key));
         let write = SignalWrite { workflow_id, run_id: &current_run, workflow_type: &workflow_type, name,
             command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context,
-            request_id: bridge.map(|key| key.identity.as_str()) };
+            request_id: bridge.map(|key| key.identity.as_str()).or(token.as_deref()) };
         Self::record_accepted_signal(&mut tx, &write, &prepared.command, &prepared.arguments, &DB::string(&run, "queue")?).await?;
+        if let Some(digest) = digest.as_deref() {
+            Self::record_command_intent(&mut tx, &command_id, self.namespace.as_ref(), digest).await?;
+        }
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(
@@ -1303,6 +1317,81 @@ where
             "workflow_instance_id":write.workflow_id,"workflow_run_id":write.run_id,"signal_name":write.name,"signal_wait_id":wait_id,
             "arguments":wire(arguments),"payload_codec":"avro"}), None, Some(write.command_id)).await?;
         Self::enqueue_next_message(tx, write.run_id, queue, true).await
+    }
+
+    /// The command a caller key already admitted on this instance (Server
+    /// #934), under the transition lock: the hashed key token, or the raw key
+    /// an update stored before tokens. Its recorded intent digest, if any.
+    pub(super) async fn retained_command(
+        tx: &mut Transaction<'_, DB>,
+        workflow_id: &str,
+        command_type: &str,
+        key: &str,
+    ) -> Result<Option<(DB::Row, Option<String>)>> {
+        let token = super::command_intent::key_token(command_type, key);
+        let Some(row) = Self::query("SELECT * FROM workflow_commands WHERE workflow_instance_id=$1 AND command_type=$2 AND (request_id=$3 OR request_id=$4) ORDER BY CASE WHEN request_id=$5 THEN 0 ELSE 1 END LIMIT 1")
+            .bind(workflow_id).bind(command_type).bind(&token).bind(key).bind(&token)
+            .fetch_optional(&mut **tx).await?
+        else {
+            return Ok(None);
+        };
+        // A case-insensitive collation can match another raw key.
+        if DB::optional_string(&row, "request_id")?.is_none_or(|stored| stored != token && stored != key) {
+            return Ok(None);
+        }
+        let digest = Self::query("SELECT intent_digest FROM dw_command_intents WHERE command_id=$1")
+            .bind(DB::string(&row, "id")?).fetch_optional(&mut **tx).await?
+            .map(|intent| DB::string(&intent, "intent_digest")).transpose()?;
+        Ok(Some((row, digest)))
+    }
+
+    /// Records the intent digest of a command admitted under a caller key.
+    pub(super) async fn record_command_intent(
+        tx: &mut Transaction<'_, DB>,
+        command_id: &str,
+        namespace: &str,
+        digest: &str,
+    ) -> Result<()> {
+        Self::query("INSERT INTO dw_command_intents(command_id,namespace,intent_digest) VALUES ($1,$2,$3)")
+            .bind(command_id).bind(namespace).bind(digest).execute(&mut **tx).await?;
+        Ok(())
+    }
+
+    /// A signal retried under its key: the original receipt when the intent
+    /// matches, a conflict when it does not. Nothing is written either way.
+    async fn retained_signal(
+        tx: &mut Transaction<'_, DB>,
+        workflow_id: &str,
+        name: &str,
+        run_id: Option<&str>,
+        digest: &str,
+        command: &DB::Row,
+        retained: Option<&str>,
+    ) -> Result<Value> {
+        let command_id = DB::string(command, "id")?;
+        let signal = Self::query("SELECT signal_name FROM workflow_signal_records WHERE workflow_command_id=$1")
+            .bind(&command_id).fetch_optional(&mut **tx).await?;
+        let retained_name = signal.as_ref().map(|row| DB::string(row, "signal_name")).transpose()?;
+        let intent = super::command_intent::compare(retained, digest);
+        if intent == super::command_intent::Intent::Different
+            || intent == super::command_intent::Intent::Unverified && retained_name.as_deref() != Some(name)
+        {
+            let mut parts = Vec::new();
+            if retained_name.as_deref() != Some(name) {
+                parts.push("name");
+            }
+            if parts.is_empty() {
+                parts.push(if run_id.is_some() { "target_or_arguments" } else { "arguments" });
+            }
+            return Err(super::command_intent::conflict(workflow_id, "signal", &command_id,
+                DB::optional_string(command, "outcome")?.as_deref(), parts));
+        }
+        let run = DB::string(command, "workflow_run_id")?;
+        Ok(json!({"workflow_id":workflow_id,"run_id":run,"resolved_run_id":run,"requested_run_id":null,"signal_name":retained_name.unwrap_or_else(|| name.to_owned()),
+            "command_id":command_id,"command_sequence":DB::optional_number(command, "command_sequence")?,"workflow_type":DB::optional_string(command, "workflow_type")?,
+            "command_status":DB::string(command, "status")?,"command_source":"control_plane","target_scope":"instance",
+            "outcome":DB::optional_string(command, "outcome")?,"reason":null,"rejection_reason":null,"validation_errors":[],
+            "retained":true,"intent_verified":intent == super::command_intent::Intent::Same}))
     }
 
     /// `StructuralLimits::guardPendingActivities`, `guardPendingChildren` and

@@ -24,6 +24,15 @@ import {checkActivityDeadlineReceiptPackages} from './server-parity/activity-dea
 import {contractFailureLocation} from './server-parity/failure-location.mjs';
 import {failureExcerpt} from './server-parity/failure-excerpt.mjs';
 
+
+/// The reviewed native-only behavior differences (native-divergences.json)
+/// that apply to a recording target. Only native recordings take them.
+function nativeDivergences(target) {
+  if (target !== 'rust') return [];
+  const registry = JSON.parse(readFileSync(new URL('./server-parity/native-divergences.json', import.meta.url), 'utf8'));
+  return registry.divergences.map(divergence => divergence.id);
+}
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const {values, positionals} = parseArgs({allowPositionals: true, options: {
   mode: {type: 'string'}, url: {type: 'string'}, 'application-root': {type: 'string'},
@@ -114,7 +123,8 @@ try {
           if (values[flag]) arguments_.push(`--${flag}`, values[flag]);
         }
         const probe = captureProbe('php', arguments_, {directory: dirname(resolve(values.output)), timeout: fixture.memo_replay ? fixture.memo_replay.overall_budget_seconds * 1000 + 5000 : fixture.corrected_markers ? fixture.corrected_markers.overall_budget_seconds * 1000 + 5000 : fixture.namespace_signal_pair || fixture.selected_run_signal_pair || fixture.cancellation_scopes ? 75000 : fixture.update_validation ? 90000 : fixture.worker_poll_fence ? fixture.worker_poll_fence.overall_budget_seconds * 1000 + 5000 : fixture.worker_sessions ? fixture.worker_sessions.overall_budget_seconds * 1000 + 5000 : fixture.worker_session_activities ? fixture.worker_session_activities.overall_budget_seconds * 1000 + 5000 : fixture.large_command_batches ? fixture.large_command_batches.overall_budget_seconds * 1000 + 5000 : fixture.many_updates ? fixture.many_updates.overall_budget_seconds * 1000 + 5000 : 45000,
-          env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output))},
+          env: {...process.env, DW_PARITY_FAILURE_EVIDENCE_DIR: dirname(resolve(values.output)), DW_PARITY_TARGET: values.target,
+            DW_PARITY_NATIVE_DIVERGENCES: nativeDivergences(values.target).join(',')},
           preserveStdout: join(sourceDirectory, name)});
         const item = {fixture_id: fixture.id, fixture, outcome: 'runner-blocked'};
         // Recognized diagnostics are kept even when the probe succeeds.
