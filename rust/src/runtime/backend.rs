@@ -818,12 +818,22 @@ impl Backend for MySql {
             .map(|value| value.0))
     }
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
-        let mut tx = pool.begin().await?;
+        let waiting = std::time::Instant::now();
+        let mut tx = pool.begin().await.map_err(|error| {
+            eprintln!("server1204_acquire_failure phase=mysql_pool_begin elapsed_ms={} pool_size={} pool_idle={} pool_timeout={}",
+                waiting.elapsed().as_millis(), pool.size(), pool.num_idle(), matches!(&error, sqlx::Error::PoolTimedOut));
+            error
+        })?;
+        let waiting = std::time::Instant::now();
         // InnoDB row locking releases on commit/rollback/process loss. This
         // first slice serializes transitions on its single ownership row.
         // MariaDB stays at 12 while MySQL moved to 13 (server#1016).
         sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=IF(VERSION() LIKE '%MariaDB%',?,?) FOR UPDATE")
-            .bind(mysql::MARIADB_VERSION).bind(mysql::MYSQL_VERSION).fetch_one(&mut *tx).await?;
+            .bind(mysql::MARIADB_VERSION).bind(mysql::MYSQL_VERSION).fetch_one(&mut *tx).await.map_err(|error| {
+                eprintln!("server1204_acquire_failure phase=mysql_ownership_lock elapsed_ms={} pool_timeout={}",
+                    waiting.elapsed().as_millis(), matches!(&error, sqlx::Error::PoolTimedOut));
+                error
+            })?;
         Ok(tx)
     }
     async fn history_ready(pool: &Pool<Self>) -> bool {

@@ -1400,8 +1400,13 @@ fn runtime_pool_options() -> MySqlPoolOptions {
                 tokio::time::timeout(Duration::from_secs(5), connection.execute("ROLLBACK"))
                     .await
                     .map_err(|_| {
+                        eprintln!("server1204_acquire_failure phase=mysql_session_reset_deadline");
                         sqlx::Error::Protocol("native MySQL pool reset deadline exceeded".into())
-                    })??;
+                    })?.map_err(|error| {
+                        eprintln!("server1204_acquire_failure phase=mysql_session_reset_error pool_timeout={}",
+                            matches!(&error, sqlx::Error::PoolTimedOut));
+                        error
+                    })?;
                 Ok(true)
             })
         })

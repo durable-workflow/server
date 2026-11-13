@@ -432,12 +432,17 @@ where
         // Queue before borrowing a connection so readers keep the other pool
         // slots. A timed-out waiter returns the existing typed pool refusal;
         // it never abandons FIFO and continues to the database anyway.
+        let waiting = std::time::Instant::now();
         let queued = tokio::time::timeout(
             self.pool.options().get_acquire_timeout(),
             self.transitions.clone().lock_owned(),
         )
         .await
-        .map_err(|_| sqlx::Error::PoolTimedOut)?;
+        .map_err(|_| {
+            eprintln!("server1204_acquire_failure phase=transition_queue elapsed_ms={} pool_size={} pool_idle={}",
+                waiting.elapsed().as_millis(), self.pool.size(), self.pool.num_idle());
+            sqlx::Error::PoolTimedOut
+        })?;
         #[cfg(test)]
         self.test_transitions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         DB::begin(&self.pool)
