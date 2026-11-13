@@ -28,6 +28,8 @@ yarn-error.log
 /.fleet
 /.idea
 /.vscode
+/.claude/settings.local.json
+**/.claude/settings.local.json
 /durable_workflow
 /rust/target/
 /corrected-marker-adapters/
