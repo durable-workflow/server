@@ -331,7 +331,7 @@ where
                 .and_then(|items| items.as_array().cloned())
                 .unwrap_or_default();
             if policy == "buffer_one" && !buffered.is_empty() {
-                Self::record_skip(tx, row, "buffer_full", context, None).await?;
+                Self::record_skip(tx, row, "buffer_full", context, Some(buffered.len() as u64)).await?;
                 Self::recompute_next(tx, row).await?;
                 return Ok(Decision::Done(Trigger::BufferFull));
             }
@@ -743,13 +743,23 @@ where
             assert_eq!(summary["last_outcome"]["outcome"], "buffered");
             assert_eq!(summary["buffered_actions_count"], depth);
         }
-        let buffered = self.describe_schedule("dispatch-summary").await.unwrap()["dispatch_summary"].clone();
+        // The full-buffer decision already owns the complete array, including
+        // on a legacy row. Its new skip can establish current count authority.
+        Self::query("UPDATE workflow_schedules SET dispatch_summary=NULL,overlap_policy='buffer_one' WHERE id=$1")
+            .bind(&key).execute(&self.pool).await.unwrap();
+        let full = self.trigger_schedule("dispatch-summary", None, json!({})).await.unwrap();
+        assert_eq!(full["outcome"], "buffer_full");
+        let before_failure = self.describe_schedule("dispatch-summary").await.unwrap()["dispatch_summary"].clone();
+        assert_eq!(before_failure["state"], "known");
+        assert_eq!(before_failure["last_outcome"]["outcome"], "skipped");
+        assert_eq!(before_failure["last_outcome"]["reason"], "buffer_full");
+        assert_eq!(before_failure["buffered_actions_count"], 2);
         // Execution failure changes the current-run projection, not dispatch.
         Self::query("UPDATE workflow_runs SET status='failed' WHERE id=$1")
             .bind(started["run_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
         let page = self.list_schedules(None, "fixture-secret").await.unwrap();
         let row = page["schedules"].as_array().unwrap().iter().find(|row| row["schedule_id"]=="dispatch-summary").unwrap();
-        assert_eq!(row["dispatch_summary"], buffered);
+        assert_eq!(row["dispatch_summary"], before_failure);
         assert_eq!(row["current_run"]["status"], "failed");
 
         // A refused start rolls back the removal, then records its skip from
@@ -763,7 +773,7 @@ where
         assert_eq!(refused["dispatch_summary"]["buffered_actions_count"], 2);
         assert_eq!(refused["dispatch_summary"]["last_outcome"]["outcome"], "skipped");
         assert_eq!(refused["dispatch_summary"]["last_outcome"]["reason"], "unsupported_payload_codec");
-        assert_ne!(refused["dispatch_summary"]["last_outcome"]["id"], buffered["last_outcome"]["id"]);
+        assert_ne!(refused["dispatch_summary"]["last_outcome"]["id"], before_failure["last_outcome"]["id"]);
 
         Self::query("UPDATE workflow_schedules SET action=$1 WHERE id=$2")
             .bind(DB::document(&json!({"workflow_type":"echo","task_queue":"dispatch-summary"}))).bind(&key).execute(&self.pool).await.unwrap();
