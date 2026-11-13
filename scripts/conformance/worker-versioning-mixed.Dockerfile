@@ -8,7 +8,10 @@ ARG PYTHON_SDK_VERSION
 COPY bootstrap-patched-pip.sh blocked_roots.py /opt/dw-ci/
 # apt checks package signatures rather than TLS trust. It refreshes the OS CA
 # store, which must then exclude the withdrawn roots before any TLS download.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates php-cli php-curl unzip \
+# CVE-2026-109518 (durable-workflow/.github#295): the unpinned parent's APT may
+# follow a redirect on a retried download, so retries are off first.
+RUN printf 'Acquire::Retries "0";\n' > /etc/apt/apt.conf.d/99-no-retries \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates php-cli php-curl unzip \
     && rm -r /var/lib/apt/lists/* \
     && python3 /opt/dw-ci/blocked_roots.py /etc/ssl/certs/ca-certificates.crt
 COPY --from=composer /usr/bin/composer /usr/bin/composer
