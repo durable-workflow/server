@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -643,12 +644,10 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertEqual(["python3", "capacity_adapter.py", "worker"], command[-3:])
         self.assertNotIn("--interactive", command)
         self.assertIn("capacity-worker", command)
-        self.assertTrue(
-            any(
-                value.startswith("/tmp/durable-workflow-capacity-worker-")
-                for value in command
-            )
+        self.assertRegex(
+            runner._container_worker_pid_file(adapter, environment), r"^[0-9a-f]{24}\.pid$"
         )
+        self.assertIn(runner._container_worker_pid_file(adapter, environment), command)
         self.assertTrue(
             any(
                 value == "DURABLE_WORKFLOW_TASK_QUEUE=capacity-smoke"
@@ -678,6 +677,84 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             runner._container_worker_pid_file(adapter, environment),
             cleanup[-1],
         )
+
+    def test_worker_pid_files_are_private_and_exclusive(self) -> None:
+        # Server #1051: run the exact container scripts with the local sh,
+        # with TMPDIR standing in for the container's temp directory.
+        def run(script: str, temp: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["sh", "-c", script, "capacity-worker", *arguments],
+                text=True, capture_output=True, check=False,
+                env={"PATH": os.environ.get("PATH", ""), "TMPDIR": str(temp)},
+            )
+
+        def worker(temp: Path, name: str) -> subprocess.CompletedProcess[str]:
+            return run(capacity_matrix.WORKER_PIDFILE_SCRIPT, temp, name, "true")
+
+        def cleanup(temp: Path, name: str) -> subprocess.CompletedProcess[str]:
+            return run(capacity_matrix.WORKER_CLEANUP_SCRIPT, temp, name)
+
+        with tempfile.TemporaryDirectory() as scratch:
+            temp = Path(scratch) / "temp"
+            temp.mkdir()
+            directory = temp / "durable-workflow-capacity-workers"
+            pidfile = directory / "worker.pid"
+            started = worker(temp, "worker.pid")
+            self.assertEqual(0, started.returncode, started.stderr)
+            self.assertEqual(0o700, directory.stat().st_mode & 0o777)
+            self.assertEqual(0o600, pidfile.stat().st_mode & 0o777)
+            recorded = pidfile.read_text()
+            self.assertRegex(recorded, r"^\d+ \d+\n$")
+
+            # A second start with the same identity refuses; nothing is overwritten.
+            self.assertEqual(43, worker(temp, "worker.pid").returncode)
+            self.assertEqual(recorded, pidfile.read_text())
+
+            # The recorded process has exited, so cleanup only removes the file.
+            self.assertEqual(0, cleanup(temp, "worker.pid").returncode)
+            self.assertFalse(pidfile.exists())
+            self.assertEqual(0, cleanup(temp, "worker.pid").returncode, "a missing pid file is already clean")
+
+            # Only a plain file name is accepted.
+            for name in ("", "../escape.pid", ".hidden", "a/b.pid"):
+                self.assertEqual(42, worker(temp, name).returncode, name)
+
+            # A symlinked directory or pid file is refused, never followed.
+            target = Path(scratch) / "elsewhere"
+            target.mkdir(mode=0o700)
+            linked = Path(scratch) / "linked-temp"
+            linked.mkdir()
+            (linked / "durable-workflow-capacity-workers").symlink_to(target)
+            self.assertEqual(42, worker(linked, "worker.pid").returncode)
+            self.assertEqual([], list(target.iterdir()))
+            (directory / "planted.pid").symlink_to(target / "victim")
+            self.assertEqual(42, cleanup(temp, "planted.pid").returncode)
+            self.assertFalse((target / "victim").exists())
+
+            # A live process with a different recorded start is left alone.
+            with open(pidfile, "x") as handle:
+                handle.write(f"{os.getpid()} 1\n")
+            self.assertEqual(41, cleanup(temp, "worker.pid").returncode)
+            self.assertTrue(pidfile.exists())
+
+    def test_git_is_resolved_without_path(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = Path(scratch) / "git"
+            fake.write_text("#!/bin/sh\necho 0123456789abcdef0123456789abcdef01234567\n")
+            fake.chmod(0o700)
+            with mock.patch.dict(capacity_suite.os.environ, {"CAPACITY_GIT": str(fake), "PATH": scratch}):
+                self.assertEqual(str(fake), capacity_suite.git_executable())
+                self.assertEqual("0123456789abcdef0123456789abcdef01234567", capacity_suite._git_revision())
+            for configured in ("git", str(Path(scratch) / "missing")):
+                with mock.patch.dict(capacity_suite.os.environ, {"CAPACITY_GIT": configured}):
+                    with self.assertRaises(FileNotFoundError):
+                        capacity_suite.git_executable()
+                    self.assertEqual("unknown-local-revision", capacity_suite._git_revision())
+            # Unset, a PATH entry named git is never chosen.
+            with mock.patch.dict(capacity_suite.os.environ, {"PATH": scratch}, clear=True):
+                with mock.patch.object(capacity_suite, "GIT_CANDIDATES", ("/nonexistent/git",)):
+                    with self.assertRaises(FileNotFoundError):
+                        capacity_suite.git_executable()
 
     def test_worker_process_runs_container_cleanup_after_client_exit(self) -> None:
         process = mock.Mock()

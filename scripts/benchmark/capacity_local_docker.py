@@ -633,7 +633,11 @@ def _execute_matrix(
         topology, topology["component_services"]["load-generator"]
     )
     environment = _execution_environment(context)
-    source_revision = _run(["git", "rev-parse", "HEAD"], timeout=30).strip()
+    try:
+        git = capacity_suite.git_executable()
+    except FileNotFoundError as error:
+        raise TopologyError(str(error)) from error
+    source_revision = _run([git, "rev-parse", "HEAD"], timeout=30).strip()
     if not re.fullmatch(r"[0-9a-f]{40}", source_revision):
         raise TopologyError("source revision must be a full Git commit")
     matrix_arguments = [command, *arguments]
