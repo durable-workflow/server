@@ -186,6 +186,9 @@ jobs:
           python3 -m unittest tests/Unit/Support/php_apt_test.py
           python3 scripts/ci/verify-php-apt-source.py
 
+      - name: Check the shared legacy command-key seed and authority scopes
+        run: python3 scripts/ci/test_command_key_legacy_fixture.py
+
       - name: Check published failover image identity and recovery result gates
         run: python3 -m unittest discover -s tests/Unit/Support -p 'single_region_failover*test.py'
 
