@@ -69,6 +69,49 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 1.8.0 / Server 3.10.0 (native)
+
+**Every backend needs an explicit native schema upgrade from 3.9.x.** Chart
+1.8.0 selects native Server 3.10.0 and retains the existing values and resource
+contract. An explicit `image.tag` or `image.digest` override must select the
+intended qualified image too. The PHP Server remains 2.11.8.
+
+| Backend | Schema step |
+| --- | --- |
+| SQLite | 13 to 14 |
+| PostgreSQL | 14 to 15 |
+| MariaDB | 14 to 15 |
+| MySQL | 15 to 16 |
+
+1. Stop every Server replica sharing the database, including replicas outside
+   this Helm release. Keep the database running.
+2. Back up the database and external payload storage.
+3. Run the new image's `schema-upgrade` once through the opt-in upgrade hook or
+   manual Job in [Native schema upgrades](../README.md#native-schema-upgrades).
+   The hook requires live proof that all Server replicas are stopped.
+4. Restart every replica on the same new image and verify readiness, reported
+   version 3.10.0 and worker registration.
+
+Startup does not upgrade an older schema automatically. Earlier releases also
+apply the intervening steps. MySQL and MariaDB can resume an interrupted
+upgrade; SQLite and PostgreSQL apply their step transactionally. Rolling back
+to an older image requires restoring the pre-upgrade database and storage
+backup. Do not start an older binary against the upgraded database.
+
+The new nullable schedule column is not backfilled from legacy action arrays.
+Existing schedules return unavailable dispatch authority until an owning
+transition records a valid summary. A known last dispatch outcome, current
+buffered-action count and latest workflow execution status are separate facts.
+A Started dispatch can point to a workflow that later Failed. Summary support
+requires a complete valid v1 field; a version string or empty list is not proof.
+
+Worker protocol 1.20, control plane version 2, command-key receipts and encoded
+completion limits remain unchanged. Installed client and Waterline acceptance
+are separate. This release grants no new upload or Cloud adoption authority;
+MariaDB held-poll reliability work in #1204 remains open.
+
+See [Server 3.10.0 release notes](../../../../docs/releases/3.10.0.md).
+
 ### Chart 1.7.1 / Server 3.9.2 (native)
 
 Chart 1.7.1 selects the native Server 3.9.2 corrective image. From Server

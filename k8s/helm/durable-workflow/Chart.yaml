@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 1.7.1
+version: 1.8.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.9.2"
+appVersion: "3.10.0"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,16 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.9.2"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.10.0"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: "Default image advances from native Server 3.9.1 to 3.9.2. No schema step from 3.9.0 or 3.9.1; upgrades from 3.8.x or earlier keep the explicit 3.9 schema/backup/restore procedure in docs/UPGRADING.md."
-    - kind: fixed
-      description: "Server 3.9.2 accepts 255-code-point multibyte command keys and echoes literal keys with explicit fresh/retained intent metadata. Installed client acceptance remains separately qualified. https://github.com/durable-workflow/server/releases/tag/3.9.2"
+      description: "Default image advances to native Server 3.10.0. Every backend needs an explicit additive schema upgrade from 3.9.x with all replicas stopped; rollback requires restoring the pre-upgrade backup. See docs/UPGRADING.md."
+    - kind: added
+      description: "Schedule list and describe responses carry bounded durable dispatch summaries. Last dispatch outcome, current buffer count and latest workflow execution status remain distinct. Existing schedules have unavailable authority until an owning transition records it."
     - kind: changed
-      description: "Storage-admission observation ownership is checked on the opened descriptor against root or the effective Server UID. Trusted ancestors remain operator-required; draining uploads and Cloud adoption remain separate (server#951)."
-    - kind: fixed
-      description: "Legacy command-key readback identifies unverified intent and refuses ambiguous identities. Oversized completion responses use a bounded drain, and discovery advertises the actual completion wire cap; installed SDK acceptance is tracked in shared#228."
+      description: "Worker protocol 1.20 and control plane 2 remain unchanged. Client, Waterline and Cloud acceptance remain separate; this release adds no draining-upload authority or pool-timeout fix. https://github.com/durable-workflow/server/releases/tag/3.10.0"
