@@ -384,6 +384,10 @@
         "value": true,
         "reason": "Native serves GET /api/workflows/{workflow_id}/updates/{update_id}, which reads a retained update's receipt, optionally waiting for its outcome, without admitting another update (Server #1131). Published PHP has no such route."
       },
+      "capabilities.command_request_keys": {
+        "value": true,
+        "reason": "Native treats a signal or update request_id as a durable command key on the workflow instance (Server #934): a retry with the same command intent (Core CommandIntent v1 over the name, typed arguments and run target) returns the original receipt before any run gate, including after the run closes or continues as new, and the same key with a different intent is refused with 409 request_id_conflict, writing nothing. Published PHP 2.11.x does not deduplicate signals and does not compare update arguments."
+      },
       "capabilities.task_queue_activity_dispatch_pause": {
         "value": true,
         "reason": "Native serves GET /api/task-queues/{task_queue}/activity-dispatch and POST .../activity-dispatch/{pause,resume}, a durable per-queue hold on new activity leases that keeps the ready backlog, attempt counts and running deadlines and leaves workflow, signal, query and update delivery unchanged (Server #577). Published PHP has no such route."

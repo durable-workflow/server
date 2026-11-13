@@ -78,6 +78,50 @@ pub(super) fn canonical(value: &Value, out: &mut Vec<u8>) {
     }
 }
 
+/// Core's `CommandRequestIdentity::keyToken`: the caller's key as stored in
+/// `workflow_commands.request_id`, `<type>-v1:` and its hex SHA-256. A
+/// fixed-width token keeps every valid key inside the column and makes the
+/// unique `(instance, type, request_id)` index the arbiter of one admission.
+pub(super) fn key_token(command_type: &str, key: &str) -> String {
+    format!("{command_type}-v1:{}", hex(&Sha256::digest(key.as_bytes())))
+}
+
+/// The caller's command key: a non-empty body `request_id`. A bridge
+/// command keeps its own identity and is not keyed here.
+pub(super) fn caller_key(body: &serde_json::Value) -> Option<&str> {
+    body.get("request_id").and_then(serde_json::Value::as_str).filter(|key| !key.is_empty())
+}
+
+/// How a retry's intent compares with the receipt its key retains.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Intent {
+    Same,
+    Different,
+    /// The receipt predates intent digests; nothing can prove equality.
+    Unverified,
+}
+
+pub(super) fn compare(retained: Option<&str>, candidate: &str) -> Intent {
+    match retained {
+        None => Intent::Unverified,
+        Some(retained) if retained == candidate => Intent::Same,
+        Some(_) => Intent::Different,
+    }
+}
+
+/// The refusal for a key reused with a different command intent. Nothing is
+/// written; the key keeps its original receipt.
+pub(super) fn conflict(workflow_id: &str, command_type: &str, retained_command_id: &str, retained_outcome: Option<&str>,
+    parts: Vec<&'static str>) -> super::RuntimeError {
+    let message = format!("The request_id was already used for a different {command_type} command on workflow [{workflow_id}]. Use a new request_id for a different command.");
+    super::RuntimeError::Protocol {
+        status: axum::http::StatusCode::CONFLICT,
+        response: serde_json::json!({"workflow_id":workflow_id,"reason":"request_id_conflict","outcome":"rejected_request_id_conflict",
+            "command_status":"rejected","rejection_reason":"request_id_conflict","message":message,"intent_verified":true,
+            "retained":true,"retained_command_id":retained_command_id,"retained_outcome":retained_outcome,"conflict":parts}),
+    }
+}
+
 fn list(out: &mut Vec<u8>, items: &[Value]) {
     out.extend_from_slice(format!("l{}[", items.len()).as_bytes());
     for item in items {

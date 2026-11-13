@@ -73,6 +73,8 @@ mod selected_run_signals;
 #[path = "execution/worker_incarnations.rs"]
 mod worker_incarnations;
 
+#[path = "execution/command_keys.rs"]
+mod command_keys;
 #[path = "execution/worker_contracts.rs"]
 mod worker_contracts;
 
@@ -2082,10 +2084,15 @@ async fn updates_preserve_original_receipts_and_fence_recovered_tasks_across_poo
     let admitted = request(&a, "POST", &path, input.clone()).await;
     assert_eq!(admitted.0, StatusCode::ACCEPTED, "{}", admitted.1);
     let before = request(&a, "GET", &history_path, Value::Null).await.1;
-    let mut duplicate = input.clone();
-    duplicate["input"] = envelope(Payload::Array(vec![Payload::String(
+    // Server #934: changed arguments under the same request id are refused
+    // unwritten; the same arguments return the original receipt.
+    let mut changed = input.clone();
+    changed["input"] = envelope(Payload::Array(vec![Payload::String(
         "must not overwrite original arguments".into(),
     )]));
+    let conflict = request(&b, "POST", &path, changed).await;
+    assert_eq!((conflict.0, conflict.1["reason"].clone()), (StatusCode::CONFLICT, json!("request_id_conflict")), "{}", conflict.1);
+    let mut duplicate = input.clone();
     let repeated = request(&b, "POST", &path, duplicate.clone()).await;
     assert_eq!(repeated.0, StatusCode::ACCEPTED, "{}", repeated.1);
     assert_eq!(repeated.1["update_id"], admitted.1["update_id"]);
@@ -2338,10 +2345,14 @@ async fn failed_updates_preserve_terminal_identity_and_parent_continuation_after
     let admitted = request(&a, "POST", path, input.clone()).await;
     assert_eq!(admitted.0, StatusCode::ACCEPTED);
     let before = request(&a, "GET", &history_path, Value::Null).await.1;
-    let mut duplicate = input.clone();
-    duplicate["input"] = envelope(Payload::Array(vec![Payload::String(
+    // Server #934: changed arguments under the request id conflict; the same
+    // arguments return the original receipt.
+    let mut changed = input.clone();
+    changed["input"] = envelope(Payload::Array(vec![Payload::String(
         "changed duplicate".into(),
     )]));
+    assert_eq!(request(&b, "POST", path, changed).await.1["reason"], "request_id_conflict");
+    let mut duplicate = input.clone();
     assert_eq!(
         request(&b, "POST", path, duplicate.clone()).await.1["update_id"],
         admitted.1["update_id"]
@@ -2614,8 +2625,12 @@ async fn updates_have_no_lifetime_cap_and_preserve_accepted_work_after_wait_time
             .count(),
         64
     );
-    let duplicate = request(&app, "POST", path, json!({
+    let conflict = request(&app, "POST", path, json!({
         "input":envelope(Payload::Array(vec![Payload::Long(999)])),"request_id":"bounded:0","wait_for":"completed"
+    })).await;
+    assert_eq!(conflict.1["reason"], "request_id_conflict", "{}", conflict.1);
+    let duplicate = request(&app, "POST", path, json!({
+        "input":envelope(Payload::Array(vec![Payload::Long(0)])),"request_id":"bounded:0","wait_for":"completed"
     })).await;
     assert_eq!(duplicate.0, StatusCode::OK, "{}", duplicate.1);
     assert_eq!(duplicate.1["result_envelope"], envelope(Payload::Long(0)));
@@ -2962,9 +2977,13 @@ async fn buffered_signals_survive_restart_and_each_wait_commits_once() {
         ("count".into(), Payload::Long(9007199254740993)),
         ("message".into(), Payload::String("signal λ".into())),
     ]));
-    let input = json!({"input":envelope(Payload::Array(vec![value.clone()])),"request_id":"same-request-context"});
+    // Two signals with the same arguments are two commands only under two
+    // request ids; one request id is one command (Server #934).
+    let input = json!({"input":envelope(Payload::Array(vec![value.clone()])),"request_id":"signal-a"});
+    let mut input_b = input.clone();
+    input_b["request_id"] = json!("signal-b");
     let accepted_a = request(&app, "POST", &signal_path, input.clone()).await;
-    let accepted_b = request(&app, "POST", &signal_path, input.clone()).await;
+    let accepted_b = request(&app, "POST", &signal_path, input_b).await;
     assert_eq!(accepted_a.0, StatusCode::ACCEPTED, "{}", accepted_a.1);
     assert_eq!(accepted_b.0, StatusCode::ACCEPTED, "{}", accepted_b.1);
     assert_ne!(accepted_a.1["command_id"], accepted_b.1["command_id"]);
@@ -2997,7 +3016,7 @@ async fn buffered_signals_survive_restart_and_each_wait_commits_once() {
         ),
         (
             signal_path.replace("/signal/payload", "/signal/unknown"),
-            input.clone(),
+            json!({"input":input["input"].clone(),"request_id":"signal-unknown"}),
             StatusCode::NOT_FOUND,
         ),
         (
