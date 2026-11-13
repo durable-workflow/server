@@ -25,7 +25,7 @@ fn iso(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
 }
 
-/// Replay clocks retain the event's fractional boundary. Deadline formatting
+/// Replay clocks retain the persisted instant's precision. Deadline formatting
 /// remains separate; rounding a clock changes workflow decisions on replay.
 fn replay_time(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, false)
