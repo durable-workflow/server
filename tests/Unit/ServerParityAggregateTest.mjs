@@ -52,6 +52,7 @@ test('pull requests run without a path filter and push keeps the one path list',
   for (const input of [
     'tests/Fixtures/ActivityResultInspection/v1.json',
     'resources/platform-protocol-specs/workflow-task-completion-limits-v1-vectors.json',
+    'resources/platform-protocol-specs/command-key-legacy-v1-vectors.json',
     'tests/Fixtures/ServerParityReaders/sdk-signals.mjs',
     'tests/Conformance/ServerParityDeadlinePollTest.mjs',
     'benchmarks/capacity/v1/bindings/php/capacity_adapter.php',
