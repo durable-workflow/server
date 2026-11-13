@@ -1,0 +1,172 @@
+{
+  "schema": "durable-workflow.command-key-legacy-fixture.v1",
+  "reference_producer": {
+    "tag": "3.9.1",
+    "source_commit": "7d7ad9d6c9aee2e4592d74389ba9efd36e741f44",
+    "tests": "rust/tests/execution/command_keys.rs",
+    "scope": "Source control, not an installed-client receipt or a reusable database dump."
+  },
+  "synthetic_legacy_shape": {
+    "backend": "sqlite",
+    "source_helper": "legacy_key",
+    "scope": "Transform a stopped, disposable copy of real current-producer API admissions. This is not a physical pre-upgrade rehearsal.",
+    "preconditions": [
+      "Database belongs to the test cohort; no production input.",
+      "Server is stopped; use a disposable copy.",
+      "Selected command_id, command_type, workflow_instance_id and workflow_run_id equal the original API receipt.",
+      "Stored request_id equals the original caller key token and exactly one dw_command_intents row belongs to command_id."
+    ],
+    "transaction": "BEGIN IMMEDIATE; verify preconditions before mutations; require one affected row from each statement; COMMIT only if all succeed, otherwise ROLLBACK.",
+    "statements": [
+      "DELETE FROM dw_command_intents WHERE command_id=:command_id",
+      "UPDATE workflow_commands SET request_id=:legacy_request_id WHERE id=:command_id"
+    ],
+    "preserve": "Every other command column, related update/signal, task, history and payload-registry row remains byte-for-byte unchanged."
+  },
+  "keys": {
+    "original": "token-key",
+    "second": "second-key",
+    "case_exact": "CaseSensitive",
+    "case_other": "casesensitive",
+    "tokens": {
+      "signal": "signal-v1:7fd98d71570942fe2b98b2888d3d879c32e8130a904115032291500e856db4ba",
+      "update": "update-v1:7fd98d71570942fe2b98b2888d3d879c32e8130a904115032291500e856db4ba"
+    }
+  },
+  "legacy_readback": {
+    "types": [
+      "signal",
+      "update"
+    ],
+    "states": [
+      "open_after_restart",
+      "completed_after_restart",
+      "continued_after_restart"
+    ],
+    "original_input": 1,
+    "retry_input": 999,
+    "concurrency": 4,
+    "expected": {
+      "retained": true,
+      "intent_verified": false,
+      "same_fields": [
+        "command_id",
+        "run_id"
+      ],
+      "update_same_fields": [
+        "update_id",
+        "accepted_at"
+      ],
+      "writes": 0,
+      "success_statuses": {
+        "signal": [
+          202
+        ],
+        "update": [
+          200,
+          202
+        ]
+      }
+    },
+    "update_close_setup": [
+      "complete_update(original_update_id, null)",
+      "complete_workflow(null) or continue_as_new"
+    ],
+    "closed_update_expected": {
+      "update_status": "completed",
+      "result": null
+    },
+    "explicit_original_run": "Read back the original receipt, including after continuation; do not claim the successor was targeted.",
+    "changed_name_or_explicit_run": {
+      "status": 409,
+      "reason": "request_id_conflict",
+      "original_id_field": "retained_command_id",
+      "writes": 0
+    }
+  },
+  "ambiguity": [
+    {
+      "shape": "two-rows",
+      "setup": "Admit original under token-key. Admit a second command under second-key; transform only that second command to raw token-key.",
+      "retry_key": "original"
+    },
+    {
+      "shape": "legacy-token",
+      "setup": "Admit under token-key; transform that command to raw keys.tokens[type], removing its intent.",
+      "retry_key": "original"
+    },
+    {
+      "shape": "modern-raw",
+      "setup": "Keep the original modern admission under token-key unchanged.",
+      "retry_key": "tokens[type]"
+    }
+  ],
+  "ambiguity_expected": {
+    "status": 409,
+    "reason": "request_id_ambiguous",
+    "retained": true,
+    "intent_verified": false,
+    "retryable": false,
+    "writes": 0,
+    "must_not_select_receipt": true
+  },
+  "case_only": {
+    "setup": "Admit under CaseSensitive, then transform that command to raw CaseSensitive. Exact-byte retry reads back unverified.",
+    "retry_key": "casesensitive",
+    "mysql_mariadb_default_ci": {
+      "status": 409,
+      "reason": "request_id_ambiguous",
+      "retryable": false,
+      "writes": 0
+    },
+    "sqlite_postgresql_binary": {
+      "status": 202,
+      "identity": "new command; distinct key",
+      "zero_write_claim": false
+    }
+  },
+  "physical_upgrade": {
+    "scope": "Separate actual old-image admission and schema-upgrade cell. Do not substitute the synthetic transform or minimal orphan command-row schema tests.",
+    "baseline": {
+      "tag": "3.8.0",
+      "source_commit": "28f084513235f6647e740c4b3d9e3aace7a323b7",
+      "index_digest": "sha256:7988a23525d9e50e997a9f6f02e801300ed4f626de3cf6977033657ae7e9f58e"
+    },
+    "schemas": {
+      "sqlite": [
+        12,
+        13
+      ],
+      "postgresql": [
+        13,
+        14
+      ],
+      "mariadb": [
+        13,
+        14
+      ],
+      "mysql": [
+        14,
+        15
+      ]
+    },
+    "procedure": [
+      "Admit real signal/update receipts through baseline public APIs; record exact keys, command/run/update identities and rows/history. Use the baseline advertised worker protocol; seed generation is not a current-SDK acceptance claim.",
+      "Stop all baseline Servers, keep the database and backup, and record the baseline image/source and database fingerprints.",
+      "Run the exact candidate image schema-upgrade once; require the declared schema transition and an empty dw_command_intents table.",
+      "Prove original raw request_id values and command/history rows were preserved, then start the exact candidate image.",
+      "Perform legacy readbacks and name/target conflicts; compare full rows/history and original identities. Keep synthetic ambiguity cells separate unless their seed was genuinely created through the baseline API."
+    ],
+    "no_inference": "The 3.9.1 source tests prove all-backend row preservation separately. They do not prove this installed upgrade cell for an SDK."
+  },
+  "postcommit_response_loss": {
+    "scope": "Separate real admission cell. A proxy must establish that the Server committed before dropping the response; then retry the original key. Synthetic legacy setup does not establish response-loss evidence."
+  },
+  "receipt_requirements": [
+    "Exact fixture Git commit/blob and digest",
+    "Actual SDK/CLI package and Server source/index/platform identities",
+    "Synthetic-shape versus physical-upgrade versus postcommit-loss cell label",
+    "Original and returned command/run/update identities and complete zero-write snapshots where required",
+    "Nonpass and cleanup outcomes; no inferred PASS from source lineage"
+  ]
+}
