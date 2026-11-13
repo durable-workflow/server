@@ -321,7 +321,9 @@ case "$path" in
   repos/example/server/git/ref/tags/*) printf '%s\n' "${TAG_OBJECT:-commit $COMMIT}" ;;
   repos/example/server/git/tags/*) printf 'commit %s\n' "$COMMIT" ;;
   repos/example/server/compare/*) printf '%s\n' "${COMPARE:-ahead}" ;;
-  repos/example/server/releases/latest) printf '%s\n' "${LATEST_TAG:-}" ;;
+  repos/example/server/releases/latest)
+    if [[ -n "${LATEST_AFTER_EDIT:-}" ]] && grep -q -- '^release edit ' "$GH_LOG"; then printf '%s\n' "$LATEST_AFTER_EDIT"
+    else printf '%s\n' "${LATEST_TAG:-}"; fi ;;
   repos/example/server/actions/runs/*) printf '%s\n' "${RUN_LINE:-.github/workflows/native-release.yml workflow_dispatch completed success $RELEASE_TAG $COMMIT ${RUN_ATTEMPT:-1}}" ;;
   *) exit 1 ;;
 esac
@@ -437,6 +439,8 @@ want_release "legacy body, no repair asked" "$(gh_release 3.1.0 "$ours" LATEST_T
 want_release "legacy body repaired, Latest kept" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$legacy_final")")" "edit --latest=true"
 [[ "$(cat "$scratch/gh_notes")" == "$notes_final" ]] || fail "the repair must publish exactly the tagged notes."
 want_release "legacy backport repaired, not Latest" "$(gh_release 3.0.2 "$theirs" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.0.2 3.0.2 false false "$legacy_backport")")" "edit --latest=false"
+want_release "older release repaired while a newer one stays Latest" "$(gh_release 3.0.2 "$theirs" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 LATEST_AFTER_EDIT=3.1.0 EXISTING="$(existing 3.0.2 3.0.2 false false "$legacy_backport")")" "edit --latest=false"
+want_release "repair that moves Latest" "$(gh_release 3.0.2 "$theirs" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 LATEST_AFTER_EDIT=3.0.2 EXISTING="$(existing 3.0.2 3.0.2 false false "$legacy_backport")")" "$failed"
 want_release "complete body with repair asked" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$notes_final")")" "none"
 want_release "repair of other notes" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$legacy_final extra")")" "$failed"
 want_release "repair with another title" "$(gh_release 3.1.0 "$ours" REPAIR_LEGACY_NOTES=true LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 native-3.1.0 false false "$legacy_final")")" "$failed"

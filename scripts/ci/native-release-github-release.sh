@@ -122,7 +122,9 @@ if existing=$("$gh_bin" release view "$tag" --repo "$repo" --json tagName,name,i
     existing=$("$gh_bin" release view "$tag" --repo "$repo" --json tagName,name,isDraft,isPrerelease,body) \
       || fail "cannot read Release $tag back."
     matches "$notes" || fail "Release $tag did not read back with its tagged notes."
-    printf 'Release %s now carries its tagged notes.\n' "$tag"
+    after=$("$gh_bin" api "repos/$repo/releases/latest" --jq .tag_name) || fail "cannot read the Latest Release back."
+    [[ "$after" == "$current" ]] || fail "repairing $tag moved Latest from $current to $after."
+    printf 'Release %s now carries its tagged notes; Latest is still %s.\n' "$tag" "$current"
     exit 0
   fi
   printf 'Release %s is exactly this verified release; left unchanged.\n' "$tag"
