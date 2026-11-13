@@ -596,6 +596,8 @@ fn list_selection(backend: &str, cursor_probe: bool) -> String {
         .iter()
         .map(|name| format!("s.{name}"))
         .collect::<Vec<_>>();
+    let dispatch_length = byte_length(backend, "s.dispatch_summary");
+    columns.push(format!("CASE WHEN {dispatch_length}<=4096 THEN s.dispatch_summary ELSE NULL END AS dispatch_summary"));
     let scalars = [
         (
             "s.latest_workflow_instance_id",
@@ -792,7 +794,8 @@ where
             return Err(invalid_summary());
         }
         Ok(
-            json!({"failures_count":failures,"skipped_trigger_count":skipped,
+            json!({"dispatch_summary":super::schedule_dispatch_summary::Summary::wire(DB::optional_string(row,"dispatch_summary").ok().flatten()),
+            "failures_count":failures,"skipped_trigger_count":skipped,
             "latest_workflow_instance_id":latest,"current_run":current}),
         )
     }

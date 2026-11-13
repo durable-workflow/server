@@ -1258,10 +1258,38 @@ with at most 64 Unicode scalars / 256 UTF-8 bytes. The nullable UTC timestamp
 preserves six fractional digits, for example `2026-11-05T12:00:01.123456Z`, and
 matches describe's `info.last_skipped_at`. Invalid or oversized stored values
 return HTTP 503 `storage_unavailable`. A later successful fire preserves an
-earlier skip, so this pair is not the latest overall dispatch outcome. Full
-last-dispatch/buffer summaries and published capability remain pending Server
-#1014. An empty list cannot prove pair support; consumers retain describe
-fallback and their current polling policy.
+earlier skip, so this pair is not the latest overall dispatch outcome. The
+dispatch summary has its own authority below. An empty list cannot prove
+support for either contract.
+
+Native list rows and describe responses also carry a top-level
+`dispatch_summary` v1. Older producers omit it. The complete object contains
+`version`, `state`, `last_outcome` and `buffered_actions_count`:
+
+| State | Last outcome | Current buffer count |
+| --- | --- | --- |
+| `known` | Complete recorded dispatch | Integer from 0 through 9007199254740991 |
+| `never` | `null`, established only by new creation | `0` |
+| `unavailable` | `null`, including legacy or invalid stored authority | `null` |
+
+A known outcome has exactly `id`, `outcome`, `recorded_at`, `reason`,
+`workflow_instance_id` and `workflow_run_id`. Outcomes are `started`, `buffered`,
+`skipped` or `failed`. Started outcomes name both new uppercase ULIDs and have
+a null reason. Other outcomes have null workflow identities. Skipped and failed
+outcomes keep the complete reason, including empty strings and whitespace;
+buffered outcomes have a null reason. Times are UTC with six fractional digits.
+The complete summary is bounded to 4096 serialized UTF-8 bytes. An outcome that
+cannot fit the complete contract replaces earlier authority with unavailable
+without changing the underlying scheduling operation or truncating its reason.
+
+A valid unavailable summary overrides older legacy outcome evidence. Absent,
+null, partial or unsupported summaries provide no v1 authority. A later describe
+owns the whole summary, including absence or null; do not merge it with a list
+snapshot. Count-only buffer changes retain the outcome ID and time, so a buffered
+outcome can coexist with a current count of zero. Neither timestamp ranking nor
+the latest-workflow pointer determines the latest dispatch. Current workflow
+execution status remains separate. Native schema upgrades leave existing rows
+unknown and do not reconstruct summaries from legacy arrays.
 
 Schedule listing is namespace-scoped and never returns deleted schedules. The
 optional `status` (`active` or `paused`) and `workflow_type` filters are exact

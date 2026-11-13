@@ -13,7 +13,7 @@ use sqlx::{
 
 use super::{Result, refuse};
 
-pub const VERSION: i64 = 14;
+pub const VERSION: i64 = 15;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
@@ -53,6 +53,63 @@ fn migrator() -> &'static Migrator {
     MIGRATOR.get_or_init(|| {
         let mut migrations = Migrator::with_migrations(vec![Migration::new(
             VERSION,
+            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries".into(),
+            MigrationType::Simple,
+            concat!(
+                include_str!("../../migrations/postgres/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0013_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0014_command_intents.sql"), "\n", include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql")
+            )
+            .into_sql_str(),
+            false,
+        )]);
+        // The caller's transaction-scoped PostgreSQL advisory lock covers
+        // the pre-migration recheck, ledger, DDL and marker together.
+        migrations.set_locking(false);
+        migrations
+    })
+}
+
+/// The single native migration, which a takeover records as applied once
+/// conversion has produced its schema.
+pub(super) fn migration() -> &'static Migration {
+    migrator().iter().next().expect("one native PostgreSQL migration")
+}
+
+/// The cumulative bootstrap an earlier native version recorded, byte for
+/// byte, with the catalog captured from PostgreSQL for that version.
+fn earlier_migration(version: i64) -> Option<(&'static Migration, &'static str)> {
+    static V7: OnceLock<Migration> = OnceLock::new();
+    static V8: OnceLock<Migration> = OnceLock::new();
+    static V9: OnceLock<Migration> = OnceLock::new();
+    static V10: OnceLock<Migration> = OnceLock::new();
+    static V11: OnceLock<Migration> = OnceLock::new();
+    static V12: OnceLock<Migration> = OnceLock::new();
+    static V13: OnceLock<Migration> = OnceLock::new();
+    static V14: OnceLock<Migration> = OnceLock::new();
+    match version {
+        14 => Some((V14.get_or_init(|| Migration::new(
+            14,
             "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents".into(),
             MigrationType::Simple,
             concat!(
@@ -82,31 +139,8 @@ fn migrator() -> &'static Migrator {
             )
             .into_sql_str(),
             false,
-        )]);
-        // The caller's transaction-scoped PostgreSQL advisory lock covers
-        // the pre-migration recheck, ledger, DDL and marker together.
-        migrations.set_locking(false);
-        migrations
-    })
-}
+        )), include_str!("../../migrations/postgres/0014_catalog.json"))),
 
-/// The single native migration, which a takeover records as applied once
-/// conversion has produced its schema.
-pub(super) fn migration() -> &'static Migration {
-    migrator().iter().next().expect("one native PostgreSQL migration")
-}
-
-/// The cumulative bootstrap an earlier native version recorded, byte for
-/// byte, with the catalog captured from PostgreSQL for that version.
-fn earlier_migration(version: i64) -> Option<(&'static Migration, &'static str)> {
-    static V7: OnceLock<Migration> = OnceLock::new();
-    static V8: OnceLock<Migration> = OnceLock::new();
-    static V9: OnceLock<Migration> = OnceLock::new();
-    static V10: OnceLock<Migration> = OnceLock::new();
-    static V11: OnceLock<Migration> = OnceLock::new();
-    static V12: OnceLock<Migration> = OnceLock::new();
-    static V13: OnceLock<Migration> = OnceLock::new();
-    match version {
         13 => Some((V13.get_or_init(|| Migration::new(13,
             "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses".into(),
             MigrationType::Simple,
@@ -280,6 +314,7 @@ fn step(version: i64) -> Option<&'static str> {
         11 => Some(include_str!("../../migrations/postgres/0012_run_command_contracts.sql")),
         12 => Some(include_str!("../../migrations/postgres/0013_task_queue_pauses.sql")),
         13 => Some(include_str!("../../migrations/postgres/0014_command_intents.sql")),
+        14 => Some(include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql")),
         _ => None,
     }
 }
@@ -312,7 +347,7 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/postgres/0013_task_queue_pauses.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0014_command_intents.sql")
+                include_str!("../../migrations/postgres/0014_command_intents.sql"), "\n", include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql")
         ),
     )
 }
@@ -450,7 +485,7 @@ pub(super) async fn verify(connection: &mut PgConnection) -> Result<()> {
     // from SQL text. It retains types, precision, defaults, indexes, foreign
     // keys and sequence ownership while excluding live rows/sequence values.
     let expected: Catalog =
-        serde_json::from_str(include_str!("../../migrations/postgres/0014_catalog.json"))?;
+        serde_json::from_str(include_str!("../../migrations/postgres/0015_catalog.json"))?;
     let actual = catalog(connection).await?;
     if actual != expected {
         return Err(refuse(
@@ -1000,6 +1035,7 @@ mod tests {
         let db=Database::new().await;
         let store=super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_schedule_list_summary().await;
+        store.qualify_schedule_dispatch_summary().await;
         store.close().await;
         db.remove().await;
     }

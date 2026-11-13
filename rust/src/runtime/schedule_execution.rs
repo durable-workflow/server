@@ -1,6 +1,7 @@
 //! Schedule controls and firing as published PHP's `ScheduleManager` does
 //! them, with each admission committed atomically with its original run.
 use super::schedule_storage::{iso8601, occurrence as occurrence_text};
+use super::schedule_dispatch_summary::{Kind, Outcome, Summary, MAX_BYTES};
 use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
@@ -56,6 +57,36 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// Read only bounded scalar authority while holding the transition lock.
+    /// SQL NULL proves an empty buffer; other legacy array contents are not
+    /// parsed here. Only the operation already owning that array supplies a count.
+    async fn dispatch_authority(tx: &mut Transaction<'_, DB>, key: &str) -> Result<(Summary, Option<u64>)> {
+        let sql = if DB::NAME == "SQLite" {
+            "SELECT CASE WHEN length(CAST(dispatch_summary AS BLOB))<=4096 THEN dispatch_summary ELSE NULL END AS dispatch_summary,CASE WHEN buffered_actions IS NULL THEN 1 ELSE 0 END AS buffer_empty FROM workflow_schedules WHERE id=$1"
+        } else {
+            "SELECT CASE WHEN OCTET_LENGTH(dispatch_summary)<=4096 THEN dispatch_summary ELSE NULL END AS dispatch_summary,CASE WHEN buffered_actions IS NULL THEN 1 ELSE 0 END AS buffer_empty FROM workflow_schedules WHERE id=$1"
+        };
+        let row = Self::query(sql).bind(key).fetch_one(&mut **tx).await?;
+        let raw = DB::optional_string(&row, "dispatch_summary").ok().flatten();
+        let summary = Summary::read(raw.as_deref());
+        let count = if DB::number(&row, "buffer_empty")? == 1 { Some(0) } else { summary.count() };
+        Ok((summary, count))
+    }
+
+    async fn record_dispatch(tx: &mut Transaction<'_, DB>, key: &str, outcome: Outcome, count: Option<u64>) -> Result<()> {
+        let count = match count { Some(count) => Some(count), None => Self::dispatch_authority(tx, key).await?.1 };
+        Self::query("UPDATE workflow_schedules SET dispatch_summary=$1 WHERE id=$2")
+            .bind(Summary::recorded(outcome, count).encoded()).bind(key).execute(&mut **tx).await?;
+        Ok(())
+    }
+
+    async fn update_dispatch_count(tx: &mut Transaction<'_, DB>, key: &str, count: u64) -> Result<()> {
+        let (summary, _) = Self::dispatch_authority(tx, key).await?;
+        Self::query("UPDATE workflow_schedules SET dispatch_summary=$1 WHERE id=$2")
+            .bind(summary.with_count(count).encoded()).bind(key).execute(&mut **tx).await?;
+        Ok(())
+    }
+
     /// Pause, resume or delete a live schedule.
     pub(crate) async fn edit_schedule(
         &self,
@@ -101,6 +132,7 @@ where
             "delete" => {
                 Self::query("UPDATE workflow_schedules SET status='deleted',deleted_at=$1,next_fire_at=NULL,buffered_actions=NULL,updated_at=$2 WHERE id=$3")
                     .bind(DB::bind_time(changed)).bind(DB::bind_time(changed)).bind(&key).execute(&mut *tx).await?;
+                Self::update_dispatch_count(&mut tx, &key, 0).await?;
                 Self::append_schedule(&mut tx, &key, "ScheduleDeleted",
                     json!({"reason":"deleted","deleted_at":iso8601(changed)}), Some(&context), None, None).await?;
                 "deleted"
@@ -223,7 +255,7 @@ where
                 }
                 Decision::Start { policy } => {
                     let result = store
-                        .start_scheduled(&mut tx, &row, occurrence, outcome, &policy, context)
+                        .start_scheduled(&mut tx, &row, occurrence, outcome, &policy, context, None)
                         .await;
                     match result {
                         Ok(result) => {
@@ -239,7 +271,7 @@ where
                                 .bind(key)
                                 .fetch_one(&mut *tx)
                                 .await?;
-                            Self::record_skip(&mut tx, &row, reason, context).await?;
+                            Self::record_skip(&mut tx, &row, reason, context, None).await?;
                             Self::recompute_next(&mut tx, &row).await?;
                             tx.commit().await?;
                             return Ok(Trigger::Skipped(reason.to_owned()));
@@ -274,17 +306,17 @@ where
             }
         }
         if DB::string(row, "status")? != "active" {
-            Self::record_skip(tx, row, "status_not_triggerable", context).await?;
+            Self::record_skip(tx, row, "status_not_triggerable", context, None).await?;
             return Ok(skip("status_not_triggerable"));
         }
         if DB::optional_number(row, "remaining_actions")?.is_some_and(|remaining| remaining <= 0) {
-            Self::record_skip(tx, row, "remaining_actions_exhausted", context).await?;
+            Self::record_skip(tx, row, "remaining_actions_exhausted", context, None).await?;
             return Ok(skip("remaining_actions_exhausted"));
         }
         if let Some(occurrence) = occurrence
             && self.has_fired(tx, row, occurrence).await?
         {
-            self.skip_fired(tx, row, occurrence, context).await?;
+            self.skip_fired(tx, row, occurrence, context, None).await?;
             return Ok(skip("already_fired_occurrence"));
         }
         let stored = DB::string(row, "overlap_policy")?;
@@ -299,7 +331,7 @@ where
                 .and_then(|items| items.as_array().cloned())
                 .unwrap_or_default();
             if policy == "buffer_one" && !buffered.is_empty() {
-                Self::record_skip(tx, row, "buffer_full", context).await?;
+                Self::record_skip(tx, row, "buffer_full", context, None).await?;
                 Self::recompute_next(tx, row).await?;
                 return Ok(Decision::Done(Trigger::BufferFull));
             }
@@ -312,6 +344,7 @@ where
             Self::query("UPDATE workflow_schedules SET buffered_actions=$1,updated_at=$2 WHERE id=$3")
                 .bind(DB::document(&json!(buffered))).bind(DB::bind_time(now())).bind(DB::string(row, "id")?)
                 .execute(&mut **tx).await?;
+            Self::record_dispatch(tx, &DB::string(row, "id")?, Outcome::new(Kind::Buffered, now(), None, None, None), Some(buffered.len() as u64)).await?;
             Self::recompute_next(tx, row).await?;
             return Ok(Decision::Done(Trigger::Buffered));
         }
@@ -320,7 +353,7 @@ where
             || matches!(policy.as_str(), "cancel_other" | "terminate_other");
         if !allowed {
             let reason = format!("overlap_policy_{policy}");
-            Self::record_skip(tx, row, &reason, context).await?;
+            Self::record_skip(tx, row, &reason, context, None).await?;
             Self::recompute_next(tx, row).await?;
             return Ok(Decision::Done(Trigger::Skipped(reason)));
         }
@@ -342,6 +375,7 @@ where
         outcome: &str,
         policy: &str,
         context: Option<&Value>,
+        buffer_count: Option<u64>,
     ) -> Result<Trigger> {
         let key = DB::string(row, "id")?;
         let schedule = DB::string(row, "schedule_id")?;
@@ -422,6 +456,8 @@ where
             )
             .await?;
         }
+        let count = if remaining.is_some_and(|remaining| remaining <= 0) { Some(0) } else { buffer_count };
+        Self::record_dispatch(tx, &key, Outcome::new(Kind::Started, fired, None, Some(&workflow), Some(&run)), count).await?;
         Ok(Trigger::Triggered { workflow, run })
     }
 
@@ -431,6 +467,7 @@ where
         row: &DB::Row,
         reason: &str,
         context: Option<&Value>,
+        buffer_count: Option<u64>,
     ) -> Result<()> {
         let changed = now();
         let key = DB::string(row, "id")?;
@@ -443,6 +480,7 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "schedule_skip_count_exhausted"))?;
         Self::query("UPDATE workflow_schedules SET skipped_trigger_count=$1,last_skip_reason=$2,last_skipped_at=$3,updated_at=$4 WHERE id=$5")
             .bind(skipped).bind(reason).bind(DB::bind_time(changed)).bind(DB::bind_time(changed)).bind(&key).execute(&mut **tx).await?;
+        Self::record_dispatch(tx, &key, Outcome::new(Kind::Skipped, changed, Some(reason), None, None), buffer_count).await?;
         Self::append_schedule(
             tx,
             &key,
@@ -471,6 +509,7 @@ where
         Self::query("UPDATE workflow_schedules SET recent_actions=$1,failures_count=$2,last_fired_at=$3,updated_at=$4 WHERE id=$5")
             .bind(DB::document(&recent)).bind(failures).bind(DB::bind_time(failed)).bind(DB::bind_time(failed)).bind(key)
             .execute(&mut *tx).await?;
+        Self::record_dispatch(&mut tx, key, Outcome::new(Kind::Failed, failed, Some(reason), None, None), None).await?;
         // A spec PHP cannot evaluate keeps its stored occurrence.
         if let Ok(next) = schedules::next_fire(
             &DB::optional_document_row(&row, "spec")?.unwrap_or(Value::Null),
@@ -519,8 +558,9 @@ where
         row: &DB::Row,
         occurrence: DateTime<Utc>,
         context: Option<&Value>,
+        buffer_count: Option<u64>,
     ) -> Result<()> {
-        Self::record_skip(tx, row, "already_fired_occurrence", context).await?;
+        Self::record_skip(tx, row, "already_fired_occurrence", context, buffer_count).await?;
         if DB::optional_instant(row, "next_fire_at")?
             .is_some_and(|next| occurrence_key(next) == occurrence_key(occurrence))
             && now().timestamp() >= occurrence.timestamp()
@@ -620,6 +660,7 @@ where
         let rest = (!buffered.is_empty()).then(|| DB::document(&json!(buffered)));
         Self::query("UPDATE workflow_schedules SET buffered_actions=$1,updated_at=$2 WHERE id=$3")
             .bind(rest).bind(DB::bind_time(now())).bind(key).execute(&mut *tx).await?;
+        Self::update_dispatch_count(&mut tx, key, buffered.len() as u64).await?;
         let occurrence = action["occurrence_time"]
             .as_str()
             .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
@@ -627,20 +668,21 @@ where
         if let Some(occurrence) = occurrence
             && store.has_fired(&mut tx, &row, occurrence).await?
         {
-            store.skip_fired(&mut tx, &row, occurrence, None).await?;
+            store.skip_fired(&mut tx, &row, occurrence, None, Some(buffered.len() as u64)).await?;
             tx.commit().await?;
             return Ok(());
         }
         if DB::string(&row, "status")? != "active" {
             drop(tx);
             let mut tx = self.begin().await?;
-            Self::record_skip(&mut tx, &row, "schedule_not_triggerable", None).await?;
+            let row = Self::query("SELECT * FROM workflow_schedules WHERE id=$1").bind(key).fetch_one(&mut *tx).await?;
+            Self::record_skip(&mut tx, &row, "schedule_not_triggerable", None, None).await?;
             tx.commit().await?;
             return Ok(());
         }
         let policy = DB::string(&row, "overlap_policy")?;
         match store
-            .start_scheduled(&mut tx, &row, occurrence, "drained", &policy, None)
+            .start_scheduled(&mut tx, &row, occurrence, "drained", &policy, None, Some(buffered.len() as u64))
             .await
         {
             Ok(_) => {
@@ -652,11 +694,117 @@ where
                 // The drained action is kept: PHP rolls the drain back too.
                 drop(tx);
                 let mut tx = self.begin().await?;
-                Self::record_skip(&mut tx, &row, reason, None).await?;
+                let row = Self::query("SELECT * FROM workflow_schedules WHERE id=$1").bind(key).fetch_one(&mut *tx).await?;
+                Self::record_skip(&mut tx, &row, reason, None, None).await?;
                 tx.commit().await?;
                 Ok(())
             }
             Err(error) => Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+impl<DB: Backend> Store<DB>
+where
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'q> Option<&'q str>: Encode<'q, DB>,
+    for<'q> Option<DB::EncodedDocument>: Encode<'q, DB>,
+    for<'q> Option<i64>: Encode<'q, DB>,
+    for<'q> String: Encode<'q, DB> + Type<DB>,
+    for<'q> i64: Encode<'q, DB> + Type<DB>,
+    for<'r> i64: Decode<'r, DB>,
+    usize: ColumnIndex<DB::Row>,
+{
+    /// The same actual writer/rollback controls on each supported driver.
+    pub(super) async fn qualify_schedule_dispatch_summary(&self) {
+        let definition = schedules::definition(&json!({"schedule_id":"dispatch-summary",
+            "spec":{"intervals":[{"every":"PT1H"}],"timezone":"UTC"},
+            "action":{"workflow_type":"echo","task_queue":"dispatch-summary"},
+            "overlap_policy":"buffer_all"})).unwrap();
+        self.create_schedule(definition, json!({}), json!({})).await.unwrap();
+        let initial = self.describe_schedule("dispatch-summary").await.unwrap();
+        assert_eq!(initial["dispatch_summary"], json!({"version":1,"state":"never","last_outcome":null,"buffered_actions_count":0}));
+        let key_row = Self::query("SELECT id FROM workflow_schedules WHERE schedule_id='dispatch-summary' AND namespace=$1")
+            .bind(self.namespace.as_ref()).fetch_one(&self.pool).await.unwrap();
+        let key = DB::string(&key_row, "id").unwrap();
+
+        let started = self.trigger_schedule("dispatch-summary", None, json!({})).await.unwrap();
+        let first = self.describe_schedule("dispatch-summary").await.unwrap()["dispatch_summary"].clone();
+        assert_eq!(first["state"], "known");
+        assert_eq!(first["last_outcome"]["outcome"], "started");
+        assert_eq!(first["last_outcome"]["workflow_instance_id"], started["workflow_id"]);
+        assert_eq!(first["last_outcome"]["workflow_run_id"], started["run_id"]);
+        for depth in 1..=2 {
+            self.trigger_schedule("dispatch-summary", None, json!({})).await.unwrap();
+            let summary = self.describe_schedule("dispatch-summary").await.unwrap()["dispatch_summary"].clone();
+            assert_eq!(summary["last_outcome"]["outcome"], "buffered");
+            assert_eq!(summary["buffered_actions_count"], depth);
+        }
+        let buffered = self.describe_schedule("dispatch-summary").await.unwrap()["dispatch_summary"].clone();
+        // Execution failure changes the current-run projection, not dispatch.
+        Self::query("UPDATE workflow_runs SET status='failed' WHERE id=$1")
+            .bind(started["run_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
+        let page = self.list_schedules(None, "fixture-secret").await.unwrap();
+        let row = page["schedules"].as_array().unwrap().iter().find(|row| row["schedule_id"]=="dispatch-summary").unwrap();
+        assert_eq!(row["dispatch_summary"], buffered);
+        assert_eq!(row["current_run"]["status"], "failed");
+
+        // A refused start rolls back the removal, then records its skip from
+        // fresh locked authority. The malformed envelope is test-owned state.
+        let bad_action = json!({"workflow_type":"echo","task_queue":"dispatch-summary","input":{"codec":"unsupported","blob":"fixture"}});
+        Self::query("UPDATE workflow_schedules SET action=$1 WHERE id=$2")
+            .bind(DB::document(&bad_action)).bind(&key).execute(&self.pool).await.unwrap();
+        self.drain_one(&key).await.unwrap();
+        let refused = self.describe_schedule("dispatch-summary").await.unwrap();
+        assert_eq!(refused["info"]["buffered_actions"].as_array().unwrap().len(), 2);
+        assert_eq!(refused["dispatch_summary"]["buffered_actions_count"], 2);
+        assert_eq!(refused["dispatch_summary"]["last_outcome"]["outcome"], "skipped");
+        assert_eq!(refused["dispatch_summary"]["last_outcome"]["reason"], "unsupported_payload_codec");
+        assert_ne!(refused["dispatch_summary"]["last_outcome"]["id"], buffered["last_outcome"]["id"]);
+
+        Self::query("UPDATE workflow_schedules SET action=$1 WHERE id=$2")
+            .bind(DB::document(&json!({"workflow_type":"echo","task_queue":"dispatch-summary"}))).bind(&key).execute(&self.pool).await.unwrap();
+        self.drain_one(&key).await.unwrap();
+        let drained = self.describe_schedule("dispatch-summary").await.unwrap();
+        assert_eq!(drained["dispatch_summary"]["buffered_actions_count"], 1);
+        assert_eq!(drained["dispatch_summary"]["last_outcome"]["outcome"], "started");
+
+        let mut tx = self.begin().await.unwrap();
+        let row = self.schedule_row(&mut tx, "dispatch-summary", false).await.unwrap();
+        Self::record_skip(&mut tx, &row, "uncommitted", None, None).await.unwrap();
+        tx.rollback().await.unwrap();
+        assert_eq!(self.describe_schedule("dispatch-summary").await.unwrap()["dispatch_summary"], drained["dispatch_summary"]);
+
+        // An oversized new reason revokes old authority, while the original
+        // failure and its complete text remain in the existing detail history.
+        let oversized = "x".repeat(65);
+        self.record_failure(&key, &oversized).await.unwrap();
+        let failure = self.describe_schedule("dispatch-summary").await.unwrap();
+        assert_eq!(failure["dispatch_summary"]["state"], "unavailable");
+        assert_eq!(failure["info"]["recent_actions"].as_array().unwrap().last().unwrap()["reason"], oversized);
+        // Legacy non-NULL buffers do not become a fabricated zero count.
+        Self::query("UPDATE workflow_schedules SET dispatch_summary=NULL WHERE id=$1").bind(&key).execute(&self.pool).await.unwrap();
+        self.record_failure(&key, "legacy").await.unwrap();
+        assert_eq!(self.describe_schedule("dispatch-summary").await.unwrap()["dispatch_summary"]["state"], "unavailable");
+        Self::query("UPDATE workflow_schedules SET buffered_actions=NULL WHERE id=$1").bind(&key).execute(&self.pool).await.unwrap();
+        self.record_failure(&key, " ").await.unwrap();
+        let failure = self.describe_schedule("dispatch-summary").await.unwrap();
+        assert_eq!(failure["dispatch_summary"]["last_outcome"]["reason"], " ");
+        assert_eq!(failure["dispatch_summary"]["buffered_actions_count"], 0);
+        // Count-only clearing preserves every outcome field, including time.
+        let mut tx = self.begin().await.unwrap();
+        Self::update_dispatch_count(&mut tx, &key, 0).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(self.describe_schedule("dispatch-summary").await.unwrap()["dispatch_summary"], failure["dispatch_summary"]);
+
+        for raw in ["null".to_owned(), "{}".to_owned(), "x".repeat(MAX_BYTES+1)] {
+            Self::query("UPDATE workflow_schedules SET dispatch_summary=$1 WHERE id=$2").bind(raw).bind(&key).execute(&self.pool).await.unwrap();
+            let page = self.list_schedules(None, "fixture-secret").await.unwrap();
+            let row = page["schedules"].as_array().unwrap().iter().find(|row| row["schedule_id"]=="dispatch-summary").unwrap();
+            assert_eq!(row["dispatch_summary"]["state"], "unavailable");
         }
     }
 }
@@ -740,6 +888,14 @@ mod tests {
 
     async fn sqlite_store(file: &std::path::Path) -> Store<sqlx::Sqlite> {
         Store::<sqlx::Sqlite>::new(super::super::sqlite::open(file.to_str().unwrap()).await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn dispatch_summary_writer_and_rollback_controls() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = sqlite_store(&directory.path().join("dispatch.sqlite")).await;
+        store.qualify_schedule_dispatch_summary().await;
+        store.close().await;
     }
 
     #[tokio::test]
