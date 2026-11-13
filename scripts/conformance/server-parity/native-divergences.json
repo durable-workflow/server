@@ -2,6 +2,15 @@
   "schema": "durable-workflow.server-parity-native-divergences/v1",
   "divergences": [
     {
+      "id": "completion-byte-limit-discovery",
+      "issue": "https://github.com/durable-workflow/server/issues/1136",
+      "since": "native #1136 source correction",
+      "applies_to": ["cluster-info"],
+      "published_php": "The limits object does not advertise a separate workflow task completion request-body budget.",
+      "native": "limits.max_workflow_task_completion_bytes advertises the actual enforced wire-request cap for workflow and activity continuation completions, independently of per-value limits.",
+      "harness": "The native cluster-info comparator requires the exact field and shared-vector default value. PHP and embedded observations and frozen fixtures remain unchanged. Actual HTTP boundary and TCP refusal tests consume the shared completion-limit vectors."
+    },
+    {
       "id": "request-id-reuse-conflict",
       "issue": "https://github.com/durable-workflow/server/issues/934",
       "since": "native 3.9.0",

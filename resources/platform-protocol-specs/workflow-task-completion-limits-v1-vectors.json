@@ -1,0 +1,53 @@
+{
+  "schema": "durable-workflow.workflow-task-completion-limits.v1",
+  "issue": "https://github.com/durable-workflow/server/issues/1136",
+  "measurement": "complete_encoded_json_http_request_body_bytes",
+  "default_limits": {
+    "max_payload_bytes": 2097152,
+    "max_workflow_task_completion_bytes": 33554432
+  },
+  "completion_routes": [
+    "/api/worker/workflow-tasks/fixture-task/complete",
+    "/api/worker/activity-tasks/fixture-task/continuation/complete"
+  ],
+  "ordinary_route": "/api/workflows",
+  "wire_cases": [
+    {
+      "id": "ordinary-exact",
+      "route_kind": "ordinary",
+      "wire_bytes": 2097152,
+      "size_admitted": true
+    },
+    {
+      "id": "ordinary-over",
+      "route_kind": "ordinary",
+      "wire_bytes": 2097153,
+      "size_admitted": false
+    },
+    {
+      "id": "completion-over-ordinary",
+      "route_kind": "completion",
+      "wire_bytes": 2097153,
+      "size_admitted": true
+    },
+    {
+      "id": "completion-exact",
+      "route_kind": "completion",
+      "wire_bytes": 33554432,
+      "size_admitted": true
+    },
+    {
+      "id": "completion-over",
+      "route_kind": "completion",
+      "wire_bytes": 33554433,
+      "size_admitted": false
+    }
+  ],
+  "oversized_response": {
+    "status": 413,
+    "reason": "payload_too_large",
+    "limit_kind": "workflow_task_completion_bytes",
+    "limit": 33554432
+  },
+  "scope": "Size admission alone. Authentication, lease fences, per-value Avro limits and command validation still apply; no durable work is admitted by a size refusal."
+}
