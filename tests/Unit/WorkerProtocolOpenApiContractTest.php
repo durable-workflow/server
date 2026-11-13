@@ -26,6 +26,32 @@ class WorkerProtocolOpenApiContractTest extends TestCase
         $this->spec = $spec;
     }
 
+    public function test_completion_budget_schema_consumes_shared_positive_and_invalid_vectors(): void
+    {
+        $root = dirname(__DIR__, 2).'/resources/platform-protocol-specs/';
+        $document = json_decode(file_get_contents($root.'cluster-info-envelope.schema.json'), true, flags: JSON_THROW_ON_ERROR);
+        $vectors = json_decode(file_get_contents($root.'workflow-task-completion-limits-v1-vectors.json'), flags: JSON_THROW_ON_ERROR);
+        $schema = OpenApiSchema::fromFile($root.'cluster-info-envelope.schema.json');
+        $field = 'max_workflow_task_completion_bytes';
+        $this->assertNotContains($field, $document['properties']['limits']['required'], 'Older producers may omit the field.');
+        foreach ($vectors->negotiation_cases as $case) {
+            if (! property_exists($case->limits, $field)) {
+                continue;
+            }
+            $validate = fn () => $schema->assertReferenceMatches('#/properties/limits/properties/'.$field, $case->limits->{$field});
+            if ($case->expected === 'completion_cap') {
+                $validate();
+                continue;
+            }
+            try {
+                $validate();
+                $this->fail('Invalid completion budget accepted: '.$case->id);
+            } catch (AssertionFailedError $error) {
+                $this->assertStringNotContainsString('Invalid completion budget accepted:', $error->getMessage());
+            }
+        }
+    }
+
     public function test_workflow_claims_publish_an_additive_observation_clock(): void
     {
         $schema = OpenApiSchema::fromFile(dirname(__DIR__, 2).'/resources/platform-protocol-specs/worker-protocol-api.openapi.yaml');
