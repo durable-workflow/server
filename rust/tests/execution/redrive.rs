@@ -126,6 +126,7 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
         assert_eq!(run_history(&app, &source["workflow_id"], &source["run_id"]).await, original);
         let task = poll(&app, "worker", "workflow").await;
         assert_eq!(task["run_id"], accepted["run_id"]);
+        assert_eq!(clock(&task["replay_clock"]["started_at"]), original_start);
         assert_eq!(finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b",
             "arguments":envelope(Payload::Array(vec![]))}])).await.0, StatusCode::OK);
         previous_timer = fired["timer_id"].clone();
