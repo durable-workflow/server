@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -645,7 +646,7 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
         self.assertIn("capacity-worker", command)
         self.assertTrue(
             any(
-                value.startswith("/tmp/durable-workflow-capacity-worker-")
+                value.startswith("/tmp/durable-workflow-capacity-workers/")
                 for value in command
             )
         )
@@ -678,6 +679,75 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             runner._container_worker_pid_file(adapter, environment),
             cleanup[-1],
         )
+
+    def test_worker_pid_files_are_private_and_exclusive(self) -> None:
+        # Server #1051: run the exact container scripts with the local sh.
+        def worker(pidfile: Path) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["sh", "-c", capacity_matrix.WORKER_PIDFILE_SCRIPT, "capacity-worker", str(pidfile), "true"],
+                text=True, capture_output=True, check=False,
+            )
+
+        def cleanup(pidfile: Path) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["sh", "-c", capacity_matrix.WORKER_CLEANUP_SCRIPT, "capacity-worker-cleanup", str(pidfile)],
+                text=True, capture_output=True, check=False,
+            )
+
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            pidfile = root / "workers" / "worker.pid"
+            started = worker(pidfile)
+            self.assertEqual(0, started.returncode, started.stderr)
+            self.assertEqual(0o700, pidfile.parent.stat().st_mode & 0o777)
+            self.assertEqual(0o600, pidfile.stat().st_mode & 0o777)
+            recorded = pidfile.read_text()
+            self.assertRegex(recorded, r"^\d+ \d+\n$")
+
+            # A second start with the same identity refuses; nothing is overwritten.
+            self.assertEqual(43, worker(pidfile).returncode)
+            self.assertEqual(recorded, pidfile.read_text())
+
+            # The recorded process has exited, so cleanup only removes the file.
+            self.assertEqual(0, cleanup(pidfile).returncode)
+            self.assertFalse(pidfile.exists())
+            self.assertEqual(0, cleanup(pidfile).returncode, "a missing pid file is already clean")
+
+            # A symlinked directory or pid file is refused, never followed.
+            target = root / "elsewhere"
+            target.mkdir(mode=0o700)
+            (root / "linked").symlink_to(target)
+            self.assertEqual(42, worker(root / "linked" / "worker.pid").returncode)
+            self.assertEqual([], list(target.iterdir()))
+            planted = pidfile.parent / "planted.pid"
+            planted.symlink_to(target / "victim")
+            self.assertEqual(42, cleanup(planted).returncode)
+            self.assertFalse((target / "victim").exists())
+
+            # A started process with a different recorded start is left alone.
+            with open(pidfile, "x") as handle:
+                handle.write(f"{os.getpid()} 1\n")
+            self.assertEqual(41, cleanup(pidfile).returncode)
+            self.assertTrue(pidfile.exists())
+
+    def test_git_is_resolved_without_path(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = Path(scratch) / "git"
+            fake.write_text("#!/bin/sh\necho 0123456789abcdef0123456789abcdef01234567\n")
+            fake.chmod(0o700)
+            with mock.patch.dict(capacity_suite.os.environ, {"CAPACITY_GIT": str(fake), "PATH": scratch}):
+                self.assertEqual(str(fake), capacity_suite.git_executable())
+                self.assertEqual("0123456789abcdef0123456789abcdef01234567", capacity_suite._git_revision())
+            for configured in ("git", str(Path(scratch) / "missing")):
+                with mock.patch.dict(capacity_suite.os.environ, {"CAPACITY_GIT": configured}):
+                    with self.assertRaises(FileNotFoundError):
+                        capacity_suite.git_executable()
+                    self.assertEqual("unknown-local-revision", capacity_suite._git_revision())
+            # Unset, a PATH entry named git is never chosen.
+            with mock.patch.dict(capacity_suite.os.environ, {"PATH": scratch}, clear=True):
+                with mock.patch.object(capacity_suite, "GIT_CANDIDATES", ("/nonexistent/git",)):
+                    with self.assertRaises(FileNotFoundError):
+                        capacity_suite.git_executable()
 
     def test_worker_process_runs_container_cleanup_after_client_exit(self) -> None:
         process = mock.Mock()
