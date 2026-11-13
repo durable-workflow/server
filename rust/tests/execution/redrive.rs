@@ -95,8 +95,10 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
         }
         // Physical timer inventories stay unchanged by redrive, on every backend.
         let after = table_counts(&database).await;
-        assert_eq!(after.iter().find(|(name, _)| name == "workflow_timers"), counts.iter().find(|(name, _)| name == "workflow_timers"));
-        for sql in [format!("SELECT COUNT(*) FROM workflow_timers WHERE workflow_run_id='{run}'"),
+        let timer_count = |rows: &[(String, i64)]| rows.iter().find(|(name, _)| name == "workflow_run_timers")
+            .expect("the source catalog contains workflow_run_timers").1;
+        assert_eq!(timer_count(&after), timer_count(&counts));
+        for sql in [format!("SELECT COUNT(*) FROM workflow_run_timers WHERE workflow_run_id='{run}'"),
             format!("SELECT COUNT(*) FROM workflow_tasks WHERE workflow_run_id='{run}' AND task_type='timer'")] {
             assert_eq!(task_retry::rows(&database, Box::leak(sql.into_boxed_str())).await, 0);
         }
