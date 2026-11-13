@@ -92,7 +92,7 @@ class CodecTests(unittest.TestCase):
             digest = hashlib.sha256((package.parent / relative).read_bytes()).digest()
             entry.hash = importlib.metadata.FileHash("sha256=" + base64.urlsafe_b64encode(digest).decode().rstrip("="))
             files.append(entry)
-        self.distribution = SimpleNamespace(version=seed.CODEC_VERSION, files=files,
+        self.distribution = SimpleNamespace(version="2.17.1", files=files,
                                             locate_file=lambda entry: package.parent / str(entry))
         self.package = package
         self.addCleanup(patch.stopall)
