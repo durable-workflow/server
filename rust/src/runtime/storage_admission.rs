@@ -147,16 +147,15 @@ fn read(settings: &Settings, now: i64) -> Snapshot {
 }
 
 /// A bounded regular file, never a FIFO, device or symlink, nor one another
-/// user could replace; the opened file must be the one inspected.
+/// user could replace. The final path component is opened without following
+/// a symlink and without blocking on a FIFO, and every check is made on that
+/// same descriptor, so nothing can be swapped in between a check and the read.
 fn observation(path: &str) -> Option<Value> {
-    let inspected = std::fs::symlink_metadata(path).ok()?;
-    if !inspected.file_type().is_file() || inspected.mode() & 0o022 != 0 {
-        return None;
-    }
-    let mut file = std::fs::File::open(path).ok()?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path).ok()?;
     let opened = file.metadata().ok()?;
-    if opened.dev() != inspected.dev() || opened.ino() != inspected.ino() || opened.len() > MAX_BYTES
-        || opened.mode() & 0o022 != 0 {
+    if !opened.file_type().is_file() || opened.len() > MAX_BYTES || opened.mode() & 0o022 != 0 {
         return None;
     }
     let mut bytes = Vec::with_capacity(MAX_BYTES as usize);
@@ -324,6 +323,11 @@ mod tests {
         let link = directory.path().join("link.json");
         std::os::unix::fs::symlink(&path, &link).unwrap();
         unavailable(&settings(&link));
+        // A FIFO is refused without blocking the reader.
+        let fifo = directory.path().join("fifo.json");
+        let fifo_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o644) }, 0);
+        unavailable(&settings(&fifo));
         // A directory, a relative path, half a configuration or an age bound
         // outside 1..=300.
         unavailable(&settings(directory.path()));
