@@ -3146,6 +3146,38 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_command_intents_upgrade_resumes() {
+        // server#934: MySQL 14 -> 15 and MariaDB 13 -> 14 add only the intent table.
+        for stage in ["before", "committed"] {
+            let db = Database::new().await;
+            let mut connection = db.connection().await;
+            let from = command_intents_step(Flavor::detect(&mut connection).await.unwrap());
+            connection.close().await.unwrap();
+            let flavor = retained_version_database(&db, from).await;
+            if stage == "before" {
+                refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+            } else {
+                // The table DDL committed before the interrupted upgrade recorded it.
+                let mut connection = db.connection().await;
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                connection.execute(flavor.step(from).unwrap()).await.unwrap();
+                connection.close().await.unwrap();
+            }
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection = db.connection().await;
+            let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(kept, format!("seeded at version {from}"));
+            assert_eq!(catalog(&mut connection).await.unwrap(), flavor.expected().unwrap());
+            connection.execute("ALTER TABLE dw_command_intents ADD COLUMN extra TEXT NULL").await.unwrap();
+            connection.close().await.unwrap();
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+            db.remove().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
     async fn qualification_task_queue_pauses_upgrade_resumes() {
         // server#577: MySQL 13 -> 14 and MariaDB 12 -> 13 add only the pause table.
         for stage in ["before", "committed"] {
