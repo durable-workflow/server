@@ -133,13 +133,14 @@ function finishHttpLargeCommandBatches(Client $admin, array $fixture, string $wo
         $observed['events'] = $counts;
         $observed['parallel_groups'] = $groups;
         $state[$case] = $observed;
-    }
-    // The runs' open timers and never-polled activity tasks would otherwise
-    // stay for the rest of the corpus, where every maintenance pass repairs
-    // them and delays the installed scheduler the schedule fixtures wait on.
-    foreach (array_keys($definition['cases']) as $case) {
-        $terminated = $raw('POST', 'workflows/'.rawurlencode($workflowId.'-lcb-'.$case).'/terminate',
-            ['reason' => 'large command batches recorded']);
+        // The run's open timers and never-polled activity tasks would
+        // otherwise stay while the later cases run and for the rest of the
+        // corpus. Every maintenance pass of the published SQLite reference
+        // repairs them on the file the next case's poll needs, which can hold
+        // that poll in backend_lock_pressure past its retry budget (Server
+        // #1194), and later delays the installed scheduler the schedule
+        // fixtures wait on. Everything above is recorded before this.
+        $terminated = $raw('POST', 'workflows/'.rawurlencode($id).'/terminate', ['reason' => 'large command batches recorded']);
         if (! in_array($terminated['status'], [200, 202], true)) {
             throw new RuntimeException('Large command batches cleanup: '.json_encode($terminated));
         }
