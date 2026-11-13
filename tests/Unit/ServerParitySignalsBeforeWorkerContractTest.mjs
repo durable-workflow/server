@@ -26,6 +26,25 @@ function model() {
 const projection = {scope: 'signals_before_worker'};
 
 test('published PHP responses pass', () => assert.deepStrictEqual(checkSignalsBeforeWorker(fixture, model(), workflowId), projection));
+test('native requires exact fresh keyed metadata while preserving all original receipt fields', () => {
+  const native = model();
+  const receipt = native.signals_before_worker.steps[1].response;
+  Object.assign(receipt, {request_id: 'before-worker-1', retained: false, intent_verified: true});
+  assert.deepStrictEqual(checkSignalsBeforeWorker(fixture, native, workflowId, 'rust'), projection);
+  assert.throws(() => checkSignalsBeforeWorker(fixture, native, workflowId, 'php'));
+  assert.throws(() => checkSignalsBeforeWorker(fixture, model(), workflowId, 'rust'));
+  for (const [field, wrong] of [['request_id', 'another-key'], ['retained', true], ['intent_verified', false],
+    ['command_status', 'rejected'], ['command_id', 'missing']]) {
+    const original = receipt[field];
+    receipt[field] = wrong;
+    assert.throws(() => checkSignalsBeforeWorker(fixture, native, workflowId, 'rust'), field);
+    delete receipt[field];
+    assert.throws(() => checkSignalsBeforeWorker(fixture, native, workflowId, 'rust'), field);
+    receipt[field] = original;
+  }
+  native.signals_before_worker.steps[2].response.retained = false;
+  assert.throws(() => checkSignalsBeforeWorker(fixture, native, workflowId, 'rust'), 'unkeyed responses stay exact');
+});
 test('embedded explicitly declares the case inapplicable', () => assert.deepStrictEqual(checkSignalsBeforeWorker(fixture,
   {mode: 'embedded', signals_before_worker: {applicable: false, reason: 'embedded_runs_have_a_loadable_contract'}}, workflowId),
   projection));

@@ -8,6 +8,15 @@ const fixture = JSON.parse(readFileSync(new URL('../Fixtures/ServerParity/update
 const recorded = JSON.parse(readFileSync(new URL('../Fixtures/ServerParityExpected/update-validation-observation.json', import.meta.url)));
 const workflowId = 'uv-probe-3';
 const observation = () => ({mode: 'http', update_validation: structuredClone(recorded)});
+function nativeObservation() {
+  const actual = observation();
+  for (const [step, request_id] of Object.entries({approved_update: 'r1', plain: 'p1', completed_wait: 'r4',
+    retained_approval: 'r1', retained_rejection: 'r2'})) {
+    Object.assign(actual.update_validation[step].response, {request_id, retained: step.startsWith('retained_'),
+      intent_verified: step !== 'retained_rejection'});
+  }
+  return actual;
+}
 const projection = {scope: 'update_validation', steps: Object.keys(fixture.update_validation.expected).length};
 
 test('published PHP passes', () => {
@@ -15,7 +24,7 @@ test('published PHP passes', () => {
 });
 
 test('native retained receipts explicitly report intent proof under their named divergence', () => {
-  const actual = observation();
+  const actual = nativeObservation();
   const response = actual.update_validation.retained_approval.response;
   response.retained = true;
   response.intent_verified = true;
@@ -34,6 +43,26 @@ test('native retained receipts explicitly report intent proof under their named 
   actual.update_validation.retained_rejection.response.intent_verified = false;
   actual.update_validation.approved_update.response.retained = true;
   assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), /approved_update/);
+});
+
+test('native keyed receipts require exact keys and fresh markers without weakening original fields', () => {
+  const steps = ['approved_update', 'plain', 'completed_wait', 'retained_approval', 'retained_rejection'];
+  for (const step of steps) {
+    for (const field of ['request_id', 'retained', 'intent_verified']) {
+      for (const mutation of ['missing', 'wrong']) {
+        const actual = nativeObservation();
+        const response = actual.update_validation[step].response;
+        if (mutation === 'missing') delete response[field];
+        else response[field] = field === 'request_id' ? 'another-key' : !response[field];
+        assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), new RegExp(step));
+      }
+    }
+    const actual = nativeObservation();
+    delete actual.update_validation[step].response.command_id;
+    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), new RegExp(step));
+  }
+  assert.throws(() => checkUpdateValidation(fixture, observation(), workflowId, 'rust'), /approved_update/);
+  assert.throws(() => checkUpdateValidation(fixture, nativeObservation(), workflowId, 'php'), /approved_update/);
 });
 
 test('embedded explicitly declares update validation inapplicable', () => {
@@ -81,7 +110,7 @@ for (const [label, mutate, message] of [
   ['a capability that is not advertised', state => { state.capability[0] = false; }],
 ]) {
   test(`rejects ${label}`, () => {
-    const actual = observation();
+    const actual = nativeObservation();
     mutate(actual.update_validation);
     assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), message);
   });

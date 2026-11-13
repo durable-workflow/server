@@ -45,13 +45,14 @@ test('the recorder forwards its native target to retained update validation chec
   const raw = {...observation(), mode: 'http', update_validation: updateState};
   // The implementation target belongs to the recording, never the probe observation.
   raw.update_validation.workflow_id = `${raw.workflow_id}-uv`;
-  for (const step of ['retained_approval', 'retained_rejection']) {
-    raw.update_validation[step].response.retained = true;
-    raw.update_validation[step].response.intent_verified = step === 'retained_approval';
+  for (const [step, request_id] of Object.entries({approved_update: 'r1', plain: 'p1', completed_wait: 'r4',
+    retained_approval: 'r1', retained_rejection: 'r2'})) {
+    Object.assign(raw.update_validation[step].response, {request_id, retained: step.startsWith('retained_'),
+      intent_verified: step !== 'retained_rejection'});
   }
   assert.deepEqual(checkObservation(combined, raw, raw.workflow_id, undefined, 'rust').update_validation,
     {scope: 'update_validation', steps: Object.keys(updateFixture.update_validation.expected).length});
-  assert.throws(() => checkObservation(combined, raw, raw.workflow_id, undefined, 'php'), /retained_approval/);
+  assert.throws(() => checkObservation(combined, raw, raw.workflow_id, undefined, 'php'), /approved_update/);
 });
 
 test('comparison binds identical recordings to the selected source artifact manifest', () => {
