@@ -390,21 +390,26 @@ async fn workflow_failure_applies_authored_commands_before_terminal_and_closes_p
             .iter()
             .map(|e| e["event_type"].as_str().unwrap())
             .collect::<Vec<_>>(),
+        // The failure settles the work it scheduled before its terminal
+        // event (Server #1193): activities first, then timers.
         vec![
             "StartAccepted",
             "WorkflowStarted",
             "TimerScheduled",
             "ActivityScheduled",
+            "ActivityCancelled",
+            "TimerCancelled",
             "WorkflowFailed"
         ]
     );
+    assert_eq!(events[4]["payload"]["cancellation_reason"], "run_closed", "{events}");
     assert_eq!(
         task_retry::rows(
             &database,
             "SELECT COUNT(*) FROM workflow_run_timers WHERE status='pending'"
         )
         .await,
-        1
+        0
     );
     assert_eq!(
         task_retry::rows(
@@ -412,7 +417,7 @@ async fn workflow_failure_applies_authored_commands_before_terminal_and_closes_p
             "SELECT COUNT(*) FROM activity_executions WHERE status='pending'"
         )
         .await,
-        1
+        0
     );
     assert!(poll(&app, "failure-worker", "activity").await.is_null());
     assert!(poll(&app, "failure-worker", "workflow").await.is_null());
@@ -519,6 +524,8 @@ async fn workflow_failure_terminal_position_does_not_split_authored_selection_me
             "VersionMarkerRecorded",
             "ActivityScheduled",
             "TimerScheduled",
+            "ActivityCancelled",
+            "TimerCancelled",
             "WorkflowFailed"
         ]
     );

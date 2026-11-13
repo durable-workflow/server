@@ -94,6 +94,9 @@ where
             (false, true, Some("run_cancelled"))
         } else if run_status == "terminated" {
             (false, true, Some("run_terminated"))
+        } else if attempt_status == "cancelled" && matches!(run_status.as_str(), "completed" | "failed") {
+            // The run's own close cancelled it (Server #1193).
+            (false, true, Some("run_closed"))
         } else if attempt_status != "running" {
             (false, attempt_status == "cancelled", Some("attempt_closed"))
         } else if activity_status == "cancelled" {

@@ -16,6 +16,12 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+/// `cancellation_reason` of an activity its run's own close cancelled
+/// (Core `ClosingRunOpenWork::CANCELLATION_REASON`, Server #1193). Such a
+/// cancellation never decides a selection, a parallel group or an outcome:
+/// the workflow had already moved past the operation when it closed.
+pub(super) const CLOSED_RUN_CANCELLATION: &str = "run_closed";
+
 // Frozen PHP HTTP runs Laravel TrimStrings before cancellation validation.
 // Pin its reviewed character set rather than a changing Unicode whitespace
 // predicate. Internal characters and the embedded API's reasons stay intact.
@@ -307,7 +313,7 @@ where
         .await?;
         Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND status IN ('ready','leased')")
             .bind(&run_id).execute(&mut **tx).await?;
-        Self::cancel_open_activities(tx, &run_id, Some(command_id), activities, at).await?;
+        Self::cancel_open_activities(tx, &run_id, Some(command_id), activities, at, None).await?;
         for timer in timers {
             let timer_id = DB::string(&timer, "id")?;
             Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE id=$1")
@@ -424,6 +430,7 @@ where
         command_id: Option<&str>,
         activities: Vec<DB::Row>,
         at: chrono::DateTime<chrono::Utc>,
+        cancellation_reason: Option<&str>,
     ) -> Result<()> {
         for activity in activities {
             let activity_id = DB::string(&activity, "id")?;
@@ -453,6 +460,9 @@ where
             payload["attempt_number"] = json!(DB::number(&cancelled, "attempt_count")?);
             payload["cancelled_at"] = json!(DB::optional_instant(&cancelled, "closed_at")?);
             payload["activity_attempt"] = attempt_snapshot;
+            if let Some(reason) = cancellation_reason {
+                payload["cancellation_reason"] = json!(reason);
+            }
             Self::append(
                 tx,
                 run_id,
@@ -462,6 +472,45 @@ where
                 command_id,
             )
             .await?;
+        }
+        Ok(())
+    }
+
+    /// Core `ClosingRunOpenWork::settle` (Server #1193, workflow#1117): the
+    /// run's own code is closing it by completing, failing or continuing as
+    /// new. Every activity and timer it still has open is cancelled in the
+    /// closing transaction, before the terminal event, so nothing is ever
+    /// appended after that event. An activity cancellation carries
+    /// `cancellation_reason: run_closed`, which replay never treats as an
+    /// outcome the workflow observed. Only the run's open activity and timer
+    /// tasks are cancelled; the closing workflow task is the caller's.
+    /// Native refuses the abandon cancellation policy at scheduling (#971),
+    /// so no activity is left running and no `abandoned_activities` list is
+    /// written. Children follow their parent-close policy as before.
+    pub(super) async fn settle_closing_open_work(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        closing_task_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let activities = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY sequence, id")
+            .bind(run_id).fetch_all(&mut **tx).await?;
+        let timers = Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY sequence, id")
+            .bind(run_id).fetch_all(&mut **tx).await?;
+        if activities.is_empty() && timers.is_empty() {
+            return Ok(());
+        }
+        Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND task_type IN ('activity','timer') AND status IN ('ready','leased') AND id<>$2")
+            .bind(run_id).bind(closing_task_id).execute(&mut **tx).await?;
+        Self::cancel_open_activities(tx, run_id, None, activities, at, Some(CLOSED_RUN_CANCELLATION)).await?;
+        for timer in timers {
+            let timer_id = DB::string(&timer, "id")?;
+            Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE id=$1")
+                .bind(&timer_id)
+                .execute(&mut **tx)
+                .await?;
+            let payload = Self::timer_cancellation_payload(tx, run_id, &timer, at).await?;
+            Self::append(tx, run_id, "TimerCancelled", payload, Some(closing_task_id), None).await?;
         }
         Ok(())
     }
@@ -494,7 +543,7 @@ where
             .bind(&run_id).fetch_all(&mut **tx).await?;
         Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND status IN ('ready','leased') AND id<>$2")
             .bind(&run_id).bind(&task_id).execute(&mut **tx).await?;
-        Self::cancel_open_activities(tx, &run_id, None, activities, at).await?;
+        Self::cancel_open_activities(tx, &run_id, None, activities, at, None).await?;
         for timer in timers {
             let timer_id = DB::string(&timer, "id")?;
             Self::query("UPDATE workflow_run_timers SET status='cancelled' WHERE id=$1")
@@ -549,6 +598,10 @@ where
         let reason = match run_status.as_str() {
             "cancelled" => "run_cancelled",
             "terminated" => "run_terminated",
+            // The run's own code closed it (Server #1193): Core refuses any
+            // late outcome on a completed or failed run with run_closed and
+            // appends nothing after its terminal event.
+            "completed" | "failed" => "run_closed",
             // A deadline, not the run, cancelled this task. The caller
             // answers the late outcome with PHP's stale attempt receipt.
             _ => return Ok(()),

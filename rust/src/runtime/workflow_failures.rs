@@ -195,6 +195,9 @@ where
         } else {
             false
         };
+        // Attribution reads the last event the workflow saw, so the run's
+        // open work is settled only after it (Server #1193).
+        Self::settle_closing_open_work(tx, &run_id, &task_id, at).await?;
         Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,'terminal',$4,$5,$6,CASE WHEN $7='true' THEN TRUE ELSE FALSE END,FALSE,'',0,'',$8,$9)")
             .bind(&failure_id).bind(&run_id).bind(&run_id).bind(failure.category).bind(&failure.class).bind(stored_message(&failure.message).as_ref())
             .bind(if failure.non_retryable {"true"} else {"false"}).bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;

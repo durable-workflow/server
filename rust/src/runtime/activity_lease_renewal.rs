@@ -267,6 +267,8 @@ store_methods! {
             return Ok(match run_status.as_deref() {
                 Some("cancelled") => (false, true, Some("run_cancelled")),
                 Some("terminated") => (false, true, Some("run_terminated")),
+                // The run's own close cancelled it (Server #1193).
+                Some("completed" | "failed") if attempt_status == "cancelled" => (false, true, Some("run_closed")),
                 _ => (false, attempt_status == "cancelled", Some("attempt_closed")),
             });
         }

@@ -170,9 +170,9 @@ where
                 "continue_as_new_run_not_current",
             ));
         }
-        // Published PHP continues a run whatever it has open
-        // (`applyContinueAsNew`). Its activities, timers, children and waits
-        // stay with the closed predecessor, and no parent-close policy
+        // Core settles the predecessor's open activities and timers before
+        // its terminal event (Server #1193, workflow#1117). Its children and
+        // waits stay with the closed predecessor, and no parent-close policy
         // applies. Message streams pass to the next run when the completion
         // records its stream acknowledgements. Durable output streams are
         // rows of their run and stay with the predecessor. Core touches
@@ -249,9 +249,10 @@ where
             Self::append(tx, &next, "ScheduleTriggered", DB::document_row(&origin, "payload")?, None, None).await?;
         }
         Self::transfer_messages(tx, &old, &next, &workflow).await?;
+        let task_id = DB::string(task, "id")?;
+        Self::settle_closing_open_work(tx, &old, &task_id, started).await?;
         Self::query("UPDATE workflow_runs SET status='completed',closed_reason='continued',closed_at=$1,last_progress_at=$2 WHERE id=$3")
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).bind(&old).execute(&mut **tx).await?;
-        let task_id = DB::string(task, "id")?;
         Self::append(tx,&old,"WorkflowContinuedAsNew",json!({"sequence":sequence,"continued_to_run_id":next,
             "continued_to_run_number":number,"workflow_link_id":link,"closed_reason":"continued","task":Self::task_snapshot(task)?}),Some(&task_id),None).await?;
         // `PendingUpdateCloser::closeForTerminalRun`: updates already applied
