@@ -21,6 +21,11 @@ Laravel applications can also run the engine directly in
 
 ## Run Server
 
+PHP Server 2.11.8 is retired and contains Laravel dependencies affected by
+published advisories. Existing PHP installations should follow the
+[PHP retirement and security notice](docs/security/retired-php-server-2026-11-13.md)
+for immediate exposure reduction and the supported native migration guidance.
+
 For the 21 October 2026 critical PHP update, follow the
 [PHP runtime security notice](docs/security/php-runtime-2026-10-21.md) and verify
 the patched runtime in every deployed role.
