@@ -62,6 +62,9 @@ async fn redrive_reuses_fired_timer_identity_and_original_clock_without_timer_wo
         database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_history_events SET recorded_at='{}' WHERE workflow_run_id='{source_run}' AND sequence={sequence}",
             at.format("%Y-%m-%d %H:%M:%S%.6f")))).await;
     }
+    runtime.close().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
     let original = run_history(&app, &source["workflow_id"], &source["run_id"]).await;
     let timer = |history: &Value, kind: &str| history.as_array().unwrap().iter()
         .find(|event| event["event_type"] == kind).unwrap().clone();
