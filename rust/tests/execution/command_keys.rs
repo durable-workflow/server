@@ -180,6 +180,53 @@ async fn retention_prunes_request_key_digests_with_their_commands() {
     assert_eq!(task_retry::rows(&database, KEPT).await, 1, "the other run keeps its digest");
 }
 
+#[tokio::test]
+async fn unicode_request_keys_use_the_character_limit_and_keep_retry_identity() {
+    for (kind, action) in [("signal", "signal/finish"), ("update", "update/set")] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        update_worker(&app, "unicode-key-worker").await;
+        let started = start(&app, "unicode-keys").await;
+        if kind == "update" {
+            open_update_wait(&app, "unicode-key-worker").await;
+        }
+        let path = format!("/api/workflows/unicode-keys/{action}");
+        for character in ["é", "🦀"] {
+            let key = character.repeat(255);
+            assert_eq!(key.chars().count(), 255);
+            assert!(key.len() > 255);
+            let original = request(&app, "POST", &path, input(1, Some(&key))).await;
+            assert_eq!(original.0, StatusCode::ACCEPTED, "{kind}: {}", original.1);
+            let before = table_counts(&database).await;
+            let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+            let replies = futures_util::future::join_all((0..4).map(|_| {
+                request(&app, "POST", &path, input(1, Some(&key)))
+            })).await;
+            for (status, reply) in replies {
+                assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+                assert_eq!(reply["command_id"], original.1["command_id"]);
+                assert_eq!(reply["run_id"], original.1["run_id"]);
+                assert_eq!((reply["retained"].clone(), reply["intent_verified"].clone()),
+                    (json!(true), json!(true)), "{reply}");
+                if kind == "update" {
+                    assert_eq!(reply["update_id"], original.1["update_id"]);
+                }
+            }
+            assert_conflict(&request(&app, "POST", &path, input(2, Some(&key))).await,
+                &original.1, "arguments");
+            let too_long = character.repeat(256);
+            let refused = request(&app, "POST", &path, input(1, Some(&too_long))).await;
+            assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused.1);
+            assert_eq!(refused.1["reason"], "validation_failed", "{}", refused.1);
+            assert_eq!(table_counts(&database).await, before);
+            assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, history);
+        }
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
 /// The pre-3.9 writer stored a raw request_id and no intent row. Preserve
 /// that exact shape without rewriting the original command or its history.
 async fn legacy_key(database: &TestDatabase, command: &Value, key: &str) {

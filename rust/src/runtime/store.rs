@@ -1048,7 +1048,7 @@ where
             ));
         }
         if body.get("request_id").is_some_and(|value| {
-            !value.is_null() && value.as_str().is_none_or(|text| text.len() > 255)
+            !value.is_null() && value.as_str().is_none_or(|text| text.chars().count() > 255)
         }) {
             return Err(refuse(
                 StatusCode::UNPROCESSABLE_ENTITY,
