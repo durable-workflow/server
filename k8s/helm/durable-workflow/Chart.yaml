@@ -9,7 +9,7 @@ version: 1.7.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.9.0"
+appVersion: "3.9.1"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,14 +30,16 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.9.0"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.9.1"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: "Default image changes from native Server 3.8.0 to 3.9.0. Every backend needs a schema upgrade (SQLite 12 to 13, PostgreSQL and MariaDB 13 to 14, MySQL 14 to 15) that only creates the empty dw_command_intents table. Scale to zero, back up, run helm upgrade with native.schemaUpgrade.enabled=true, scale up; rolling back means restoring the backup (docs/UPGRADING.md)."
+      description: "Default image changes from native Server 3.8.0 to 3.9.1. Every backend needs a schema upgrade (SQLite 12 to 13, PostgreSQL and MariaDB 13 to 14, MySQL 14 to 15) that only creates the empty dw_command_intents table. Scale to zero, back up, run helm upgrade with native.schemaUpgrade.enabled=true, scale up; rolling back means restoring the backup (docs/UPGRADING.md)."
     - kind: added
-      description: "Server 3.9.0: signal and update request_id values are durable command keys; reusing a key with different input returns 409 request_id_conflict. A run's own close settles its open activities and timers. https://github.com/durable-workflow/server/releases/tag/3.9.0"
+      description: "Server 3.9.1: signal and update request_id values are durable command keys; reusing a key with different input returns 409 request_id_conflict. A run's own close settles its open activities and timers. https://github.com/durable-workflow/server/releases/tag/3.9.1"
     - kind: changed
-      description: "Server 3.9.0 honors the configured storage-admission observation: draining refuses new work while existing leases can finish; fenced permits only reads. Completion uploads during draining remain unavailable (server#951)."
+      description: "Server 3.9.1 honors the configured storage-admission observation: draining refuses new work while existing leases can finish; fenced permits only reads. Completion uploads during draining remain unavailable (server#951)."
+    - kind: fixed
+      description: "Legacy command-key readback identifies unverified intent and refuses ambiguous identities. Oversized completion responses use a bounded drain, and discovery advertises the actual completion wire cap; installed SDK acceptance is tracked in shared#228."

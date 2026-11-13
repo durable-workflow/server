@@ -69,11 +69,11 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
-### Chart 1.7.0 / Server 3.9.0 (native)
+### Chart 1.7.0 / Server 3.9.1 (native)
 
-**Every backend needs an explicit native schema upgrade.** Server 3.9.0 adds
+**From 3.8.x or earlier, every backend needs an explicit native schema upgrade.** Server 3.9.1 includes
 one native-only table, `dw_command_intents`, created empty. It rewrites no
-existing rows:
+existing rows. From 3.9.0, there is no additional schema step:
 
 | Backend | Schema |
 | --- | --- |
@@ -85,14 +85,14 @@ existing rows:
 1. Scale the Server to zero, including every replica sharing the database.
 2. Back up the database and external payload storage.
 3. Run `helm upgrade` with `native.schemaUpgrade.enabled=true` (or the manual
-   schema-upgrade Job in the chart README) so the 3.9.0 image runs
+   schema-upgrade Job in the chart README) so the 3.9.1 image runs
    `schema-upgrade` once.
-4. Scale every Server back up on 3.9.0 and confirm readiness and worker
+4. Scale every Server back up on 3.9.1 and confirm readiness and worker
    registration.
 
 Rolling back to 3.8.x requires restoring the backup taken in step 2: 3.8.0
 refuses the upgraded database with `native_schema_newer_than_binary`.
-Started on the earlier schema, 3.9.0 refuses with
+Started on the earlier schema, 3.9.1 refuses with
 `native_schema_upgrade_required`. On MySQL and MariaDB an interrupted
 upgrade resumes when `schema-upgrade` is run again; SQLite and PostgreSQL
 upgrade in one transaction.
@@ -107,6 +107,19 @@ below, with its downtime of about 2 minutes per million history rows.
   with different input returns `409 request_id_conflict` with zero writes.
   Do not retry that 409 unchanged. Use the original input to recover the
   receipt, or a new key for a new command. This differs from PHP 2.x.
+- Compatible receipts retained from before intent recording return their original
+  identities with `retained: true` and `intent_verified: false`. A changed
+  explicit run target or name refuses; ambiguous raw/hashed identities and
+  collation-only matches return nonretryable `409 request_id_ambiguous` with
+  zero writes.
+- Completion discovery exposes `limits.max_workflow_task_completion_bytes`
+  (default 33,554,432 encoded JSON request bytes) for workflow-task and activity
+  continuation completion. The per-value limit is unchanged. Oversized uploads
+  use a bounded discard (64 MiB/two seconds) before typed 413 delivery; uploads
+  beyond either bound can still get a transport error. This grants no new
+  continuation command upload authority. See
+  [shared #228](https://github.com/durable-workflow/.github/issues/228) for
+  installed SDK within/over-cap worker qualification.
 - A run's own complete, fail or continue-as-new now cancels its open
   activities and timers before its terminal event. A workflow that needs a
   select loser's effect must await it before returning. Workers must handle
@@ -122,7 +135,7 @@ fenced or unavailable observations permit only reads. Completion uploads
 during draining remain unavailable, so workers hold their results and retry
 after pressure clears. See the
 [storage-admission contract](../../../../docs/storage-admission.md#native-server)
-and [Server 3.9.0 release notes](../../../../docs/releases/3.9.0.md).
+and [Server 3.9.1 release notes](../../../../docs/releases/3.9.1.md).
 
 ### Chart 1.6.0 / Server 3.8.0 (native)
 
