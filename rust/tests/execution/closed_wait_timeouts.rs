@@ -33,7 +33,8 @@ async fn closed(case: &str) {
     let run = start(&app, &format!("wait-close-{case}")).await;
     let task = poll(&app, "close-worker", "workflow").await;
     let mut commands = waits();
-    // Ordinary timers retain PHP's existing completion/failure/continue behavior.
+    // An ordinary timer is settled with the waits' timeouts: a run's own close
+    // cancels every pending timer before its terminal event (Server #1193).
     commands.push(json!({"type":"start_timer","delay_seconds":600}));
     let terminal = match case {
         "complete" => Some(json!({"type":"complete_workflow","result":envelope(Payload::Null)})),
@@ -67,9 +68,14 @@ async fn closed(case: &str) {
         "TimerScheduled",
     ];
     match case {
-        "complete" => expected.push("WorkflowCompleted"),
-        "fail" => expected.push("WorkflowFailed"),
-        "continue" => expected.push("WorkflowContinuedAsNew"),
+        "complete" | "fail" | "continue" => {
+            expected.extend(["TimerCancelled", "TimerCancelled", "TimerCancelled"]);
+            expected.push(match case {
+                "complete" => "WorkflowCompleted",
+                "fail" => "WorkflowFailed",
+                _ => "WorkflowContinuedAsNew",
+            });
+        }
         "cancel" => expected.extend([
             "CancelRequested",
             "TimerCancelled",
@@ -95,7 +101,7 @@ async fn closed(case: &str) {
             .collect::<Vec<_>>(),
         expected
     );
-    let all_cancelled = matches!(case, "cancel" | "terminate");
+    let all_cancelled = true;
     let timers = rows(&database, "workflow_run_timers", &run["run_id"]).await;
     assert_eq!(timers.len(), 3);
     assert_eq!(
@@ -170,17 +176,17 @@ async fn closed(case: &str) {
 }
 
 #[tokio::test]
-async fn completion_settles_only_wait_timeouts_and_preserves_php_history() {
+async fn completion_settles_every_pending_timer_before_its_terminal_event() {
     closed("complete").await;
 }
 
 #[tokio::test]
-async fn failure_settles_only_wait_timeouts_and_preserves_php_history() {
+async fn failure_settles_every_pending_timer_before_its_terminal_event() {
     closed("fail").await;
 }
 
 #[tokio::test]
-async fn continuation_settles_only_predecessor_wait_timeouts_and_preserves_php_history() {
+async fn continuation_settles_every_predecessor_timer_before_its_terminal_event() {
     closed("continue").await;
 }
 
@@ -274,11 +280,16 @@ async fn later_completion(missing_projection: bool, missing_task: bool) {
     assert_eq!(finished.1["run_status"], "completed");
     let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     let events = history.as_array().unwrap();
+    // The close cancels both pending wait timeouts before its terminal event
+    // (Server #1193), and otherwise leaves the history as it was.
     assert_eq!(
-        &events[..events.len() - 1],
+        &events[..events.len() - 3],
         before.as_array().unwrap().as_slice()
     );
-    assert_eq!(events.last().unwrap()["event_type"], "WorkflowCompleted");
+    assert_eq!(
+        events[events.len() - 3..].iter().map(|event| event["event_type"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["TimerCancelled", "TimerCancelled", "WorkflowCompleted"]
+    );
     let timers = rows(&database, "workflow_run_timers", &run["run_id"]).await;
     assert_eq!(timers.len(), 2);
     assert!(timers.iter().all(|(_, state)| state == "cancelled"));

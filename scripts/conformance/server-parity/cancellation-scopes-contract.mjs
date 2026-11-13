@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {expectedFor} from './native-divergences.mjs';
 
 // Reviewed workflow-task cancellation scopes (CancellationScopeController over
 // Workflow 2.10's portable scope opening and delivery), with the scope
@@ -22,7 +23,7 @@ import assert from 'node:assert/strict';
 // answers Laravel's bare 500 (fixture `published_defects`). At those steps the
 // published answers or the intended 409 refusal are accepted, as a set;
 // nothing else is relaxed.
-export function checkCancellationScopes(fixture, observation, workflowId) {
+export function checkCancellationScopes(fixture, observation, workflowId, target) {
   const state = observation.cancellation_scopes;
   const projection = {scope: 'cancellation_scopes'};
   assert.ok(state && typeof state === 'object', 'actual cancellation scopes observation');
@@ -45,7 +46,9 @@ export function checkCancellationScopes(fixture, observation, workflowId) {
       for (const step of steps) actual[step] = definition.expected[step];
     }
   }
-  for (const [step, expected] of Object.entries(definition.expected)) {
+  // Native's own-close timer cancellation is the named divergence
+  // run-close-settles-open-work (Server #1193).
+  for (const [step, expected] of Object.entries(expectedFor(definition, target))) {
     assert.deepStrictEqual(actual[step], expected, `cancellation scopes ${step}`);
   }
   assert.deepStrictEqual(Object.keys(actual).sort(), Object.keys(definition.expected).sort(), 'cancellation scopes steps');

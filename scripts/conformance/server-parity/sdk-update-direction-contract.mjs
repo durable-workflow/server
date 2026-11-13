@@ -1,18 +1,13 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {checkPublishedSdkPackages} from './sdk-direction-contract.mjs';
+import {nativeDivergence} from './native-divergences.mjs';
 
 const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-updates/artifacts.json', import.meta.url)));
 const failureArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-update-failures/artifacts.json', import.meta.url)));
 const artifactsFor = fixture => fixture.sdk_update_failure ? failureArtifacts : artifacts;
 const languages = ['php', 'python', 'rust'];
 
-const divergences = JSON.parse(readFileSync(new URL('./native-divergences.json', import.meta.url), 'utf8'));
-/// Whether a reviewed native divergence applies to this recording target.
-function nativeDivergence(target, id) {
-  assert(divergences.divergences.some(divergence => divergence.id === id), `unregistered native divergence ${id}`);
-  return target === 'rust';
-}
 
 const phases = ['original', 'update-1', 'duplicate-pending-1', 'resumed-1', 'duplicate-completed-1',
   'update-2', 'duplicate-pending-2', 'resumed-2', 'duplicate-completed-2', 'signal', 'replacement'];

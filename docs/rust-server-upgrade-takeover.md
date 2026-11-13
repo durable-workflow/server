@@ -724,6 +724,18 @@ named. These are the ones a client moving from 2.x can observe:
   (workflow#877) behave like native. The parity harness records this as the
   named divergence `request-id-reuse-conflict`
   (`scripts/conformance/server-parity/native-divergences.json`).
+- **Open work when a run's own code closes it (native 3.9.0 and later, Server
+  #1193).** PHP 2.x completes, fails or continues a run as new and leaves its
+  open activities and timers as they are. An unawaited activity, such as a
+  `select()` loser, still runs and its history is appended after the terminal
+  event. Native follows Core workflow#1117 (Workflow 2.28.0). The close
+  records `ActivityCancelled` with `cancellation_reason: "run_closed"` for each
+  open activity and `TimerCancelled` for each pending timer, wait timeouts
+  included, before the terminal event, and appends nothing after it. A late
+  activity result answers `409` with `reason: "run_closed"`. Workers treat it
+  as final. A workflow that needs a loser's effect must await it before
+  returning. The parity harness records this as the named divergence
+  `run-close-settles-open-work`.
 
 ## Design
 

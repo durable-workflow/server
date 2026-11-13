@@ -701,6 +701,46 @@
         ],
         "terminated": 200
       }
+    },
+    "native_divergence": "run-close-settles-open-work",
+    "native_expected": {
+      "mixed": {
+        "first_history": [
+          [
+            "SignalReceived",
+            {
+              "signal_id": "{signal:2}",
+              "signal_name": "first",
+              "signal_wait_id": "{wait:1}"
+            }
+          ],
+          [
+            "MessageCursorAdvanced",
+            []
+          ],
+          [
+            "SignalApplied",
+            {
+              "sequence": 1,
+              "signal_id": "{signal:2}",
+              "signal_name": "first",
+              "signal_wait_id": "{wait:1}"
+            }
+          ],
+          [
+            "TimerCancelled",
+            {
+              "delay_seconds": 600,
+              "sequence": 4,
+              "timer_id": "{timer:3}"
+            }
+          ],
+          [
+            "WorkflowCompleted",
+            []
+          ]
+        ]
+      }
     }
   }
 }

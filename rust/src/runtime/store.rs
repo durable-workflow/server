@@ -3874,11 +3874,9 @@ where
                     // it a turn before the close (Server 2.10.0).
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
-                    // Published PHP completes a run whatever is still open. Its
-                    // ordinary activities and timers stay as they are, and
-                    // open children follow their parent-close policies. The
-                    // terminal event settles physical wait timeout rows while
-                    // retaining PHP's history.
+                    // Core settles the run's open activities and timers before
+                    // the terminal event (Server #1193, workflow#1117); open
+                    // children follow their parent-close policies.
                     let output = match external.get(&index) {
                         Some(prepared) => prepared.stored(),
                         None => envelope(command, "result")?,
@@ -3888,6 +3886,7 @@ where
                         self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri)
                             .await?;
                     }
+                    Self::settle_closing_open_work(&mut tx, &run_id, task_id, closed_at).await?;
                     Self::append(
                         &mut tx,
                         &run_id,

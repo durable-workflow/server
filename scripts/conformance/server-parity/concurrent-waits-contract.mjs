@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {expectedFor} from './native-divergences.mjs';
 
 // Reviewed concurrent waits (concurrent-waits-probe.php), recorded against
 // published Server 2.11.5: two signal waits and a condition wait opened in
@@ -8,8 +9,11 @@ import assert from 'node:assert/strict';
 // fixture's `expected` holds the whole normalized
 // observation; identities are labels by first appearance and instants are
 // dropped, so every step compares exactly.
-export function checkConcurrentWaits(fixture, observation) {
+export function checkConcurrentWaits(fixture, observation, target) {
   const definition = fixture.concurrent_waits;
+  // Native's own-close timer cancellation is the named divergence
+  // run-close-settles-open-work (Server #1193).
+  const expectedRuns = expectedFor(definition, target);
   const state = observation.concurrent_waits;
   const projection = {scope: 'concurrent_waits', runs: Object.keys(definition.expected).length};
   assert.ok(state && typeof state === 'object', 'actual concurrent waits observation');
@@ -19,7 +23,7 @@ export function checkConcurrentWaits(fixture, observation) {
     return projection;
   }
   assert.equal(state.applicable, true, 'HTTP targets record concurrent waits');
-  for (const [run, steps] of Object.entries(definition.expected)) {
+  for (const [run, steps] of Object.entries(expectedRuns)) {
     assert.ok(state[run] && typeof state[run] === 'object', `concurrent waits ${run} recorded`);
     for (const [step, expected] of Object.entries(steps)) {
       assert.deepStrictEqual(state[run][step], expected, `concurrent waits ${run} ${step}`);

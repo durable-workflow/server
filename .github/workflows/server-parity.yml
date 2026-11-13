@@ -70,6 +70,7 @@ on:
       - tests/Unit/ServerParityConcurrentWaitsContractTest.mjs
       - tests/Unit/ServerParityParallelChildAllContractTest.mjs
       - tests/Unit/ServerParityClosedWaitTimeoutsContractTest.mjs
+      - tests/Unit/ServerParityNativeDivergencesTest.mjs
       - tests/Unit/ServerParityHistoryExportWaitsContractTest.mjs
       - tests/Unit/ServerParityContinueTransfersContractTest.mjs
       - tests/Unit/ServerParityLargeCommandBatchesContractTest.mjs
@@ -2352,6 +2353,7 @@ jobs:
               tests/Unit/ServerParityConcurrentWaitsContractTest.mjs \
               tests/Unit/ServerParityParallelChildAllContractTest.mjs \
               tests/Unit/ServerParityClosedWaitTimeoutsContractTest.mjs \
+              tests/Unit/ServerParityNativeDivergencesTest.mjs \
               tests/Unit/ServerParityHistoryExportWaitsContractTest.mjs \
               tests/Unit/ServerParityContinueTransfersContractTest.mjs \
               tests/Unit/ServerParityChildDescriptionsContractTest.mjs \

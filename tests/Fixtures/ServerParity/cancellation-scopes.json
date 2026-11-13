@@ -7745,6 +7745,76 @@
           "status": 200
         }
       }
+    },
+    "native_divergence": "run-close-settles-open-work",
+    "native_expected": {
+      "scope_checkpoints": {
+        "history": [
+          {
+            "event_type": "StartAccepted",
+            "sequence": 1
+          },
+          {
+            "event_type": "WorkflowStarted",
+            "sequence": 2
+          },
+          {
+            "event_type": "SideEffectRecorded",
+            "sequence": 3
+          },
+          {
+            "event_type": "VersionMarkerRecorded",
+            "sequence": 4
+          },
+          {
+            "event_type": "TimerScheduled",
+            "payload": {
+              "cancellation_scope_id": "{absent}",
+              "sequence": 3
+            },
+            "sequence": 5
+          },
+          {
+            "event_type": "CancellationScopeOpened",
+            "payload": {
+              "parent_scope_id": "root",
+              "schema": "durable-workflow.cancellation-scope/v1",
+              "scope_id": "{R5.S1}",
+              "sequence": 4,
+              "shield_parent": false,
+              "task": {
+                "attempt_count": 1,
+                "id": "{R5.T1}",
+                "lease_owner": "{id}-r5-worker",
+                "status": "leased",
+                "type": "workflow"
+              },
+              "workflow_run_id": "{R5}"
+            },
+            "sequence": 6
+          },
+          {
+            "event_type": "TimerCancelled",
+            "payload": {
+              "cancelled_at": "{time:Z3}",
+              "delay_seconds": 3600,
+              "fire_at": "{time:Z6}",
+              "sequence": 3,
+              "timer_id": "{ulid:36}"
+            },
+            "sequence": 7
+          },
+          {
+            "event_type": "WorkflowCompleted",
+            "sequence": 8
+          }
+        ],
+        "open_after": {
+          "response": {
+            "history_event_id": "{ulid:37}"
+          }
+        }
+      }
     }
   }
 }

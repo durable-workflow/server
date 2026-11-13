@@ -1219,6 +1219,27 @@ When a run-level cancel or terminate command stops a leased activity task,
 heartbeat, complete, and fail responses include `run_closed_reason` and
 `run_closed_at` alongside `cancel_requested: true`.
 
+When a run's own code closes it with `complete_workflow`, `fail_workflow` or
+`continue_as_new` (native Server 3.9.0 and later, Core workflow#1117), the
+close settles the activities and timers the run still has open, in the same
+transaction and before the terminal event. An open activity, such as a
+`select()` loser the workflow never awaited, gets `ActivityCancelled` with
+`cancellation_reason: "run_closed"`, and its attempt and task are cancelled.
+Each pending timer, including a wait's timeout timer, gets `TimerCancelled`.
+Nothing is appended after the terminal event. A late heartbeat or lease
+renewal for such an activity answers `reason: "run_closed"` with
+`can_continue: false` and `cancel_requested: true`. A late `complete` or `fail`
+is refused with `409`, `outcome: "ignored"`, `recorded: false`,
+`reason: "run_closed"` and `activity_status: "cancelled"`. Workers must treat
+it as final and not retry. Replay must ignore an `ActivityCancelled` whose
+`cancellation_reason` is `run_closed`: the workflow never observed it, so it
+never resolves a selection, a parallel group member or an activity outcome.
+Native refuses the `abandon` activity cancellation policy, so it never keeps
+an activity running past its run's close and never writes the
+`abandoned_activities` list that Core writes for one. Children are unchanged:
+they follow their parent-close policy. Published PHP 2.x left this work open,
+so a workflow that needs a loser's effect must await it before returning.
+
 ### Schedules
 - `GET /api/schedules` — List schedules with visibility filters and cursor paging
 - `POST /api/schedules` — Create schedule

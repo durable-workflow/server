@@ -195,9 +195,9 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const searchAttributes = fixture.search_attributes ? checkSearchAttributes(fixture, observation, workflowId) : null;
   const storageTest = fixture.storage_test ? checkStorageTest(fixture, observation, workflowId) : null;
   const activityLeaseRenewal = fixture.activity_lease_renewal ? checkActivityLeaseRenewal(fixture, observation, workflowId) : null;
-  const concurrentWaits = fixture.concurrent_waits ? checkConcurrentWaits(fixture, observation) : null;
+  const concurrentWaits = fixture.concurrent_waits ? checkConcurrentWaits(fixture, observation, target) : null;
   const parallelChildAll = fixture.parallel_child_all ? checkParallelChildAll(fixture, observation) : null;
-  const closedWaitTimeouts = fixture.closed_wait_timeouts ? checkClosedWaitTimeouts(fixture, observation) : null;
+  const closedWaitTimeouts = fixture.closed_wait_timeouts ? checkClosedWaitTimeouts(fixture, observation, target) : null;
   const historyExportWaits = fixture.history_export_waits ? checkHistoryExportWaits(fixture, observation) : null;
   const continueTransfers = fixture.continue_transfers ? checkContinueTransfers(fixture, observation) : null;
   const largeCommandBatches = fixture.large_command_batches ? checkLargeCommandBatches(fixture, observation) : null;
@@ -230,7 +230,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const workerSessionActivities = fixture.worker_session_activities ? checkWorkerSessionActivities(fixture, observation, workflowId) : null;
   const activityCancellationAcknowledgement = fixture.activity_cancellation_acknowledgement
     ? checkActivityCancellationAcknowledgement(fixture, observation, workflowId) : null;
-  const cancellationScopes = fixture.cancellation_scopes ? checkCancellationScopes(fixture, observation, workflowId) : null;
+  const cancellationScopes = fixture.cancellation_scopes ? checkCancellationScopes(fixture, observation, workflowId, target) : null;
   const serviceCatalog = fixture.service_catalog ? checkServiceCatalog(fixture, observation, workflowId) : null;
   const serviceEndpoints = fixture.service_endpoints ? checkServiceEndpoints(fixture, observation, workflowId) : null;
   const serviceCalls = fixture.service_calls ? checkServiceCalls(fixture, observation, workflowId) : null;
