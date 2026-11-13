@@ -98,7 +98,10 @@ async fn retained_update_retries_never_claim_a_distinct_external_input_reference
             database.execute(sqlx::AssertSqlSafe(format!("DELETE FROM dw_command_intents WHERE command_id='{command}'"))).await;
             database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_commands SET request_id='external-retry-key' WHERE id='{command}'"))).await;
         }
-        let retry_input = upload(&app, &blob).await;
+        // Identical uploads deduplicate by digest. The transport trims the
+        // blob carrier before Avro decoding, so a trailing newline gives a
+        // distinct object/reference with the same decoded command intent.
+        let retry_input = upload(&app, &format!("{blob}\n")).await;
         assert_ne!(retry_input["reference_id"], original_input["reference_id"]);
         assert_eq!(unclaimed(&database).await, 1);
         let before = admission_snapshot(&database).await;
