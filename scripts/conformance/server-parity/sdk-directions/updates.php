@@ -43,7 +43,7 @@ if (preg_match('/^(update|duplicate-pending|duplicate-completed)-([12])$/', $pha
     $index = (int) $match[2] - 1;
     // Native refuses a request id reused with other arguments (Server #934),
     // so its retries repeat the original ones.
-    $value = $match[1] === 'update' || getenv('DW_PARITY_TARGET') === 'rust'
+    $value = $match[1] === 'update' || in_array('request-id-reuse-conflict', explode(',', (string) getenv('DW_PARITY_NATIVE_DIVERGENCES')), true)
         ? $fixture['update_values'][$index] : $fixture['duplicate_update_value'];
     $requestId = $workflowId.':update:'.$index;
     $expectsFailure = isset($fixture['sdk_update_failure']) && $index === 0;

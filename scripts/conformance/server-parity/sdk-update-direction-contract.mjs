@@ -6,6 +6,14 @@ const artifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/Serve
 const failureArtifacts = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/ServerParityProfiles/published-sdk-update-failures/artifacts.json', import.meta.url)));
 const artifactsFor = fixture => fixture.sdk_update_failure ? failureArtifacts : artifacts;
 const languages = ['php', 'python', 'rust'];
+
+const divergences = JSON.parse(readFileSync(new URL('./native-divergences.json', import.meta.url), 'utf8'));
+/// Whether a reviewed native divergence applies to this recording target.
+function nativeDivergence(target, id) {
+  assert(divergences.divergences.some(divergence => divergence.id === id), `unregistered native divergence ${id}`);
+  return target === 'rust';
+}
+
 const phases = ['original', 'update-1', 'duplicate-pending-1', 'resumed-1', 'duplicate-completed-1',
   'update-2', 'duplicate-pending-2', 'resumed-2', 'duplicate-completed-2', 'signal', 'replacement'];
 const nonempty = value => assert(typeof value === 'string' && value.length > 0);
@@ -161,9 +169,10 @@ export function checkSdkUpdateDirection(fixture, observation, workflowId, target
         continue;
       }
       const number = Number(phase.phase.slice(-1)) - 1;
-      // Native refuses a request id reused with other arguments (Server
-      // #934), so its retries repeat the original arguments.
-      const original = phase.phase.startsWith('update-') || target === 'rust';
+      // Named divergence request-id-reuse-conflict (native-divergences.json,
+      // Server #934): native refuses a request id reused with other
+      // arguments, so its retries repeat the original arguments.
+      const original = phase.phase.startsWith('update-') || nativeDivergence(target, 'request-id-reuse-conflict');
       const author = direction.phases[number === 0 ? 3 : 7];
       assert.equal(phase.update_sent, true); assert.equal(phase.client_finished, true);
       assert.equal(phase.request_id, workflowId + ':update:' + number);

@@ -50,7 +50,7 @@ async def main(arguments, fixture):
                 # Native refuses a request id reused with other arguments
                 # (Server #934), so its retries repeat the original ones.
                 value = (fixture["update_values"][index]
-                         if phase.startswith("update-") or os.environ.get("DW_PARITY_TARGET") == "rust"
+                         if phase.startswith("update-") or "request-id-reuse-conflict" in os.environ.get("DW_PARITY_NATIVE_DIVERGENCES", "").split(",")
                          else fixture["duplicate_update_value"])
                 request_id = workflow_id + ":update:" + str(index)
                 expects_failure = "sdk_update_failure" in fixture and index == 0

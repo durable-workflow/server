@@ -1401,7 +1401,7 @@ try {
 function parityRetryArguments(object $client, string $workflowId, array $fixture, array $original, string $requestId,
     ?string $runId, ?string $waitFor): array
 {
-    if (getenv('DW_PARITY_TARGET') !== 'rust') {
+    if (! in_array('request-id-reuse-conflict', explode(',', (string) getenv('DW_PARITY_NATIVE_DIVERGENCES')), true)) {
         return [$fixture['duplicate_update_value']];
     }
     try {

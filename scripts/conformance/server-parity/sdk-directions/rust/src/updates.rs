@@ -47,7 +47,7 @@ pub async fn run(arguments: &[String], fixture: Value) -> Result<()> {
             .ok_or_else(|| Error::WorkerLoop("Invalid update index".into()))?;
         // Native refuses a request id reused with other arguments (Server
         // #934), so its retries repeat the original ones.
-        let value = if phase.starts_with("update-") || std::env::var("DW_PARITY_TARGET").is_ok_and(|target| target == "rust") {
+        let value = if phase.starts_with("update-") || std::env::var("DW_PARITY_NATIVE_DIVERGENCES").is_ok_and(|ids| ids.split(',').any(|id| id == "request-id-reuse-conflict")) {
             fixture["update_values"][index].clone()
         } else {
             fixture["duplicate_update_value"].clone()

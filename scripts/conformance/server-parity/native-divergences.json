@@ -1,0 +1,14 @@
+{
+  "schema": "durable-workflow.server-parity-native-divergences/v1",
+  "divergences": [
+    {
+      "id": "request-id-reuse-conflict",
+      "issue": "https://github.com/durable-workflow/server/issues/934",
+      "since": "native 3.9.0",
+      "applies_to": ["state-updates", "sdk_update_direction"],
+      "published_php": "An update retried under an existing request_id with different arguments returns the original receipt.",
+      "native": "The same retry is refused with 409 request_id_conflict (outcome rejected_request_id_conflict) and writes nothing. A retry with the original arguments returns the original receipt.",
+      "harness": "Against native, the probe first proves the conflict and then retries with the original arguments; the SDK direction drivers retry with the original arguments, and the direction contract expects them. PHP and embedded recordings are unchanged."
+    }
+  ]
+}

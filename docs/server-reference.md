@@ -704,7 +704,9 @@ a key is the only command it admits:
   `409`, `reason: "request_id_conflict"` and `outcome:
   "rejected_request_id_conflict"`. The response names the part that differs in
   `conflict` and the original command in `retained_command_id`. Nothing is
-  written, and the key keeps its original receipt.
+  written, and the key keeps its original receipt. Clients and SDKs must not
+  retry this 409 unchanged: it means the key was reused for different input.
+  Send the original input to recover the receipt, or use a new key.
 - A refused signal (for example `run_not_active` or `unknown_signal`) does not
   reserve its key; retrying it is evaluated again.
 - An update receipt written before 3.9.0 has no recorded intent. It is read back
