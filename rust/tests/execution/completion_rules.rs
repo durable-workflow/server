@@ -79,11 +79,11 @@ async fn command_names_longer_than_their_columns_are_refused_before_any_write() 
     let before = table_counts(&database).await;
     let long = |length: usize| "n".repeat(length);
     for (command, field, most) in [
-        (json!({"type":"schedule_activity","activity_type":long(256)}), "activity_type", 255),
+        (json!({"type":"schedule_activity","activity_type":long(192)}), "activity_type", 191),
         (json!({"type":"schedule_activity","activity_type":"a","queue":long(256)}), "queue", 255),
-        (json!({"type":"start_child_workflow","workflow_type":long(256)}), "workflow_type", 255),
+        (json!({"type":"start_child_workflow","workflow_type":long(192)}), "workflow_type", 191),
         (json!({"type":"start_child_workflow","workflow_type":"child","queue":long(192)}), "queue", 191),
-        (json!({"type":"open_signal_wait","signal_name":long(256)}), "signal_name", 255),
+        (json!({"type":"open_signal_wait","signal_name":long(192)}), "signal_name", 191),
     ] {
         let (_, errors) = refused(&app, &task, completion(&task, json!([command]))).await;
         assert_eq!(errors[format!("commands.0.{field}")],
@@ -93,7 +93,7 @@ async fn command_names_longer_than_their_columns_are_refused_before_any_write() 
 
     // At the bound, the names fit their columns and the task commits.
     let (status, body) = finish_task(&app, &task,
-        json!([{"type":"schedule_activity","activity_type":long(255),"queue":long(255),
+        json!([{"type":"schedule_activity","activity_type":long(191),"queue":long(255),
             "arguments":envelope(Payload::Array(vec![]))}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     runtime.close().await;
