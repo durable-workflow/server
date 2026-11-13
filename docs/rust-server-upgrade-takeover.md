@@ -724,6 +724,13 @@ named. These are the ones a client moving from 2.x can observe:
   (workflow#877) behave like native. The parity harness records this as the
   named divergence `request-id-reuse-conflict`
   (`scripts/conformance/server-parity/native-divergences.json`).
+  Pre-upgrade receipts keep their raw keys and have no intent digest. A
+  compatible retry reads back the original command with `retained: true` and
+  `intent_verified: false`; its arguments are not asserted equal. A changed
+  name or explicit target is refused. Ambiguous raw/hash identities, including
+  collation collisions, get nonretryable `409 request_id_ambiguous`, select no
+  receipt and write nothing. Inspect the retained command before deciding to
+  send a new command under a new key.
 - **Open work when a run's own code closes it (native 3.9.0 and later, Server
   #1193).** PHP 2.x completes, fails or continues a run as new and leaves its
   open activities and timers as they are. An unawaited activity, such as a

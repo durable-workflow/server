@@ -698,7 +698,7 @@ a key is the only command it admits:
   The intent is Core's CommandIntent v1 digest over the command type, name,
   typed arguments and explicit run target, so `1`, `1.0` and `"1"` differ and
   map key order does not matter. The receipt is found before any run gate, so a
-  retry after the run closed or continued as new still gets it. A signal
+  retry after the run closed or continued as new still gets it. A retained
   receipt carries `retained: true` and `intent_verified: true`.
 - The same key with a different name, arguments or run target is refused with
   `409`, `reason: "request_id_conflict"` and `outcome:
@@ -713,8 +713,17 @@ a key is the only command it admits:
   Both live as long as the command does. When retention prunes a run's details,
   its commands' keys and digests go with them, and a later request under that
   key is a new command.
-- An update receipt written before 3.9.0 has no recorded intent. It is read back
-  only when the update name matches, and its arguments are not compared.
+- A receipt written before intent digests were introduced has no recorded
+  intent. An exact raw-key retry reads back the original command only when
+  the name matches and any explicit run target is the original run. It carries
+  `retained: true` and `intent_verified: false`. Arguments are not compared;
+  the readback does not establish that the retry's input equals the original.
+- An ambiguous raw-key or hashed-key match is refused with
+  `409 request_id_ambiguous`, `intent_verified: false` and `retryable: false`,
+  without selecting a receipt or writing anything. This includes a legacy
+  raw key that looks like another key's hash token and database collation
+  collisions. Inspect the original command before using a new key; do not
+  retry an ambiguous key automatically.
 
 Before 3.9.0, a repeated signal `request_id` recorded a second signal, and an
 update retried with changed arguments returned the original receipt.
