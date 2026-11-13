@@ -317,6 +317,7 @@ async fn raw_and_token_identity_collisions_are_refused_without_selecting_a_recei
             assert_eq!(refused.0, StatusCode::CONFLICT, "{shape}: {}", refused.1);
             assert_eq!(refused.1["reason"], "request_id_ambiguous", "{shape}: {}", refused.1);
             assert_eq!(refused.1["intent_verified"], false);
+            assert_eq!(refused.1["retryable"], false, "{shape}: {}", refused.1);
             assert!(refused.1["command_id"].is_null(), "no candidate is selected: {}", refused.1);
             assert_eq!(table_counts(&database).await, before);
             assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, history);
@@ -352,6 +353,7 @@ async fn legacy_key_case_collisions_never_return_another_keys_receipt() {
             // Refuse safely instead of reporting equality for other bytes.
             assert_eq!(other.0, StatusCode::CONFLICT, "{}", other.1);
             assert_eq!(other.1["reason"], "request_id_ambiguous");
+            assert_eq!(other.1["retryable"], false);
             assert_eq!(table_counts(&database).await, before);
             assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, history);
         } else {

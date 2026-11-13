@@ -48,6 +48,76 @@ fn typed(body: &Value, status: u16, reason: &str, message: &str, workflow_id: &s
     assert_eq!(body["workflow_id"], workflow_id, "{body}");
 }
 
+/// Compare complete stored rows, not just counts: retaining the retry input
+/// would update an existing registry row without adding a command or event.
+async fn admission_snapshot(database: &TestDatabase) -> Vec<(String, Vec<(String, String)>)> {
+    let mut snapshot = Vec::new();
+    for (table, key) in [("workflow_commands", "id"), ("dw_command_intents", "command_id"),
+        ("workflow_history_events", "id"), ("workflow_tasks", "id"), ("workflow_updates", "id"),
+        ("workflow_runs", "id"), ("workflow_instances", "id"), ("runtime_external_payloads", "id")] {
+        let columns = text_rows(database,
+            &format!("SELECT name,name FROM pragma_table_info('{table}') ORDER BY cid"),
+            &format!("SELECT column_name::text,column_name::text FROM information_schema.columns WHERE table_schema='public' AND table_name='{table}' ORDER BY ordinal_position"),
+            &format!("SELECT CAST(column_name AS CHAR),CAST(column_name AS CHAR) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='{table}' ORDER BY ordinal_position")).await;
+        assert!(!columns.is_empty(), "missing snapshot table {table}");
+        let mut sqlite = Vec::new();
+        let mut mysql = Vec::new();
+        for (column, _) in columns {
+            assert!(column.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+            sqlite.push(format!("'{column}',\"{column}\""));
+            mysql.push(format!("'{column}',`{column}`"));
+        }
+        let rows = text_rows(database,
+            &format!("SELECT \"{key}\",json_object({}) FROM \"{table}\" ORDER BY \"{key}\"", sqlite.join(",")),
+            &format!("SELECT {key}::text,to_jsonb(t)::text FROM {table} t ORDER BY {key}"),
+            &format!("SELECT CAST(`{key}` AS CHAR),CAST(JSON_OBJECT({}) AS CHAR) FROM `{table}` ORDER BY `{key}`", mysql.join(","))).await;
+        snapshot.push((table.to_owned(), rows));
+    }
+    snapshot
+}
+
+#[tokio::test]
+async fn retained_update_retries_never_claim_a_distinct_external_input_reference() {
+    for legacy in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &temp.path().join("objects")).await;
+        waiting_run(&app, "retry-reference", json!({"worker_id":"retry-worker","task_queue":"retry-reference",
+            "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[],"capabilities":["workflow_updates"],
+            "workflow_command_contracts":{"echo":{"updates":["u"],"update_validators":[],"update_contracts":[{"name":"u","parameters":string_parameter()}]}}})).await;
+        let blob = argument("same typed value");
+        let original_input = upload(&app, &blob).await;
+        let path = "/api/workflows/retry-reference/update/u";
+        let (status, original) = json_request(&app, "POST", path, "operator-token",
+            json!({"request_id":"external-retry-key","wait_for":"accepted",
+                "input":{"codec":"avro","external_payload":original_input}})).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{original}");
+        assert_eq!(unclaimed(&database).await, 0);
+        if legacy {
+            let command = original["command_id"].as_str().unwrap();
+            assert!(command.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+            database.execute(sqlx::AssertSqlSafe(format!("DELETE FROM dw_command_intents WHERE command_id='{command}'"))).await;
+            database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_commands SET request_id='external-retry-key' WHERE id='{command}'"))).await;
+        }
+        let retry_input = upload(&app, &blob).await;
+        assert_ne!(retry_input["reference_id"], original_input["reference_id"]);
+        assert_eq!(unclaimed(&database).await, 1);
+        let before = admission_snapshot(&database).await;
+        let (status, mut repeated) = json_request(&app, "POST", path, "operator-token",
+            json!({"request_id":"external-retry-key","wait_for":"accepted",
+                "input":{"codec":"avro","external_payload":retry_input}})).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{repeated}");
+        assert_eq!(repeated["retained"], true);
+        assert_eq!(repeated["intent_verified"], !legacy);
+        repeated.as_object_mut().unwrap().remove("retained");
+        repeated.as_object_mut().unwrap().remove("intent_verified");
+        assert_eq!(repeated, original, "the original receipt is unchanged");
+        assert_eq!(unclaimed(&database).await, 1, "the retry input is still owned by its uploader");
+        assert_eq!(admission_snapshot(&database).await, before, "a retained retry changes no stored row");
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
 #[tokio::test]
 async fn signal_update_and_query_input_resolve_runtime_references_like_php() {
     let temp = tempfile::tempdir().unwrap();
