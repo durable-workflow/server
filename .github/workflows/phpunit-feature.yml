@@ -286,7 +286,8 @@ jobs:
             docker build --target base -t durable-workflow-server-phpunit-base .
             docker build -t durable-workflow-server-corpus-validator - <<'DOCKERFILE'
           FROM durable-workflow-server-phpunit-base
-          RUN apt-get update \
+          RUN /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /bin/sh /usr/local/lib/server-apt/require-fixed-apt.sh \
+              && apt-get update \
               && apt-get install -y --no-install-recommends git jq \
               && rm -rf /var/lib/apt/lists/* \
               && server-verify-trust final

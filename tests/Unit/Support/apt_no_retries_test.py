@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Every networked APT path in a tracked Dockerfile runs on a proved fixed APT
-or with APT retries off.
+"""Every networked APT path in a tracked Dockerfile, or in a Dockerfile inlined
+in a workflow, runs on a proved fixed APT or with APT retries off.
 
 CVE-2026-109518 (durable-workflow/.github#295): a vulnerable APT can follow a
 redirect on a retried package download and install a swapped package as root.
@@ -24,7 +24,8 @@ def dockerfiles():
     tracked = subprocess.run(['git', 'ls-files'], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
     for path in tracked:
         name = path.rsplit('/', 1)[-1].lower()
-        if name.startswith('dockerfile') or name.endswith('.dockerfile'):
+        inline = path.startswith('.github/workflows/') and name.endswith(('.yml', '.yaml'))
+        if name.startswith('dockerfile') or name.endswith('.dockerfile') or inline:
             yield path
 
 
@@ -52,6 +53,9 @@ class AptNoRetriesTest(unittest.TestCase):
         self.assertEqual([], list(unprotected('FROM a\nRUN sh require-fixed-apt.sh && apt-get install -y x\n')))
         self.assertEqual(1, len(list(unprotected(f'FROM a\nRUN apt-get update && {retries}\n'))))
         self.assertEqual(1, len(list(unprotected('FROM a\nRUN apt-get install -y --no-install-recommends x\n'))))
+        # A Dockerfile inlined in a workflow step is checked from its own FROM.
+        inline = 'run: |\n  docker build - <<EOF\n  FROM base\n  RUN apt-get update\n  EOF\n'
+        self.assertEqual(1, len(list(unprotected(inline))))
         # A guard in one stage does not cover the next stage.
         self.assertEqual(1, len(list(unprotected(f'FROM a\nRUN {retries} && apt-get update\nFROM b\nRUN apt upgrade\n'))))
 
