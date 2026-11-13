@@ -3,7 +3,10 @@ FROM ${SERVER_IMAGE} AS published
 
 FROM php:8.3.35-fpm-trixie@sha256:ea1c5007c904d2cdf12e4ac87528c9f12407fb8d7636a31a93b4a862b22e2f8f
 
-RUN apt-get update \
+# CVE-2026-109518 (durable-workflow/.github#295): the parent's APT may follow a
+# redirect on a retried download, so retries are off before any APT network call.
+RUN printf 'Acquire::Retries "0";\n' > /etc/apt/apt.conf.d/99-no-retries \
+    && apt-get update \
     && apt-get install -y --no-install-recommends libpq5 libzip5 \
     && groupmod --gid 1000 www-data \
     && usermod --uid 1000 --gid 1000 www-data \
