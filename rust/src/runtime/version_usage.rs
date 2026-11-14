@@ -6,6 +6,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 const MARKER_BUDGET: usize = 1000;
 pub(super) const CAPABILITY: &str = "workflow_version_usage";
@@ -106,7 +107,8 @@ pub(super) struct Evidence<'a> {
     change_id: &'a str,
     history_available: bool,
     started: bool,
-    decision: Option<(i32, i32, i32)>,
+    version: Option<i32>,
+    logical_sequences: BTreeSet<i64>,
     invalid: bool,
     conflicting: bool,
     markers: usize,
@@ -119,7 +121,8 @@ impl<'a> Evidence<'a> {
             change_id,
             history_available,
             started: false,
-            decision: None,
+            version: None,
+            logical_sequences: BTreeSet::new(),
             invalid: false,
             conflicting: false,
             markers: 0,
@@ -149,15 +152,15 @@ impl<'a> Evidence<'a> {
                     self.invalid = true;
                     return;
                 };
-                if minimum > version || version > maximum || !payload.get("sequence").and_then(Value::as_i64).is_some_and(|sequence| sequence > 0) {
+                let logical = payload.get("sequence").and_then(Value::as_i64);
+                if minimum > version || version > maximum || !logical.is_some_and(|sequence| sequence > 0 && self.logical_sequences.insert(sequence)) {
                     self.invalid = true;
                     return;
                 }
-                let decision = (version, minimum, maximum);
-                if self.decision.is_some_and(|previous| previous != decision) {
+                if self.version.is_some_and(|previous| previous != version) {
                     self.conflicting = true;
                 }
-                self.decision = Some(decision);
+                self.version = Some(version);
             }
             _ => {}
         }
@@ -190,7 +193,7 @@ impl<'a> Evidence<'a> {
         } else if self.conflicting {
             Usage::Unknown(Unknown::ConflictingMarkers)
         } else {
-            match self.decision.map(|decision| decision.0) {
+            match self.version {
                 Some(version) if version < minimum_version => Usage::Legacy(version),
                 Some(version) => Usage::Current(version),
                 None => Usage::Unknown(Unknown::MarkerMissing),
@@ -371,8 +374,10 @@ mod tests {
             assert_eq!(e.classify(1), Usage::Unknown(Unknown::MarkerInvalid));
         }
         let mut e = evidence("pricing-v2");
-        for version in [0, 2, 2] {
-            e.record("VersionMarkerRecorded", &marker("pricing-v2", version));
+        for (index, version) in [0, 2, 2].into_iter().enumerate() {
+            let mut payload = marker("pricing-v2", version);
+            payload["sequence"] = json!(index + 1);
+            e.record("VersionMarkerRecorded", &payload);
         }
         assert_eq!(e.classify(1), Usage::Unknown(Unknown::ConflictingMarkers));
     }
@@ -383,8 +388,10 @@ mod tests {
         for change_id in ["Λ-Pricing", "λ-pricing", "λ-Pricing "] {
             e.record("VersionMarkerRecorded", &json!({"change_id":change_id,"version":0}));
         }
-        for _ in 0..2 {
-            e.record("VersionMarkerRecorded", &marker("λ-Pricing", 2));
+        for sequence in 1..=2 {
+            let mut payload = marker("λ-Pricing", 2);
+            payload["sequence"] = json!(sequence);
+            e.record("VersionMarkerRecorded", &payload);
         }
         assert_eq!(e.classify(1), Usage::Current(2));
     }
@@ -393,11 +400,13 @@ mod tests {
     fn marker_budget_and_history_gaps_do_not_report_a_partial_current_decision() {
         let mut e = Evidence::new("pricing-v2", true);
         e.event(1, "WorkflowStarted", None);
-        let payload = marker("pricing-v2", 2).to_string();
         for sequence in 2..=1001 {
-            e.event(sequence, "VersionMarkerRecorded", Some(&payload));
+            let mut payload = marker("pricing-v2", 2);
+            payload["sequence"] = json!(sequence - 1);
+            e.event(sequence, "VersionMarkerRecorded", Some(&payload.to_string()));
         }
         assert_eq!(e.classify(1), Usage::Current(2));
+        let payload = marker("pricing-v2", 2).to_string();
         e.event(1002, "VersionMarkerRecorded", Some(&payload));
         assert_eq!(e.classify(1), Usage::Unknown(Unknown::HistoryUnavailable));
         let mut e = Evidence::new("pricing-v2", true);
@@ -415,5 +424,18 @@ mod tests {
             e.record("VersionMarkerRecorded", &payload);
             assert_eq!(e.classify(1), Usage::Unknown(Unknown::MarkerInvalid));
         }
+    }
+
+    #[test]
+    fn repeated_versions_can_expand_the_range_but_cannot_reuse_a_logical_sequence() {
+        let mut e = evidence("pricing-v2");
+        for (sequence, minimum, maximum) in [(1,0,1), (2,-1,2)] {
+            e.record("VersionMarkerRecorded", &json!({"change_id":"pricing-v2","version":1,
+                "min_supported":minimum,"max_supported":maximum,"sequence":sequence}));
+        }
+        assert_eq!(e.classify(1), Usage::Current(1));
+        e.record("VersionMarkerRecorded", &json!({"change_id":"pricing-v2","version":1,
+            "min_supported":-1,"max_supported":2,"sequence":2}));
+        assert_eq!(e.classify(1), Usage::Unknown(Unknown::MarkerInvalid));
     }
 }

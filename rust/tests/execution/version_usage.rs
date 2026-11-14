@@ -51,11 +51,35 @@ async fn recorded(app: &Router, workflow: &str, version: i32) -> Value {
     let run = start(app, workflow).await;
     let task = poll(app, "version-reader-worker", "workflow").await;
     assert_eq!(task["run_id"], run["run_id"]);
-    let (status, body) = request(app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
-        json!({"lease_owner":task["lease_owner"], "commands":[{"type":"record_version_marker", "change_id":"pricing-v2",
-            "version":version,"min_supported":-1,"max_supported":2}]})).await;
+    let (status, body) = finish_task(app, &task,
+        json!([{"type":"record_version_marker", "change_id":"pricing-v2",
+            "version":version,"min_supported":-1,"max_supported":2}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     run
+}
+
+#[tokio::test]
+async fn repeated_decisions_with_a_wider_valid_range_keep_the_recorded_version() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "version-reader-worker", json!(["echo"]), json!([])).await;
+    let run = start(&app, "version-expanding-range").await;
+    let task = poll(&app, "version-reader-worker", "workflow").await;
+    assert_eq!(task["run_id"], run["run_id"]);
+    let (status, body) = finish_task(&app, &task, json!([
+        {"type":"record_version_marker","change_id":"pricing-v2","version":1,"min_supported":0,"max_supported":1},
+        {"type":"record_version_marker","change_id":"pricing-v2","version":1,"min_supported":-1,"max_supported":2}
+    ])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let answer = usage(&app, QUERY).await;
+    assert_eq!(answer["counts"], json!({"total":1,"legacy":0,"current":1,"unknown":0}));
+    assert_eq!(answer["runs"][0]["recorded_version"], 1);
+    assert_eq!(answer["runs"][0]["unknown_reason"], Value::Null);
+    assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, history);
+    runtime.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]
