@@ -410,6 +410,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn cursor_key() -> String {
+        let mut bytes = [0_u8; 32];
+        getrandom::fill(&mut bytes).unwrap();
+        URL_SAFE_NO_PAD.encode(bytes)
+    }
+
     fn marker(change_id: &str, version: i32) -> Value {
         json!({"change_id":change_id,"version":version,"min_supported":i32::MIN,"max_supported":i32::MAX,"sequence":1})
     }
@@ -525,19 +531,22 @@ mod tests {
 
     #[test]
     fn cursor_authentication_rejects_unsigned_or_modified_bounds() {
+        let key = cursor_key();
+        let other_key = cursor_key();
+        assert_ne!(key, other_key);
         let cursor = Cursor { version:1, namespace:"default".into(), workflow_type:"echo".into(),
             change_id:"pricing-v2".into(), min_version:1, state:None, after:"A".into(), through:"Z".into() };
-        let token = cursor.encode("test-secret").unwrap();
-        assert!(Cursor::decode(&token, "test-secret").is_ok());
-        assert!(Cursor::decode(&token, "different-key").is_err());
+        let token = cursor.encode(&key).unwrap();
+        assert!(Cursor::decode(&token, &key).is_ok());
+        assert!(Cursor::decode(&token, &other_key).is_err());
         let body = serde_json::to_vec(&cursor).unwrap();
-        assert!(Cursor::decode(&URL_SAFE_NO_PAD.encode(&body), "test-secret").is_err());
+        assert!(Cursor::decode(&URL_SAFE_NO_PAD.encode(&body), &key).is_err());
         let (_, tag) = token.split_once('.').unwrap();
         for (field, value) in [("after","B"),("through","ZZ")] {
             let mut modified = serde_json::to_value(&cursor).unwrap();
             modified[field] = json!(value);
             let modified = format!("{}.{tag}",URL_SAFE_NO_PAD.encode(serde_json::to_vec(&modified).unwrap()));
-            assert!(Cursor::decode(&modified,"test-secret").is_err());
+            assert!(Cursor::decode(&modified,&key).is_err());
         }
     }
 
@@ -560,11 +569,12 @@ mod tests {
 
     #[test]
     fn cursor_round_trips_maximum_query_values_even_when_json_escapes_them() {
+        let key = cursor_key();
         let cursor = Cursor { version:1, namespace:"default".into(), workflow_type:"\0".repeat(255),
             change_id:"\0".repeat(1024), min_version:1, state:None, after:"A".into(), through:"Z".into() };
-        let token = cursor.encode("test-secret").unwrap();
+        let token = cursor.encode(&key).unwrap();
         assert!(token.len() > 8192);
-        assert!(Cursor::decode(&token, "test-secret").is_ok());
+        assert!(Cursor::decode(&token, &key).is_ok());
     }
 
     #[test]
