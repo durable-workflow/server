@@ -49,6 +49,8 @@ test('every reviewed native addition is a member published PHP lacks and gives a
 
 for (const [name, mutate] of [
   ['native without its child start turn', state => { delete state.capabilities.child_workflow_start_turn; }],
+  ['native without version usage', state => { delete state.capabilities.workflow_version_usage; }],
+  ['native declaring version usage unavailable', state => { state.capabilities.workflow_version_usage = false; }],
   ['native copying a manifest flag it does not publish', state => { state.capabilities.timer_runtime_contract = true; }],
   ['native advertising response compression', state => { state.capabilities.response_compression = ['gzip']; }],
   ['native without its unqualified list', state => { state.native_unqualified = []; }],
