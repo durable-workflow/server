@@ -1,0 +1,38 @@
+{
+  "schema": "durable-workflow.server1204.capture.v1",
+  "observer_commit": "688c1cddb1783529f8fc097ece08bebaeded3706",
+  "historical_execution": "1ecdfb1fda1b37a8723f1de6f3be5ad0e41b0d43",
+  "runtime_equivalent_baseline": "cb7158a02c4fab6ef09d325425e5d2ea1c1a9469",
+  "original_run": 43405494921,
+  "original_job": 131820856947,
+  "original_artifact": 14027583636,
+  "original_artifact_sha256": "50c4ecf63c8d362f6d2e25195cd7fde3f269d919461749d0c00f6c4e5dc98809",
+  "runner_label": "ubuntu-latest",
+  "platform": "linux/amd64",
+  "selection_sha256": "5e33a068f02bdef527417b5a604ea1eb459b5ba253dd853db73b2f03125d8c9a",
+  "test_count": 405,
+  "listed_count": 810,
+  "test_threads": 2,
+  "test_seconds": 900,
+  "compiler_seconds": 600,
+  "fetch_seconds": 300,
+  "pull_seconds_per_image": 180,
+  "bootstrap_wait_seconds": 195,
+  "workload_seconds": 2700,
+  "cleanup_seconds": 120,
+  "runner": {
+    "cpus": 2,
+    "memory_gib": 8,
+    "pids": 512
+  },
+  "database": {
+    "cpus": 1,
+    "memory_gib": 1,
+    "pids": 256
+  },
+  "images": {
+    "rust": "mirror.gcr.io/library/rust@sha256:ba81bc3eaa4422af576c0262515d96b0111a628a6ccc2c86557cf55c9a4bbee0",
+    "mariadb": "mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2",
+    "layout": "ghcr.io/durable-workflow/server@sha256:28fa0f3968ea253c727aad7fe583bb61c788553f1e4b96ece6ea4570d20faf42"
+  }
+}
