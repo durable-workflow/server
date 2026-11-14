@@ -72,6 +72,11 @@ history pruning, and payload cleanup do not start a new pass under pressure.
 
 ### Admission observation file
 
+File observations require Unix descriptor and ownership checks. On unsupported
+platforms, configuring an observation keeps admission fenced with
+`storage_admission_unavailable`; no file is trusted through a fallback reader.
+Admission remains disabled by default, including in a linked development runtime.
+
 Publish the observation as a regular file owned by root or the Server's
 effective UID, with group and other write permissions disabled (for example,
 `0644` or `0600`). For containers, use the ownership as seen inside the Server
