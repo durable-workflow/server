@@ -137,7 +137,7 @@ async fn pruned_missing_prefix_and_conflicting_history_remain_unknown() {
     // version is newer. This is private storage-corruption regression data.
     fixture(&database, &conflict, r#"UPDATE workflow_history_events SET payload='{"change_id":"pricing-v2","version":2,"min_supported":3,"max_supported":4,"sequence":1}' WHERE workflow_run_id=$1 AND event_type='VersionMarkerRecorded'"#).await;
     fixture(&database, &unsupported, "UPDATE workflow_history_events SET payload='[]' WHERE workflow_run_id=$1 AND event_type='WorkflowStarted'").await;
-    fixture(&database, &late_start, "INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,recorded_at) SELECT 'version-usage-late-admission',workflow_run_id,MAX(sequence)+1,'StartAccepted','{}','2026-01-01 00:00:00' FROM workflow_history_events WHERE workflow_run_id=$1 GROUP BY workflow_run_id").await;
+    fixture(&database, &late_start, "INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,recorded_at) SELECT 'version-late-admission',workflow_run_id,MAX(sequence)+1,'StartAccepted','{}','2026-01-01 00:00:00' FROM workflow_history_events WHERE workflow_run_id=$1 GROUP BY workflow_run_id").await;
     fixture(&database, &late_start, "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1").await;
     let page = usage(&app, QUERY).await;
     assert_eq!(page["counts"], json!({"total":5,"legacy":0,"current":0,"unknown":5}));
