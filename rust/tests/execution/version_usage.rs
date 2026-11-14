@@ -1,5 +1,29 @@
 use super::*;
 
+
+// Fixture statements are compiled templates. All run identities remain bound,
+// including after MySQL's placeholder-only dialect conversion.
+async fn fixture(database: &TestDatabase, run: &Value, statement: &'static str) {
+    let run_id = run["run_id"].as_str().unwrap();
+    match database {
+        TestDatabase::Sqlite(directory) => {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", directory.path().join("runtime.sqlite").display())).await.unwrap();
+            sqlx::query(statement).bind(run_id).execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+        TestDatabase::Postgres { options, .. } => {
+            let pool = sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            sqlx::query(statement).bind(run_id).execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+        TestDatabase::MySql { options, .. } => {
+            let pool = sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(statement.replace("$1", "?"))).bind(run_id).execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+    }
+}
+
 const QUERY: &str = "workflow_type=echo&change_id=pricing-v2&min_version=1";
 
 async fn usage(app: &Router, query: &str) -> Value {
@@ -28,7 +52,7 @@ async fn open_runs_report_all_counts_before_filter_and_never_upgrade_missing_mar
     let legacy = recorded(&app, "version-usage-old", 0).await;
     let current = recorded(&app, "version-usage-new", 1).await;
     let closed = recorded(&app, "version-usage-closed", -1).await;
-    database.execute(&format!("UPDATE workflow_runs SET status='completed' WHERE id='{}'", closed["run_id"].as_str().unwrap())).await;
+    fixture(&database, &closed, "UPDATE workflow_runs SET status='completed' WHERE id=$1").await;
     let absent = start(&app, "version-usage-unreached").await;
     let page = usage(&app, QUERY).await;
     assert_eq!(page["schema_version"], 1);
@@ -62,11 +86,11 @@ async fn pruned_missing_prefix_and_conflicting_history_remain_unknown() {
     let pruned = recorded(&app, "version-usage-pruned", 2).await;
     let prefix = recorded(&app, "version-usage-prefix", 2).await;
     let conflict = recorded(&app, "version-usage-conflict", 2).await;
-    database.execute(&format!("UPDATE workflow_runs SET details_pruned_at='2026-01-01 00:00:00' WHERE id='{}'", pruned["run_id"].as_str().unwrap())).await;
-    database.execute(&format!("DELETE FROM workflow_history_events WHERE workflow_run_id='{}' AND sequence=1", prefix["run_id"].as_str().unwrap())).await;
+    fixture(&database, &pruned, "UPDATE workflow_runs SET details_pruned_at='2026-01-01 00:00:00' WHERE id=$1").await;
+    fixture(&database, &prefix, "DELETE FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence=1").await;
     // A retained malformed decision must not become current merely because its
     // version is newer. This is private storage-corruption regression data.
-    database.execute(&format!("UPDATE workflow_history_events SET payload='{{\"change_id\":\"pricing-v2\",\"version\":2,\"min_supported\":3,\"max_supported\":4,\"sequence\":1}}' WHERE workflow_run_id='{}' AND event_type='VersionMarkerRecorded'", conflict["run_id"].as_str().unwrap())).await;
+    fixture(&database, &conflict, r#"UPDATE workflow_history_events SET payload='{"change_id":"pricing-v2","version":2,"min_supported":3,"max_supported":4,"sequence":1}' WHERE workflow_run_id=$1 AND event_type='VersionMarkerRecorded'"#).await;
     let page = usage(&app, QUERY).await;
     assert_eq!(page["counts"], json!({"total":3,"legacy":0,"current":0,"unknown":3}));
     for run in [&pruned, &prefix] {
@@ -95,16 +119,20 @@ async fn keyset_cursors_bind_query_identity_and_keep_the_initial_upper_bound() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert_eq!(body["reason"], "validation_failed");
     }
+    // Cross the ULID millisecond boundary so this admission is above the
+    // captured upper ID rather than relying on same-millisecond entropy order.
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     let later = start(&app, "version-page-later").await;
     assert!(later["run_id"].as_str().unwrap() > first["through_run_id"].as_str().unwrap());
+    fixture(&database, &first["runs"][0], "UPDATE workflow_runs SET status='completed' WHERE id=$1").await;
     let second = usage(&app, &format!("{QUERY}&limit=200&cursor={cursor}")).await;
     assert_eq!(second["through_run_id"], first["through_run_id"]);
-    assert_eq!(second["counts"]["total"], 3);
+    assert_eq!(second["counts"]["total"], 2);
     assert_eq!(second["returned_count"], 2);
     assert_eq!(second["has_more"], false);
     let first_id = first["runs"][0]["run_id"].as_str().unwrap();
     assert!(second["runs"].as_array().unwrap().iter().all(|run| run["run_id"].as_str().unwrap() > first_id));
-    assert_eq!(usage(&app, QUERY).await["counts"]["total"], 4);
+    assert_eq!(usage(&app, QUERY).await["counts"]["total"], 3);
     runtime.close().await;
     database.remove().await;
 }
@@ -119,6 +147,13 @@ async fn named_namespace_and_exact_workflow_type_do_not_leak_other_runs() {
         namespaces::start_scoped(&app, namespace, &format!("{namespace}-run")).await;
     }
     start(&app, "version-default").await;
+    start(&app, "version-default-second").await;
+    let default_page = usage(&app, &format!("{QUERY}&limit=1")).await;
+    let foreign_cursor = default_page["next_cursor"].as_str().unwrap();
+    let (status, body) = namespaces::scoped(&app, "version-tenant-a", "GET",
+        &format!("/api/workflows/version-usage?{QUERY}&cursor={foreign_cursor}"), Value::Null).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["reason"], "validation_failed");
     let path = format!("/api/workflows/version-usage?{QUERY}&limit=1");
     for namespace in ["version-tenant-a", "version-tenant-b"] {
         let (status, body) = namespaces::scoped(&app, namespace, "GET", &path, Value::Null).await;
@@ -129,6 +164,33 @@ async fn named_namespace_and_exact_workflow_type_do_not_leak_other_runs() {
     }
     let wrong_case = usage(&app, "workflow_type=ECHO&change_id=pricing-v2&min_version=1").await;
     assert_eq!(wrong_case["counts"]["total"], 0);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn all_canonical_open_statuses_participate_including_an_archived_open_run() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (name, statement) in [
+        ("pending", "UPDATE workflow_runs SET status='pending' WHERE id=$1"),
+        ("running", "UPDATE workflow_runs SET status='running' WHERE id=$1"),
+        ("waiting", "UPDATE workflow_runs SET status='waiting',archived_at='2026-01-01 00:00:00' WHERE id=$1"),
+        ("completed", "UPDATE workflow_runs SET status='completed' WHERE id=$1"),
+        ("failed", "UPDATE workflow_runs SET status='failed' WHERE id=$1"),
+        ("cancelled", "UPDATE workflow_runs SET status='cancelled' WHERE id=$1"),
+        ("terminated", "UPDATE workflow_runs SET status='terminated' WHERE id=$1"),
+    ] {
+        let run = start(&app, &format!("version-status-{name}")).await;
+        fixture(&database, &run, statement).await;
+    }
+    let answer = usage(&app, QUERY).await;
+    assert_eq!(answer["counts"], json!({"total":3,"legacy":0,"current":0,"unknown":3}));
+    let mut statuses: Vec<_> = answer["runs"].as_array().unwrap().iter().map(|run| run["status"].as_str().unwrap()).collect();
+    statuses.sort_unstable();
+    assert_eq!(statuses, ["pending", "running", "waiting"]);
+    assert_eq!(request(&app,"GET","/api/cluster/info",Value::Null).await.1["capabilities"]["workflow_version_usage"], true);
     runtime.close().await;
     database.remove().await;
 }

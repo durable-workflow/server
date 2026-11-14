@@ -1,6 +1,6 @@
 //! Read-only version-marker usage. Missing evidence cannot establish that a
 //! legacy branch is unused.
-use super::{Result, RuntimeError, backend::Backend};
+use super::{Result, RuntimeError};
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::TryStreamExt;
