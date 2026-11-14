@@ -99,7 +99,7 @@ store_methods! {
             .transpose()?
             .flatten()
             .unwrap_or(Value::Null);
-        let local = match super::external_transport::local_for(&policy, self.namespace.as_ref()).await {
+        let local = match super::external_transport::local_for_retained(&policy, self.namespace.as_ref()).await {
             Ok(Some(local)) => local,
             Ok(None) => return Ok(Err(Outcome::Skipped("external_payload_storage_driver_unavailable"))),
             Err(_) => return Ok(Err(Outcome::Error(retention::PAYLOAD_CLEANUP_FAILED.into()))),

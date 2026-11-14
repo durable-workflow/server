@@ -9,6 +9,7 @@ use super::{
 };
 use axum::http::StatusCode;
 use chrono::SecondsFormat;
+use futures_util::TryStreamExt;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
@@ -158,16 +159,40 @@ where
     }
 
     pub(super) async fn set_external_policy(&self, name: &str, body: Value) -> Result<Value> {
-        let policy = super::external_transport::local_policy(body)?;
+        let mut policy = super::external_transport::local_policy(body)?;
         let name = name.to_ascii_lowercase();
         let mut tx = self.begin().await?;
-        if Self::scalar("SELECT COUNT(*) FROM workflow_namespaces WHERE name=$1")
+        let row = Self::query("SELECT external_payload_storage FROM workflow_namespaces WHERE name=$1")
             .bind(&name)
-            .fetch_one(&mut *tx)
-            .await?
-            == 0
+            .fetch_optional(&mut *tx).await?
+            .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "namespace_not_found"))?;
+        let previous = DB::optional_document_row(&row, "external_payload_storage")?.unwrap_or(Value::Null);
+        // A disable is admission-only. Clients need not resend the trusted
+        // location needed by existing objects and committed deletions.
+        if policy["enabled"] == false && policy.get("config").is_none()
+            && let Some(config) = previous.get("config").filter(|value| value.is_object())
         {
-            return Err(refuse(StatusCode::NOT_FOUND, "namespace_not_found"));
+            policy["config"] = config.clone();
+        }
+        let location_changed = previous["driver"] != policy["driver"]
+            || previous["config"]["uri"] != policy["config"]["uri"];
+        if location_changed && Self::scalar("SELECT COUNT(*) FROM runtime_external_payloads WHERE namespace=$1")
+            .bind(&name).fetch_one(&mut *tx).await? > 0
+        {
+            let in_use = || refuse(StatusCode::CONFLICT, "external_payload_storage_in_use");
+            // Validate against the proposed trusted root, never a root inferred
+            // from a stored URI. This also admits restoring an original policy.
+            // A refused change must not create its proposed directory.
+            let local = super::external_transport::local_for_retained(&policy, &name).await
+                .map_err(|_| in_use())?.ok_or_else(in_use)?;
+            let mut rows = Self::query("SELECT * FROM runtime_external_payloads WHERE namespace=$1")
+                .bind(&name).fetch(&mut *tx);
+            while let Some(row) = rows.try_next().await? {
+                let registered = Self::payload_row(&row)?;
+                if local.uri_for(&registered.reference).map_err(|_| in_use())? != registered.uri {
+                    return Err(in_use());
+                }
+            }
         }
         Self::query("UPDATE workflow_namespaces SET external_payload_storage=$1,updated_at=$2 WHERE name=$3")
             .bind(DB::document(&policy)).bind(DB::bind_time(now())).bind(&name).execute(&mut *tx).await?;

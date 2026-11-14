@@ -110,19 +110,17 @@ async fn cleanup_respects_its_limit_a_backup_hold_and_a_disabled_policy() {
     let held = status(&router).await;
     assert_eq!([&held["last_pass"]["status"], &held["totals"]["blocked_outcomes"]], [&json!("blocked"), &json!(1)]);
 
-    // With the policy disabled there is no driver to delete through.
+    // Disabling new offloads does not hold reclamation after the backup ends.
     database.execute("UPDATE runtime_external_payload_backup_hold SET expires_at='2000-01-01 00:00:00'").await;
     assert_eq!(policy(&router, "default", &root, false).await, StatusCode::OK);
     let (code, body) = pass(&router, json!({})).await;
-    assert_eq!(code, StatusCode::MULTI_STATUS, "{body}");
-    assert_eq!(body["cleanup"]["blocked"], 1);
-
-    // Once the hold has expired and the policy is back, the object goes.
-    assert_eq!(policy(&router, "default", &root, true).await, StatusCode::OK);
-    let (code, body) = pass(&router, json!({"limit": null})).await;
     assert_eq!(code, StatusCode::OK, "{body}");
     assert_eq!(body["cleanup"], report([1, 1, 1, 0, 0, 0, 0], 0, 100, false));
     assert!(!object(&root, remaining).exists());
+
+    let (code, body) = pass(&router, json!({"limit": null})).await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["cleanup"], report([0, 0, 0, 0, 0, 0, 0], 0, 100, false));
     assert_eq!(status(&router).await["totals"]["passes"], 4);
 
     for (limit, message) in [

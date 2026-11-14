@@ -26,7 +26,7 @@
 //! only way a retained reference can reach it again.
 use super::Result;
 use super::external_registry::uri_hash;
-use super::external_transport::local_for;
+use super::external_transport::local_for_retained;
 use super::store::now;
 use super::transaction::Transaction;
 use axum::http::StatusCode;
@@ -131,7 +131,7 @@ store_methods! {
         if registered == 0 {
             let namespace = DB::string(&row, "namespace")?;
             let policy: Value = serde_json::from_str(&DB::string(&row, "storage_policy")?).unwrap_or(Value::Null);
-            let failure = match local_for(&policy, &namespace).await {
+            let failure = match local_for_retained(&policy, &namespace).await {
                 Ok(Some(local)) => {
                     // Locked through the delete, as PHP's `deleting()` holds it.
                     if Self::locked_backup_hold(&mut tx).await?.active() {

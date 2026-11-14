@@ -33,6 +33,9 @@ pub(super) const TYPED_REASONS: &[&str] = &[
     "external_payload_expired",
     "external_payload_unauthorized",
     "external_payload_unavailable",
+    "external_payload_storage_policy_unavailable",
+    "external_payload_storage_location_mismatch",
+    "external_payload_storage_location_unavailable",
     "external_payload_oversized",
     "external_payload_unsupported",
     "external_payload_integrity_mismatch",
@@ -56,6 +59,9 @@ fn message(reason: &str) -> &str {
         "external_payload_unsupported" => "External payload envelopes must contain exactly codec and external_payload.",
         "external_payload_integrity_mismatch" => "External payload envelope codec does not match the runtime reference.",
         "external_payload_unavailable" => "External payload storage is temporarily unavailable.",
+        "external_payload_storage_policy_unavailable" => "The stored payload requires its original namespace storage configuration.",
+        "external_payload_storage_location_mismatch" => "The stored payload location does not match the namespace storage configuration. Restore its original configuration.",
+        "external_payload_storage_location_unavailable" => "The configured external payload location could not be opened. Check its original storage configuration and backing storage.",
         "external_payload_completion_invalid" => "A canonical worker completion context is required.",
         "external_payload_completion_lease_rejected" => "The payload upload does not belong to a current worker completion lease.",
         "external_payload_completion_conflict" => "A completion payload slot is already bound to different bytes.",
@@ -259,10 +265,20 @@ pub(super) async fn local(runtime: &Runtime) -> Result<LocalStorage> {
 /// The local storage a namespace's policy names, or none when the policy is
 /// missing, disabled or names another driver.
 pub(super) async fn local_for(policy: &Value, namespace: &str) -> Result<Option<LocalStorage>> {
-    if policy.is_null() || policy["enabled"] == false || policy["driver"] != "local" {
+    if policy["enabled"] == false {
         return Ok(None);
     }
-    let root = match policy["config"]["uri"]
+    match local_root(policy, namespace)? {
+        Some(root) => LocalStorage::open(root).await.map(Some).map_err(snapshot_error),
+        None => Ok(None),
+    }
+}
+
+fn local_root(policy: &Value, namespace: &str) -> Result<Option<PathBuf>> {
+    if policy.is_null() || policy["driver"] != "local" {
+        return Ok(None);
+    }
+    Ok(Some(match policy["config"]["uri"]
         .as_str()
         .and_then(|uri| uri.strip_prefix("file://"))
     {
@@ -270,8 +286,30 @@ pub(super) async fn local_for(policy: &Value, namespace: &str) -> Result<Option<
         None => std::env::current_dir()?
             .join("storage/app/external-payloads")
             .join(namespace),
-    };
-    LocalStorage::open(root).await.map(Some).map_err(snapshot_error)
+    }))
+}
+
+/// Disabling admission changes new offloads, not the location of retained bytes.
+pub(super) async fn local_for_retained(policy: &Value, namespace: &str) -> Result<Option<LocalStorage>> {
+    match local_root(policy, namespace)? {
+        Some(root) => LocalStorage::open_existing(root).await.map(Some).map_err(snapshot_error),
+        None => Ok(None),
+    }
+}
+
+pub(super) async fn retained_storage(runtime: &Runtime) -> Result<LocalStorage> {
+    let metadata = runtime.describe_namespace(runtime.namespace()).await?;
+    local_for_retained(&metadata["external_payload_storage"], runtime.namespace()).await
+        .map_err(|_| refuse(StatusCode::SERVICE_UNAVAILABLE, "external_payload_storage_location_unavailable"))?
+        .ok_or_else(|| refuse(StatusCode::CONFLICT, "external_payload_storage_policy_unavailable"))
+}
+
+pub(super) async fn retained_local(runtime: &Runtime, registered: &super::external_registry::RegisteredPayload) -> Result<LocalStorage> {
+    let local = retained_storage(runtime).await?;
+    if local.uri_for(&registered.reference).map_err(snapshot_error)? != registered.uri {
+        return Err(refuse(StatusCode::CONFLICT, "external_payload_storage_location_mismatch"));
+    }
+    Ok(local)
 }
 
 pub(super) async fn set_policy(
@@ -427,7 +465,7 @@ async fn fetch_inner(runtime: Runtime, identity: String, headers: HeaderMap) -> 
         ));
     }
     let registered = runtime.external_payload_for_fetch(&expected).await?;
-    let snapshot = local(&runtime)
+    let snapshot = retained_local(&runtime, &registered)
         .await?
         .fetch(
             registered.reference,

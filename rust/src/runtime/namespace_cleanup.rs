@@ -17,7 +17,7 @@
 //! format, an envelope, or one on a stream) refuses before changing anything,
 //! with PHP's answer for unavailable external payload storage.
 use super::external_registry::{object_bucket, uri_hash};
-use super::external_transport::{local_for, typed_error};
+use super::external_transport::{local_for_retained, typed_error};
 use super::retention::reference;
 use super::retention_payloads::native_reference;
 use super::transaction::Transaction;
@@ -400,7 +400,7 @@ store_methods! {
     }
 
     /// The namespace's storage policy, saved with each recorded deletion, and
-    /// its enabled local storage as `driverFor` resolves it.
+    /// its retained-object storage, independent of new-upload admission.
     async fn namespace_storage(tx: &mut Transaction<'_, DB>, name: &str) -> Result<(Value, Result<Option<LocalStorage>>)> {
         let policy = Self::query("SELECT external_payload_storage FROM workflow_namespaces WHERE name=$1")
             .bind(name)
@@ -410,7 +410,7 @@ store_methods! {
             .transpose()?
             .flatten()
             .unwrap_or(Value::Null);
-        let local = local_for(&policy, name).await;
+        let local = local_for_retained(&policy, name).await;
         Ok((policy, local))
     }
 

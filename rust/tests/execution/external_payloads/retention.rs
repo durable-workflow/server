@@ -144,7 +144,7 @@ async fn retention_without_storage_or_after_a_failed_delete_keeps_the_run() {
     // Without storage, a run with an object to delete is skipped; one whose
     // objects a retained run holds needs none. The skip marks the instance's
     // inbound streams blocked, as PHP's `markBlocked` does.
-    assert_eq!(policy(&router, "default", &root, false).await, StatusCode::OK);
+    database.execute("UPDATE workflow_namespaces SET external_payload_storage=NULL WHERE name='default'").await;
     let (status, result) = prune(&router, "default", &run).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result, json!({"run_id": run, "outcome": "skipped", "reason": "external_payload_storage_driver_unavailable"}));
@@ -340,7 +340,7 @@ async fn a_blocked_prune_marks_its_instance_streams_until_it_completes() {
     // A retained later run of the instance keeps the streams in place.
     database.execute(AssertSqlSafe(format!(
         "INSERT INTO workflow_run_summaries(id,workflow_instance_id,run_number,class,workflow_type,namespace,status,status_bucket) SELECT 'later-run',workflow_instance_id,2,'echo','echo','default','running','running' FROM workflow_runs WHERE id='{run}'"))).await;
-    assert_eq!(policy(&router, "default", &root, false).await, StatusCode::OK);
+    database.execute("UPDATE workflow_namespaces SET external_payload_storage=NULL WHERE name='default'").await;
     assert_eq!(prune(&router, "default", &run).await.1["reason"], "external_payload_storage_driver_unavailable");
     assert_eq!(blocked(&database, &run, "external_payload_storage_driver_unavailable").await, 1);
     assert_eq!(policy(&router, "default", &root, true).await, StatusCode::OK);

@@ -479,9 +479,9 @@ impl Runtime {
     delegate!(prometheus_metrics() -> Result<Value>);
     delegate!(payload_cleanup_status(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
     /// The namespace's payload cleanup pass, with its local storage when an
-    /// enabled local policy names it.
+    /// local policy names it, including when new offloads are disabled.
     pub(crate) async fn payload_cleanup_pass(&self, limit: i64) -> Result<Value> {
-        let local = super::external_transport::local(self).await.ok();
+        let local = super::external_transport::retained_storage(self).await.ok();
         let retention = self.external.abandoned_seconds;
         match &*self.storage {
             Storage::Sqlite(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,

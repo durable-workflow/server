@@ -28,6 +28,18 @@ fn checked(reference: &Reference) -> Result<(), SnapshotError> {
 }
 
 impl LocalStorage {
+    /// Resolve a policy for validation without creating a backing directory.
+    pub(crate) async fn open_existing(root: PathBuf) -> Result<Self, SnapshotError> {
+        let root = tokio::task::spawn_blocking(move || {
+            let root = root.canonicalize().map_err(unavailable)?;
+            if !root.is_dir() || root.to_str().is_none() {
+                return Err(SnapshotError::Unavailable);
+            }
+            Ok(root)
+        }).await.map_err(unavailable)??;
+        Ok(Self { root: Arc::new(root) })
+    }
+
     pub async fn open(root: PathBuf) -> Result<Self, SnapshotError> {
         let root = tokio::task::spawn_blocking(move || {
             fs::create_dir_all(&root).map_err(unavailable)?;

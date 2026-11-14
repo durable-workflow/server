@@ -71,7 +71,7 @@ async fn namespace_delete_without_storage_refuses_and_changes_nothing() {
     assert_eq!(policy(&router, "held", &root, true).await, StatusCode::OK);
     let sole = upload(&router, "held", "held sole").await;
     closed_run(&router, "held", "held-sole", &sole).await;
-    assert_eq!(policy(&router, "held", &root, false).await, StatusCode::OK);
+    database.execute("UPDATE workflow_namespaces SET external_payload_storage=NULL WHERE name='held'").await;
     let (status, body) = delete(&router, "held").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body, json!({
@@ -92,7 +92,7 @@ async fn namespace_delete_without_storage_refuses_and_changes_nothing() {
     create(&router, "idle").await;
     assert_eq!(policy(&router, "idle", &root, true).await, StatusCode::OK);
     let unused = upload(&router, "idle", "idle unused").await;
-    assert_eq!(policy(&router, "idle", &root, false).await, StatusCode::OK);
+    database.execute("UPDATE workflow_namespaces SET external_payload_storage=NULL WHERE name='idle'").await;
     let (status, body) = delete(&router, "idle").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body["schema"], "durable-workflow.v2.runtime-external-payload-error.v1", "{body}");
