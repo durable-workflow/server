@@ -24,6 +24,14 @@ decisions remain `unknown/history_invalid`. More than 1,000 inspected marker
 events in one run also makes its history unavailable. The query reads no
 application arguments, results, memo or external payload objects.
 
+Reused markers must carry both `reused_from_run_id` and `reused_recorded_at`,
+or neither. The source ID must be nonempty, exact and at most 255 UTF-8 bytes,
+without surrounding whitespace or control characters. The clock must be a valid
+explicit-offset RFC3339 timestamp (`Z` or `+/-HH:MM`), with optional fractional
+seconds of at most nine digits. Malformed pairs remain `history_invalid`, even
+on a different change ID. Reading these fields never rewrites retained strings
+or establishes SDK replay-clock qualification.
+
 `counts` includes the entire bounded open-run cohort before the optional state
 filter. `runs` is ordered by ascending run ID. The first page fixes the greatest
 participating ID as `through_run_id`; continuations retain that upper bound and

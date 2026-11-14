@@ -310,3 +310,51 @@ async fn parity_future_history_formats_do_not_report_current_usage() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn malformed_reuse_provenance_is_unknown_in_stored_history() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app,"version-reader-worker",json!(["echo"]),json!([])).await;
+    let run = recorded(&app,"version-provenance",1).await;
+    for statement in [
+        r#"UPDATE workflow_history_events SET payload='{"change_id":"pricing-v2","version":1,"min_supported":0,"max_supported":1,"sequence":1,"reused_from_run_id":"source"}' WHERE workflow_run_id=$1 AND event_type='VersionMarkerRecorded'"#,
+        r#"UPDATE workflow_history_events SET payload='{"change_id":"pricing-v2","version":1,"min_supported":0,"max_supported":1,"sequence":1,"reused_from_run_id":[],"reused_recorded_at":"2026-01-02T03:04:05Z"}' WHERE workflow_run_id=$1 AND event_type='VersionMarkerRecorded'"#,
+        r#"UPDATE workflow_history_events SET payload='{"change_id":"pricing-v2","version":1,"min_supported":0,"max_supported":1,"sequence":1,"reused_from_run_id":"source","reused_recorded_at":""}' WHERE workflow_run_id=$1 AND event_type='VersionMarkerRecorded'"#,
+        r#"UPDATE workflow_history_events SET payload='{"change_id":"pricing-v2","version":1,"min_supported":0,"max_supported":1,"sequence":1,"reused_from_run_id":"source","reused_recorded_at":"not-a-clock"}' WHERE workflow_run_id=$1 AND event_type='VersionMarkerRecorded'"#,
+    ] {
+        fixture(&database,&run,statement).await;
+        let answer = usage(&app,QUERY).await;
+        assert_eq!(answer["counts"],json!({"total":1,"legacy":0,"current":0,"unknown":1}));
+        assert_eq!(answer["runs"][0]["unknown_reason"],"history_invalid");
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn an_actual_redriven_marker_retains_a_queryable_recorded_decision() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let registered = request(&app,"POST","/api/worker/register",json!({"worker_id":"worker","task_queue":"test",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["a","b"],
+        "workflow_definition_fingerprints":{"echo":redrive::FINGERPRINT}})).await;
+    assert_eq!(registered.0,StatusCode::CREATED,"{}",registered.1);
+    let source = redrive::failed_with(&app,"version-reused-marker",json!({}),vec![
+        json!({"type":"record_version_marker","change_id":"pricing-v2","version":1,"min_supported":0,"max_supported":1})
+    ]).await;
+    let (status, successor) = request(&app,"POST",&format!("/api/workflows/version-reused-marker/runs/{}/redrive",source["run_id"].as_str().unwrap()),json!({})).await;
+    assert_eq!(status,StatusCode::ACCEPTED,"{successor}");
+    let before = run_history(&app,&source["workflow_id"],&successor["run_id"]).await;
+    let marker = before.as_array().unwrap().iter().find(|event|event["event_type"]=="VersionMarkerRecorded").unwrap();
+    assert_eq!(marker["payload"]["reused_from_run_id"],source["run_id"]);
+    assert!(chrono::DateTime::parse_from_rfc3339(marker["payload"]["reused_recorded_at"].as_str().unwrap()).is_ok());
+    let answer = usage(&app,QUERY).await;
+    assert_eq!(answer["counts"],json!({"total":1,"legacy":0,"current":1,"unknown":0}),"{answer}");
+    assert_eq!(answer["runs"][0]["run_id"],successor["run_id"]);
+    assert_eq!(run_history(&app,&source["workflow_id"],&successor["run_id"]).await,before);
+    runtime.close().await;
+    database.remove().await;
+}

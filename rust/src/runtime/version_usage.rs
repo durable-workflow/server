@@ -13,6 +13,32 @@ use std::collections::BTreeSet;
 const MARKER_BUDGET: usize = 1000;
 pub(super) const CAPABILITY: &str = "workflow_version_usage";
 
+fn valid_reuse_clock(value: &str) -> bool {
+    if !value.is_ascii() || !(20..=35).contains(&value.len()) || value.as_bytes()[10] != b'T' {
+        return false;
+    }
+    let zone = if value.ends_with('Z') { value.len()-1 } else {
+        let at = value.len()-6;
+        if !matches!(value.as_bytes()[at], b'+' | b'-') || value.as_bytes()[at+3] != b':' { return false; }
+        at
+    };
+    if zone < 19 { return false; }
+    let fraction = &value[19..zone];
+    let precision = fraction.is_empty() || fraction.strip_prefix('.').is_some_and(|digits|
+        (1..=9).contains(&digits.len()) && digits.bytes().all(|byte| byte.is_ascii_digit()));
+    precision && chrono::DateTime::parse_from_rfc3339(value).is_ok()
+}
+
+fn valid_reuse_provenance(payload: &Value) -> bool {
+    match (payload.get("reused_from_run_id"), payload.get("reused_recorded_at")) {
+        (None, None) => true,
+        (Some(Value::String(source)), Some(Value::String(clock))) =>
+            !source.is_empty() && source.len() <= 255 && source.trim() == source.as_str()
+                && !source.chars().any(char::is_control) && valid_reuse_clock(clock),
+        _ => false,
+    }
+}
+
 #[derive(Default, Deserialize)]
 pub(super) struct Query {
     workflow_type: Option<String>,
@@ -176,7 +202,10 @@ impl<'a> Evidence<'a> {
                     return;
                 };
                 let logical = payload.get("sequence").and_then(Value::as_i64);
-                if minimum > version || version > maximum || !logical.is_some_and(|sequence| sequence > 0 && !self.logical_sequences.contains(&sequence)) {
+                if minimum > version || version > maximum
+                    || !logical.is_some_and(|sequence| sequence > 0 && !self.logical_sequences.contains(&sequence))
+                    || !valid_reuse_provenance(payload)
+                {
                     self.invalid = true;
                     return;
                 }
@@ -587,5 +616,46 @@ mod tests {
         invalid["min_supported"] = json!(2);
         e.record("VersionMarkerRecorded",&invalid);
         assert_eq!(e.classify(1),Usage::Unknown(Unknown::MarkerInvalid));
+    }
+
+    #[test]
+    fn reuse_metadata_must_be_a_complete_valid_pair_for_every_change() {
+        for change_id in ["pricing-v2", "other-change"] {
+            for fields in [
+                json!({"reused_from_run_id":"source"}),
+                json!({"reused_recorded_at":"2026-01-02T03:04:05Z"}),
+                json!({"reused_from_run_id":[],"reused_recorded_at":"2026-01-02T03:04:05Z"}),
+                json!({"reused_from_run_id":"","reused_recorded_at":"2026-01-02T03:04:05Z"}),
+                json!({"reused_from_run_id":" source ","reused_recorded_at":"2026-01-02T03:04:05Z"}),
+                json!({"reused_from_run_id":"source","reused_recorded_at":null}),
+                json!({"reused_from_run_id":"source","reused_recorded_at":""}),
+                json!({"reused_from_run_id":"source","reused_recorded_at":"not-a-clock"}),
+                json!({"reused_from_run_id":"source","reused_recorded_at":"2026-02-30T03:04:05Z"}),
+                json!({"reused_from_run_id":"source","reused_recorded_at":"2026-01-02T03:04:05"}),
+                json!({"reused_from_run_id":"source","reused_recorded_at":"2026-01-02T03:04:05.1234567890Z"}),
+            ] {
+                let mut e = evidence("pricing-v2");
+                e.record("VersionMarkerRecorded",&marker("pricing-v2",1));
+                let mut payload = marker(change_id,1);
+                payload["sequence"] = json!(2);
+                payload.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+                e.record("VersionMarkerRecorded",&payload);
+                assert_eq!(e.classify(1),Usage::Unknown(Unknown::MarkerInvalid),"{payload}");
+            }
+        }
+    }
+
+    #[test]
+    fn reuse_metadata_accepts_native_precision_and_explicit_offsets() {
+        for clock in ["2026-01-02T03:04:05Z","2026-01-02T03:04:05+00:00",
+            "2026-01-02T03:04:05.123Z","2026-01-02T03:04:05.123456+00:00",
+            "2026-01-02T03:04:05.123456789+02:30"] {
+            let mut payload = marker("pricing-v2",1);
+            payload["reused_from_run_id"] = json!("source-run");
+            payload["reused_recorded_at"] = json!(clock);
+            let mut e = evidence("pricing-v2");
+            e.record("VersionMarkerRecorded",&payload);
+            assert_eq!(e.classify(1),Usage::Current(1),"{clock}");
+        }
     }
 }

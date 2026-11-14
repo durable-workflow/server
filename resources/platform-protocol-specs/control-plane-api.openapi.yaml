@@ -215,7 +215,10 @@ paths:
         Each response uses one read-only storage snapshot. Pagination is a live
         ascending run-ID keyset, fixed to the first page's through_run_id, not a
         durable fleet snapshot or deployment fence. A marker inspection budget
-        of 1000 per run yields history_unavailable when exceeded. Arguments,
+        of 1000 per run yields history_unavailable when exceeded.
+        Reused marker provenance must be a complete source-ID and explicit-offset
+        RFC3339 clock pair, otherwise history_invalid. Native clocks retain up to
+        nine fractional digits and retained strings are never rewritten. Arguments,
         results and external payloads are not read. The shared v1 contract is
         https://github.com/durable-workflow/workflow/blob/9af1eb53f698f8dd764dfd7841c1851d79555b9d/docs/version-usage.md.
       parameters:
