@@ -217,7 +217,7 @@ paths:
         durable fleet snapshot or deployment fence. A marker inspection budget
         of 1000 per run yields history_unavailable when exceeded. Arguments,
         results and external payloads are not read. The shared v1 contract is
-        https://github.com/durable-workflow/workflow/blob/0f8f30f2094c175f8432e0d0150e189f13738870/docs/version-usage.md.
+        https://github.com/durable-workflow/workflow/blob/9af1eb53f698f8dd764dfd7841c1851d79555b9d/docs/version-usage.md.
       parameters:
         - $ref: "#/components/parameters/ControlPlaneVersionHeader"
         - in: query

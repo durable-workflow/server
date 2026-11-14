@@ -34,7 +34,7 @@ cursor requires a fresh traversal. This live view is not a deployment fence and
 never authorizes branch removal; unknowns must stay visible while admissions
 are drained or fenced through the operator's rollout process.
 
-The normative fields are in the [shared v1 contract](https://github.com/durable-workflow/workflow/blob/0f8f30f2094c175f8432e0d0150e189f13738870/docs/version-usage.md)
+The normative fields are in the [shared v1 contract](https://github.com/durable-workflow/workflow/blob/9af1eb53f698f8dd764dfd7841c1851d79555b9d/docs/version-usage.md)
 and the [control-plane OpenAPI](../resources/platform-protocol-specs/control-plane-api.openapi.yaml).
 The endpoint changes no marker producer, history, workflow definition, schema
 or replay behavior.
