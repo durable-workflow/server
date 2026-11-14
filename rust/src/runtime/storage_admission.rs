@@ -15,12 +15,16 @@
 //! in progress can still write, and a transition can race a check.
 use axum::http::Method;
 use serde_json::{Value, json};
+#[cfg(unix)]
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::sync::RwLock;
 
 pub(super) const SCHEMA: &str = "durable-workflow.storage-pressure.v1";
+#[cfg(unix)]
 const MAX_BYTES: u64 = 4096;
+#[cfg(unix)]
 const MAX_DEPTH: usize = 8;
 pub(super) const RETRY_AFTER_SECONDS: i64 = 5;
 
@@ -118,7 +122,7 @@ fn read(settings: &Settings, now: i64) -> Snapshot {
         return Snapshot::UNAVAILABLE;
     }
     // The observation must come from root or this process's effective user.
-    let Some(value) = observation(path, unsafe { libc::geteuid() }) else {
+    let Some(value) = platform_observation(path) else {
         return Snapshot::UNAVAILABLE;
     };
     let state = match value.get("state").and_then(Value::as_str) {
@@ -147,11 +151,24 @@ fn read(settings: &Settings, now: i64) -> Snapshot {
     }
 }
 
+#[cfg(unix)]
+fn platform_observation(path: &str) -> Option<Value> {
+    observation(path, unsafe { libc::geteuid() })
+}
+
+// File observations require the descriptor/ownership guarantees below. An
+// unsupported target cannot turn a configured observation into healthy state.
+#[cfg(not(unix))]
+fn platform_observation(_path: &str) -> Option<Value> {
+    None
+}
+
 /// A bounded regular file owned by root or the reader, never a FIFO, device
 /// or symlink, nor writable by another user. Trusted parent directories remain
 /// an operator requirement. The final path component is opened without following
 /// a symlink and without blocking on a FIFO, and every check is made on that
 /// same descriptor, so nothing can be swapped in between a check and the read.
+#[cfg(unix)]
 fn observation(path: &str, reader_uid: u32) -> Option<Value> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new().read(true)
@@ -173,6 +190,7 @@ fn observation(path: &str, reader_uid: u32) -> Option<Value> {
 
 /// PHP's `json_decode` depth: a scalar is one level and each array or object
 /// adds one, so `{"a":1}` needs depth 2 and `{}` depth 1.
+#[cfg(unix)]
 fn depth(value: &Value) -> usize {
     match value {
         Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
@@ -256,14 +274,17 @@ pub(super) fn refusal(snapshot: &Snapshot, admission: Admission, poll_request_id
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     const NOW: i64 = 1_793_829_000;
 
+    #[cfg(unix)]
     fn settings(path: &std::path::Path) -> Settings {
         Settings { file: Some(path.to_str().unwrap().to_owned()), source: Some("cell-a".into()), max_age_seconds: 5 }
     }
 
+    #[cfg(unix)]
     fn write(path: &std::path::Path, body: &str) {
         let staged = path.with_extension("tmp");
         std::fs::write(&staged, body).unwrap();
@@ -272,10 +293,12 @@ mod tests {
         std::fs::rename(&staged, path).unwrap();
     }
 
+    #[cfg(unix)]
     fn record(state: &str, observed_at: i64, usage: &str) -> String {
         format!(r#"{{"schema":"{SCHEMA}","source":"cell-a","observed_at":{observed_at},"state":"{state}","usage":{usage}}}"#)
     }
 
+    #[cfg(unix)]
     #[test]
     fn producer_records_are_read_fresh_on_every_check() {
         let directory = tempfile::tempdir().unwrap();
@@ -294,6 +317,7 @@ mod tests {
         assert!(read(&settings, NOW).accepts_new_work(), "the replacement is seen at once");
     }
 
+    #[cfg(unix)]
     #[test]
     fn untrusted_evidence_fails_closed() {
         let directory = tempfile::tempdir().unwrap();
@@ -342,6 +366,7 @@ mod tests {
         unavailable(&Settings { max_age_seconds: 301, ..base.clone() });
     }
 
+    #[cfg(unix)]
     #[test]
     fn observation_owner_must_be_root_or_the_reader() {
         let directory = tempfile::tempdir().unwrap();
@@ -374,6 +399,25 @@ mod tests {
         // Atomic producer replacement restores the actual reader's ownership.
         write(&path, &record("draining", NOW, "{}"));
         assert_eq!(read(&settings(&path), NOW).state, State::Draining);
+    }
+
+    #[test]
+    fn disabled_admission_allows_work_without_a_file_observation() {
+        let snapshot = read(&Settings::default(), NOW);
+        assert_eq!(snapshot, Snapshot::DISABLED);
+        assert!(admits(Admission::Normal, &snapshot));
+        assert_eq!(snapshot.describe()["enabled"], false);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn configured_observation_on_an_unsupported_platform_fails_closed() {
+        for path in ["/storage-pressure.json", r"C:\storage-pressure.json"] {
+            let snapshot = read(&Settings { file:Some(path.into()),source:Some("fixture".into()),max_age_seconds:15 }, NOW);
+            assert_eq!(snapshot, Snapshot::UNAVAILABLE);
+            assert!(!admits(Admission::Normal, &snapshot));
+            assert_eq!(snapshot.describe()["reason"], "storage_admission_unavailable");
+        }
     }
 
     #[test]
