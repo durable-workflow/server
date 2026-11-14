@@ -1,4 +1,5 @@
 use super::*;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 
 // Fixture statements are compiled templates. All run identities remain bound,
@@ -74,7 +75,10 @@ async fn repeated_decisions_with_a_wider_valid_range_keep_the_recorded_version()
     assert_eq!(status, StatusCode::OK, "{body}");
     let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     let answer = usage(&app, QUERY).await;
-    assert_eq!(answer["counts"], json!({"total":1,"legacy":0,"current":1,"unknown":0}));
+    let metadata: Vec<_> = history.as_array().unwrap().iter().map(|event|
+        json!({"sequence":event["sequence"],"event_type":event["event_type"],"type":event["type"]})).collect();
+    assert_eq!(answer["counts"], json!({"total":1,"legacy":0,"current":1,"unknown":0}),
+        "answer={answer}; history={metadata:?}");
     assert_eq!(answer["runs"][0]["recorded_version"], 1);
     assert_eq!(answer["runs"][0]["unknown_reason"], Value::Null);
     assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, history);
@@ -153,6 +157,16 @@ async fn keyset_cursors_bind_query_identity_and_keep_the_initial_upper_bound() {
     let first = usage(&app, &format!("{QUERY}&limit=1")).await;
     assert_eq!(first["has_more"], true);
     let cursor = first["next_cursor"].as_str().unwrap();
+    let (body, tag) = cursor.split_once('.').unwrap();
+    let cursor_body: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(body).unwrap()).unwrap();
+    for (field, value) in [("after", "0"), ("through", "ZZZZ")] {
+        let mut altered = cursor_body.clone();
+        altered[field] = json!(value);
+        let altered = format!("{}.{tag}", URL_SAFE_NO_PAD.encode(serde_json::to_vec(&altered).unwrap()));
+        let (status, body) = request(&app, "GET", &format!("/api/workflow-version-usage?{QUERY}&cursor={altered}"), Value::Null).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["reason"], "validation_failed");
+    }
     for changed in ["workflow_type=other&change_id=pricing-v2&min_version=1", "workflow_type=echo&change_id=other&min_version=1", "workflow_type=echo&change_id=pricing-v2&min_version=2"] {
         let (status, body) = request(&app, "GET", &format!("/api/workflow-version-usage?{changed}&cursor={cursor}"), Value::Null).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");

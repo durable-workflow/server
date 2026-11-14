@@ -1124,9 +1124,9 @@ impl Runtime {
     }
     pub(super) async fn version_usage(&self, filter: super::version_usage::Filter) -> Result<Value> {
         match &*self.storage {
-            Storage::Sqlite(store) => store.version_usage(&filter).await,
-            Storage::Postgres(store) => store.version_usage(&filter).await,
-            Storage::MySql(store) => store.version_usage(&filter).await,
+            Storage::Sqlite(store) => store.version_usage(&filter, &self.token).await,
+            Storage::Postgres(store) => store.version_usage(&filter, &self.token).await,
+            Storage::MySql(store) => store.version_usage(&filter, &self.token).await,
         }
     }
     pub(crate) async fn update_workflow(

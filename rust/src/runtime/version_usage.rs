@@ -4,8 +4,10 @@ use super::{Result, RuntimeError};
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::TryStreamExt;
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use std::collections::BTreeSet;
 
 const MARKER_BUDGET: usize = 1000;
@@ -43,6 +45,31 @@ struct Cursor {
     through: String,
 }
 
+impl Cursor {
+    fn mac(key: &str, body: &[u8]) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC accepts any key length");
+        mac.update(b"durable-workflow/version-usage/v1\0");
+        mac.update(body);
+        mac
+    }
+
+    fn encode(&self, key: &str) -> Result<String> {
+        let body = serde_json::to_vec(self)?;
+        Ok(format!("{}.{}", URL_SAFE_NO_PAD.encode(&body),
+            URL_SAFE_NO_PAD.encode(Self::mac(key, &body).finalize().into_bytes())))
+    }
+
+    fn decode(token: &str, key: &str) -> Result<Self> {
+        let bad = || invalid("cursor", "The version-usage cursor is invalid.");
+        if token.len() > 8192 { return Err(bad()); }
+        let (body, tag) = token.split_once('.').ok_or_else(bad)?;
+        let body = URL_SAFE_NO_PAD.decode(body).map_err(|_| bad())?;
+        let tag = URL_SAFE_NO_PAD.decode(tag).map_err(|_| bad())?;
+        Self::mac(key, &body).verify_slice(&tag).map_err(|_| bad())?;
+        serde_json::from_slice(&body).map_err(|_| bad())
+    }
+}
+
 pub(super) fn invalid(field: &str, message: &str) -> RuntimeError {
     RuntimeError::Protocol {
         status: StatusCode::UNPROCESSABLE_ENTITY,
@@ -52,7 +79,7 @@ pub(super) fn invalid(field: &str, message: &str) -> RuntimeError {
 }
 
 impl Query {
-    pub(super) fn validate(self) -> Result<Filter> {
+    pub(super) fn validate(self, key: &str) -> Result<Filter> {
         let required = |value: Option<String>, key, maximum| {
             value.filter(|value| !value.trim().is_empty() && value.len() <= maximum)
                 .ok_or_else(|| invalid(key, "A nonempty string within the supported byte limit is required."))
@@ -70,9 +97,7 @@ impl Query {
             None => 50,
         };
         let cursor = self.cursor.map(|token| {
-            let cursor = (token.len() <= 8192).then(|| URL_SAFE_NO_PAD.decode(token).ok()).flatten()
-                .and_then(|bytes| serde_json::from_slice::<Cursor>(&bytes).ok())
-                .ok_or_else(|| invalid("cursor", "The version-usage cursor is invalid."))?;
+            let cursor = Cursor::decode(&token, key)?;
             if cursor.version != 1 || cursor.workflow_type != workflow_type || cursor.change_id != change_id
                 || cursor.min_version != min_version || cursor.state != self.state
                 || cursor.after.is_empty() || cursor.through.is_empty() || cursor.after > cursor.through
@@ -167,7 +192,13 @@ impl<'a> Evidence<'a> {
     }
 
     fn event(&mut self, sequence: i64, event_type: &str, payload: Option<&str>) {
-        if self.sequence.checked_add(1) != Some(sequence) || (self.sequence == 0 && event_type != "WorkflowStarted") {
+        // Ordinary native starts/redrives retain StartAccepted before
+        // WorkflowStarted; child/continued runs start with WorkflowStarted.
+        if self.sequence.checked_add(1) != Some(sequence)
+            || (self.sequence == 0 && !matches!(event_type, "StartAccepted" | "WorkflowStarted"))
+            || (event_type == "VersionMarkerRecorded" && !self.started)
+            || (event_type == "WorkflowStarted" && self.started)
+        {
             self.history_available = false;
         }
         self.sequence = sequence;
@@ -260,7 +291,7 @@ const POSTGRES_UPPER: &str = "SELECT r.id FROM workflow_runs r JOIN workflow_ins
 const MYSQL_UPPER: &str = "SELECT r.id FROM workflow_runs r JOIN workflow_instances i ON BINARY i.id=BINARY r.workflow_instance_id AND BINARY i.namespace=BINARY $1 WHERE BINARY r.namespace=BINARY $2 AND BINARY r.workflow_type=BINARY $3 AND BINARY r.status IN ('pending','running','waiting') ORDER BY BINARY r.id DESC LIMIT 1";
 
 store_methods! {
-    pub(super) async fn version_usage(&self, filter: &Filter) -> Result<Value> {
+    pub(super) async fn version_usage(&self, filter: &Filter, key: &str) -> Result<Value> {
         if filter.cursor.as_ref().is_some_and(|cursor| cursor.namespace != self.namespace.as_ref()) {
             return Err(invalid("cursor", "The cursor does not match the authenticated namespace."));
         }
@@ -309,12 +340,12 @@ store_methods! {
         let has_more = page.len() > filter.limit;
         page.truncate(filter.limit);
         let next_cursor = if has_more {
-            Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&Cursor {
+            Some(Cursor {
                 version: 1, namespace: self.namespace.to_string(), workflow_type: filter.workflow_type.clone(),
                 change_id: filter.change_id.clone(), min_version: filter.min_version, state: filter.state.clone(),
                 after: page.last().expect("nonempty page")["run_id"].as_str().expect("run ID").to_owned(),
                 through: through.clone().expect("bounded cohort"),
-            })?))
+            }.encode(key)?)
         } else { None };
         Ok(json!({"schema_version":1,"namespace":self.namespace.as_ref(),"workflow_type":filter.workflow_type,
             "change_id":filter.change_id,"min_version":filter.min_version,"state":filter.state,
@@ -437,5 +468,40 @@ mod tests {
         e.record("VersionMarkerRecorded", &json!({"change_id":"pricing-v2","version":1,
             "min_supported":-1,"max_supported":2,"sequence":2}));
         assert_eq!(e.classify(1), Usage::Unknown(Unknown::MarkerInvalid));
+    }
+
+    #[test]
+    fn cursor_authentication_rejects_unsigned_or_modified_bounds() {
+        let cursor = Cursor { version:1, namespace:"default".into(), workflow_type:"echo".into(),
+            change_id:"pricing-v2".into(), min_version:1, state:None, after:"A".into(), through:"Z".into() };
+        let token = cursor.encode("test-secret").unwrap();
+        assert!(Cursor::decode(&token, "test-secret").is_ok());
+        assert!(Cursor::decode(&token, "different-key").is_err());
+        let body = serde_json::to_vec(&cursor).unwrap();
+        assert!(Cursor::decode(&URL_SAFE_NO_PAD.encode(&body), "test-secret").is_err());
+        let (_, tag) = token.split_once('.').unwrap();
+        for (field, value) in [("after","B"),("through","ZZ")] {
+            let mut modified = serde_json::to_value(&cursor).unwrap();
+            modified[field] = json!(value);
+            let modified = format!("{}.{tag}",URL_SAFE_NO_PAD.encode(serde_json::to_vec(&modified).unwrap()));
+            assert!(Cursor::decode(&modified,"test-secret").is_err());
+        }
+    }
+
+    #[test]
+    fn native_start_admission_prefix_and_child_start_prefix_are_supported() {
+        let payload = marker("pricing-v2", 1).to_string();
+        for prefix in [vec!["StartAccepted","WorkflowStarted"], vec!["WorkflowStarted"]] {
+            let mut e = Evidence::new("pricing-v2", true);
+            for (index, event_type) in prefix.iter().enumerate() {
+                e.event(index as i64 + 1, event_type, None);
+            }
+            e.event(prefix.len() as i64 + 1, "VersionMarkerRecorded", Some(&payload));
+            assert_eq!(e.classify(1), Usage::Current(1));
+        }
+        let mut e = Evidence::new("pricing-v2", true);
+        e.event(1,"StartAccepted",None);
+        e.event(2,"VersionMarkerRecorded",Some(&payload));
+        assert_eq!(e.classify(1), Usage::Unknown(Unknown::HistoryUnavailable));
     }
 }

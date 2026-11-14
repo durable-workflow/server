@@ -1474,7 +1474,7 @@ async fn version_usage(
     query: std::result::Result<Query<super::version_usage::Query>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>> {
     let Query(query) = query.map_err(|_| super::version_usage::invalid("query", "The version-usage query parameters are invalid."))?;
-    Ok(Json(runtime.version_usage(query.validate()?).await?))
+    Ok(Json(runtime.version_usage(query.validate(&runtime.token)?).await?))
 }
 
 async fn describe_current(
