@@ -69,7 +69,7 @@ pub fn router(runtime: Runtime) -> Router {
             delete(delete_search_attribute),
         )
         .route("/api/workflows", get(list_workflows).post(start))
-        .route("/api/workflows/version-usage", get(version_usage))
+        .route("/api/workflow-version-usage", get(version_usage))
         .route("/api/bridge-adapters/webhook/{adapter}", post(bridge_webhook))
         .route("/api/workflows/import/embedded-v2", post(import_embedded_v2))
         .route("/api/workflows/import/waterline-v1", post(import_waterline_v1))
@@ -933,7 +933,7 @@ fn namespace_route(path: &str) -> Option<Allowed> {
 fn exact_namespace_route(path: &str) -> Option<Allowed> {
     Some(match path {
         "/api/runtime-credentials" | "/api/schedules" => Allowed::Any,
-        "/api/workflows/version-usage" => READ,
+        "/api/workflow-version-usage" => READ,
         "/api/workflows" | "/api/activities" | "/api/search-attributes" => READ_WRITE,
         // The metrics describe the namespace's own state, read by GET or POST.
         "/api/system/metrics" => READ_WRITE,

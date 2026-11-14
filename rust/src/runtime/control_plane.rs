@@ -347,7 +347,7 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         ("POST", ["api", "workflows", _, "query", name])
         | ("POST", ["api", "workflows", _, "runs", _, "query", name]) => Operation::Query(name),
         ("GET", ["api", "workflows"]) => Operation::List,
-        ("GET", ["api", "workflows", "version-usage"]) => Operation::VersionUsage,
+        ("GET", ["api", "workflow-version-usage"]) => Operation::VersionUsage,
         ("GET", ["api", "workflows", _]) => Operation::Describe,
         ("GET", ["api", "workflows", _, "runs"]) => Operation::ListRuns,
         ("GET", ["api", "workflows", _, "runs", _]) => Operation::DescribeRun,

@@ -1,6 +1,6 @@
 # Open-run version usage
 
-`GET /api/workflows/version-usage` reports which open runs retain an older
+`GET /api/workflow-version-usage` reports which open runs retain an older
 version-marker decision for one workflow type and change point. Discover support
 by requiring `capabilities.workflow_version_usage` to be exactly `true` on
 `GET /api/cluster/info`. A missing capability or unsuccessful request is not an

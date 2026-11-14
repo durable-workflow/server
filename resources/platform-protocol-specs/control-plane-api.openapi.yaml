@@ -201,7 +201,7 @@ paths:
         "201": { $ref: "#/components/responses/ControlPlaneEnvelope" }
         "409": { $ref: "#/components/responses/ControlPlaneError" }
         "422": { $ref: "#/components/responses/ControlPlaneError" }
-  /workflows/version-usage:
+  /workflow-version-usage:
     get:
       tags: [workflows]
       operationId: getWorkflowVersionUsage

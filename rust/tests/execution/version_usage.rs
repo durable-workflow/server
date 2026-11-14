@@ -26,8 +26,23 @@ async fn fixture(database: &TestDatabase, run: &Value, statement: &'static str) 
 
 const QUERY: &str = "workflow_type=echo&change_id=pricing-v2&min_version=1";
 
+#[tokio::test]
+async fn version_usage_does_not_reserve_an_existing_workflow_id() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let started = start(&app, "version-usage").await;
+    let (status, described) = request(&app, "GET", "/api/workflows/version-usage", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    assert_eq!(described["workflow_id"], "version-usage");
+    assert_eq!(described["run_id"], started["run_id"]);
+    assert_eq!(usage(&app, QUERY).await["counts"]["total"], 1);
+    runtime.close().await;
+    database.remove().await;
+}
+
 async fn usage(app: &Router, query: &str) -> Value {
-    let (status, body) = request(app, "GET", &format!("/api/workflows/version-usage?{query}"), Value::Null).await;
+    let (status, body) = request(app, "GET", &format!("/api/workflow-version-usage?{query}"), Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     body
 }
@@ -115,7 +130,7 @@ async fn keyset_cursors_bind_query_identity_and_keep_the_initial_upper_bound() {
     assert_eq!(first["has_more"], true);
     let cursor = first["next_cursor"].as_str().unwrap();
     for changed in ["workflow_type=other&change_id=pricing-v2&min_version=1", "workflow_type=echo&change_id=other&min_version=1", "workflow_type=echo&change_id=pricing-v2&min_version=2"] {
-        let (status, body) = request(&app, "GET", &format!("/api/workflows/version-usage?{changed}&cursor={cursor}"), Value::Null).await;
+        let (status, body) = request(&app, "GET", &format!("/api/workflow-version-usage?{changed}&cursor={cursor}"), Value::Null).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert_eq!(body["reason"], "validation_failed");
     }
@@ -151,10 +166,10 @@ async fn named_namespace_and_exact_workflow_type_do_not_leak_other_runs() {
     let default_page = usage(&app, &format!("{QUERY}&limit=1")).await;
     let foreign_cursor = default_page["next_cursor"].as_str().unwrap();
     let (status, body) = namespaces::scoped(&app, "version-tenant-a", "GET",
-        &format!("/api/workflows/version-usage?{QUERY}&cursor={foreign_cursor}"), Value::Null).await;
+        &format!("/api/workflow-version-usage?{QUERY}&cursor={foreign_cursor}"), Value::Null).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["reason"], "validation_failed");
-    let path = format!("/api/workflows/version-usage?{QUERY}&limit=1");
+    let path = format!("/api/workflow-version-usage?{QUERY}&limit=1");
     for namespace in ["version-tenant-a", "version-tenant-b"] {
         let (status, body) = namespaces::scoped(&app, namespace, "GET", &path, Value::Null).await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -201,7 +216,7 @@ async fn invalid_requests_refuse_instead_of_returning_an_empty_success() {
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     for query in ["", "workflow_type=echo&change_id=pricing-v2", "workflow_type=echo&change_id=pricing-v2&min_version=2147483648", "workflow_type=echo&change_id=pricing-v2&min_version=1&limit=0", "workflow_type=echo&change_id=pricing-v2&min_version=1&limit=201", "workflow_type=echo&change_id=pricing-v2&min_version=1&state=closed", "workflow_type=echo&change_id=pricing-v2&min_version=1&cursor=invalid"] {
-        let (status, body) = request(&app, "GET", &format!("/api/workflows/version-usage?{query}"), Value::Null).await;
+        let (status, body) = request(&app, "GET", &format!("/api/workflow-version-usage?{query}"), Value::Null).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {body}");
         assert_eq!(body["reason"], "validation_failed");
     }
