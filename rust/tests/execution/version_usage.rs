@@ -130,15 +130,18 @@ async fn pruned_missing_prefix_and_conflicting_history_remain_unknown() {
     let prefix = recorded(&app, "version-usage-prefix", 2).await;
     let conflict = recorded(&app, "version-usage-conflict", 2).await;
     let unsupported = recorded(&app, "version-usage-format", 2).await;
+    let late_start = recorded(&app, "version-usage-late-start", 2).await;
     fixture(&database, &pruned, "UPDATE workflow_runs SET details_pruned_at='2026-01-01 00:00:00' WHERE id=$1").await;
     fixture(&database, &prefix, "DELETE FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence=1").await;
     // A retained malformed decision must not become current merely because its
     // version is newer. This is private storage-corruption regression data.
     fixture(&database, &conflict, r#"UPDATE workflow_history_events SET payload='{"change_id":"pricing-v2","version":2,"min_supported":3,"max_supported":4,"sequence":1}' WHERE workflow_run_id=$1 AND event_type='VersionMarkerRecorded'"#).await;
     fixture(&database, &unsupported, "UPDATE workflow_history_events SET payload='[]' WHERE workflow_run_id=$1 AND event_type='WorkflowStarted'").await;
+    fixture(&database, &late_start, "INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,recorded_at) SELECT 'version-usage-late-admission',workflow_run_id,MAX(sequence)+1,'StartAccepted','{}','2026-01-01 00:00:00' FROM workflow_history_events WHERE workflow_run_id=$1 GROUP BY workflow_run_id").await;
+    fixture(&database, &late_start, "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1").await;
     let page = usage(&app, QUERY).await;
-    assert_eq!(page["counts"], json!({"total":4,"legacy":0,"current":0,"unknown":4}));
-    for run in [&pruned, &prefix, &unsupported] {
+    assert_eq!(page["counts"], json!({"total":5,"legacy":0,"current":0,"unknown":5}));
+    for run in [&pruned, &prefix, &unsupported, &late_start] {
         let record = page["runs"].as_array().unwrap().iter().find(|value| value["run_id"] == run["run_id"]).unwrap();
         assert_eq!(record["unknown_reason"], "history_unavailable");
     }

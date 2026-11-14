@@ -195,11 +195,14 @@ impl<'a> Evidence<'a> {
     fn event(&mut self, sequence: i64, event_type: &str, payload: Option<&str>) {
         // Ordinary native starts/redrives retain StartAccepted before
         // WorkflowStarted; child/continued runs start with WorkflowStarted.
-        if self.sequence.checked_add(1) != Some(sequence)
-            || (self.sequence == 0 && !matches!(event_type, "StartAccepted" | "WorkflowStarted"))
-            || (event_type == "VersionMarkerRecorded" && !self.started)
-            || (event_type == "WorkflowStarted" && self.started)
-        {
+        let prefix_valid = match (self.sequence, self.started, event_type) {
+            (0, false, "StartAccepted" | "WorkflowStarted") => true,
+            (1, false, "WorkflowStarted") => true,
+            (_, true, "StartAccepted" | "WorkflowStarted") => false,
+            (_, true, _) => true,
+            _ => false,
+        };
+        if self.sequence.checked_add(1) != Some(sequence) || !prefix_valid {
             self.history_available = false;
         }
         self.sequence = sequence;
@@ -517,5 +520,23 @@ mod tests {
         let token = cursor.encode("test-secret").unwrap();
         assert!(token.len() > 8192);
         assert!(Cursor::decode(&token, "test-secret").is_ok());
+    }
+
+    #[test]
+    fn malformed_start_prefixes_never_establish_a_current_decision() {
+        for prefix in [
+            vec!["StartAccepted", "StartAccepted", "WorkflowStarted"],
+            vec!["StartAccepted", "OtherEvent", "WorkflowStarted"],
+            vec!["WorkflowStarted", "StartAccepted"],
+            vec!["WorkflowStarted", "WorkflowStarted"],
+            vec!["OtherEvent", "WorkflowStarted"],
+        ] {
+            let mut e = Evidence::new("pricing-v2", true);
+            for (index, event_type) in prefix.iter().enumerate() {
+                e.event(index as i64 + 1, event_type, None);
+            }
+            e.event(prefix.len() as i64 + 1, "VersionMarkerRecorded", Some(&marker("pricing-v2",1).to_string()));
+            assert_eq!(e.classify(1), Usage::Unknown(Unknown::HistoryUnavailable), "{prefix:?}");
+        }
     }
 }
