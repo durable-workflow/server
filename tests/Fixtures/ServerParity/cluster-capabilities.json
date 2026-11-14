@@ -456,6 +456,10 @@
           }
         },
         "reason": "Native's client_compatibility (server#1005) cites only protocols it serves beside the block: the auth composition contract, the control plane with its request contract, and worker protocol 1.20. Published PHP's block also cites the skew refusal matrix and five worker_protocol external execution contracts, which native does not publish; the CLI checks every protocol the block requires, so native must not cite them."
+      },
+      "capabilities.workflow_version_usage": {
+        "value": true,
+        "reason": "Native serves GET /api/workflow-version-usage for namespace-scoped open-run legacy/current/unknown counts and live keyset pages. Missing markers and unavailable provenance remain unknown, with no safe-to-remove flag (Server #1220). Published PHP has no such endpoint."
       }
     }
   }

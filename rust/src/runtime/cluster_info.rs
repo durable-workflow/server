@@ -54,6 +54,7 @@ pub(super) fn capabilities() -> Value {
         "schedule_jitter",
         "schedule_max_runs",
         "search_attributes",
+        super::version_usage::CAPABILITY,
         "history_export",
         "continue_as_new",
         "child_workflows",
@@ -217,8 +218,9 @@ mod tests {
         }
         // PHP's names plus native's child turn, occurrence-id reopen,
         // occurrence deadline, update outcome reads, task queue pauses and
-        // command request keys.
-        assert_eq!(caps.as_object().unwrap().len(), 62);
+        // command request keys and open-run version usage.
+        assert_eq!(caps.as_object().unwrap().len(), 63);
+        assert_eq!(caps[super::super::version_usage::CAPABILITY], json!(true));
         assert_eq!(caps["task_queue_activity_dispatch_pause"], json!(true));
         assert_eq!(caps["command_request_keys"], json!(true));
         assert_eq!(caps["update_outcome_reads"], json!(true));

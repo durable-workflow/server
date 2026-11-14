@@ -207,6 +207,7 @@ mod update_validation;
 mod updates;
 pub mod upgrade;
 mod visibility;
+mod version_usage;
 mod visibility_query;
 mod wait_history;
 mod wait_projection;

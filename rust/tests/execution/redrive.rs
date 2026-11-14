@@ -258,7 +258,7 @@ async fn a_redriven_run_cancels_and_terminates_like_php() {
 
 /// A run like `failed_at_second_activity`, started with `start` fields and
 /// with `extra` commands, one step each, in its first workflow task.
-async fn failed_with(app: &Router, workflow: &str, start: Value, extra: Vec<Value>) -> Value {
+pub(super) async fn failed_with(app: &Router, workflow: &str, start: Value, extra: Vec<Value>) -> Value {
     let failed_step = 2 + extra.len();
     let mut body = json!({"workflow_id":workflow,"workflow_type":"echo","task_queue":"test","input":envelope(Payload::Array(vec![]))});
     for (key, value) in start.as_object().unwrap() {

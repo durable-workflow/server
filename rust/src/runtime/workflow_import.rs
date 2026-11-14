@@ -42,7 +42,7 @@ const SOURCE_RUNTIME: &str = "embedded";
 
 const RUN_STATUSES: &[&str] = &["pending", "running", "waiting", "cancelled", "terminated", "completed", "failed"];
 const TERMINAL_STATUSES: &[&str] = &["cancelled", "terminated", "completed", "failed"];
-const HISTORY_EVENT_TYPES: &[&str] = &[
+pub(super) const HISTORY_EVENT_TYPES: &[&str] = &[
     "StartAccepted", "StartRejected", "WorkflowStarted", "WorkflowContinuedAsNew", "ChildWorkflowScheduled",
     "ChildCancellationRequested", "ChildCancellationResolved", "ChildRunStarted", "ChildRunCompleted", "ChildRunFailed",
     "ChildRunCancelled", "ChildRunTerminated", "ServiceCallStarted", "ServiceCallCompleted", "ServiceCallFailed",

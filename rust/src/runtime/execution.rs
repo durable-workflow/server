@@ -1122,6 +1122,13 @@ impl Runtime {
             Storage::MySql(store) => store.list_workflows(&filter).await,
         }
     }
+    pub(super) async fn version_usage(&self, filter: super::version_usage::Filter) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.version_usage(&filter, &self.token).await,
+            Storage::Postgres(store) => store.version_usage(&filter, &self.token).await,
+            Storage::MySql(store) => store.version_usage(&filter, &self.token).await,
+        }
+    }
     pub(crate) async fn update_workflow(
         &self,
         workflow_id: &str,
