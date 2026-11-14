@@ -61,7 +61,8 @@ impl Cursor {
 
     fn decode(token: &str, key: &str) -> Result<Self> {
         let bad = || invalid("cursor", "The version-usage cursor is invalid.");
-        if token.len() > 8192 { return Err(bad()); }
+        // Legal UTF-8 query values can expand sixfold in JSON escaping.
+        if token.len() > 16384 { return Err(bad()); }
         let (body, tag) = token.split_once('.').ok_or_else(bad)?;
         let body = URL_SAFE_NO_PAD.decode(body).map_err(|_| bad())?;
         let tag = URL_SAFE_NO_PAD.decode(tag).map_err(|_| bad())?;
@@ -507,5 +508,14 @@ mod tests {
         e.event(1,"StartAccepted",None);
         e.event(2,"VersionMarkerRecorded",Some(&payload));
         assert_eq!(e.classify(1), Usage::Unknown(Unknown::HistoryUnavailable));
+    }
+
+    #[test]
+    fn cursor_round_trips_maximum_query_values_even_when_json_escapes_them() {
+        let cursor = Cursor { version:1, namespace:"default".into(), workflow_type:"\0".repeat(255),
+            change_id:"\0".repeat(1024), min_version:1, state:None, after:"A".into(), through:"Z".into() };
+        let token = cursor.encode("test-secret").unwrap();
+        assert!(token.len() > 8192);
+        assert!(Cursor::decode(&token, "test-secret").is_ok());
     }
 }
