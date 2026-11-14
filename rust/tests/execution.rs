@@ -24,6 +24,9 @@ mod visibility;
 #[path = "execution/visibility_collation.rs"]
 mod visibility_collation;
 
+#[path = "execution/version_usage.rs"]
+mod version_usage;
+
 #[path = "execution/memos.rs"]
 mod memos;
 

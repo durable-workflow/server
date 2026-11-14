@@ -54,6 +54,7 @@ pub(super) fn capabilities() -> Value {
         "schedule_jitter",
         "schedule_max_runs",
         "search_attributes",
+        super::version_usage::CAPABILITY,
         "history_export",
         "continue_as_new",
         "child_workflows",

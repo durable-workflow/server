@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub(super) enum Operation<'a> {
     Start,
     List,
+    VersionUsage,
     ListRuns,
     Describe,
     DescribeRun,
@@ -99,6 +100,7 @@ impl Operation<'_> {
         let (operation, required, success): (&str, &[&str], &[&str]) = match self {
             Self::Start => ("start", &[], &["workflow_id", "outcome"]),
             Self::List => ("list", &[], &[]),
+            Self::VersionUsage => ("version_usage", &[], &[]),
             Self::ListRuns => ("list_runs", &["workflow_id"], &[]),
             Self::Describe => ("describe", &["workflow_id"], &[]),
             Self::DescribeRun => ("describe_run", &["workflow_id"], &["run_id"]),
@@ -321,7 +323,7 @@ impl Operation<'_> {
                  selected_run_not_current configured_workflow_type_invalid v1_projection_read_only \
                  backend_lock_pressure control_plane_internal_error",
             ),
-            Self::List | Self::ListRuns | Self::Describe | Self::Observe | Self::Debug | Self::ImportEmbeddedV2 => return None,
+            Self::List | Self::VersionUsage | Self::ListRuns | Self::Describe | Self::Observe | Self::Debug | Self::ImportEmbeddedV2 => return None,
         })
     }
 }
@@ -345,6 +347,7 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         ("POST", ["api", "workflows", _, "query", name])
         | ("POST", ["api", "workflows", _, "runs", _, "query", name]) => Operation::Query(name),
         ("GET", ["api", "workflows"]) => Operation::List,
+        ("GET", ["api", "workflows", "version-usage"]) => Operation::VersionUsage,
         ("GET", ["api", "workflows", _]) => Operation::Describe,
         ("GET", ["api", "workflows", _, "runs"]) => Operation::ListRuns,
         ("GET", ["api", "workflows", _, "runs", _]) => Operation::DescribeRun,
