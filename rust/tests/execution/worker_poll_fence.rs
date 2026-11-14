@@ -137,7 +137,9 @@ async fn held_activity_polls_end_when_the_registration_changes() {
 
     register_on_own_queue(&app, "act-replaced", None).await;
     let poll = held(&app, "act-replaced", "activity").await;
+    acquisition_context("activity_reregistration_start");
     let (status, body) = request(&app, "POST", "/api/worker/register", registration("act-replaced", None)).await;
+    acquisition_context("activity_reregistration_returned");
     assert_eq!(status, StatusCode::CREATED, "{body}");
     schedule_activity(&app, "act-replaced").await;
     assert_eq!(outcome(&answer(poll).await, "act-replaced"), stale());

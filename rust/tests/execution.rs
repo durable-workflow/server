@@ -458,8 +458,18 @@ async fn table_counts(database: &TestDatabase) -> Vec<(String, i64)> {
     counts
 }
 
+fn acquisition_context(phase: &str) {
+    let thread = std::thread::current();
+    eprintln!(
+        "server1204_context {}",
+        json!({"at":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            "test":thread.name().unwrap_or("unnamed"), "phase":phase})
+    );
+}
+
 impl TestDatabase {
     async fn new() -> Self {
+        acquisition_context("database_create");
         assert!(
             !(std::env::var_os("DW_EXECUTION_POSTGRES_URL").is_some()
                 && std::env::var_os("DW_EXECUTION_MYSQL_URL").is_some()),
@@ -476,6 +486,7 @@ impl TestDatabase {
                 .timezone(Some("+00:00".into()));
             let url = options.to_url_lossy().to_string();
             MySql::create_database(&url).await.unwrap();
+            acquisition_context("mysql_database_ready");
             return Self::MySql {
                 options: Box::new(options),
                 url,
