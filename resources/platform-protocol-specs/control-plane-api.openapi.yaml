@@ -220,7 +220,7 @@ paths:
         RFC3339 clock pair, otherwise history_invalid. Native clocks retain up to
         nine fractional digits and retained strings are never rewritten. Arguments,
         results and external payloads are not read. The shared v1 contract is
-        https://github.com/durable-workflow/workflow/blob/9af1eb53f698f8dd764dfd7841c1851d79555b9d/docs/version-usage.md.
+        https://github.com/durable-workflow/workflow/blob/30341b139323c4bf3fa26a34c2c562f88c075bbe/docs/version-usage.md.
       parameters:
         - $ref: "#/components/parameters/ControlPlaneVersionHeader"
         - in: query
