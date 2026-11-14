@@ -269,3 +269,44 @@ async fn invalid_requests_refuse_instead_of_returning_an_empty_success() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn parity_missing_or_foreign_instance_metadata_stays_in_unknown_counts() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app,"version-reader-worker",json!(["echo"]),json!([])).await;
+    let missing = recorded(&app,"version-missing-owner",1).await;
+    let foreign = recorded(&app,"version-foreign-owner",1).await;
+    fixture(&database,&json!({"run_id":missing["workflow_id"]}),"DELETE FROM workflow_instances WHERE id=$1").await;
+    fixture(&database,&json!({"run_id":foreign["workflow_id"]}),"UPDATE workflow_instances SET namespace='unrelated-owner' WHERE id=$1").await;
+    let answer = usage(&app, &format!("{QUERY}&limit=1")).await;
+    assert_eq!(answer["counts"],json!({"total":2,"legacy":0,"current":0,"unknown":2}));
+    assert_eq!(answer["runs"][0]["unknown_reason"],"history_unavailable");
+    assert_eq!(answer["has_more"],true);
+    let next = usage(&app,&format!("{QUERY}&limit=1&cursor={}",answer["next_cursor"].as_str().unwrap())).await;
+    assert_eq!(next["counts"],answer["counts"]);
+    assert_eq!(next["runs"][0]["unknown_reason"],"history_unavailable");
+    assert_ne!(next["runs"][0]["run_id"],answer["runs"][0]["run_id"]);
+    assert_eq!(next["has_more"],false);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn parity_future_history_formats_do_not_report_current_usage() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app,"version-reader-worker",json!(["echo"]),json!([])).await;
+    let future = recorded(&app,"version-future-event",1).await;
+    let marker = recorded(&app,"version-future-marker",1).await;
+    fixture(&database,&future,"INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,recorded_at) SELECT 'version-usage-future-event',workflow_run_id,MAX(sequence)+1,'FutureHistoryEvent','{}','2026-01-01 00:00:00' FROM workflow_history_events WHERE workflow_run_id=$1 GROUP BY workflow_run_id").await;
+    fixture(&database,&future,"UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1").await;
+    fixture(&database,&marker,r#"UPDATE workflow_history_events SET payload='{"change_id":"pricing-v2","version":1,"min_supported":0,"max_supported":2,"sequence":1,"future_format":2}' WHERE workflow_run_id=$1 AND event_type='VersionMarkerRecorded'"#).await;
+    let answer = usage(&app,QUERY).await;
+    assert_eq!(answer["counts"],json!({"total":2,"legacy":0,"current":0,"unknown":2}));
+    assert!(answer["runs"].as_array().unwrap().iter().all(|run|run["unknown_reason"]=="history_unavailable"));
+    runtime.close().await;
+    database.remove().await;
+}

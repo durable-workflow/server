@@ -165,22 +165,33 @@ impl<'a> Evidence<'a> {
                     self.history_available = false;
                     return;
                 }
-                let Some(change_id) = payload.get("change_id").and_then(Value::as_str) else {
+                let Some(change_id) = payload.get("change_id").and_then(Value::as_str).filter(|value| !value.is_empty()) else {
                     // Its identity is unavailable; it might be the requested marker.
                     self.invalid = true;
                     return;
                 };
-                if change_id != self.change_id {
-                    return;
-                }
                 let integer = |key| payload.get(key).and_then(Value::as_i64).and_then(|value| i32::try_from(value).ok());
                 let (Some(version), Some(minimum), Some(maximum)) = (integer("version"), integer("min_supported"), integer("max_supported")) else {
                     self.invalid = true;
                     return;
                 };
                 let logical = payload.get("sequence").and_then(Value::as_i64);
-                if minimum > version || version > maximum || !logical.is_some_and(|sequence| sequence > 0 && self.logical_sequences.insert(sequence)) {
+                if minimum > version || version > maximum || !logical.is_some_and(|sequence| sequence > 0 && !self.logical_sequences.contains(&sequence)) {
                     self.invalid = true;
+                    return;
+                }
+                // Native retains a task snapshot in addition to the portable
+                // decision fields. Unknown extensions need a reader upgrade.
+                if payload.as_object().expect("a decision object").keys().any(|key| !matches!(key.as_str(),
+                    "change_id" | "version" | "min_supported" | "max_supported" | "sequence"
+                    | "task" | "reused_from_run_id" | "reused_recorded_at"))
+                    || payload.get("task").is_some_and(|task| !task.is_object())
+                {
+                    self.history_available = false;
+                    return;
+                }
+                self.logical_sequences.insert(logical.expect("validated logical sequence"));
+                if change_id != self.change_id {
                     return;
                 }
                 if self.version.is_some_and(|previous| previous != version) {
@@ -202,7 +213,9 @@ impl<'a> Evidence<'a> {
             (_, true, _) => true,
             _ => false,
         };
-        if self.sequence.checked_add(1) != Some(sequence) || !prefix_valid {
+        if self.sequence.checked_add(1) != Some(sequence) || !prefix_valid
+            || !super::workflow_import::HISTORY_EVENT_TYPES.contains(&event_type)
+        {
             self.history_available = false;
         }
         self.sequence = sequence;
@@ -287,12 +300,12 @@ fn finish(run: Run<'_>, filter: &Filter, counts: &mut Counts, page: &mut Vec<Val
 
 // Fixed SQL templates keep all caller values in binds. Explicit binary/C
 // comparisons make namespace, type, and keyset identity independent of collation.
-const SQLITE_ROWS: &str = "SELECT r.id,r.workflow_instance_id,r.status,r.details_pruned_at,r.import_source,r.last_history_sequence,h.sequence,h.event_type,CASE WHEN h.event_type='VersionMarkerRecorded' THEN h.payload ELSE NULL END AS marker,CASE WHEN h.event_type='WorkflowStarted' THEN CASE WHEN json_valid(h.payload) THEN CASE WHEN json_type(h.payload)='object' THEN 1 ELSE 0 END ELSE 0 END ELSE 1 END AS start_format_valid FROM workflow_runs r JOIN workflow_instances i ON i.id COLLATE BINARY=r.workflow_instance_id COLLATE BINARY AND i.namespace COLLATE BINARY=$1 LEFT JOIN workflow_history_events h ON h.workflow_run_id COLLATE BINARY=r.id COLLATE BINARY WHERE r.namespace COLLATE BINARY=$2 AND r.workflow_type COLLATE BINARY=$3 AND r.status COLLATE BINARY IN ('pending','running','waiting') AND ($4 IS NULL OR r.id COLLATE BINARY<=$5) ORDER BY r.id COLLATE BINARY,h.sequence";
-const POSTGRES_ROWS: &str = "SELECT r.id,r.workflow_instance_id,r.status,r.details_pruned_at,r.import_source,r.last_history_sequence,h.sequence,h.event_type,CASE WHEN h.event_type='VersionMarkerRecorded' THEN h.payload::text ELSE NULL END AS marker,CASE WHEN h.event_type='WorkflowStarted' THEN CASE WHEN jsonb_typeof(h.payload::jsonb)='object' THEN 1 ELSE 0 END ELSE 1 END AS start_format_valid FROM workflow_runs r JOIN workflow_instances i ON i.id COLLATE \"C\"=r.workflow_instance_id COLLATE \"C\" AND i.namespace COLLATE \"C\"=$1 LEFT JOIN workflow_history_events h ON h.workflow_run_id COLLATE \"C\"=r.id COLLATE \"C\" WHERE r.namespace COLLATE \"C\"=$2 AND r.workflow_type COLLATE \"C\"=$3 AND r.status COLLATE \"C\" IN ('pending','running','waiting') AND ($4 IS NULL OR r.id COLLATE \"C\"<=$5 COLLATE \"C\") ORDER BY r.id COLLATE \"C\",h.sequence";
-const MYSQL_ROWS: &str = "SELECT r.id,r.workflow_instance_id,r.status,r.details_pruned_at,r.import_source,r.last_history_sequence,h.sequence,h.event_type,CASE WHEN h.event_type='VersionMarkerRecorded' THEN CAST(h.payload AS CHAR) ELSE NULL END AS marker,CASE WHEN h.event_type='WorkflowStarted' THEN CASE WHEN JSON_TYPE(h.payload)='OBJECT' THEN 1 ELSE 0 END ELSE 1 END AS start_format_valid FROM workflow_runs r JOIN workflow_instances i ON BINARY i.id=BINARY r.workflow_instance_id AND BINARY i.namespace=BINARY $1 LEFT JOIN workflow_history_events h ON BINARY h.workflow_run_id=BINARY r.id WHERE BINARY r.namespace=BINARY $2 AND BINARY r.workflow_type=BINARY $3 AND BINARY r.status IN ('pending','running','waiting') AND ($4 IS NULL OR BINARY r.id<=BINARY $5) ORDER BY BINARY r.id,h.sequence";
-const SQLITE_UPPER: &str = "SELECT r.id FROM workflow_runs r JOIN workflow_instances i ON i.id COLLATE BINARY=r.workflow_instance_id COLLATE BINARY AND i.namespace COLLATE BINARY=$1 WHERE r.namespace COLLATE BINARY=$2 AND r.workflow_type COLLATE BINARY=$3 AND r.status COLLATE BINARY IN ('pending','running','waiting') ORDER BY r.id COLLATE BINARY DESC LIMIT 1";
-const POSTGRES_UPPER: &str = "SELECT r.id FROM workflow_runs r JOIN workflow_instances i ON i.id COLLATE \"C\"=r.workflow_instance_id COLLATE \"C\" AND i.namespace COLLATE \"C\"=$1 WHERE r.namespace COLLATE \"C\"=$2 AND r.workflow_type COLLATE \"C\"=$3 AND r.status COLLATE \"C\" IN ('pending','running','waiting') ORDER BY r.id COLLATE \"C\" DESC LIMIT 1";
-const MYSQL_UPPER: &str = "SELECT r.id FROM workflow_runs r JOIN workflow_instances i ON BINARY i.id=BINARY r.workflow_instance_id AND BINARY i.namespace=BINARY $1 WHERE BINARY r.namespace=BINARY $2 AND BINARY r.workflow_type=BINARY $3 AND BINARY r.status IN ('pending','running','waiting') ORDER BY BINARY r.id DESC LIMIT 1";
+const SQLITE_ROWS: &str = "SELECT r.id,r.workflow_instance_id,r.status,r.details_pruned_at,r.import_source,r.last_history_sequence,i.id AS owner_id,h.sequence,h.event_type,CASE WHEN h.event_type='VersionMarkerRecorded' THEN h.payload ELSE NULL END AS marker,CASE WHEN h.event_type='WorkflowStarted' THEN CASE WHEN json_valid(h.payload) THEN CASE WHEN json_type(h.payload)='object' THEN 1 ELSE 0 END ELSE 0 END ELSE 1 END AS start_format_valid FROM workflow_runs r LEFT JOIN workflow_instances i ON i.id COLLATE BINARY=r.workflow_instance_id COLLATE BINARY AND i.namespace COLLATE BINARY=$1 LEFT JOIN workflow_history_events h ON h.workflow_run_id COLLATE BINARY=r.id COLLATE BINARY WHERE r.namespace COLLATE BINARY=$2 AND r.workflow_type COLLATE BINARY=$3 AND r.status COLLATE BINARY IN ('pending','running','waiting') AND ($4 IS NULL OR r.id COLLATE BINARY<=$5) ORDER BY r.id COLLATE BINARY,h.sequence";
+const POSTGRES_ROWS: &str = "SELECT r.id,r.workflow_instance_id,r.status,r.details_pruned_at,r.import_source,r.last_history_sequence,i.id AS owner_id,h.sequence,h.event_type,CASE WHEN h.event_type='VersionMarkerRecorded' THEN h.payload::text ELSE NULL END AS marker,CASE WHEN h.event_type='WorkflowStarted' THEN CASE WHEN jsonb_typeof(h.payload::jsonb)='object' THEN 1 ELSE 0 END ELSE 1 END AS start_format_valid FROM workflow_runs r LEFT JOIN workflow_instances i ON i.id COLLATE \"C\"=r.workflow_instance_id COLLATE \"C\" AND i.namespace COLLATE \"C\"=$1 LEFT JOIN workflow_history_events h ON h.workflow_run_id COLLATE \"C\"=r.id COLLATE \"C\" WHERE r.namespace COLLATE \"C\"=$2 AND r.workflow_type COLLATE \"C\"=$3 AND r.status COLLATE \"C\" IN ('pending','running','waiting') AND ($4 IS NULL OR r.id COLLATE \"C\"<=$5 COLLATE \"C\") ORDER BY r.id COLLATE \"C\",h.sequence";
+const MYSQL_ROWS: &str = "SELECT r.id,r.workflow_instance_id,r.status,r.details_pruned_at,r.import_source,r.last_history_sequence,i.id AS owner_id,h.sequence,h.event_type,CASE WHEN h.event_type='VersionMarkerRecorded' THEN CAST(h.payload AS CHAR) ELSE NULL END AS marker,CASE WHEN h.event_type='WorkflowStarted' THEN CASE WHEN JSON_TYPE(h.payload)='OBJECT' THEN 1 ELSE 0 END ELSE 1 END AS start_format_valid FROM workflow_runs r LEFT JOIN workflow_instances i ON BINARY i.id=BINARY r.workflow_instance_id AND BINARY i.namespace=BINARY $1 LEFT JOIN workflow_history_events h ON BINARY h.workflow_run_id=BINARY r.id WHERE BINARY r.namespace=BINARY $2 AND BINARY r.workflow_type=BINARY $3 AND BINARY r.status IN ('pending','running','waiting') AND ($4 IS NULL OR BINARY r.id<=BINARY $5) ORDER BY BINARY r.id,h.sequence";
+const SQLITE_UPPER: &str = "SELECT r.id FROM workflow_runs r LEFT JOIN workflow_instances i ON i.id COLLATE BINARY=r.workflow_instance_id COLLATE BINARY AND i.namespace COLLATE BINARY=$1 WHERE r.namespace COLLATE BINARY=$2 AND r.workflow_type COLLATE BINARY=$3 AND r.status COLLATE BINARY IN ('pending','running','waiting') ORDER BY r.id COLLATE BINARY DESC LIMIT 1";
+const POSTGRES_UPPER: &str = "SELECT r.id FROM workflow_runs r LEFT JOIN workflow_instances i ON i.id COLLATE \"C\"=r.workflow_instance_id COLLATE \"C\" AND i.namespace COLLATE \"C\"=$1 WHERE r.namespace COLLATE \"C\"=$2 AND r.workflow_type COLLATE \"C\"=$3 AND r.status COLLATE \"C\" IN ('pending','running','waiting') ORDER BY r.id COLLATE \"C\" DESC LIMIT 1";
+const MYSQL_UPPER: &str = "SELECT r.id FROM workflow_runs r LEFT JOIN workflow_instances i ON BINARY i.id=BINARY r.workflow_instance_id AND BINARY i.namespace=BINARY $1 WHERE BINARY r.namespace=BINARY $2 AND BINARY r.workflow_type=BINARY $3 AND BINARY r.status IN ('pending','running','waiting') ORDER BY BINARY r.id DESC LIMIT 1";
 
 store_methods! {
     pub(super) async fn version_usage(&self, filter: &Filter, key: &str) -> Result<Value> {
@@ -326,6 +339,7 @@ store_methods! {
                 if current.is_none() {
                     let source = DB::optional_string(&row, "import_source")?;
                     let retained = DB::optional_instant(&row, "details_pruned_at")?.is_none()
+                        && DB::optional_string(&row, "owner_id")?.is_some()
                         && matches!(source.as_deref(), None | Some("embedded_v2"));
                     current = Some(Run { id, instance: DB::string(&row,"workflow_instance_id")?,
                         status: DB::string(&row,"status")?, last_sequence: DB::number(&row,"last_history_sequence")?,
@@ -380,7 +394,7 @@ mod tests {
     #[test]
     fn absent_marker_never_proves_current_usage() {
         let mut e = evidence("pricing-v2");
-        e.record("VersionMarkerRecorded", &json!({"change_id":"unrelated", "version":99}));
+        e.record("VersionMarkerRecorded", &marker("unrelated", 99));
         assert_eq!(e.classify(1), Usage::Unknown(Unknown::MarkerMissing));
     }
 
@@ -424,10 +438,12 @@ mod tests {
     #[test]
     fn marker_identity_is_exact_and_duplicate_identical_evidence_is_allowed() {
         let mut e = evidence("λ-Pricing");
-        for change_id in ["Λ-Pricing", "λ-pricing", "λ-Pricing "] {
-            e.record("VersionMarkerRecorded", &json!({"change_id":change_id,"version":0}));
+        for (index, change_id) in ["Λ-Pricing", "λ-pricing", "λ-Pricing "].into_iter().enumerate() {
+            let mut payload = marker(change_id, 0);
+            payload["sequence"] = json!(index + 1);
+            e.record("VersionMarkerRecorded", &payload);
         }
-        for sequence in 1..=2 {
+        for sequence in 4..=5 {
             let mut payload = marker("λ-Pricing", 2);
             payload["sequence"] = json!(sequence);
             e.record("VersionMarkerRecorded", &payload);
@@ -538,5 +554,38 @@ mod tests {
             e.event(prefix.len() as i64 + 1, "VersionMarkerRecorded", Some(&marker("pricing-v2",1).to_string()));
             assert_eq!(e.classify(1), Usage::Unknown(Unknown::HistoryUnavailable), "{prefix:?}");
         }
+    }
+
+    #[test]
+    fn parity_unsupported_event_after_a_current_marker_remains_unavailable() {
+        let mut e = Evidence::new("pricing-v2", true);
+        e.event(1,"WorkflowStarted",None);
+        e.event(2,"VersionMarkerRecorded",Some(&marker("pricing-v2",1).to_string()));
+        e.event(3,"FutureHistoryEvent",None);
+        assert_eq!(e.classify(1), Usage::Unknown(Unknown::HistoryUnavailable));
+    }
+
+    #[test]
+    fn parity_unknown_marker_fields_require_a_reader_upgrade() {
+        for change_id in ["pricing-v2","other-change"] {
+            let mut e = evidence("pricing-v2");
+            e.record("VersionMarkerRecorded",&marker("pricing-v2",1));
+            let mut future = marker(change_id,1);
+            future["sequence"] = json!(2);
+            future["future_format"] = json!(2);
+            e.record("VersionMarkerRecorded",&future);
+            assert_eq!(e.classify(1),Usage::Unknown(Unknown::HistoryUnavailable));
+        }
+    }
+
+    #[test]
+    fn parity_malformed_other_change_decisions_cannot_be_ignored() {
+        let mut e = evidence("pricing-v2");
+        e.record("VersionMarkerRecorded",&marker("pricing-v2",1));
+        let mut invalid = marker("other-change",1);
+        invalid["sequence"] = json!(2);
+        invalid["min_supported"] = json!(2);
+        e.record("VersionMarkerRecorded",&invalid);
+        assert_eq!(e.classify(1),Usage::Unknown(Unknown::MarkerInvalid));
     }
 }
