@@ -28,6 +28,41 @@ fn checked(reference: &Reference) -> Result<(), SnapshotError> {
 }
 
 impl LocalStorage {
+    /// Resolve retained storage without creating a replacement for a missing
+    /// original root. A later symlink must not redirect the recorded owner.
+    pub(crate) async fn open_existing(root: PathBuf) -> Result<Self, SnapshotError> {
+        let root = tokio::task::spawn_blocking(move || {
+            let canonical = root.canonicalize().map_err(unavailable)?;
+            if canonical.as_os_str() != root.as_os_str()
+                || !canonical.is_dir()
+                || canonical.to_str().is_none()
+            {
+                return Err(SnapshotError::Unavailable);
+            }
+            Ok(canonical)
+        })
+        .await
+        .map_err(unavailable)??;
+        Ok(Self {
+            root: Arc::new(root),
+        })
+    }
+
+    pub(crate) fn canonical_root(&self) -> &std::path::Path {
+        self.root.as_path()
+    }
+
+    /// Pure addressing used to validate a stored binding before filesystem I/O.
+    pub(crate) fn address_at(
+        root: PathBuf,
+        reference: &Reference,
+    ) -> Result<String, SnapshotError> {
+        Self {
+            root: Arc::new(root),
+        }
+        .uri_for(reference)
+    }
+
     pub async fn open(root: PathBuf) -> Result<Self, SnapshotError> {
         let root = tokio::task::spawn_blocking(move || {
             fs::create_dir_all(&root).map_err(unavailable)?;
@@ -178,13 +213,18 @@ impl LocalStorage {
 
     /// The content address a `uri_for` URI names under this root.
     fn path_for_uri(&self, uri: &str) -> Result<PathBuf, SnapshotError> {
-        let encoded = uri.strip_prefix("file://").ok_or(SnapshotError::Unavailable)?.as_bytes();
+        let encoded = uri
+            .strip_prefix("file://")
+            .ok_or(SnapshotError::Unavailable)?
+            .as_bytes();
         let mut bytes = Vec::with_capacity(encoded.len());
         let mut index = 0;
         while index < encoded.len() {
             let byte = encoded[index];
             if byte == b'%' {
-                let hex = encoded.get(index + 1..index + 3).ok_or(SnapshotError::Unavailable)?;
+                let hex = encoded
+                    .get(index + 1..index + 3)
+                    .ok_or(SnapshotError::Unavailable)?;
                 let hex = std::str::from_utf8(hex).map_err(unavailable)?;
                 bytes.push(u8::from_str_radix(hex, 16).map_err(unavailable)?);
                 index += 3;
@@ -197,11 +237,17 @@ impl LocalStorage {
         }
         let path = PathBuf::from(String::from_utf8(bytes).map_err(unavailable)?);
         let relative = path.strip_prefix(&*self.root).map_err(unavailable)?;
-        let parts: Vec<&str> = relative.iter().map(|part| part.to_str().unwrap_or("")).collect();
+        let parts: Vec<&str> = relative
+            .iter()
+            .map(|part| part.to_str().unwrap_or(""))
+            .collect();
         let [kind, prefix, sha256] = parts.as_slice() else {
             return Err(SnapshotError::Unavailable);
         };
-        let content = sha256.len() == 64 && sha256.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+        let content = sha256.len() == 64
+            && sha256
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
         if *kind != "avro" || !content || !sha256.starts_with(prefix) || prefix.len() != 2 {
             return Err(SnapshotError::Unavailable);
         }
@@ -318,7 +364,9 @@ mod tests {
     #[tokio::test]
     async fn delete_uri_accepts_only_this_roots_content_address_and_replays() {
         let temp = tempfile::tempdir().unwrap();
-        let storage = LocalStorage::open(temp.path().join("space λ")).await.unwrap();
+        let storage = LocalStorage::open(temp.path().join("space λ"))
+            .await
+            .unwrap();
         let expected = upload(&storage, temp.path(), b"bytes to reclaim").await;
         let uri = storage.uri_for(&expected).unwrap();
         let path = storage.path(&expected).unwrap();

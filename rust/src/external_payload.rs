@@ -4,8 +4,10 @@
 use serde::Serialize;
 use serde_json::Value;
 mod local;
+mod storage_binding;
 mod snapshot;
 pub use local::LocalStorage;
+pub(crate) use storage_binding::StorageBinding;
 pub use snapshot::{AsyncSnapshot, Snapshot, SnapshotError, capture};
 
 pub const REFERENCE_SCHEMA: &str = "durable-workflow.v2.runtime-external-payload-reference.v1";
