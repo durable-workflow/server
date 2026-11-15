@@ -43,6 +43,7 @@ class PhpunitFeatureWorkflowContractTest extends TestCase
             'name: PHPUnit feature suite',
             'if: ${{ always() }}',
             'vendor/bin/phpunit tests/Feature',
+            'tests/Unit/NativeStorageBindingSchemaTest.php',
             'tests/Unit/NexusContractTest.php',
             'tests/Unit/PhpunitFeatureWorkflowContractTest.php',
         ] as $needle) {

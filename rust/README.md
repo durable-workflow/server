@@ -539,6 +539,9 @@ restart, all database families and S3 qualification. The actual byte probe is
 an isolated runtime configured with its disposable fixture token, a default
 namespace, four MiB payload ceiling and one-object namespace quota. See the
 [port log](../docs/rust-server-port.md) for its precise acceptance scope.
+Registered local objects retain their original storage bindings across disabled
+or moved write policies. Preserve all retained roots through backup and recovery;
+see [local policy changes](../docs/contracts/external-payload-storage.md#native-local-storage-policy-changes).
 Workflow start, activity arguments, terminal workflow completion and activity completion accept
 verified opaque external payloads. Retention commits with the admitted input or fenced result; cold
 delivery, history and descriptions keep references for normal SDK hydration.

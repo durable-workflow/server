@@ -33,6 +33,7 @@ pub(super) const TYPED_REASONS: &[&str] = &[
     "external_payload_expired",
     "external_payload_unauthorized",
     "external_payload_unavailable",
+    "external_payload_storage_binding_unavailable",
     "external_payload_oversized",
     "external_payload_unsupported",
     "external_payload_integrity_mismatch",
@@ -56,6 +57,7 @@ fn message(reason: &str) -> &str {
         "external_payload_unsupported" => "External payload envelopes must contain exactly codec and external_payload.",
         "external_payload_integrity_mismatch" => "External payload envelope codec does not match the runtime reference.",
         "external_payload_unavailable" => "External payload storage is temporarily unavailable.",
+        "external_payload_storage_binding_unavailable" => "The original external payload storage binding is unavailable or invalid.",
         "external_payload_completion_invalid" => "A canonical worker completion context is required.",
         "external_payload_completion_lease_rejected" => "The payload upload does not belong to a current worker completion lease.",
         "external_payload_completion_conflict" => "A completion payload slot is already bound to different bytes.",
@@ -262,7 +264,11 @@ pub(super) async fn local_for(policy: &Value, namespace: &str) -> Result<Option<
     if policy.is_null() || policy["enabled"] == false || policy["driver"] != "local" {
         return Ok(None);
     }
-    let root = match policy["config"]["uri"]
+    LocalStorage::open(local_root(policy, namespace)?).await.map(Some).map_err(snapshot_error)
+}
+
+pub(super) fn local_root(policy: &Value, namespace: &str) -> Result<PathBuf> {
+    Ok(match policy["config"]["uri"]
         .as_str()
         .and_then(|uri| uri.strip_prefix("file://"))
     {
@@ -270,8 +276,7 @@ pub(super) async fn local_for(policy: &Value, namespace: &str) -> Result<Option<
         None => std::env::current_dir()?
             .join("storage/app/external-payloads")
             .join(namespace),
-    };
-    LocalStorage::open(root).await.map(Some).map_err(snapshot_error)
+    })
 }
 
 pub(super) async fn set_policy(
@@ -427,7 +432,7 @@ async fn fetch_inner(runtime: Runtime, identity: String, headers: HeaderMap) -> 
         ));
     }
     let registered = runtime.external_payload_for_fetch(&expected).await?;
-    let snapshot = local(&runtime)
+    let snapshot = runtime.external_payload_storage(&registered.reference, &registered.uri)
         .await?
         .fetch(
             registered.reference,

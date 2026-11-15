@@ -17,12 +17,12 @@
 //! format, an envelope, or one on a stream) refuses before changing anything,
 //! with PHP's answer for unavailable external payload storage.
 use super::external_registry::{object_bucket, uri_hash};
-use super::external_transport::{local_for, typed_error};
+use super::external_transport::typed_error;
 use super::retention::reference;
 use super::retention_payloads::native_reference;
 use super::transaction::Transaction;
 use super::{Result, RuntimeError};
-use crate::external_payload::{LocalStorage, Reference};
+use crate::external_payload::Reference;
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
 
@@ -212,20 +212,6 @@ fn unsettled(name: &str) -> RuntimeError {
     }
 }
 
-/// `ExternalPayloadStorageUnavailable` from the reference cleanup: the
-/// namespace has no storage to delete an object it alone holds.
-fn driver_unavailable(name: &str) -> RuntimeError {
-    RuntimeError::Protocol {
-        status: StatusCode::SERVICE_UNAVAILABLE,
-        response: json!({
-            "message": "Namespace cleanup requires deleting external payloads, but external payload storage is unavailable.",
-            "reason": "external_payload_storage_driver_unavailable",
-            "namespace": name,
-            "error": "External payload storage driver is unavailable for namespace cleanup.",
-        }),
-    }
-}
-
 /// PHP wraps a failed delete in the reference cleanup in a plain
 /// `RuntimeException`, which Laravel answers as a server error.
 fn cleanup_failed() -> RuntimeError {
@@ -321,97 +307,50 @@ store_methods! {
         if Self::scalar(DB::NAMESPACE_STREAM_REFERENCES).bind(name).bind(name).bind(name).fetch_one(&mut **tx).await? > 0 {
             return Err(unsettled(name));
         }
-        let mut deletable = Vec::new();
+        let mut targets: Vec<(String, Reference, Value)> = Vec::new();
         for reference in references {
-            let uri = Self::query("SELECT storage_uri FROM runtime_external_payloads WHERE id=$1 AND namespace=$2")
-                .bind(&reference.reference_id)
-                .bind(name)
-                .fetch_optional(&mut **tx)
-                .await?
-                .map(|row| DB::string(&row, "storage_uri"))
-                .transpose()?;
-            if !Self::namespace_payload_retained(tx, name, &reference, uri.as_deref()).await? {
-                deletable.push((reference, uri));
-            }
+            let row = Self::query("SELECT storage_uri,storage_binding FROM runtime_external_payloads WHERE id=$1 AND namespace=$2")
+                .bind(&reference.reference_id).bind(name).fetch_optional(&mut **tx).await?;
+            let uri = row.as_ref().map(|row| DB::string(row, "storage_uri")).transpose()?;
+            if Self::namespace_payload_retained(tx, name, &reference, uri.as_deref()).await? { continue; }
+            let row = row.ok_or_else(super::external_storage_binding::unavailable)?;
+            let uri = uri.expect("registered payload has a URI");
+            let stored = DB::optional_string(&row, "storage_binding")?;
+            let policy = Self::bound_deletion_policy(tx, name, &reference, &uri, stored.as_deref()).await?;
+            if !targets.iter().any(|(known, _, _)| *known == uri) { targets.push((uri, reference, policy)); }
         }
-        let (policy, local) = Self::namespace_storage(tx, name).await?;
+        targets.sort_by(|left, right| (object_bucket(&left.0), &left.0).cmp(&(object_bucket(&right.0), &right.0)));
         let mut staged = Vec::new();
         let mut external_payloads = 0;
-        if !deletable.is_empty() {
-            let local = match &local {
-                Ok(Some(local)) => local,
-                Ok(None) => return Err(driver_unavailable(name)),
-                Err(_) => return Err(cleanup_failed()),
-            };
-            let mut targets: Vec<(String, Reference)> = Vec::new();
-            for (reference, uri) in deletable {
-                // A reference without a registration names its object by the
-                // driver's address, as PHP's stored reference names its URI.
-                let uri = match uri {
-                    Some(uri) => uri,
-                    None => local.uri_for(&reference).map_err(|_| cleanup_failed())?,
-                };
-                if !targets.iter().any(|(known, _)| *known == uri) {
-                    targets.push((uri, reference));
-                }
-            }
-            targets.sort_by(|left, right| (object_bucket(&left.0), &left.0).cmp(&(object_bucket(&right.0), &right.0)));
-            for (uri, reference) in targets {
-                Self::payload_object_lock(tx, &uri).await?;
-                if Self::namespace_payload_retained(tx, name, &reference, Some(&uri)).await? {
-                    continue;
-                }
-                let owners = Self::payload_owners(tx, &uri).await?;
-                let own = owners.iter().find(|(_, namespace)| namespace == name).map(|(id, _)| id.clone());
-                if owners.is_empty() || (own.is_some() && owners.len() == 1) {
-                    staged.push(Self::stage_payload_deletion(tx, name, &uri, &policy).await.map_err(|_| cleanup_failed())?);
-                }
-                if let Some(id) = own {
-                    Self::query("DELETE FROM runtime_external_payloads WHERE id=$1").bind(&id).execute(&mut **tx).await?;
-                }
-                external_payloads += 1;
-            }
-        }
-        let mut left = Vec::new();
-        for row in Self::query("SELECT id,storage_uri FROM runtime_external_payloads WHERE namespace=$1 ORDER BY id")
-            .bind(name)
-            .fetch_all(&mut **tx)
-            .await?
-        {
-            left.push((DB::string(&row, "id")?, DB::string(&row, "storage_uri")?));
-        }
-        let mut registrations = 0;
-        for (id, uri) in left {
+        for (uri, reference, policy) in targets {
             Self::payload_object_lock(tx, &uri).await?;
+            if Self::namespace_payload_retained(tx, name, &reference, Some(&uri)).await? { continue; }
             let owners = Self::payload_owners(tx, &uri).await?;
-            if owners.len() == 1 {
-                if !matches!(local, Ok(Some(_))) {
-                    return Err(registry_unavailable("External payload storage is unavailable for namespace cleanup."));
-                }
-                let deletion = Self::stage_payload_deletion(tx, name, &uri, &policy)
-                    .await
-                    .map_err(|_| registry_unavailable("External payload storage could not complete namespace cleanup."))?;
-                staged.push(deletion);
+            let own = owners.iter().find(|(_, namespace)| namespace == name).map(|(id, _)| id.clone());
+            if owners.is_empty() || (own.is_some() && owners.len() == 1) {
+                staged.push(Self::stage_payload_deletion(tx, name, &uri, &policy).await.map_err(|_| cleanup_failed())?);
             }
-            Self::query("DELETE FROM runtime_external_payloads WHERE id=$1").bind(&id).execute(&mut **tx).await?;
+            if let Some(id) = own { Self::query("DELETE FROM runtime_external_payloads WHERE id=$1").bind(id).execute(&mut **tx).await?; }
+            external_payloads += 1;
+        }
+        let left = Self::query("SELECT * FROM runtime_external_payloads WHERE namespace=$1 ORDER BY id")
+            .bind(name).fetch_all(&mut **tx).await?;
+        let mut registrations = 0;
+        for row in left {
+            let registered = Self::payload_row(&row)?;
+            let uri = &registered.uri;
+            Self::payload_object_lock(tx, uri).await?;
+            let owners = Self::payload_owners(tx, uri).await?;
+            if owners.len() == 1 {
+                let stored = DB::optional_string(&row, "storage_binding")?;
+                let policy = Self::bound_deletion_policy(tx, name, &registered.reference, uri, stored.as_deref()).await?;
+                staged.push(Self::stage_payload_deletion(tx, name, uri, &policy).await
+                    .map_err(|_| registry_unavailable("External payload storage could not complete namespace cleanup."))?);
+            }
+            Self::query("DELETE FROM runtime_external_payloads WHERE id=$1").bind(&registered.reference.reference_id).execute(&mut **tx).await?;
             registrations += 1;
         }
         Ok(([external_payloads, registrations], staged))
-    }
-
-    /// The namespace's storage policy, saved with each recorded deletion, and
-    /// its enabled local storage as `driverFor` resolves it.
-    async fn namespace_storage(tx: &mut Transaction<'_, DB>, name: &str) -> Result<(Value, Result<Option<LocalStorage>>)> {
-        let policy = Self::query("SELECT external_payload_storage FROM workflow_namespaces WHERE name=$1")
-            .bind(name)
-            .fetch_optional(&mut **tx)
-            .await?
-            .map(|row| DB::optional_document_row(&row, "external_payload_storage"))
-            .transpose()?
-            .flatten()
-            .unwrap_or(Value::Null);
-        let local = local_for(&policy, name).await;
-        Ok((policy, local))
     }
 
     /// Every namespace's registration of an object: id and namespace.

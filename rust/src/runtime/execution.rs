@@ -478,15 +478,13 @@ impl Runtime {
     delegate!(system_metrics() -> Result<Value>);
     delegate!(prometheus_metrics() -> Result<Value>);
     delegate!(payload_cleanup_status(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
-    /// The namespace's payload cleanup pass, with its local storage when an
-    /// enabled local policy names it.
+    /// Reclaim each registered object through its original storage binding.
     pub(crate) async fn payload_cleanup_pass(&self, limit: i64) -> Result<Value> {
-        let local = super::external_transport::local(self).await.ok();
         let retention = self.external.abandoned_seconds;
         match &*self.storage {
-            Storage::Sqlite(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
-            Storage::Postgres(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
-            Storage::MySql(store) => store.payload_cleanup_pass(limit, retention, local.as_ref()).await,
+            Storage::Sqlite(store) => store.payload_cleanup_pass(limit, retention).await,
+            Storage::Postgres(store) => store.payload_cleanup_pass(limit, retention).await,
+            Storage::MySql(store) => store.payload_cleanup_pass(limit, retention).await,
         }
     }
     delegate!(change_backup_hold(action: super::backup_hold::Action, request: &super::backup_hold::Request) -> Result<Value>);
@@ -531,6 +529,12 @@ impl Runtime {
         external_payload_for_fetch(
             expected: &crate::external_payload::Reference,
         ) -> Result<super::external_registry::RegisteredPayload>
+    );
+    delegate!(
+        external_payload_storage(
+            expected: &crate::external_payload::Reference,
+            uri: &str,
+        ) -> Result<crate::external_payload::LocalStorage>
     );
     delegate!(
         authorize_completion_upload(

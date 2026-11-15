@@ -240,11 +240,11 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const operatorDashboardTypes = fixture.operator_dashboard_types ? checkOperatorDashboardTypes(fixture, observation, workflowId) : null;
   const prometheusMetrics = fixture.prometheus_metrics ? checkPrometheusMetrics(fixture, observation, workflowId) : null;
   const payloadCleanup = fixture.payload_cleanup ? checkPayloadCleanup(fixture, observation, workflowId) : null;
-  const retentionPayloads = fixture.retention_payloads ? checkRetentionPayloads(fixture, observation, workflowId) : null;
+  const retentionPayloads = fixture.retention_payloads ? checkRetentionPayloads(fixture, observation, workflowId, target) : null;
   const clusterInfo = fixture.cluster_info ? checkClusterInfo(fixture, observation, workflowId) : null;
   const repairPass = fixture.repair_pass ? checkRepairPass(fixture, observation, workflowId) : null;
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;
-  const namespaceDeletePayloads = fixture.namespace_delete_payloads ? checkNamespaceDeletePayloads(fixture, observation, workflowId) : null;
+  const namespaceDeletePayloads = fixture.namespace_delete_payloads ? checkNamespaceDeletePayloads(fixture, observation, workflowId, target) : null;
   const updateValidation = fixture.update_validation ? checkUpdateValidation(fixture, observation, workflowId, target) : null;
   const messageStreams = fixture.message_streams ? checkMessageStreams(fixture, observation, workflowId) : null;
   const workflowStreamWrites = fixture.workflow_stream_writes ? checkWorkflowStreamWrites(fixture, observation, workflowId) : null;

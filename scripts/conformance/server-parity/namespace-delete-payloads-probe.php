@@ -114,7 +114,8 @@ function finishHttpNamespaceDeletePayloads(Client $admin, array $fixture, string
     $upload($namespace, 'namespace delete unused λ');
     $upload($idle, 'namespace delete idle λ');
 
-    // An object only the namespace holds needs its storage: nothing changes.
+    // PHP refuses after disabling storage; native uses original object bindings
+    // and deletes the namespace now. Keep the original labels for both targets.
     $state['setup']['storage_off'] = $policy($namespace, false);
     $delete('storage off: refused', $namespace);
     $described('storage off: namespace remains', $namespace);

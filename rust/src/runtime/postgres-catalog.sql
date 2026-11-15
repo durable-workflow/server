@@ -12,9 +12,11 @@ SELECT kind, name, definition FROM (
     WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')
     UNION ALL
     -- Historical PHP takeovers can leave dropped tail-column slots. The new
-    -- native readiness column has a stable name key; all old ordinal keys stay exact.
+    -- Native additions have stable name keys; all old ordinal keys stay exact.
     SELECT 'column', c.relname || '.' || CASE
         WHEN c.relname='workflow_tasks' AND a.attname='ready_origin_at' THEN a.attname
+        WHEN c.relname='runtime_external_payloads' AND a.attname='storage_binding' THEN a.attname
+        WHEN c.relname='workflow_namespaces' AND a.attname='external_payload_storage_generation' THEN a.attname
         ELSE a.attnum::text END,
         jsonb_build_object('name', a.attname, 'type', format_type(a.atttypid,a.atttypmod),
             'not_null', a.attnotnull, 'default', pg_get_expr(d.adbin,d.adrelid,false),

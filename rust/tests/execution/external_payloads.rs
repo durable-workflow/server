@@ -15,6 +15,8 @@ mod retention;
 mod namespace_delete;
 #[path = "external_payloads/carried_polls.rs"]
 mod carried_polls;
+#[path = "external_payloads/policy_changes.rs"]
+mod policy_changes;
 use axum::{body::Bytes, http::HeaderMap};
 use durable_workflow_server::runtime::ExternalPayloadConfig;
 use sha2::{Digest, Sha256};

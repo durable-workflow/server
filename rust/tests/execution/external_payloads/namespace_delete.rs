@@ -61,46 +61,52 @@ async fn namespace_delete_settles_its_external_payloads() {
 }
 
 #[tokio::test]
-async fn namespace_delete_without_storage_refuses_and_changes_nothing() {
+async fn namespace_delete_without_original_storage_refuses_and_changes_nothing() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("objects");
     let (database, _runtime, router) = setup(ExternalPayloadConfig::default(), &root).await;
 
-    // A referenced object it alone holds needs the namespace's storage.
+    let offline = temp.path().join("offline");
+    // Disabling writes preserves the binding. Losing the original root still
+    // refuses before any row is deleted, rather than selecting a new root.
     create(&router, "held").await;
     assert_eq!(policy(&router, "held", &root, true).await, StatusCode::OK);
     let sole = upload(&router, "held", "held sole").await;
     closed_run(&router, "held", "held-sole", &sole).await;
     assert_eq!(policy(&router, "held", &root, false).await, StatusCode::OK);
+    std::fs::rename(&root, &offline).unwrap();
     let (status, body) = delete(&router, "held").await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert_eq!(body, json!({
-        "message": "Namespace cleanup requires deleting external payloads, but external payload storage is unavailable.",
-        "reason": "external_payload_storage_driver_unavailable", "namespace": "held",
-        "error": "External payload storage driver is unavailable for namespace cleanup."}));
-    assert!(object(&root, &sole).exists());
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["reason"], "external_payload_storage_binding_unavailable");
+    assert_eq!(body["retryable"], false);
+    assert!(object(&offline, &sole).exists());
+    assert!(!root.exists(), "cleanup must not recreate a missing original root");
     assert_eq!(registered(&database, &sole).await, 1);
     assert_eq!(ns_request(&router, "GET", "/api/namespaces/held", "default", Value::Null).await.0, StatusCode::OK);
-    assert_eq!(policy(&router, "held", &root, true).await, StatusCode::OK);
+    std::fs::rename(&offline, &root).unwrap();
+    // The policy stays disabled. Restoring original storage is sufficient.
     let (status, body) = delete(&router, "held").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["deleted"]["external_payloads_deleted"], 1, "{body}");
     assert!(!object(&root, &sole).exists());
 
-    // An unreferenced upload fails in the registry's own pass, PHP's typed
-    // external payload error.
+    // The registry's unreferenced objects preserve the same refusal boundary.
     create(&router, "idle").await;
     assert_eq!(policy(&router, "idle", &root, true).await, StatusCode::OK);
     let unused = upload(&router, "idle", "idle unused").await;
     assert_eq!(policy(&router, "idle", &root, false).await, StatusCode::OK);
+    std::fs::rename(&root, &offline).unwrap();
     let (status, body) = delete(&router, "idle").await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["schema"], "durable-workflow.v2.runtime-external-payload-error.v1", "{body}");
-    assert_eq!(body["reason"], "external_payload_unavailable");
-    assert_eq!(body["message"], "External payload storage is unavailable for namespace cleanup.");
-    assert_eq!(body["retryable"], true);
-    assert!(object(&root, &unused).exists());
+    assert_eq!(body["reason"], "external_payload_storage_binding_unavailable");
+    assert_eq!(body["retryable"], false);
+    assert!(object(&offline, &unused).exists());
+    assert!(!root.exists());
     assert_eq!(registered(&database, &unused).await, 1);
+    std::fs::rename(&offline, &root).unwrap();
+    assert_eq!(delete(&router, "idle").await.0, StatusCode::OK);
+    assert!(!object(&root, &unused).exists());
 }
 
 #[tokio::test]

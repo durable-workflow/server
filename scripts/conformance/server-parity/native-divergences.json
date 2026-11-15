@@ -48,6 +48,18 @@
       "published_php": "A run its own code closes (complete, fail, continue as new) leaves its open activities and timers as they are; nothing is recorded for them.",
       "native": "As Core workflow#1117 (Workflow 2.28.0), the close records ActivityCancelled (cancellation_reason run_closed) for each open activity and TimerCancelled for each pending timer, wait timeouts included, before the terminal event, and appends nothing after it.",
       "harness": "Each affected fixture section names this divergence and carries a reviewed native_expected that overlays only the changed steps of its published expected; the contracts apply it for the native target alone. PHP and embedded recordings are unchanged."
+    },
+    {
+      "id": "retained-external-storage-binding",
+      "issue": "https://github.com/durable-workflow/server/issues/546",
+      "since": "native source PR #1224 (unreleased)",
+      "applies_to": [
+        "retention-external-payloads",
+        "namespace-delete-payloads"
+      ],
+      "published_php": "Disabling new external writes also prevents deletion through that namespace policy; a sole payload keeps its run until the policy is enabled again.",
+      "native": "Each admitted object retains its original validated local storage binding. Disabling new writes does not prevent retention cleanup; the sole payload and run details are deleted and a later explicit prune observes run_not_found.",
+      "harness": "The two named retention steps and three named namespace-deletion steps have exact native-only expectations. Re-enabling an already deleted namespace returns 404; shared-object and unused-registration counts remain exact. Every original PHP setup/step remains byte-equivalent as data; held and peer objects, deletion counts, cleanup inventory and final fetch are still required. No storage outage, unavailable original binding or pending cleanup is accepted as a successful deletion."
     }
   ]
 }

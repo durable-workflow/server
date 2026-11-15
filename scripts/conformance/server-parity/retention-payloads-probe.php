@@ -109,7 +109,9 @@ function finishHttpRetentionPayloads(Client $admin, array $fixture, string $work
     $prune('peer-held pruned', 'mine');
     $prune('peer pruned', 'theirs');
     $fetch('peer-held fetched', $namespace, $mine);
-    // Without storage, a held payload needs no deletion; a sole one does.
+    // Published PHP disables access with new writes and skips the sole payload.
+    // Native retains its original binding, deletes it now, and the later pass
+    // observes run_not_found. Keep the published step names as stable labels.
     $state['setup']['storage_off'] = $policy($namespace, false);
     $prune('storage off: held pruned', 'off-1');
     $prune('storage off: sole skipped', 'off-2');

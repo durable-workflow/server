@@ -14,8 +14,9 @@
 //! the pruned references. The cleanup and retention passes retry pending
 //! deletions first (`retry_payload_deletions`), least recently tried first;
 //! a cleanup pass also retries those of deleted namespaces.
-//! A deletion keeps the namespace's storage policy from when it was
-//! recorded, so a deleted namespace is still reclaimed.
+//! A deletion keeps the object's original storage binding, so later policy
+//! changes and namespace deletion cannot redirect reclamation. Older journals
+//! retain their saved policy and require that original root to remain present.
 //!
 //! A new registration of the object, in any namespace, fences an older
 //! deletion: the row goes and the object stays. PHP also scans its retained
@@ -26,7 +27,7 @@
 //! only way a retained reference can reach it again.
 use super::Result;
 use super::external_registry::uri_hash;
-use super::external_transport::local_for;
+use super::external_storage_binding::deletion_storage;
 use super::store::now;
 use super::transaction::Transaction;
 use axum::http::StatusCode;
@@ -130,8 +131,8 @@ store_methods! {
             .await?;
         if registered == 0 {
             let namespace = DB::string(&row, "namespace")?;
-            let policy: Value = serde_json::from_str(&DB::string(&row, "storage_policy")?).unwrap_or(Value::Null);
-            let failure = match local_for(&policy, &namespace).await {
+            let policy = DB::string(&row, "storage_policy")?;
+            let failure = match deletion_storage(&policy, &namespace, &uri).await {
                 Ok(Some(local)) => {
                     // Locked through the delete, as PHP's `deleting()` holds it.
                     if Self::locked_backup_hold(&mut tx).await?.active() {

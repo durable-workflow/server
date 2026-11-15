@@ -129,7 +129,7 @@ async fn retention_deletes_objects_no_retained_run_holds() {
 }
 
 #[tokio::test]
-async fn retention_without_storage_or_after_a_failed_delete_keeps_the_run() {
+async fn retention_without_original_storage_or_after_a_failed_delete_keeps_the_run() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("objects");
     let (database, _runtime, router) = setup(ExternalPayloadConfig::default(), &root).await;
@@ -141,18 +141,22 @@ async fn retention_without_storage_or_after_a_failed_delete_keeps_the_run() {
 
     inbound_stream(&database, &run).await;
 
-    // Without storage, a run with an object to delete is skipped; one whose
+    // Without its original storage, a run with an object to delete is skipped; one whose
     // objects a retained run holds needs none. The skip marks the instance's
     // inbound streams blocked, as PHP's `markBlocked` does.
     assert_eq!(policy(&router, "default", &root, false).await, StatusCode::OK);
+    let offline = temp.path().join("offline");
+    std::fs::rename(&root, &offline).unwrap();
     let (status, result) = prune(&router, "default", &run).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result, json!({"run_id": run, "outcome": "skipped", "reason": "external_payload_storage_driver_unavailable"}));
+    assert_eq!(result, json!({"run_id": run, "outcome": "skipped", "reason": "external_payload_storage_binding_unavailable"}));
     assert!(kept_details(&database, &run).await);
-    assert_eq!(blocked(&database, &run, "external_payload_storage_driver_unavailable").await, 1);
+    assert_eq!(blocked(&database, &run, "external_payload_storage_binding_unavailable").await, 1);
     pruned(&prune(&router, "default", &first).await.1, 0);
-    assert_eq!(prune(&router, "default", &second).await.1["reason"], "external_payload_storage_driver_unavailable");
-    assert_eq!(policy(&router, "default", &root, true).await, StatusCode::OK);
+    assert_eq!(prune(&router, "default", &second).await.1["reason"], "external_payload_storage_binding_unavailable");
+    assert!(!root.exists());
+    assert!(object(&offline, &sole).exists());
+    std::fs::rename(&offline, &root).unwrap();
 
     // An online-backup hold fails the prune: 207, and everything stays.
     database.execute("INSERT INTO runtime_external_payload_backup_hold(id,owner,acquired_at,expires_at) VALUES (1,'7f1c3a1e-0000-4000-8000-000000000001','2026-01-01 00:00:00','2037-01-01 00:00:00')").await;
@@ -341,9 +345,12 @@ async fn a_blocked_prune_marks_its_instance_streams_until_it_completes() {
     database.execute(AssertSqlSafe(format!(
         "INSERT INTO workflow_run_summaries(id,workflow_instance_id,run_number,class,workflow_type,namespace,status,status_bucket) SELECT 'later-run',workflow_instance_id,2,'echo','echo','default','running','running' FROM workflow_runs WHERE id='{run}'"))).await;
     assert_eq!(policy(&router, "default", &root, false).await, StatusCode::OK);
-    assert_eq!(prune(&router, "default", &run).await.1["reason"], "external_payload_storage_driver_unavailable");
-    assert_eq!(blocked(&database, &run, "external_payload_storage_driver_unavailable").await, 1);
-    assert_eq!(policy(&router, "default", &root, true).await, StatusCode::OK);
+    let offline = temp.path().join("offline");
+    std::fs::rename(&root, &offline).unwrap();
+    assert_eq!(prune(&router, "default", &run).await.1["reason"], "external_payload_storage_binding_unavailable");
+    assert_eq!(blocked(&database, &run, "external_payload_storage_binding_unavailable").await, 1);
+    assert!(!root.exists());
+    std::fs::rename(&offline, &root).unwrap();
     pruned(&prune(&router, "default", &run).await.1, 1);
     assert_eq!(count(&database, "SELECT COUNT(*) FROM workflow_inbound_streams WHERE cleanup_blocked_at IS NULL AND cleanup_blocked_reason IS NULL AND cleanup_blocked_run_id IS NULL").await, 1,
         "the completed prune clears its mark and keeps the stream");
