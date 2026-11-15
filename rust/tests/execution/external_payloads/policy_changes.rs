@@ -32,26 +32,79 @@ async fn binding(database: &TestDatabase, reference: &Value) -> Value {
 
 async fn replace_binding(database: &TestDatabase, reference: &Value, value: &Value) {
     let id = reference["reference_id"].as_str().unwrap();
+    let encoded = (!value.is_null()).then(|| value.to_string());
     match database {
         TestDatabase::Sqlite(directory) => {
             let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", directory.path().join("runtime.sqlite").display())).await.unwrap();
             sqlx::query("UPDATE runtime_external_payloads SET storage_binding=$1 WHERE id=$2")
-                .bind(value.to_string()).bind(id).execute(&pool).await.unwrap();
+                .bind(encoded).bind(id).execute(&pool).await.unwrap();
             pool.close().await;
         }
         TestDatabase::Postgres { options, .. } => {
             let pool = sqlx::postgres::PgPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
             sqlx::query("UPDATE runtime_external_payloads SET storage_binding=$1 WHERE id=$2")
-                .bind(value.to_string()).bind(id).execute(&pool).await.unwrap();
+                .bind(encoded).bind(id).execute(&pool).await.unwrap();
             pool.close().await;
         }
         TestDatabase::MySql { options, .. } => {
             let pool = sqlx::mysql::MySqlPoolOptions::new().connect_with(options.as_ref().clone()).await.unwrap();
             sqlx::query("UPDATE runtime_external_payloads SET storage_binding=? WHERE id=?")
-                .bind(value.to_string()).bind(id).execute(&pool).await.unwrap();
+                .bind(encoded).bind(id).execute(&pool).await.unwrap();
             pool.close().await;
         }
     }
+}
+
+#[tokio::test]
+async fn legacy_rows_pin_before_a_policy_move_and_returning_to_the_old_root_keeps_generations() {
+    let temporary = tempfile::tempdir().unwrap();
+    let original = temporary.path().join("original");
+    let replacement = temporary.path().join("replacement");
+    let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &original).await;
+    let first = upload(&app, "default", "legacy original bytes").await;
+    let original_binding = binding(&database, &first).await;
+    replace_binding(&database, &first, &Value::Null).await;
+    assert_eq!(policy(&app, "default", &replacement, true).await, StatusCode::OK);
+    assert_eq!(binding(&database, &first).await, original_binding);
+    let second = upload(&app, "default", "replacement generation").await;
+    let second_binding = binding(&database, &second).await;
+    assert_eq!(policy(&app, "default", &original, true).await, StatusCode::OK);
+    let third = upload(&app, "default", "new generation at original root").await;
+    let third_binding = binding(&database, &third).await;
+    assert_eq!(third_binding["root_uri"], original_binding["root_uri"]);
+    assert!(third_binding["generation"].as_i64().unwrap() > second_binding["generation"].as_i64().unwrap());
+    assert_eq!(binding(&database, &first).await, original_binding);
+    assert_eq!(binding(&database, &second).await, second_binding);
+    for reference in [&first, &second, &third] {
+        assert_eq!(fetch(&app, "default", reference).await.0, StatusCode::OK);
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn a_missing_legacy_root_refuses_policy_replacement_without_recreating_or_rebinding_it() {
+    let temporary = tempfile::tempdir().unwrap();
+    let original = temporary.path().join("original");
+    let offline = temporary.path().join("offline");
+    let replacement = temporary.path().join("replacement");
+    let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &original).await;
+    let reference = upload(&app, "default", "legacy unavailable bytes").await;
+    let original_binding = binding(&database, &reference).await;
+    replace_binding(&database, &reference, &Value::Null).await;
+    std::fs::rename(&original, &offline).unwrap();
+    assert_eq!(policy(&app, "default", &replacement, true).await, StatusCode::CONFLICT);
+    assert!(!original.exists());
+    assert!(!replacement.exists());
+    let (status, body) = ns_request(&app, "GET", "/api/namespaces/default", "default", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["external_payload_storage"]["config"]["uri"], format!("file://{}", original.display()));
+    std::fs::rename(&offline, &original).unwrap();
+    assert_eq!(policy(&app, "default", &replacement, true).await, StatusCode::OK);
+    assert_eq!(binding(&database, &reference).await, original_binding);
+    assert_eq!(fetch(&app, "default", &reference).await.0, StatusCode::OK);
+    runtime.close().await;
+    database.remove().await;
 }
 
 #[tokio::test]

@@ -20,7 +20,7 @@ use super::activity_completion_uploads::Context;
 use super::laravel_validation::{Rule, failure_messages, rule_errors};
 use super::operator_metrics::whole_second;
 use super::store::now;
-use crate::external_payload::{LocalStorage, REFERENCE_SCHEMA, Reference};
+use crate::external_payload::{REFERENCE_SCHEMA, Reference};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 
@@ -74,7 +74,6 @@ store_methods! {
         &self,
         limit: i64,
         retention_seconds: i64,
-        local: Option<&LocalStorage>,
     ) -> Result<Value> {
         let limit = limit.clamp(1, MAX_BATCH_SIZE);
         let cutoff = now();
@@ -91,7 +90,7 @@ store_methods! {
         let mut report = Report::default();
         for candidate in &candidates {
             report.processed += 1;
-            match self.cleanup_reference(&DB::string(candidate, "id")?, cutoff, local).await? {
+            match self.cleanup_reference(&DB::string(candidate, "id")?, cutoff).await? {
                 Outcome::Skipped => report.skipped += 1,
                 Outcome::DeletedObject => {
                     report.deleted_references += 1;
@@ -181,7 +180,7 @@ store_methods! {
     }
 
     /// `cleanupReference`, under the reference's object lock.
-    async fn cleanup_reference(&self, id: &str, cutoff: DateTime<Utc>, local: Option<&LocalStorage>) -> Result<Outcome> {
+    async fn cleanup_reference(&self, id: &str, cutoff: DateTime<Utc>) -> Result<Outcome> {
         let Some(first) = Self::query("SELECT storage_uri FROM runtime_external_payloads WHERE id=$1")
             .bind(id)
             .fetch_optional(&self.pool)
@@ -224,9 +223,21 @@ store_methods! {
             size_bytes: DB::number(&row, "size_bytes")?,
             sha256: DB::string(&row, "sha256")?,
         };
-        let Some(local) = local.filter(|local| local.uri_for(&reference).is_ok_and(|current| current == uri)) else {
-            tx.commit().await?;
-            return Ok(Outcome::Blocked);
+        let stored = DB::optional_string(&row, "storage_binding")?;
+        let binding = match Self::retained_storage_binding(&mut tx, self.namespace.as_ref(), &reference, &uri, stored.as_deref()).await {
+            Ok(binding) => binding,
+            Err(super::RuntimeError::Refused { reason: "external_payload_storage_binding_unavailable", .. }) => {
+                tx.commit().await?;
+                return Ok(Outcome::Blocked);
+            }
+            Err(error) => return Err(error),
+        };
+        let local = match binding.storage().await {
+            Ok(local) => local,
+            Err(_) => {
+                tx.commit().await?;
+                return Ok(Outcome::StorageFailure);
+            }
         };
         if Self::locked_backup_hold(&mut tx).await?.active() {
             tx.commit().await?;

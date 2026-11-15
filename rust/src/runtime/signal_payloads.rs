@@ -106,7 +106,7 @@ impl Runtime {
         let reference = Reference::validate(&value)
             .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_signal_arguments"))?;
         let registered = self.external_payload_for_fetch(&reference).await?;
-        let mut snapshot = super::external_transport::local(self)
+        let mut snapshot = self.external_payload_storage(&registered.reference, &registered.uri)
             .await?
             .fetch(
                 registered.reference,

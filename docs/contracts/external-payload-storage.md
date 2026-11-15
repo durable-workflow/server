@@ -134,6 +134,34 @@ credentials, endpoints, bucket names, or object references. Production
 operators remain responsible for object-store durability, access policy,
 backup, retention, and recovery validation.
 
+### Native local-storage policy changes
+
+The native local driver records the original namespace, storage generation and
+canonical root with each admitted object. Disabling new uploads keeps existing
+references readable and reclaimable. Moving the namespace write policy sends
+new objects to the new root; existing objects keep their original bindings.
+Keep every retained root mounted and accessible to the runtime and maintenance
+processes until its objects and committed deletion records have been reclaimed.
+Changing the policy does not copy objects between roots.
+
+A disable request that omits the location preserves the configured location.
+An upload admitted before a policy change can finish at its original root;
+requests admitted afterward use the current enabled policy. The public reference
+and authenticated namespace boundary remain unchanged.
+
+Schema upgrade leaves older registrations unbound until their recorded URI can
+be matched to an admitted local policy. Reads bind them on first use, and a
+policy change pins them before replacing the policy. An unavailable or mismatched
+original root returns the nonretryable
+`external_payload_storage_binding_unavailable` outcome. Restore the original
+mount or explicitly configure its matching location before retrying the failed
+operation. The runtime does not recreate an empty retained root or infer storage
+authority from an arbitrary URI.
+
+Backups must preserve the registry and deletion journals together with bytes
+from all retained roots, including roots no longer selected for new uploads.
+Prove restored reads before releasing the backup hold.
+
 ## State, expiry, and retention
 
 An upload starts as unclaimed and expires after the advertised abandoned-upload

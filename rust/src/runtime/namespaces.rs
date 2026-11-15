@@ -158,19 +158,19 @@ where
     }
 
     pub(super) async fn set_external_policy(&self, name: &str, body: Value) -> Result<Value> {
-        let policy = super::external_transport::local_policy(body)?;
+        let explicit_location = body.get("config").and_then(|config| config.get("uri"))
+            .is_some_and(|uri| !uri.is_null() && uri != "");
+        let mut policy = super::external_transport::local_policy(body)?;
         let name = name.to_ascii_lowercase();
         let mut tx = self.begin().await?;
-        if Self::scalar("SELECT COUNT(*) FROM workflow_namespaces WHERE name=$1")
-            .bind(&name)
-            .fetch_one(&mut *tx)
-            .await?
-            == 0
-        {
-            return Err(refuse(StatusCode::NOT_FOUND, "namespace_not_found"));
+        let (original, generation) = Self::external_storage_policy(&mut tx, &name).await?;
+        if policy["enabled"] == false && !explicit_location && original["driver"] == "local" {
+            if let Some(config) = original.get("config") { policy["config"] = config.clone(); }
         }
-        Self::query("UPDATE workflow_namespaces SET external_payload_storage=$1,updated_at=$2 WHERE name=$3")
-            .bind(DB::document(&policy)).bind(DB::bind_time(now())).bind(&name).execute(&mut *tx).await?;
+        let next = generation.checked_add(1).ok_or_else(super::external_storage_binding::unavailable)?;
+        Self::pin_legacy_payloads(&mut tx, &name, explicit_location.then_some((&policy, next))).await?;
+        Self::query("UPDATE workflow_namespaces SET external_payload_storage=$1,updated_at=$2,external_payload_storage_generation=$3 WHERE name=$4")
+            .bind(DB::document(&policy)).bind(DB::bind_time(now())).bind(next).bind(&name).execute(&mut *tx).await?;
         tx.commit().await?;
         self.describe_namespace(&name).await
     }

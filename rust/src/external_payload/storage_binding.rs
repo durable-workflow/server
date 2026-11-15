@@ -2,7 +2,7 @@
 //! public reference stays opaque and never carries these filesystem details.
 use super::{LocalStorage, Reference, SnapshotError};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::path::{Component, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +58,7 @@ impl StorageBinding {
     }
 
     /// Closed shape, owner and exact object address precede all filesystem I/O.
+    #[cfg(test)]
     pub(crate) fn decode(
         value: Value,
         namespace: &str,
@@ -65,11 +66,53 @@ impl StorageBinding {
         uri: &str,
     ) -> Option<Self> {
         let binding: Self = serde_json::from_value(value).ok()?;
+        binding.validate_address(namespace, reference, uri)
+    }
+
+    pub(crate) fn decode_stored(
+        value: &str,
+        namespace: &str,
+        reference: &Reference,
+        uri: &str,
+    ) -> Option<Self> {
+        if value.len() > 32_768 {
+            return None;
+        }
+        // Deserialize the original text directly: a Value round trip would
+        // erase duplicate keys before the closed-struct decoder sees them.
+        let binding: Self = serde_json::from_str(value).ok()?;
+        binding.validate_address(namespace, reference, uri)
+    }
+
+    fn validate_address(self, namespace: &str, reference: &Reference, uri: &str) -> Option<Self> {
+        let binding = self;
         let root = binding.root(namespace)?;
         if LocalStorage::address_at(root, reference).ok()? != uri {
             return None;
         }
         Some(binding)
+    }
+
+    pub(crate) fn encode(&self) -> Option<String> {
+        let encoded = serde_json::to_string(self).ok()?;
+        (encoded.len() <= 32_768).then_some(encoded)
+    }
+
+    /// A deletion journal has already released the registration. Its original
+    /// binding still limits deletion to the exact content-addressed object.
+    pub(crate) fn decode_deletion(value: &str, namespace: &str, uri: &str) -> Option<Self> {
+        let digest = uri.rsplit('/').next()?;
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let reference = Reference {
+            schema: super::REFERENCE_SCHEMA,
+            reference_id: "ep_00000000000000000000000000".into(),
+            codec: "avro",
+            size_bytes: 0,
+            sha256: digest.to_owned(),
+        };
+        Self::decode_stored(value, namespace, &reference, uri)
     }
 
     pub(crate) async fn storage(&self) -> Result<LocalStorage, SnapshotError> {
@@ -81,13 +124,14 @@ impl StorageBinding {
 
     pub(crate) fn deletion_policy(&self) -> Value {
         // Reads/reclamation are independent of the newest upload-enable flag.
-        json!({"driver":"local","enabled":true,"config":{"uri":self.root_uri}})
+        serde_json::to_value(self).expect("a binding contains only portable scalars")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn reference() -> Reference {
         Reference::validate(&json!({"schema":super::super::REFERENCE_SCHEMA,
@@ -140,7 +184,7 @@ mod tests {
                 .len(),
             5
         );
-        assert_eq!(original.deletion_policy()["enabled"], true);
+        assert_eq!(original.deletion_policy()["generation"], 1);
     }
 
     #[tokio::test]
@@ -172,6 +216,35 @@ mod tests {
         }
         assert!(
             StorageBinding::decode(original, "default", &reference, "file:///foreign/object")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn original_text_rejects_duplicate_fields_and_deletion_keeps_the_exact_owner() {
+        let temporary = tempfile::tempdir().unwrap();
+        let storage = LocalStorage::open(temporary.path().join("original"))
+            .await
+            .unwrap();
+        let reference = reference();
+        let uri = storage.uri_for(&reference).unwrap();
+        let binding = StorageBinding::new("default", 1, &storage).unwrap();
+        let encoded = binding.encode().unwrap();
+        assert!(StorageBinding::decode_stored(&encoded, "default", &reference, &uri).is_some());
+        let duplicated = encoded.replace(
+            "\"namespace\":\"default\"",
+            "\"namespace\":\"peer\",\"namespace\":\"default\"",
+        );
+        assert_ne!(duplicated, encoded);
+        assert!(StorageBinding::decode_stored(&duplicated, "default", &reference, &uri).is_none());
+        assert!(StorageBinding::decode_deletion(&encoded, "default", &uri).is_some());
+        assert!(StorageBinding::decode_deletion(&encoded, "peer", &uri).is_none());
+        assert!(
+            StorageBinding::decode_deletion(&encoded, "default", "file:///foreign/avro/00/invalid")
+                .is_none()
+        );
+        assert!(
+            StorageBinding::decode_stored(&" ".repeat(32_769), "default", &reference, &uri)
                 .is_none()
         );
     }

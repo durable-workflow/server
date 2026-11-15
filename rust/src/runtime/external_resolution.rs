@@ -156,7 +156,7 @@ impl Runtime {
                     "external_payload_integrity_mismatch",
                 ));
             }
-            let storage = super::external_transport::local(self).await?;
+            let storage = self.external_payload_storage(&registered.reference, &registered.uri).await?;
             let snapshot = match permit {
                 Some(permit) => {
                     storage

@@ -85,7 +85,7 @@ async fn cleanup_reclaims_expired_objects_and_keeps_shared_live_and_retained_one
 }
 
 #[tokio::test]
-async fn cleanup_respects_its_limit_a_backup_hold_and_a_disabled_policy() {
+async fn cleanup_respects_its_limit_a_backup_hold_and_missing_original_storage() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("objects");
     let (database, _runtime, router) = setup(ExternalPayloadConfig::default(), &root).await;
@@ -110,15 +110,19 @@ async fn cleanup_respects_its_limit_a_backup_hold_and_a_disabled_policy() {
     let held = status(&router).await;
     assert_eq!([&held["last_pass"]["status"], &held["totals"]["blocked_outcomes"]], [&json!("blocked"), &json!(1)]);
 
-    // With the policy disabled there is no driver to delete through.
+    // Disabling writes retains authority. A missing original root still blocks cleanup.
     database.execute("UPDATE runtime_external_payload_backup_hold SET expires_at='2000-01-01 00:00:00'").await;
     assert_eq!(policy(&router, "default", &root, false).await, StatusCode::OK);
+    let offline = temp.path().join("offline");
+    std::fs::rename(&root, &offline).unwrap();
     let (code, body) = pass(&router, json!({})).await;
     assert_eq!(code, StatusCode::MULTI_STATUS, "{body}");
     assert_eq!(body["cleanup"]["blocked"], 1);
 
-    // Once the hold has expired and the policy is back, the object goes.
-    assert_eq!(policy(&router, "default", &root, true).await, StatusCode::OK);
+    // Restore the original storage; the write policy stays disabled.
+    assert!(!root.exists());
+    assert!(object(&offline, remaining).exists());
+    std::fs::rename(&offline, &root).unwrap();
     let (code, body) = pass(&router, json!({"limit": null})).await;
     assert_eq!(code, StatusCode::OK, "{body}");
     assert_eq!(body["cleanup"], report([1, 1, 1, 0, 0, 0, 0], 0, 100, false));

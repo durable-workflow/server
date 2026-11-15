@@ -28,6 +28,15 @@ fn checked(reference: &Reference) -> Result<(), SnapshotError> {
 }
 
 impl LocalStorage {
+    /// An explicitly configured legacy root may use an alias. Resolve that
+    /// admitted name without creating directories, then pin the canonical root.
+    pub(crate) async fn open_declared_existing(root: PathBuf) -> Result<Self, SnapshotError> {
+        let root = tokio::task::spawn_blocking(move || root.canonicalize().map_err(unavailable))
+            .await
+            .map_err(unavailable)??;
+        Self::open_existing(root).await
+    }
+
     /// Resolve retained storage without creating a replacement for a missing
     /// original root. A later symlink must not redirect the recorded owner.
     pub(crate) async fn open_existing(root: PathBuf) -> Result<Self, SnapshotError> {

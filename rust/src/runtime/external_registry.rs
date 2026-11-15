@@ -20,6 +20,12 @@ pub(crate) struct RegisteredPayload {
     pub(super) uri: String,
 }
 
+enum StorageAdmission<'a> {
+    Current(&'a crate::external_payload::LocalStorage),
+    #[cfg(test)]
+    LegacyTest,
+}
+
 fn hash(value: &str) -> String {
     Sha256::digest(value.as_bytes())
         .iter()
@@ -55,7 +61,8 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
-    fn payload_row(row: &DB::Row) -> Result<RegisteredPayload> {
+    pub(super) fn payload_row(row: &DB::Row) -> Result<RegisteredPayload> {
+        if DB::string(row, "codec")? != "avro" { return Err(mismatch()); }
         Ok(RegisteredPayload {
             reference: Reference {
                 schema: REFERENCE_SCHEMA,
@@ -68,7 +75,7 @@ where
         })
     }
 
-    fn match_payload(row: &DB::Row, expected: &Reference, uri: Option<&str>) -> Result<()> {
+    pub(super) fn match_payload(row: &DB::Row, expected: &Reference, uri: Option<&str>) -> Result<()> {
         let uri_mismatch = if let Some(uri) = uri {
             DB::string(row, "storage_uri")? != uri
         } else {
@@ -202,17 +209,31 @@ where
             .uri_for(&expected)
             .map_err(super::external_transport::snapshot_error)?;
         let reference = self
-            .prepare_external_upload_with_quota(&expected, &uri, expires, quota)
+            .prepare_external_upload_admitted(&expected, &uri, expires, quota, StorageAdmission::Current(&local))
             .await?;
+        self.finish_external_local_upload(reference, &uri, snapshot, completion).await
+    }
+
+    /// The committed registration is the authority for a previously admitted
+    /// write, including when the namespace policy changes between phases.
+    async fn finish_external_local_upload(
+        &self,
+        reference: Reference,
+        uri: &str,
+        snapshot: crate::external_payload::Snapshot,
+        completion: Option<&super::activity_completion_uploads::Context>,
+    ) -> Result<Reference> {
         let mut tx = self.begin().await?;
-        Self::payload_object_lock(&mut tx, &uri).await?;
+        Self::payload_object_lock(&mut tx, uri).await?;
         // Recheck registration after acquiring the provider lock. Cleanup may
         // have removed an abandoned row before this write was admitted.
-        if Self::scalar("SELECT COUNT(*) FROM runtime_external_payloads WHERE id=$1 AND namespace=$2 AND storage_uri=$3")
-            .bind(&reference.reference_id).bind(self.namespace.as_ref()).bind(&uri)
-            .fetch_one(&mut *tx).await? != 1 {
-            return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "external_payload_unavailable"));
-        }
+        let admitted = Self::query("SELECT storage_binding FROM runtime_external_payloads WHERE id=$1 AND namespace=$2 AND storage_uri=$3")
+            .bind(&reference.reference_id).bind(self.namespace.as_ref()).bind(uri)
+            .fetch_optional(&mut *tx).await?.ok_or_else(super::external_storage_binding::unavailable)?;
+        let binding = DB::optional_string(&admitted, "storage_binding")?.ok_or_else(super::external_storage_binding::unavailable)?;
+        let binding = crate::external_payload::StorageBinding::decode_stored(&binding, self.namespace.as_ref(), &reference, uri)
+            .ok_or_else(super::external_storage_binding::unavailable)?;
+        let local = binding.storage().await.map_err(|_| super::external_storage_binding::unavailable())?;
         if let Some(context) = completion {
             self.completion_upload_lease(&mut tx, context).await?;
         }
@@ -223,18 +244,25 @@ where
         if let Some(context) = completion {
             self.completion_upload_lease(&mut tx, context).await?;
         }
-        self.promote_external_upload(&mut tx, &reference, &uri)
+        self.promote_external_upload(&mut tx, &reference, uri)
             .await?;
         tx.commit().await?;
         Ok(reference)
     }
 
+    #[cfg(test)]
     pub(super) async fn prepare_external_upload_with_quota(
         &self,
         expected: &Reference,
         uri: &str,
         expires: DateTime<Utc>,
         quota: Quota,
+    ) -> Result<Reference> {
+        self.prepare_external_upload_admitted(expected, uri, expires, quota, StorageAdmission::LegacyTest).await
+    }
+
+    async fn prepare_external_upload_admitted(
+        &self, expected: &Reference, uri: &str, expires: DateTime<Utc>, quota: Quota, admission: StorageAdmission<'_>,
     ) -> Result<Reference> {
         let value = serde_json::to_value(expected)?;
         if !Reference::validate(&value).is_ok_and(|canonical| canonical == *expected)
@@ -243,6 +271,11 @@ where
             return Err(mismatch());
         }
         let mut tx = self.begin().await?;
+        let binding = match admission {
+            StorageAdmission::Current(local) => Some(Self::admit_storage_binding(&mut tx, self.namespace.as_ref(), local, expected, uri).await?),
+            #[cfg(test)]
+            StorageAdmission::LegacyTest => None,
+        };
         Self::payload_object_lock(&mut tx, uri).await?;
         let uri_hash = hash(uri);
         let existing = Self::query(
@@ -255,6 +288,11 @@ where
         let timestamp = now();
         let reference = if let Some(row) = existing {
             Self::match_payload(&row, expected, Some(uri))?;
+            if binding.is_some() {
+                let stored = DB::optional_string(&row, "storage_binding")?;
+                let registered = Self::payload_row(&row)?;
+                Self::retained_storage_binding(&mut tx, self.namespace.as_ref(), &registered.reference, uri, stored.as_deref()).await?;
+            }
             let status = DB::string(&row, "upload_status")?;
             if status != "ready" && status != "writing" {
                 return Err(refuse(StatusCode::CONFLICT, "external_payload_unavailable"));
@@ -312,10 +350,15 @@ where
                 reference_id: format!("ep_{}", id()),
                 ..expected.clone()
             };
-            Self::query("INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes,upload_status,retained_at,expires_at,last_fetched_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'writing',NULL,$8,NULL,$9,$10)")
+            let encoded = match binding.as_ref() {
+                Some(binding) => Some(binding.encode().ok_or_else(super::external_storage_binding::unavailable)?),
+                None => None,
+            };
+            Self::query("INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes,upload_status,retained_at,expires_at,last_fetched_at,created_at,updated_at,storage_binding) VALUES ($1,$2,$3,$4,$5,$6,$7,'writing',NULL,$8,NULL,$9,$10,$11)")
                 .bind(&reference.reference_id).bind(self.namespace.as_ref()).bind(uri).bind(&uri_hash)
                 .bind(reference.codec).bind(&reference.sha256).bind(reference.size_bytes)
                 .bind(DB::bind_time(expires)).bind(DB::bind_time(timestamp)).bind(DB::bind_time(timestamp))
+                .bind(encoded.as_deref())
                 .execute(&mut *tx).await?;
             reference
         };
@@ -454,6 +497,76 @@ mod tests {
             super::super::RuntimeError::Refused { reason, .. } => reason,
             _ => panic!("unexpected error"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_policy_move_before_admission_refuses_the_cached_root_before_any_provider_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::<Sqlite>::new(super::super::sqlite::open(temp.path().join("db.sqlite").to_str().unwrap()).await.unwrap());
+        store.initialize_namespace_registry().await.unwrap();
+        let root = temp.path().join("original");
+        let local = LocalStorage::open(root.clone()).await.unwrap();
+        store.set_external_policy("default", serde_json::json!({"driver":"local","enabled":true,"config":{"uri":format!("file://{}",root.display())}})).await.unwrap();
+        let replacement = temp.path().join("replacement");
+        LocalStorage::open(replacement.clone()).await.unwrap();
+        store.set_external_policy("default", serde_json::json!({"driver":"local","enabled":true,"config":{"uri":format!("file://{}",replacement.display())}})).await.unwrap();
+        let bytes = b"cached provider root is no longer admitted";
+        let metadata = expected(bytes);
+        let snapshot = capture(Cursor::new(bytes.to_vec()), metadata.clone(), 100, temp.path().into(), Arc::new(Semaphore::new(1))).await.unwrap();
+        let error = store.upload_external_local(local, metadata.clone(), snapshot, now()+chrono::Duration::seconds(60), Quota::default()).await.unwrap_err();
+        assert_eq!(reason(error), "external_payload_storage_binding_unavailable");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_external_payloads").fetch_one(&store.pool).await.unwrap();
+        assert_eq!(count, 0);
+        assert!(!root.join("avro").exists());
+        assert!(!replacement.join("avro").exists());
+        store.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_committed_write_finishes_at_its_original_root_after_disable_or_move() {
+        for disabled in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = Store::<Sqlite>::new(super::super::sqlite::open(temp.path().join("db.sqlite").to_str().unwrap()).await.unwrap());
+            store.initialize_namespace_registry().await.unwrap();
+            let root = temp.path().join("original");
+            let local = LocalStorage::open(root.clone()).await.unwrap();
+            store.set_external_policy("default", serde_json::json!({"driver":"local","enabled":true,"config":{"uri":format!("file://{}",root.display())}})).await.unwrap();
+            let bytes = b"write admitted before policy change";
+            let metadata = expected(bytes);
+            let uri = local.uri_for(&metadata).unwrap();
+            let reference = store.prepare_external_upload_admitted(&metadata, &uri, now()+chrono::Duration::seconds(60), Quota::default(), StorageAdmission::Current(&local)).await.unwrap();
+            let original: String = sqlx::query_scalar("SELECT storage_binding FROM runtime_external_payloads").fetch_one(&store.pool).await.unwrap();
+            let replacement = temp.path().join("replacement");
+            store.set_external_policy("default", if disabled { serde_json::json!({"driver":"local","enabled":false}) } else { serde_json::json!({"driver":"local","enabled":true,"config":{"uri":format!("file://{}",replacement.display())}}) }).await.unwrap();
+            let snapshot = capture(Cursor::new(bytes.to_vec()), reference.clone(), 100, temp.path().into(), Arc::new(Semaphore::new(1))).await.unwrap();
+            assert_eq!(store.finish_external_local_upload(reference.clone(), &uri, snapshot, None).await.unwrap(), reference);
+            let row: (String, String) = sqlx::query_as("SELECT upload_status,storage_binding FROM runtime_external_payloads").fetch_one(&store.pool).await.unwrap();
+            assert_eq!(row, ("ready".into(), original));
+            assert!(root.join("avro").exists());
+            assert!(!replacement.exists());
+            store.pool.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn an_original_root_lost_after_write_admission_is_not_recreated() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::<Sqlite>::new(super::super::sqlite::open(temp.path().join("db.sqlite").to_str().unwrap()).await.unwrap());
+        store.initialize_namespace_registry().await.unwrap();
+        let root = temp.path().join("original");
+        let local = LocalStorage::open(root.clone()).await.unwrap();
+        store.set_external_policy("default", serde_json::json!({"driver":"local","enabled":true,"config":{"uri":format!("file://{}",root.display())}})).await.unwrap();
+        let bytes = b"original provider is offline";
+        let metadata = expected(bytes);
+        let uri = local.uri_for(&metadata).unwrap();
+        let reference = store.prepare_external_upload_admitted(&metadata, &uri, now()+chrono::Duration::seconds(60), Quota::default(), StorageAdmission::Current(&local)).await.unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        let snapshot = capture(Cursor::new(bytes.to_vec()), reference.clone(), 100, temp.path().into(), Arc::new(Semaphore::new(1))).await.unwrap();
+        assert_eq!(reason(store.finish_external_local_upload(reference, &uri, snapshot, None).await.unwrap_err()), "external_payload_storage_binding_unavailable");
+        assert!(!root.exists());
+        let status: String = sqlx::query_scalar("SELECT upload_status FROM runtime_external_payloads").fetch_one(&store.pool).await.unwrap();
+        assert_eq!(status, "writing");
+        store.pool.close().await;
     }
 
     #[tokio::test]

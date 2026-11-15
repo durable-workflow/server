@@ -13,7 +13,7 @@ use sqlx::{
 
 use super::{Result, refuse};
 
-pub const VERSION: i64 = 15;
+pub const VERSION: i64 = 16;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
@@ -53,6 +53,49 @@ fn migrator() -> &'static Migrator {
     MIGRATOR.get_or_init(|| {
         let mut migrations = Migrator::with_migrations(vec![Migration::new(
             VERSION,
+            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings".into(),
+            MigrationType::Simple,
+            concat!(
+                include_str!("../../migrations/postgres/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0013_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0014_command_intents.sql"), "\n", include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/postgres/0016_external_storage_bindings.sql")
+            )
+            .into_sql_str(),
+            false,
+        )]);
+        // The caller's transaction-scoped PostgreSQL advisory lock covers
+        // the pre-migration recheck, ledger, DDL and marker together.
+        migrations.set_locking(false);
+        migrations
+    })
+}
+
+// Exact released schema-15 bootstrap remains an admitted predecessor.
+fn retained_v15_migrator() -> &'static Migrator {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    MIGRATOR.get_or_init(|| {
+        let mut migrations = Migrator::with_migrations(vec![Migration::new(
+            15,
             "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries".into(),
             MigrationType::Simple,
             concat!(
@@ -108,6 +151,7 @@ fn earlier_migration(version: i64) -> Option<(&'static Migration, &'static str)>
     static V13: OnceLock<Migration> = OnceLock::new();
     static V14: OnceLock<Migration> = OnceLock::new();
     match version {
+        15 => retained_v15_migrator().iter().next().map(|migration| (migration, include_str!("../../migrations/postgres/0015_catalog.json"))),
         14 => Some((V14.get_or_init(|| Migration::new(
             14,
             "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents".into(),
@@ -307,6 +351,7 @@ fn earlier_migration(version: i64) -> Option<(&'static Migration, &'static str)>
 /// The step file that moves a native database from `version` to the next.
 fn step(version: i64) -> Option<&'static str> {
     match version {
+        15 => Some(include_str!("../../migrations/postgres/0016_external_storage_bindings.sql")),
         7 => Some(include_str!("../../migrations/postgres/0008_external_payload_deletions.sql")),
         8 => Some(include_str!("../../migrations/postgres/0009_task_ready_origin.sql")),
         9 => Some(include_str!("../../migrations/postgres/0010_poll_expiry_indexes.sql")),
@@ -347,7 +392,7 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/postgres/0013_task_queue_pauses.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0014_command_intents.sql"), "\n", include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql")
+                include_str!("../../migrations/postgres/0014_command_intents.sql"), "\n", include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/postgres/0016_external_storage_bindings.sql")
         ),
     )
 }
@@ -485,7 +530,7 @@ pub(super) async fn verify(connection: &mut PgConnection) -> Result<()> {
     // from SQL text. It retains types, precision, defaults, indexes, foreign
     // keys and sequence ownership while excluding live rows/sequence values.
     let expected: Catalog =
-        serde_json::from_str(include_str!("../../migrations/postgres/0015_catalog.json"))?;
+        serde_json::from_str(include_str!("../../migrations/postgres/0016_catalog.json"))?;
     let actual = catalog(connection).await?;
     if actual != expected {
         return Err(refuse(
@@ -721,6 +766,12 @@ impl PostgresStorage {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn storage_predecessor_keeps_its_pinned_source_checksum() {
+        let hex: String = earlier_migration(15).unwrap().0.checksum.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(hex, include_str!("../../migrations/postgres/0015_checksum.txt").trim());
+    }
     use super::*;
     use futures_util::FutureExt;
     use sqlx::{
@@ -2019,6 +2070,33 @@ mod tests {
             Err(error) => panic!("unexpected upgrade error: {error}"),
             Ok(found) => panic!("upgrade accepted version {found}"),
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_storage_binding_upgrade_preserves_unbound_objects_and_original_policy() {
+        let db = Database::new().await;
+        version_database(&db, 15).await;
+        let mut connection = db.connection().await;
+        sqlx::raw_sql("UPDATE workflow_namespaces SET external_payload_storage='{\"driver\":\"local\",\"enabled\":false,\"config\":{\"uri\":\"file:///original/root\"}}' WHERE name='kept';
+INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes,upload_status) VALUES ('original','kept','file:///original/root/avro/aa/object','digest','avro','original-digest',17,'ready');")
+            .execute(&mut connection).await.unwrap();
+        // PostgreSQL's retained CHAR(64) digest includes padding on a raw
+        // String decode. Compare the exact original representation across upgrade.
+        let original: (String, String, i64) = sqlx::query_as("SELECT storage_uri,sha256,size_bytes FROM runtime_external_payloads WHERE id='original'").fetch_one(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        refused(PostgresStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+        assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), 15);
+        PostgresStorage::check(db.options.clone()).await.unwrap();
+        let mut connection = db.connection().await;
+        let object: (String, String, i64, Option<String>) = sqlx::query_as("SELECT storage_uri,sha256,size_bytes,storage_binding FROM runtime_external_payloads WHERE id='original'").fetch_one(&mut connection).await.unwrap();
+        assert_eq!(object, (original.0, original.1, original.2, None));
+        let namespace: (sqlx::types::Json<Value>, i64) = sqlx::query_as("SELECT external_payload_storage,external_payload_storage_generation FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+        assert_eq!(namespace.0.0, serde_json::json!({"driver":"local","enabled":false,"config":{"uri":"file:///original/root"}}));
+        assert_eq!(namespace.1, 0);
+        connection.close().await.unwrap();
+        assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), VERSION);
+        db.remove().await;
     }
 
     #[test]

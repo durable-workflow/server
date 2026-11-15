@@ -11,13 +11,50 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 14;
+pub(super) const VERSION: i64 = 15;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
+            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings".into(),
+            MigrationType::Simple,
+            concat!(
+                include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0011_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0013_command_intents.sql"), "\n", include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/sqlite/0015_external_storage_bindings.sql")
+            )
+            .into_sql_str(),
+            false,
+        )])
+    })
+}
+
+// Retain the exact released schema-14 bootstrap and checksum.
+fn retained_v14_migrator() -> &'static Migrator {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    MIGRATOR.get_or_init(|| {
+        Migrator::with_migrations(vec![Migration::new(
+            14,
             "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries".into(),
             MigrationType::Simple,
             concat!(
@@ -61,6 +98,7 @@ fn earlier_migration(version: i64) -> Option<&'static Migration> {
     static V12: OnceLock<Migration> = OnceLock::new();
     static V13: OnceLock<Migration> = OnceLock::new();
     match version {
+        14 => retained_v14_migrator().iter().next(),
         13 => Some(V13.get_or_init(|| Migration::new(
             13,
             "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts and task queue activity dispatch pauses and keyed command intents".into(),
@@ -246,6 +284,7 @@ fn earlier_migration(version: i64) -> Option<&'static Migration> {
 /// Each ends by moving the ownership marker to its own version.
 fn step(version: i64) -> Option<&'static str> {
     match version {
+        14 => Some(include_str!("../../migrations/sqlite/0015_external_storage_bindings.sql")),
         7 => Some(include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql")),
         8 => Some(include_str!("../../migrations/sqlite/0009_task_ready_origin.sql")),
         9 => Some(include_str!("../../migrations/sqlite/0010_poll_expiry_indexes.sql")),
@@ -363,7 +402,7 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0013_command_intents.sql"), "\n", include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql")
+                include_str!("../../migrations/sqlite/0013_command_intents.sql"), "\n", include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/sqlite/0015_external_storage_bindings.sql")
         ),
     )
 }
@@ -492,6 +531,12 @@ pub(super) async fn bootstrap(connection: &mut SqliteConnection) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn storage_predecessor_keeps_its_pinned_source_checksum() {
+        let hex: String = earlier_migration(14).unwrap().checksum.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(hex, include_str!("../../migrations/sqlite/0014_checksum.txt").trim());
+    }
     use super::*;
     use sqlx::{migrate::Migrate, sqlite::SqliteJournalMode};
     use std::{path::Path, process::Command, time::Duration};
@@ -850,6 +895,29 @@ mod tests {
                 .unwrap();
         sqlx::raw_sql(sql).execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn version_14_storage_upgrade_preserves_original_policy_and_object_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v14-storage.sqlite");
+        let mut connection = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path).create_if_missing(true)).await.unwrap();
+        Migrator::with_migrations(vec![earlier_migration(14).unwrap().clone()]).run(&mut connection).await.unwrap();
+        sqlx::raw_sql("INSERT INTO workflow_namespaces(name,external_payload_storage) VALUES ('kept','{\"driver\":\"local\",\"enabled\":false,\"config\":{\"uri\":\"file:///original/root\"}}');
+INSERT INTO runtime_external_payloads(id,namespace,storage_uri,storage_uri_sha256,codec,sha256,size_bytes,upload_status) VALUES ('original','kept','file:///original/root/avro/aa/object','digest','avro','original-digest',17,'ready');")
+            .execute(&mut connection).await.unwrap();
+        let policy: String = sqlx::query_scalar("SELECT external_payload_storage FROM workflow_namespaces WHERE name='kept'").fetch_one(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        assert_eq!(reason(super::super::sqlite::open(path.to_str().unwrap()).await).await, "native_schema_upgrade_required");
+        let report = super::super::schema_upgrade::upgrade_sqlite(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["from_schema_version"], 14);
+        let pool = super::super::sqlite::open(path.to_str().unwrap()).await.unwrap();
+        let namespace: (String, i64) = sqlx::query_as("SELECT external_payload_storage,external_payload_storage_generation FROM workflow_namespaces WHERE name='kept'").fetch_one(&pool).await.unwrap();
+        assert_eq!(namespace, (policy, 0));
+        let object: (String, String, i64, Option<String>) = sqlx::query_as("SELECT storage_uri,sha256,size_bytes,storage_binding FROM runtime_external_payloads WHERE id='original'").fetch_one(&pool).await.unwrap();
+        assert_eq!(object, ("file:///original/root/avro/aa/object".into(), "original-digest".into(), 17, None));
+        pool.close().await;
+        assert_eq!(super::super::schema_upgrade::upgrade_sqlite(path.to_str().unwrap()).await.unwrap()["status"], "current");
     }
 
     #[test]
