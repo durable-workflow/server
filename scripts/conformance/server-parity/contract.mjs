@@ -240,7 +240,7 @@ export function checkObservation(fixture, observation, workflowId, artifacts, ta
   const operatorDashboardTypes = fixture.operator_dashboard_types ? checkOperatorDashboardTypes(fixture, observation, workflowId) : null;
   const prometheusMetrics = fixture.prometheus_metrics ? checkPrometheusMetrics(fixture, observation, workflowId) : null;
   const payloadCleanup = fixture.payload_cleanup ? checkPayloadCleanup(fixture, observation, workflowId) : null;
-  const retentionPayloads = fixture.retention_payloads ? checkRetentionPayloads(fixture, observation, workflowId) : null;
+  const retentionPayloads = fixture.retention_payloads ? checkRetentionPayloads(fixture, observation, workflowId, target) : null;
   const clusterInfo = fixture.cluster_info ? checkClusterInfo(fixture, observation, workflowId) : null;
   const repairPass = fixture.repair_pass ? checkRepairPass(fixture, observation, workflowId) : null;
   const namespaceDelete = fixture.namespace_delete ? checkNamespaceDelete(fixture, observation, workflowId) : null;

@@ -25,6 +25,27 @@ test('the fixture deletes, keeps and skips', () => {
     [404, 200, 404, 200, 404]);
 });
 
+test('native cleanup retains the admitted binding after new writes are disabled', () => {
+  const native = observation();
+  Object.assign(native.retention_payloads.steps, structuredClone(definition.native_expected));
+  assert.deepStrictEqual(checkRetentionPayloads(fixture, native, id, 'rust'),
+    checkRetentionPayloads(fixture, observation(), id, 'php'));
+  assert.throws(() => checkRetentionPayloads(fixture, observation(), id, 'rust'));
+  assert.throws(() => checkRetentionPayloads(fixture, native, id, 'php'));
+  // A readback of the already deleted original run cannot count a second deletion.
+  const repeated = structuredClone(native);
+  repeated.retention_payloads.steps['storage on: sole pruned'].result = {outcome: 'pruned', external_payloads_deleted: 1};
+  assert.throws(() => checkRetentionPayloads(fixture, repeated, id, 'rust'));
+  for (const [step, field] of [['storage off: sole skipped', 'result'], ['sole pruned', 'cleanup']]) {
+    const missing = structuredClone(native);
+    delete missing.retention_payloads.steps[step][field];
+    assert.throws(() => checkRetentionPayloads(fixture, missing, id, 'rust'));
+  }
+  const retained = structuredClone(native);
+  retained.retention_payloads.steps['storage on: sole fetched'] = {status: 200, bytes_match: true};
+  assert.throws(() => checkRetentionPayloads(fixture, retained, id, 'rust'));
+});
+
 test('the embedded retention payloads are explicitly inapplicable', () => {
   checkRetentionPayloads(fixture, {mode: 'embedded', retention_payloads: {applicable: false, reason: 'embedded_has_no_http_system_routes'}}, id);
   assert.throws(() => checkRetentionPayloads(fixture, {mode: 'embedded', retention_payloads: {applicable: true}}, id));
