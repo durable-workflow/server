@@ -114,6 +114,39 @@
           "blocked": 0
         }
       }
+    },
+    "native_divergence": "retained-external-storage-binding",
+    "native_expected": {
+      "setup": {
+        "storage_on": 404
+      },
+      "steps": {
+        "storage off: refused": {
+          "status": 200,
+          "name_matches": true,
+          "outcome": "deleted",
+          "payloads": {
+            "external_payloads_deleted": 1,
+            "runtime_external_payload_references": 2
+          },
+          "cleanup": {
+            "pending": 0,
+            "failed": 0,
+            "blocked": 0
+          }
+        },
+        "storage off: namespace remains": {
+          "status": 404
+        },
+        "deleted": {
+          "status": 404,
+          "body": {
+            "message": "Namespace [{namespace}] not found.",
+            "reason": "namespace_not_found"
+          },
+          "namespace_matches": true
+        }
+      }
     }
   }
 }

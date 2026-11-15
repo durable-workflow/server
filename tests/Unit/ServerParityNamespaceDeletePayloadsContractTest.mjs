@@ -27,6 +27,30 @@ test('the fixture refuses without storage, then deletes and keeps', () => {
   assert.deepStrictEqual(steps['idle deleted'].payloads, {runtime_external_payload_references: 1});
 });
 
+test('native deletion uses retained bindings exactly once after write policy is disabled', () => {
+  const native = observation();
+  const expected = JSON.parse(JSON.stringify(definition.native_expected).replaceAll('{namespace}', namespace));
+  Object.assign(native.namespace_delete_payloads.setup, expected.setup);
+  Object.assign(native.namespace_delete_payloads.steps, expected.steps);
+  assert.deepStrictEqual(checkNamespaceDeletePayloads(fixture, native, id, 'rust'),
+    checkNamespaceDeletePayloads(fixture, observation(), id, 'php'));
+  assert.throws(() => checkNamespaceDeletePayloads(fixture, observation(), id, 'rust'));
+  assert.throws(() => checkNamespaceDeletePayloads(fixture, native, id, 'php'));
+  for (const mutate of [
+    state => { state.setup.storage_on = 200; },
+    state => { state.steps['storage off: refused'].payloads.external_payloads_deleted = 0; },
+    state => { state.steps['storage off: refused'].payloads.runtime_external_payload_references = 1; },
+    state => { state.steps.deleted = structuredClone(state.steps['storage off: refused']); },
+    state => { state.steps.deleted.namespace_matches = false; },
+    state => { state.steps['peer fetched'] = {status: 404, reason: 'external_payload_not_found'}; },
+    state => { state.steps['storage off: refused'].cleanup.pending = 1; },
+  ]) {
+    const invalid = structuredClone(native);
+    mutate(invalid.namespace_delete_payloads);
+    assert.throws(() => checkNamespaceDeletePayloads(fixture, invalid, id, 'rust'));
+  }
+});
+
 test('the embedded namespace delete payloads are explicitly inapplicable', () => {
   checkNamespaceDeletePayloads(fixture, {mode: 'embedded',
     namespace_delete_payloads: {applicable: false, reason: 'embedded_has_no_http_namespaces'}}, id);

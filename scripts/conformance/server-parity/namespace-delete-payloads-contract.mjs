@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {nativeDivergence} from './native-divergences.mjs';
 
 // Reviewed external payloads of a deleted namespace (NamespaceController::destroy
 // over ExternalPayloadRetentionCleanup::deleteForNamespaceCleanup, then
@@ -6,7 +7,7 @@ import assert from 'node:assert/strict';
 // step is exact; namespace names are per run, so each delete records whether
 // its answer names its own namespace. Embedded applications have no HTTP
 // namespaces.
-export function checkNamespaceDeletePayloads(fixture, observation, workflowId) {
+export function checkNamespaceDeletePayloads(fixture, observation, workflowId, target) {
   const definition = fixture.namespace_delete_payloads;
   const state = observation.namespace_delete_payloads;
   const projection = {scope: 'namespace_delete_payloads', steps: Object.keys(definition.steps)};
@@ -23,10 +24,20 @@ export function checkNamespaceDeletePayloads(fixture, observation, workflowId) {
   const root = state.storage_root;
   assert.ok(typeof root === 'string' && /^file:\/\/\/state\/namespace-delete-payloads-[a-z0-9-]+\//.test(root)
     && root.endsWith(`/${namespace}`) && root.split('/').length === 6, 'a storage root of its own');
-  assert.deepStrictEqual(state.setup, definition.setup, 'every upload, run and policy accepted');
+  const native = nativeDivergence(target, definition.native_divergence);
+  const expected = native ? JSON.parse(JSON.stringify(definition.native_expected).replaceAll('{namespace}', namespace)) : {};
+  // Native can finish original-object cleanup while new writes are disabled.
+  // The first delete removes the namespace, so enabling or deleting it again
+  // must return the exact missing-namespace result, not repeat cleanup.
+  assert.deepStrictEqual(state.setup, {...definition.setup, ...expected.setup}, 'every upload, run and policy accepted');
   assert.deepStrictEqual(Object.keys(state.steps), Object.keys(definition.steps), 'every step recorded in order');
-  for (const [step, expected] of Object.entries(definition.steps)) {
-    assert.deepStrictEqual(state.steps[step], expected, step);
+  if (native) {
+    assert.deepStrictEqual(Object.keys(expected.setup), ['storage_on'], 'only the deleted namespace policy changes');
+    assert.deepStrictEqual(Object.keys(expected.steps),
+      ['storage off: refused', 'storage off: namespace remains', 'deleted'], 'only original deletion and its repeat differ');
+  }
+  for (const [step, value] of Object.entries({...definition.steps, ...expected.steps})) {
+    assert.deepStrictEqual(state.steps[step], value, step);
   }
   return projection;
 }
