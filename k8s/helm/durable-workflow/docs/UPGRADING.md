@@ -69,6 +69,67 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 3.0.0 / Server 3.12.0 (native)
+
+**Every backend needs an explicit native schema upgrade from 3.11.x.** Chart
+3.0.0 selects native Server 3.12.0 and retains the existing values and resource
+contract; Chart 2.x values files work unchanged. The chart major advances
+because changing its default image requires operator action on every backend
+under this guide's existing semver rule. An explicit `image.tag` or
+`image.digest` override must select the intended qualified image too. The PHP
+Server remains 2.11.8.
+
+| Backend | Schema step |
+| --- | --- |
+| SQLite | 14 to 15 |
+| PostgreSQL | 15 to 16 |
+| MariaDB | 15 to 16 |
+| MySQL | 16 to 17 |
+
+1. Stop every Server replica sharing the database, including replicas outside
+   this Helm release. Keep the database running.
+2. Back up the database and every external payload root, including roots no
+   longer selected for new uploads.
+3. Run the new image's `schema-upgrade` once through the opt-in upgrade hook or
+   manual Job in [Native schema upgrades](../README.md#native-schema-upgrades).
+   The hook requires live proof that all Server replicas are stopped.
+4. Restart every replica on the same new image and verify readiness, reported
+   version 3.12.0 and worker registration.
+
+Startup does not upgrade an older schema automatically. If the step is skipped,
+a 3.12.0 pod on the older schema refuses with `native_schema_upgrade_required`
+and stays unready; with the default `RollingUpdate` (`maxUnavailable: 0`) the
+existing pods keep serving and `--atomic` rolls the release back. Until
+`schema-upgrade` has run, rolling back to Chart 2.1.0 is an ordinary Helm
+rollback. From 3.9.x or earlier, the same command also applies the intervening
+steps below; 3.10.x and 3.11.x share one schema. MySQL and MariaDB can resume
+an interrupted upgrade; SQLite and PostgreSQL apply their step transactionally.
+After `schema-upgrade`, rolling back requires restoring the pre-upgrade
+database and payload storage backup: an older binary, including 3.11.x, refuses
+the upgraded database with `native_schema_newer_than_binary`. Objects written
+and policy changes made after the upgrade are not in that backup.
+
+The step adds a nullable payload storage binding and a namespace storage
+generation without rewriting existing rows. Each native local external payload
+now keeps the root it was admitted under, so reads, retention pruning,
+abandoned-upload cleanup and namespace deletion still reach objects after a
+namespace storage policy is disabled or moved. Keep every retained root mounted
+on the Server pods (`native.storage.existingClaim`, or `server.extraVolumes`
+and `server.extraVolumeMounts` for roots outside `/app/storage`) until its
+objects and committed deletion records are reclaimed. A missing or substituted
+root returns `external_payload_storage_binding_unavailable` (HTTP 409); the
+runtime does not recreate an empty root. Objects already stranded by a policy
+change under 3.11.x or earlier need the explicit-location repair in
+[Objects written before the upgrade](../../../../docs/releases/3.12.0.md#objects-written-before-the-upgrade).
+
+Server 3.12.0 also adds the read-only open-run version usage query, discovered
+only through `capabilities.workflow_version_usage: true`. Worker protocol 1.20,
+control plane version 2 and the 3.11.0 redrive rules are unchanged. This chart
+does not establish CLI, Waterline or Cloud adoption, and does not resolve
+Server #980 or #1204.
+
+See [Server 3.12.0 release notes](../../../../docs/releases/3.12.0.md).
+
 ### Chart 2.1.0 / Server 3.11.0 (native)
 
 Chart 2.1.0 selects native Server 3.11.0. From 3.10.x, no schema step is
