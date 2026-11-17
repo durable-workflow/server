@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 2.0.0
+version: 2.1.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.10.0"
+appVersion: "3.11.0"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,14 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.10.0"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.11.0"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: "Default image advances to native Server 3.10.0. Every backend needs an explicit additive schema upgrade from 3.9.x with all replicas stopped; rollback requires restoring the pre-upgrade backup. See docs/UPGRADING.md."
+      description: "Default image advances to native Server 3.11.0. No schema step is required from 3.10.x; values and resource contracts remain compatible. Earlier releases retain the explicit schema-upgrade and restore boundaries in docs/UPGRADING.md."
     - kind: added
-      description: "Schedule list and describe responses carry bounded durable dispatch summaries. Last dispatch outcome, current buffer count and latest workflow execution status remain distinct. Existing schedules have unavailable authority until an owning transition records it."
+      description: "Failed-run redrive reuses complete ordered plain timer pairs with a fresh shared timer ID and no timer work. Reused event clocks and the persisted initial run-start anchor retain fractional precision; repeated redrives preserve recorded clock strings."
     - kind: changed
-      description: "Worker protocol 1.20 and control plane 2 remain unchanged. Client, Waterline and Cloud acceptance remain separate; this release adds no draining-upload authority or pool-timeout fix. https://github.com/durable-workflow/server/releases/tag/3.10.0"
+      description: "Worker protocol 1.20 and control plane 2 remain unchanged. Historical missing fractions cannot be reconstructed. Published PHP, Python and Rust replay qualification remains separately attributable under Server #980. https://github.com/durable-workflow/server/releases/tag/3.11.0"

@@ -69,6 +69,40 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 2.1.0 / Server 3.11.0 (native)
+
+Chart 2.1.0 selects native Server 3.11.0. From 3.10.x, no schema step is
+required. The values and resource contracts remain compatible. Back up the
+database and external payload storage under your recovery procedure, pin the
+new image and update API replicas consistently before relying on the expanded
+redrive eligibility. Verify readiness, reported version and worker registration.
+An explicit `image.tag` or `image.digest` override must select the intended
+qualified image too. PHP Server remains frozen at 2.11.8.
+
+From 3.9.x or earlier, apply the intervening explicit schema steps below.
+Those upgrades still require stopping all replicas sharing the database,
+backing up database and storage, running `schema-upgrade` once and restoring
+the pre-upgrade backup before rollback to the earlier schema. Server 3.11.0
+retains schema versions SQLite 14, PostgreSQL and MariaDB 15, and MySQL 16.
+
+A failed run can reuse an exact ordered plain `TimerScheduled` / `TimerFired`
+pair before its failed activity. The successor records both events under one
+new shared timer ID without creating a timer row or task or waiting again.
+The immediate predecessor supplies lineage, while the original event supplies
+the replay clock. Reused activities, markers and fired timers retain fractional
+precision. The initial replay anchor retains the persisted source run start.
+Repeated redrives preserve existing reuse timestamp strings. Fractions already
+omitted by an earlier producer cannot be reconstructed. Deadline formatting
+and the original source history remain unchanged.
+
+Incomplete or mismatched pairs and non-plain timers remain refused under the
+[Server 3.11.0 eligibility rules](../../../../docs/releases/3.11.0.md).
+Worker protocol 1.20 and control plane version 2 are unchanged. The published
+PHP, Python and Rust cold-process replay evidence remains separately
+attributable under [Server #980](https://github.com/durable-workflow/server/issues/980).
+This chart does not establish Cloud adoption or resolve the separate MariaDB
+registration-timeout investigation in Server #1204.
+
 ### Chart 2.0.0 / Server 3.10.0 (native)
 
 **Every backend needs an explicit native schema upgrade from 3.9.x.** Chart
