@@ -84,6 +84,11 @@ async fn command_names_longer_than_their_columns_are_refused_before_any_write() 
         (json!({"type":"start_child_workflow","workflow_type":long(192)}), "workflow_type", 191),
         (json!({"type":"start_child_workflow","workflow_type":"child","queue":long(192)}), "queue", 191),
         (json!({"type":"open_signal_wait","signal_name":long(192)}), "signal_name", 191),
+        // A failure's class is stored as workflow_failures.exception_class.
+        (json!({"type":"fail_workflow","message":"m","exception_class":long(256)}), "exception_class", 255),
+        (json!({"type":"fail_workflow","message":"m","exception":{"class":long(256),"message":"m"}}), "exception.class", 255),
+        (json!({"type":"fail_update","update_id":"u","message":"m","exception_class":long(256)}), "exception_class", 255),
+        (json!({"type":"record_local_activity","activity_type":"a","outcome":"failed","exception_type":long(256)}), "exception_type", 255),
     ] {
         let (_, errors) = refused(&app, &task, completion(&task, json!([command]))).await;
         assert_eq!(errors[format!("commands.0.{field}")],
@@ -96,6 +101,16 @@ async fn command_names_longer_than_their_columns_are_refused_before_any_write() 
         json!([{"type":"schedule_activity","activity_type":long(191),"queue":long(255),
             "arguments":envelope(Payload::Array(vec![]))}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A multibyte class at the bound fits the column on every backend.
+    start(&app, "failure-class").await;
+    let task = poll(&app, "worker", "workflow").await;
+    let class = "é".repeat(255);
+    let (status, body) = finish_task(&app, &task,
+        json!([{"type":"fail_workflow","message":"bounded","exception":{"class":class,"message":"bounded"}}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, described) = request(&app, "GET", "/api/workflows/failure-class", Value::Null).await;
+    assert_eq!(described["status"], "failed", "{described}");
     runtime.close().await;
     database.remove().await;
 }

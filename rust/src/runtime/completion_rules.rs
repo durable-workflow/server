@@ -137,8 +137,11 @@ const COMMAND: &[(&str, &[Check])] = &[
     ("timeout_kind", &[NUL, STR, one_of(TIMEOUT_KINDS)]),
     ("payload_codec", &[NUL, STR]),
     ("update_id", &[NUL, STR]),
-    ("exception_class", &[NUL, STR]),
-    ("exception_type", &[NUL, STR]),
+    // A failure's class is stored as workflow_failures.exception_class,
+    // varchar(255); a local activity record stores its exception_type
+    // there (Server #607).
+    ("exception_class", &[NUL, STR, max(255)]),
+    ("exception_type", &[NUL, STR, max(255)]),
     ("exception", &[NUL, ARR]),
     ("failed_step_sequence", &[NUL, INT, min(1)]),
     ("failed_activity_execution_id", &[NUL, STR, max(255)]),
@@ -657,6 +660,15 @@ pub(super) fn normalizer_checks(index: usize, command: &Value) -> Result<()> {
                 }
             }
         }
+        // A workflow failure's structured class is stored as
+        // workflow_failures.exception_class, varchar(255) (Server #607).
+        "fail_workflow"
+            if command.get("exception").and_then(|exception| exception.get("class")).and_then(Value::as_str)
+                .is_some_and(|class| class.chars().count() > 255) =>
+        {
+            found.push((format!("commands.{index}.exception.class"),
+                vec![format!("The commands.{index}.exception.class field must not be greater than 255 characters.")]));
+        }
         "record_version_marker" => {
             let mut messages = Vec::new();
             if !command.get("change_id").and_then(Value::as_str).is_some_and(|id| !id.trim().is_empty()) {
@@ -967,6 +979,20 @@ mod tests {
         }
         let activity = json!({"type": "schedule_activity", "activity_type": "a", "queue": "q".repeat(255)});
         assert!(normalizer_checks(0, &activity).is_ok());
+        // A failure's class is stored in a varchar(255) column.
+        for (kind, field) in [("fail_workflow", "exception_class"), ("fail_update", "exception_class"),
+            ("fail_update", "exception_type"), ("record_local_activity", "exception_type")] {
+            let command = |length: usize| base(json!([{"type": kind, field: "é".repeat(length)}]));
+            assert_eq!(refusal(command(256))["errors"][format!("commands.0.{field}")],
+                json!([format!("The commands.0.{field} field must not be greater than 255 characters.")]), "{kind} {field}");
+            assert!(checked(command(255)).is_ok(), "{kind} {field} at 255");
+        }
+        let failure = |length: usize| json!({"type": "fail_workflow", "message": "m", "exception": {"class": "é".repeat(length)}});
+        let error = format!("{:?}", normalizer_checks(1, &failure(256)).unwrap_err());
+        assert!(error.contains("The commands.1.exception.class field must not be greater than 255 characters."), "{error}");
+        assert!(normalizer_checks(1, &failure(255)).is_ok());
+        // A non-string class keeps its existing fallback.
+        assert!(normalizer_checks(1, &json!({"type": "fail_workflow", "message": "m", "exception": {"class": 5}})).is_ok());
     }
 
     #[test]

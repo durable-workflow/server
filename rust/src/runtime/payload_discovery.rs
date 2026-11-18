@@ -109,8 +109,9 @@ pub(super) fn limits() -> Result<Value> {
         "max_search_attributes": super::search_attributes::configured_limit()?,
         "max_search_attribute_key_length": attributes.key_length,
         "max_search_attribute_value_bytes": attributes.value_bytes,
-        // Native refuses to start with any other value (config audit).
-        "max_operation_name_length": 256,
+        // The configured 256 is refused if changed (config audit); native
+        // caps names at their 255-character columns (Server #607).
+        "max_operation_name_length": super::laravel_validation::MAX_OPERATION_NAME_BYTES,
         "max_pending_activities": setting("DW_MAX_PENDING_ACTIVITIES", "WORKFLOW_MAX_PENDING_ACTIVITIES", 2000),
         "max_pending_children": setting("DW_MAX_PENDING_CHILDREN", "WORKFLOW_MAX_PENDING_CHILDREN", 2000),
     }))

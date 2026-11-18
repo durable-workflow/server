@@ -32,6 +32,15 @@
       "harness": "The native cluster-info comparator requires the exact field and shared-vector default value. PHP and embedded observations and frozen fixtures remain unchanged. Actual HTTP boundary and TCP refusal tests consume the shared completion-limit vectors."
     },
     {
+      "id": "operation-name-column-cap",
+      "issue": "https://github.com/durable-workflow/server/issues/607",
+      "since": "native source (unreleased)",
+      "applies_to": ["cluster-info"],
+      "published_php": "limits.max_operation_name_length advertises the configured DW_MAX_OPERATION_NAME_LENGTH, 256 by default, though signal and update names are stored in 255-character columns.",
+      "native": "Signal, update and query names are capped at 255 bytes, the column size, with the typed 422 validation_failed naming signal_name, update_name or query_name; limits.max_operation_name_length advertises 255. DW_MAX_OPERATION_NAME_LENGTH still refuses any value but its default, so the cap cannot be raised or disabled.",
+      "harness": "The native cluster-info comparator requires 255 for this one limit. PHP and embedded observations and frozen fixtures remain unchanged. The all-backend execution tests cover the 255-byte boundary and the refusal."
+    },
+    {
       "id": "request-id-reuse-conflict",
       "issue": "https://github.com/durable-workflow/server/issues/934",
       "since": "native 3.9.0",
