@@ -90,14 +90,5 @@ async fn query_admission_follows_php() {
     assert_eq!(answer.1["result_envelope"], result);
     assert_eq!(answer.1["control_plane"]["operation"], "query");
     assert_eq!(answer.1["control_plane"]["result_envelope"], result);
-    // Terminal runs other than completed ones refuse queries.
-    start(&app, "ended").await;
-    let (status, body) = request(&app, "POST", "/api/workflows/ended/terminate", json!({})).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let ended = query(&app, "/api/workflows/ended/query/state", json!({})).await;
-    let run = ended.1["run_id"].as_str().unwrap().to_owned();
-    assert_refusal(&ended, StatusCode::CONFLICT, "run_not_active",
-        &format!("Workflow query [state] cannot execute because run [{run}] is terminal with status [terminated]."));
-    assert_eq!(ended.1["run_status"], "terminated");
-    assert_eq!(ended.1["is_terminal"], true);
+    // Closed runs of every status answer queries: query_closed_runs.rs.
 }

@@ -41,12 +41,19 @@ async fn describe_reports_php_actions_and_fields() {
     assert_eq!(described(&app, "acted").await["actions"]["can_query"], true);
     let (status, body) = request(&app, "POST", "/api/workflows/acted/terminate", json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // A closed run of any status stays queryable while its history is
+    // retained (Server #587; published PHP offered no query here).
     assert_eq!(
         described(&app, "acted").await["actions"],
-        json!({"can_signal":false,"can_query":false,"can_update":false,"can_cancel":false,
+        json!({"can_signal":false,"can_query":true,"can_update":false,"can_cancel":false,
             "can_terminate":false,"can_repair":false,"can_archive":true,
             "can_redrive":false,"redrive_blocked_reason":"run_not_failed"})
     );
+    let run = described(&app, "acted").await["run_id"].clone();
+    let (status, report) = request(&app, "POST", "/api/system/retention/pass", json!({"run_ids":[run]})).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["pruned"], 1, "{report}");
+    assert_eq!(described(&app, "acted").await["actions"]["can_query"], false);
 }
 
 // The run list answers with PHP's run count and list entries.

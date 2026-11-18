@@ -211,6 +211,7 @@ mod updates;
 pub mod upgrade;
 mod visibility;
 mod version_usage;
+mod retirement;
 mod visibility_query;
 mod wait_history;
 mod wait_projection;
