@@ -16,6 +16,9 @@ use serde_json::{Map, Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 pub(super) const DRAINING: &str = "draining";
+/// The terminal `drained` intent. Only guarded retirement (Server #519)
+/// records it: the build accepts no new work and its workers claim nothing.
+pub(super) const RETIRED: &str = "drained";
 const ACTIVE: &str = "active";
 
 /// `WorkerBuildIdRollout::buildIdKey`: the trimmed build id, empty when
@@ -25,12 +28,12 @@ pub(super) fn key(build: Option<&str>) -> String {
 }
 
 /// `buildIdFromKey`.
-fn public(key: &str) -> Option<String> {
+pub(super) fn public(key: &str) -> Option<String> {
     (!key.is_empty()).then(|| key.to_owned())
 }
 
 /// Carbon's `toIso8601String`.
-fn iso(at: Option<DateTime<Utc>>) -> Value {
+pub(super) fn iso(at: Option<DateTime<Utc>>) -> Value {
     json!(at.map(|at| at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()))
 }
 
@@ -40,7 +43,7 @@ pub(super) fn zulu(at: Option<DateTime<Utc>>) -> Value {
 }
 
 /// Laravel stores these timestamps to the second.
-fn second() -> DateTime<Utc> {
+pub(super) fn second() -> DateTime<Utc> {
     let at = now();
     at.with_nanosecond(0).unwrap_or(at)
 }
@@ -194,7 +197,7 @@ impl Deployment {
     }
 
     /// `deploymentPayload`, with the route's timestamp format.
-    fn view(&self, selected: Option<&str>, time: fn(Option<DateTime<Utc>>) -> Value) -> Value {
+    pub(super) fn view(&self, selected: Option<&str>, time: fn(Option<DateTime<Utc>>) -> Value) -> Value {
         json!({"name":self.name(),"namespace":self.namespace,"task_queue":self.task_queue,"build_id":self.build,
             "state":self.state.name(),"accepts_new_work":matches!(self.state, State::Active | State::Promoted),
             "compatibility_policy":self.policy,"required_compatibility":self.required,
@@ -357,8 +360,9 @@ where
     /// `workerRegistrationStatus`: a registration on a draining build stays
     /// draining across registrations and heartbeats.
     pub(super) async fn registration_status(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, build: Option<&str>) -> Result<&'static str> {
+        // A retired build's workers claim nothing either (Server #519).
         let draining = Self::rollout(tx, namespace, task_queue, &key(build)).await?
-            .is_some_and(|rollout| rollout.drain_intent == DRAINING);
+            .is_some_and(|rollout| rollout.drain_intent == DRAINING || rollout.drain_intent == RETIRED);
         Ok(if draining { DRAINING } else { ACTIVE })
     }
 
@@ -399,23 +403,35 @@ where
                 active += 1;
             }
         }
-        let mut builds: Vec<String> = Self::rollouts(tx, namespace, task_queue).await?.into_iter()
+        let rollouts = Self::rollouts(tx, namespace, task_queue).await?;
+        // Server #519: a queue whose every cohort was retired takes no new
+        // start until an active worker cohort registers there again. A queue
+        // with any other cohort keeps PHP's gate.
+        let mut retired: Vec<String> = rollouts.iter().filter(|rollout| rollout.drain_intent == RETIRED)
+            .map(|rollout| rollout.key.clone()).collect();
+        let queue_retired = !rollouts.is_empty() && retired.len() == rollouts.len();
+        let mut builds: Vec<String> = rollouts.into_iter()
             .filter(|rollout| rollout.drain_intent == DRAINING).map(|rollout| rollout.key).collect();
         builds.sort();
-        if active > 0 || (draining == 0 && builds.is_empty()) {
+        retired.sort();
+        if active > 0 || (draining == 0 && builds.is_empty() && !queue_retired) {
             return Ok(None);
         }
-        let Value::Object(block) = json!({"routing_status":"draining","active_worker_count":active,
+        let Value::Object(mut block) = json!({"routing_status":"draining","active_worker_count":active,
             "draining_worker_count":draining,"stale_worker_count":stale,
             "draining_build_ids":builds.iter().map(|key| public(key)).collect::<Vec<_>>(),"drain_intent":DRAINING})
         else {
             unreachable!()
         };
+        if queue_retired {
+            block.insert("routing_status".into(), json!("retired"));
+            block.insert("retired_build_ids".into(), json!(retired.iter().map(|key| public(key)).collect::<Vec<_>>()));
+        }
         Ok(Some(block))
     }
 
     /// `find`: the rollout's deployment, else one only a registration knows.
-    async fn find(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, build: Option<&str>) -> Result<Option<Deployment>> {
+    pub(super) async fn find(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, build: Option<&str>) -> Result<Option<Deployment>> {
         if let Some(rollout) = Self::rollout(tx, namespace, task_queue, &key(build)).await? {
             return Ok(Some(Deployment::of(namespace, task_queue, &rollout)));
         }
@@ -523,7 +539,7 @@ where
     }
 
     /// `upsertRollout`: the row for the build, created active when missing.
-    async fn upsert(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, build: Option<&str>, apply: impl FnOnce(&mut Rollout)) -> Result<Rollout> {
+    pub(super) async fn upsert(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, build: Option<&str>, apply: impl FnOnce(&mut Rollout)) -> Result<Rollout> {
         let key = key(build);
         let existing = Self::rollout(tx, namespace, task_queue, &key).await?;
         let exists = existing.is_some();
@@ -544,7 +560,7 @@ where
     }
 
     /// `stampWorkerDrainStatus`.
-    async fn stamp_workers(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, build: Option<&str>, status: &str, only_draining: bool) -> Result<()> {
+    pub(super) async fn stamp_workers(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, build: Option<&str>, status: &str, only_draining: bool) -> Result<()> {
         Self::query("UPDATE workflow_worker_registrations SET status=$1 WHERE namespace=$2 AND task_queue=$3 AND (($4 IS NULL AND (build_id IS NULL OR build_id='')) OR build_id=$5) AND ($6='all' OR status='draining')")
             .bind(status).bind(namespace).bind(task_queue).bind(build).bind(build).bind(if only_draining { "draining" } else { "all" })
             .execute(&mut **tx).await?;
@@ -635,7 +651,7 @@ where
     }
 
     /// The queue's selected rollout key after a change.
-    async fn selected(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str) -> Result<Option<String>> {
+    pub(super) async fn selected(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str) -> Result<Option<String>> {
         let rollouts = Self::rollouts(tx, namespace, task_queue).await?;
         Ok(selected_key(&rollouts).map(str::to_owned))
     }
@@ -684,7 +700,7 @@ where
     }
 
     /// The task queue and build a deployment name in this namespace names.
-    fn deployment_scope(&self, name: &str) -> Result<(String, Option<String>)> {
+    pub(super) fn deployment_scope(&self, name: &str) -> Result<(String, Option<String>)> {
         let (namespace, task_queue, build) = parse_name(name).map_err(|error| bad_request(json!({"error":error})))?;
         if namespace != self.namespace.as_ref() {
             return Err(bad_request(json!({"error":"namespace_mismatch",

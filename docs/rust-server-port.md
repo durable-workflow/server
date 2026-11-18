@@ -519,6 +519,27 @@ contract fixture before its correction.
   page size is `422 invalid_page_size` and a foreign token
   `400 invalid_page_token`
   ([#553](https://github.com/durable-workflow/server/issues/553)).
+- **Guarded worker build and task queue retirement (native only).**
+  Published PHP's drain gives no pinned-run or recorded-queue inventory and
+  has no retirement action. Native serves
+  `GET /api/deployments/{name}/retirement` and
+  `GET /api/task-queues/{queue}/retirement`, a read-only inventory of open
+  runs (waiting, continued and child counts), ready, leased and delayed tasks
+  (activity retries and timers), open activities with their recorded queues,
+  update validations and, for a queue, schedules that start runs there. Open
+  runs with no recorded queue make the inventory `incomplete`. `POST .../retire`
+  repeats the inventory inside the serialized transition and records the
+  terminal `drained` rollout intent only when it is complete and empty;
+  otherwise 409 `live_dependencies`, `inventory_incomplete`,
+  `selected_for_new_starts`, `unknown_deployment`, `unknown_task_queue` or
+  `inventory_changed`, with nothing changed. A retired build's workers are
+  marked draining and stay draining when they register again; a queue whose
+  every cohort is retired refuses new starts with `task_queue_draining` and
+  `routing_status: "retired"` until an active worker registers. PHP never
+  records `drained`, so its routing, registration and drain contracts are
+  unchanged, and cluster info advertises `capabilities.worker_build_retirement`
+  ([#519](https://github.com/durable-workflow/server/issues/519),
+  [guide](worker-build-retirement.md)).
 - **Deadline-triggered timeout cleanup.** Published PHP does not
   admit `timeout_cleanup_seconds` on service starts. Native admits it (1 to 86,400,
   shorter than each hard timeout) only where a live worker on the queue
