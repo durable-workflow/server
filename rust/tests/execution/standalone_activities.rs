@@ -51,9 +51,11 @@ async fn a_standalone_activity_runs_in_its_own_host_run_like_php() {
         ("command_status", json!("accepted")), ("command_source", json!("control_plane"))] {
         assert_eq!(started[field], expected, "{field}: {started}");
     }
+    // A duplicate start of a running id is a typed 409 (Server #590;
+    // published PHP answered 422 on activity_id).
     let (status, running) = start_activity(&app, json!({"activity_id":"sa-1","activity_type":"greet"})).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{running}");
-    assert_eq!(running["errors"], json!({"activity_id":["Standalone activity [sa-1] is already running."]}));
+    assert_eq!(status, StatusCode::CONFLICT, "{running}");
+    assert_eq!(running["reason"], "activity_already_started", "{running}");
 
     let (_, pending) = request(&app, "GET", "/api/activities/sa-1", Value::Null).await;
     assert_eq!((pending["activity_status"].clone(), pending["attempt_count"].clone(), pending["attempts"].clone()),
@@ -195,6 +197,129 @@ async fn standalone_activity_requests_are_validated_and_listed_like_php() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{invalid}");
     assert_eq!(invalid["errors"], json!({"status":["The selected status is invalid."],
         "page_size":["The page size field must not be greater than 200."]}));
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Server #590: a standalone start takes workflow start's duplicate policy.
+// The default `fail` answers a running id with a typed 409 naming it;
+// `use-existing` returns the running activity, so a start retried after a
+// lost response gets the original. Neither writes anything. A closed id
+// starts a new run under either policy.
+#[tokio::test]
+async fn standalone_activity_starts_follow_the_duplicate_policy() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "worker", json!([]), json!(["greet"])).await;
+    let input = arguments(vec![Payload::String("x".into())]);
+    let body = |policy: Option<&str>| {
+        let mut body = json!({"activity_id":"dup-1","activity_type":"greet","task_queue":"test","input":input,
+            "business_key":"bk-dup"});
+        if let Some(policy) = policy {
+            body["duplicate_policy"] = json!(policy);
+        }
+        body
+    };
+    let (status, started) = start_activity(&app, body(Some("fail"))).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    assert_eq!(started["outcome"], "started_new", "{started}");
+    let run = started["workflow_run_id"].clone();
+    let history = run_history(&app, &json!("dup-1"), &run).await;
+
+    // Default and explicit `fail`: a typed 409 naming the running activity.
+    for policy in [None, Some("fail")] {
+        let (status, refused) = start_activity(&app, body(policy)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        for (field, expected) in [("reason", json!("activity_already_started")),
+            ("rejection_reason", json!("activity_already_started")), ("outcome", json!("rejected_duplicate")),
+            ("command_status", json!("rejected")), ("command_source", json!("control_plane")),
+            ("activity_id", json!("dup-1")), ("workflow_id", json!("dup-1")), ("workflow_run_id", run.clone()),
+            ("status", json!("running")), ("message", json!("Standalone activity [dup-1] is already running."))] {
+            assert_eq!(refused[field], expected, "{field}: {refused}");
+        }
+    }
+    // `use-existing`: the original activity, even with other input.
+    for retry in [body(Some("use-existing")), json!({"activity_id":"dup-1","activity_type":"other","duplicate_policy":"use-existing"})] {
+        let (status, existing) = start_activity(&app, retry).await;
+        assert_eq!(status, StatusCode::OK, "{existing}");
+        for field in ["activity_id", "activity_execution_id", "workflow_id", "workflow_run_id", "workflow_type",
+            "activity_type", "activity_class", "task_queue", "namespace", "status", "payload_codec", "started_at",
+            "schedule_to_start_deadline_at", "schedule_to_close_deadline_at", "command_source"] {
+            assert_eq!(existing[field], started[field], "{field}: {existing}");
+        }
+        assert_eq!((existing["outcome"].clone(), existing["command_status"].clone()),
+            (json!("returned_existing_active"), json!("accepted")), "{existing}");
+    }
+    // Nothing was written: one run, one history, one activity task.
+    let (_, runs) = request(&app, "GET", "/api/workflows/dup-1/runs", Value::Null).await;
+    assert_eq!(runs["run_count"], 1, "{runs}");
+    assert_eq!(run_history(&app, &json!("dup-1"), &run).await, history);
+    let task = poll(&app, "worker", "activity").await;
+    assert_eq!(task["arguments"], input, "{task}");
+    assert_eq!(poll(&app, "worker", "activity").await, Value::Null);
+    // A claimed activity is still running: `use-existing` still returns it.
+    let (status, existing) = start_activity(&app, body(Some("use-existing"))).await;
+    assert_eq!((status, existing["workflow_run_id"].clone()), (StatusCode::OK, run.clone()), "{existing}");
+
+    let path = format!("/api/worker/activity-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let (status, completed) = request(&app, "POST", &path, json!({"lease_owner":task["lease_owner"],
+        "activity_attempt_id":task["activity_attempt_id"],"result":input})).await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    // A closed id starts a new run under either policy.
+    let mut runs_seen = vec![run.clone()];
+    for policy in [Some("use-existing"), None] {
+        let (status, again) = start_activity(&app, body(policy)).await;
+        assert_eq!(status, StatusCode::CREATED, "{again}");
+        assert_eq!(again["outcome"], "started_new", "{again}");
+        assert!(!runs_seen.contains(&again["workflow_run_id"]), "{again}");
+        runs_seen.push(again["workflow_run_id"].clone());
+        if policy.is_some() {
+            let task = poll(&app, "worker", "activity").await;
+            let path = format!("/api/worker/activity-tasks/{}/complete", task["task_id"].as_str().unwrap());
+            let (status, body) = request(&app, "POST", &path, json!({"lease_owner":task["lease_owner"],
+                "activity_attempt_id":task["activity_attempt_id"],"result":input})).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+    }
+    let (_, runs) = request(&app, "GET", "/api/workflows/dup-1/runs", Value::Null).await;
+    assert_eq!(runs["run_count"], 3, "{runs}");
+
+    // An unsupported policy is refused with workflow start's message.
+    let (status, invalid) = start_activity(&app, json!({"activity_type":"greet","duplicate_policy":"reuse"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{invalid}");
+    assert_eq!(invalid["errors"], json!({"duplicate_policy":["The duplicate_policy field only supports fail or use-existing."]}));
+    // A workflow's id is still not reusable, whatever the policy.
+    start(&app, "dup-wf").await;
+    let (status, reserved) = start_activity(&app,
+        json!({"activity_id":"dup-wf","activity_type":"greet","duplicate_policy":"use-existing"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reserved}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// A retried `use-existing` start on a queue that has since begun draining
+// still returns the running activity; a new id there is refused.
+#[tokio::test]
+async fn use_existing_returns_a_running_activity_on_a_draining_queue() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id":"worker","task_queue":"test",
+        "runtime":"php","build_id":"v1","supported_workflow_types":[],"supported_activity_types":["greet"]})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let start = |id: &str, policy: &str| json!({"activity_id":id,"activity_type":"greet","task_queue":"test","duplicate_policy":policy});
+    let (status, started) = start_activity(&app, start("drain-1", "fail")).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let (status, drained) = request(&app, "POST", "/api/task-queues/test/build-ids/drain", json!({"build_id":"v1"})).await;
+    assert_eq!(status, StatusCode::OK, "{drained}");
+    let (status, fresh) = start_activity(&app, start("drain-2", "use-existing")).await;
+    assert_eq!((status, fresh["reason"].clone()), (StatusCode::CONFLICT, json!("task_queue_draining")), "{fresh}");
+    let (status, existing) = start_activity(&app, start("drain-1", "use-existing")).await;
+    assert_eq!(status, StatusCode::OK, "{existing}");
+    assert_eq!(existing["workflow_run_id"], started["workflow_run_id"]);
+    let (status, refused) = start_activity(&app, start("drain-1", "fail")).await;
+    assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("activity_already_started")), "{refused}");
     runtime.close().await;
     database.remove().await;
 }

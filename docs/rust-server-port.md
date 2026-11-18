@@ -482,6 +482,16 @@ contract fixture before its correction.
   behavior unchanged. The per-namespace variants stay ignored
   ([#982](https://github.com/durable-workflow/server/issues/982),
   [server reference](server-reference.md#native-long-poll-capacity)).
+- **Standalone activity duplicate starts.** Published PHP answers a start
+  whose standalone activity id is still running with a `422` validation error
+  on `activity_id` and has no duplicate policy. Native takes workflow start's
+  `duplicate_policy`: `fail` (default) is a typed
+  `409 activity_already_started` naming the running activity, and
+  `use-existing` returns it with `200` and `outcome:
+  "returned_existing_active"`, so a start retried after a lost response gets
+  the original. Neither writes anything. A closed id still starts a new run.
+  Divergence `standalone-activity-duplicate-policy`
+  ([#590](https://github.com/durable-workflow/server/issues/590)).
 - **Storage permission refusals.** Published PHP reports every storage
   driver failure, including a refused permission, as the retryable storage
   unavailable outcome. Native classifies a local-driver permission refusal

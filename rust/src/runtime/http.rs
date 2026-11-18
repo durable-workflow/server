@@ -1442,9 +1442,13 @@ async fn start_activity(
     let context = command.context(&body, &target, "standalone_activity_start", metadata(&[
         ("activity_type", trimmed("activity_type").map(Value::from)),
         ("task_queue", Some(json!(queue))),
+        ("duplicate_policy", body.get("duplicate_policy").cloned()),
     ]));
     let started = runtime.start_standalone_activity(body, context).await?;
-    Ok((StatusCode::CREATED, Json(started)))
+    // A running activity returned under `use-existing` is 200, as a workflow
+    // start's existing run is; a new run is 201 (Server #590).
+    let status = if started["outcome"] == "returned_existing_active" { StatusCode::OK } else { StatusCode::CREATED };
+    Ok((status, Json(started)))
 }
 
 async fn show_activity(

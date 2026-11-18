@@ -845,6 +845,95 @@ evidence inventory, not whether cleanup succeeded. Use the history endpoints
 for evidence outside these bounds. This candidate contract is not a claim
 about the currently published Server image.
 
+### Standalone Activities
+
+A standalone activity is an activity a client starts directly, outside any
+workflow. Workers poll and complete it like any other activity task; the
+server records it in its own host run of workflow type
+`dw.standalone_activity`, which has no workflow task and closes with the
+activity's outcome.
+
+- `POST /api/activities` — Start a standalone activity
+- `GET /api/activities` — List standalone activities (`status` = `running`,
+  `completed` or `failed`; `page_size` 1–200, default 50; `next_page_token`)
+- `GET /api/activities/{activity_id}` — Describe the current run of an activity
+
+```bash
+curl -X POST $SERVER/api/activities \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-Namespace: default" \
+  -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+  -d '{
+    "activity_id": "invoice-42",
+    "activity_type": "billing.send_invoice",
+    "task_queue": "billing",
+    "input": ["invoice-42"],
+    "duplicate_policy": "use-existing",
+    "retry_policy": {"max_attempts": 3, "backoff_seconds": [5, 30]},
+    "start_to_close_timeout_seconds": 60
+  }'
+```
+
+**Start fields.** `activity_type` is required (at most 255 characters).
+`activity_id` is optional: up to 128 letters, digits, `.`, `_`, `:` or `-`;
+the server generates one when it is omitted. `task_queue` defaults to
+`default`. `activity_class` is a free-form label for describe and list.
+`input` is a positional argument list or a payload envelope. `business_key`,
+`retry_policy` (`max_attempts`, `backoff_seconds`,
+`non_retryable_error_types`) and the timeouts
+`start_to_close_timeout_seconds`, `schedule_to_start_timeout_seconds`,
+`schedule_to_close_timeout_seconds` and `heartbeat_timeout_seconds` have
+their in-workflow meaning. Without a retry policy an activity makes one
+attempt.
+
+A new run answers `201` with `activity_id`, `activity_execution_id`, the host
+`workflow_id` and `workflow_run_id`, `status: "running"`, the deadlines,
+`outcome: "started_new"` and `command_status: "accepted"`.
+
+**Duplicate starts and id reuse.** `duplicate_policy` has workflow start's
+values (native Server; published PHP has no policy and answers a running id
+with a `422` validation error on `activity_id`):
+
+| Policy | The id's current run is still running | The id's current run is closed |
+| --- | --- | --- |
+| `fail` (default) | `409`, `reason: "activity_already_started"`, `outcome: "rejected_duplicate"`, naming the running `activity_id` and `workflow_run_id`. | A new run starts (`201`). |
+| `use-existing` | `200` with the running activity in the start response's shape and `outcome: "returned_existing_active"`. | A new run starts (`201`). |
+
+Neither duplicate answer writes anything, and `use-existing` does not compare
+the request with the original start: it returns the activity already running
+under that id, whatever its type or input. A client that retries a start
+after a lost response should send `use-existing` with the same
+`activity_id`. Both answers come before the queue's drain check, so a retry
+still finds its activity on a queue that has since begun draining. A closed
+id always starts a new run, numbered after the previous ones; use a new id
+when a repeat must not run again. An id already used by a workflow cannot be
+used for a standalone activity (`422` on `activity_id`), and an id reserved
+in another namespace is `409 activity_id_reserved_in_namespace`.
+
+**Waiting, describing and cancelling.** `GET /api/activities/{activity_id}`
+describes the id's current run: `status` (the host run's status),
+`activity_status`, `closed_reason`, the deadlines, `attempt_count`,
+`current_attempt` and every attempt, and `result` once the activity
+completed. To wait for an outcome, poll it until `status` is no longer
+`running`; a terminal failure or timeout fails the host run with the
+activity's failure. The host run is an ordinary run under the same id, so
+`POST /api/workflows/{activity_id}/cancel` or `/terminate` stops it and
+`GET /api/workflows/{activity_id}/runs/{workflow_run_id}/history` shows its
+history. An unknown id, or an id that names a workflow, is
+`404 activity_not_found`.
+
+**Limits, storage and retention.** The request body is bounded by
+`DW_MAX_PAYLOAD_BYTES` (2 MiB by default; `413 payload_too_large`). Large
+input follows the namespace's [external payload storage](#external-payload-storage)
+policy: a reference envelope is stored as given, and external storage
+refusals use the typed external payload outcomes (for example
+`external_payload_unavailable`, 503). [Storage admission](storage-admission.md)
+refuses starts unless storage is in its normal state, and a task queue whose workers
+are all draining refuses new starts with `409 task_queue_draining`. Closed
+host runs are kept and pruned by the namespace's history retention like
+workflow runs.
+
 ### History
 - `GET /api/workflows/{id}/runs/{runId}/history` — Get event history
 - `GET /api/workflows/{id}/runs/{runId}/history/export` — Export replay bundle
