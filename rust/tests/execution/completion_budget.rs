@@ -53,6 +53,10 @@ async fn an_over_budget_completion_writes_nothing_and_keeps_the_lease() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["reason"], "completion_budget_exceeded", "{body}");
     assert_eq!((&body["recorded"], &body["run_id"], &body["outcome"]), (&json!(false), &run["run_id"], &json!("completed")));
+    // .github#228: the refusal names the limit and the counted value.
+    assert_eq!((&body["limit_kind"], &body["current_value"], &body["configured_limit"]),
+        (&json!("history_transaction_size"), &json!(7), &json!(4)), "{body}");
+    assert!(body["message"].as_str().unwrap().starts_with("Structural limit exceeded: history_transaction_size:"), "{body}");
     assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, before);
 
     // Exactly the budget: scheduled, started, completed and the wait.
@@ -75,6 +79,10 @@ async fn the_meter_refuses_past_the_byte_limit_and_keeps_the_lease() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["reason"], "history_transaction_limit_exceeded", "{body}");
     assert_eq!((&body["recorded"], &body["run_id"], &body["created_task_ids"]), (&json!(false), &Value::Null, &json!([])));
+    // .github#228: the refusal names the limit and the measured size.
+    assert_eq!((&body["limit_kind"], &body["configured_limit"]), (&json!("history_transaction_bytes"), &json!(4_000)), "{body}");
+    assert!(body["current_value"].as_i64().unwrap() > 4_000, "{body}");
+    assert!(body["message"].as_str().unwrap().starts_with("Structural limit exceeded: history_transaction_bytes:"), "{body}");
     assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, before);
     assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM activity_executions").await, 0);
     assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM activity_attempts").await, 0);
