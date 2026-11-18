@@ -473,3 +473,146 @@ async fn cleanup_renews_a_live_completion_budget_and_drops_a_closed_one() {
     // A closed activity cannot resume its upload: the allowance is dropped.
     assert_eq!(count(&database, "SELECT COUNT(*) FROM runtime_payload_completion_budgets").await, 0);
 }
+
+/// An upload without a completion context: ordinary new work.
+async fn plain_upload(app: &Router, bytes: Vec<u8>, body: Option<Body>) -> (StatusCode, HeaderMap, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/external-payloads/v1")
+        .header("authorization", "Bearer worker-token")
+        .header("x-namespace", "default")
+        .header("content-type", "application/octet-stream")
+        .header("x-durable-workflow-payload-codec", "avro")
+        .header("x-durable-workflow-payload-size", bytes.len().to_string())
+        .header("x-durable-workflow-payload-sha256", digest(&bytes))
+        .body(body.unwrap_or_else(|| Body::from(bytes)))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, headers, serde_json::from_slice(&bytes).unwrap())
+}
+
+/// A storage admission refusal: 503, `Retry-After: 5`, the state, and
+/// `request_admitted: false` only when it says nothing was admitted.
+fn assert_paused(response: &(StatusCode, HeaderMap, Value), reason: &str, state: &str, unadmitted: bool) {
+    assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE, "{}", response.2);
+    assert_eq!(response.1.get("retry-after").and_then(|value| value.to_str().ok()), Some("5"), "{}", response.2);
+    assert_eq!((response.2["reason"].clone(), response.2["storage_state"].clone(), response.2["retryable"].clone()),
+        (json!(reason), json!(state), json!(true)), "{}", response.2);
+    assert_eq!(response.2.get("request_admitted").cloned(), unadmitted.then_some(json!(false)), "{}", response.2);
+    assert!(!response.2.to_string().contains("pressure.json"), "{}", response.2);
+}
+
+/// Server #951: under draining only the current activity lease's result upload
+/// is admitted, within its per-lease allowance; it completes the activity into
+/// the reserve. New uploads, foreign leases and an exhausted allowance keep
+/// the retryable storage refusal; fenced or stale admission refuses it too.
+#[tokio::test]
+async fn draining_admits_only_the_current_lease_completion_upload_within_its_allowance() {
+    let observation = crate::storage_admission::Observation::new();
+    observation.publish("normal", 0);
+    let (provider, database, runtime, app, task, bytes) = original(120).await;
+    let runtime = runtime.with_storage_admission(observation.settings());
+    let context = context(&task);
+    observation.publish("draining", 0);
+
+    // An ordinary upload is new work and is refused before its handler.
+    assert_paused(&plain_upload(&app, b"new input".to_vec(), None).await, "storage_pressure", "draining", true);
+    // The completion context is still only a current lease's authority.
+    let mut foreign = context.clone();
+    foreign["lease_owner"] = json!("foreign");
+    let rejected = upload(&app, "worker-token", "default", &foreign, bytes.clone(), None).await;
+    assert_eq!((rejected.0, rejected.2["reason"].clone()), (StatusCode::CONFLICT, json!("external_payload_completion_lease_rejected")), "{}", rejected.2);
+    assert_eq!(upload(&app, "operator-token", "default", &context, bytes.clone(), None).await.0, StatusCode::FORBIDDEN);
+    // No other completion kind gains upload authority under pressure.
+    let mut workflow = context.clone();
+    workflow["kind"] = json!("workflow");
+    let unqualified = upload(&app, "worker-token", "default", &workflow, bytes.clone(), None).await;
+    assert_eq!((unqualified.0, unqualified.2["reason"].clone()),
+        (StatusCode::UNPROCESSABLE_ENTITY, json!("development_payload_completion_upload_unqualified")), "{}", unqualified.2);
+    // An allowance this lease cannot hold is a pause, not a failure: nothing
+    // is reserved or written and the worker retries after pressure clears.
+    assert_paused(&upload(&app, "worker-token", "default", &context, vec![b'x'; 65], None).await,
+        "storage_pressure", "draining", true);
+    assert_eq!(count(&database, "SELECT COUNT(*) FROM runtime_payload_completion_budgets").await, 0);
+    assert_eq!((unclaimed(&database).await, provider_files(provider.path())), (0, 0));
+
+    let uploaded = upload(&app, "worker-token", "default", &context, bytes.clone(), None).await;
+    assert_eq!(uploaded.0, StatusCode::CREATED, "{}", uploaded.2);
+    let reference = uploaded.2["reference"].clone();
+    let retried = upload(&app, "worker-token", "default", &context, bytes.clone(), None).await;
+    assert_eq!((retried.0, retried.2["reference"].clone()), (StatusCode::CREATED, reference.clone()), "{}", retried.2);
+    assert_eq!(provider_files(provider.path()), 1);
+    let conflict = upload(&app, "worker-token", "default", &context, b"changed".to_vec(), None).await;
+    assert_eq!((conflict.0, conflict.2["reason"].clone()), (StatusCode::CONFLICT, json!("external_payload_completion_conflict")));
+
+    // Fenced or stale evidence refuses even the completion upload before it is read.
+    observation.publish("fenced", 0);
+    assert_paused(&upload(&app, "worker-token", "default", &context, bytes.clone(), None).await, "storage_pressure", "fenced", true);
+    observation.publish("normal", crate::storage_admission::MAX_AGE_SECONDS + 1);
+    assert_paused(&upload(&app, "worker-token", "default", &context, bytes.clone(), None).await,
+        "storage_admission_unavailable", "fenced", true);
+
+    // The activity completes into the reserve with the uploaded reference.
+    observation.publish("draining", 0);
+    let completed = json_request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", task["task_id"].as_str().unwrap()),
+        "worker-token", json!({"activity_attempt_id":task["activity_attempt_id"], "lease_owner":task["lease_owner"],
+            "result":{"codec":"avro","external_payload":reference}})).await;
+    assert_eq!((completed.0, completed.1["recorded"].clone()), (StatusCode::OK, json!(true)), "{}", completed.1);
+    assert_eq!(unclaimed(&database).await, 0);
+    // A lost response is reconciled after the lease closes, without a write.
+    let reconciled = upload(&app, "worker-token", "default", &context, bytes.clone(), None).await;
+    assert_eq!((reconciled.0, reconciled.2["reference"].clone()), (StatusCode::CREATED, reference), "{}", reconciled.2);
+    // A closed lease opens no new allowance.
+    let late = upload(&app, "worker-token", "default", &context, b"late".to_vec(), None).await;
+    assert_eq!(late.0, StatusCode::CONFLICT, "{}", late.2);
+
+    // Recovery restores ordinary uploads at once.
+    observation.publish("normal", 0);
+    assert_eq!(plain_upload(&app, b"after recovery".to_vec(), None).await.0, StatusCode::CREATED);
+    runtime.close().await;
+    database.remove().await;
+}
+
+/// Pressure that begins while an admitted upload's body is read refuses it
+/// before any registration or provider write: draining stops an ordinary
+/// upload, and fenced stops a completion upload.
+#[tokio::test]
+async fn pressure_during_an_admitted_upload_refuses_before_it_writes() {
+    let observation = crate::storage_admission::Observation::new();
+    observation.publish("normal", 0);
+    let (provider, database, runtime, app, task, bytes) = original(120).await;
+    let runtime = runtime.with_storage_admission(observation.settings());
+    for (completion, state) in [(false, "draining"), (true, "fenced")] {
+        observation.publish("normal", 0);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let observed = entered.clone();
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let body_bytes = bytes.clone();
+        let body = Body::from_stream(futures_util::stream::once(async move {
+            observed.notify_one();
+            wait.await.unwrap();
+            Ok::<_, std::io::Error>(Bytes::from(body_bytes))
+        }));
+        let (upload_app, upload_context, upload_bytes) = (app.clone(), context(&task), bytes.clone());
+        let pending = tokio::spawn(async move {
+            if completion {
+                upload(&upload_app, "worker-token", "default", &upload_context, upload_bytes, Some(body)).await
+            } else {
+                plain_upload(&upload_app, upload_bytes, Some(body)).await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(3), entered.notified()).await.unwrap();
+        observation.publish(state, 0);
+        release.send(()).unwrap();
+        // The request was admitted, so the refusal makes no admission claim.
+        assert_paused(&pending.await.unwrap(), "storage_pressure", state, false);
+        assert_eq!(count(&database, "SELECT COUNT(*) FROM runtime_external_payloads").await, 0);
+        assert_eq!(provider_files(provider.path()), 0);
+    }
+    assert_eq!(count(&database, "SELECT COUNT(*) FROM runtime_payload_completion_budgets").await, 0);
+    runtime.close().await;
+    database.remove().await;
+}

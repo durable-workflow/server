@@ -56,11 +56,20 @@ worker-session operations. Starts, signals, updates, queries, registrations,
 uploads, polls and other mutations are refused. A long poll that is already
 waiting answers with the poll refusal at its next probe, within 250 ms of the
 change. The built-in maintenance loop (timers, schedules, repair, timeouts and
-retention) starts no pass under pressure. Native does not yet serve the draining
-completion-upload allowance described below. Under `draining` an upload is
-refused like any other, so a worker holds its result, keeps its lease with
-heartbeats and uploads after pressure clears. Discovery does not advertise
-`upload.completion_context`.
+retention) starts no pass under pressure.
+
+Native Server serves the draining completion-upload allowance described below
+for the activity result slot it advertises in discovery: `kind` `activity`,
+`operation` `complete` and `slot` `["result"]`. Workflow, query and activity-failure
+contexts are refused with `development_payload_completion_upload_unqualified` in
+every state, so pressure grants no other upload authority. Under `draining`, an
+upload without the header is refused before its handler, and an exhausted
+allowance answers the storage refusal with `request_admitted: false` instead of
+`external_payload_completion_budget_exhausted`. Admission is checked again after
+the body is read and before each registration and provider write: an ordinary
+upload whose admission left `normal`, or a completion upload whose admission
+became fenced or unavailable, is refused with the same 503 and `Retry-After: 5`
+without `request_admitted`, before any object is written.
 
 `/api/ready` reports pressure as not ready; `/api/health` retains its database
 connectivity meaning. `php artisan server:storage-status --json` reports the

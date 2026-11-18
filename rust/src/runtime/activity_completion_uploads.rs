@@ -1,4 +1,6 @@
 //! The published v1 activity-result upload allowance grants no task completion.
+//! It is also the only upload a draining storage observation admits (#951):
+//! one current activity lease's result, within its slot and byte allowance.
 use super::transaction::Transaction;
 use super::{
     Result, RuntimeError,
@@ -284,8 +286,10 @@ where
     ) -> Result<Reference> {
         let scope = context.scope(&self.namespace);
         let slot = context.slot();
+        let gate = super::external_registry::UploadGate::Completion(&context);
         let mut tx = self.begin().await?;
         Self::payload_object_lock(&mut tx, &scope).await?;
+        self.require_upload_admission(gate)?;
         if let Some(reference) = self
             .completion_upload_reference(&mut tx, &context, &expected)
             .await?
@@ -324,6 +328,13 @@ where
             || !objects_map.contains_key(&expected.sha256)
                 && expected.size_bytes as u64 > max_bytes.saturating_sub(total)
         {
+            let pressure = self.storage_admission.snapshot();
+            if pressure.draining() {
+                // Nothing was admitted: the worker keeps its result and its
+                // lease and retries after pressure clears, as for any other
+                // draining refusal, rather than reporting a failure.
+                return Err(super::storage_admission::paused(&pressure, true));
+            }
             return Err(refuse(
                 StatusCode::TOO_MANY_REQUESTS,
                 "external_payload_completion_budget_exhausted",
@@ -351,11 +362,12 @@ where
                 snapshot,
                 expires,
                 quota,
-                Some(&context),
+                gate,
             )
             .await?;
         let mut tx = self.begin().await?;
         Self::payload_object_lock(&mut tx, &scope).await?;
+        self.require_upload_admission(gate)?;
         let row = Self::query(
             "SELECT slots FROM runtime_payload_completion_budgets WHERE id=$1 AND namespace=$2",
         )

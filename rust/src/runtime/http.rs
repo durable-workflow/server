@@ -1161,7 +1161,7 @@ pub(super) async fn admission_error(
 /// refused before its handler unless its class still runs in that state.
 async fn storage_admission_guard(State(runtime): State<Runtime>, request: Request, next: Next) -> Response {
     use super::storage_admission::{self as admission, Admission};
-    let class = admission::classify(request.method(), request.uri().path());
+    let class = admission::classify_request(request.method(), request.uri().path(), request.headers());
     if class == Admission::Always {
         return next.run(request).await;
     }

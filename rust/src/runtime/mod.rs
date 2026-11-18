@@ -321,12 +321,17 @@ impl IntoResponse for RuntimeError {
             }
             Self::Protocol { status, response } => {
                 // `WorkerPollBackpressure` advertises its retry delay.
-                let retry = poll_capacity::is_exhausted(&response);
+                let retry = if poll_capacity::is_exhausted(&response) {
+                    Some(poll_capacity::RETRY_AFTER_SECONDS)
+                } else {
+                    // `StorageAdmissionPaused` inside an admitted handler (#951).
+                    storage_admission::is_refusal(&response).then_some(storage_admission::RETRY_AFTER_SECONDS as u64)
+                };
                 let mut answer = (status, Json(response)).into_response();
-                if retry {
+                if let Some(retry) = retry {
                     answer.headers_mut().insert(
                         axum::http::header::RETRY_AFTER,
-                        axum::http::HeaderValue::from(poll_capacity::RETRY_AFTER_SECONDS),
+                        axum::http::HeaderValue::from(retry),
                     );
                 }
                 return answer;

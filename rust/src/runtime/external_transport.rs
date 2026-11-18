@@ -1,5 +1,5 @@
-//! Versioned byte transport. Full discovery remains disabled until provider,
-//! claims, completion allowances, cleanup and backup qualification are complete.
+//! Versioned byte transport. Under draining storage admission only a current
+//! activity lease's completion upload is admitted (Server #951).
 use super::{Result, Runtime, RuntimeError, refuse};
 use crate::external_payload::{LocalStorage, REFERENCE_SCHEMA, Reference, SnapshotError, capture};
 use super::json_body::Json;
@@ -119,6 +119,12 @@ pub(super) fn typed_response(status: StatusCode, body: Value) -> Response {
 }
 
 fn response_error(error: RuntimeError) -> Response {
+    // A storage admission refusal keeps its own shape and Retry-After (#951).
+    if let RuntimeError::Protocol { response, .. } = &error
+        && super::storage_admission::is_refusal(response)
+    {
+        return error.into_response();
+    }
     let (status, reason) = match &error {
         RuntimeError::Refused { status, reason } => (*status, *reason),
         _ => (
@@ -365,6 +371,12 @@ async fn upload_inner(runtime: Runtime, request: Request, deadline: Instant) -> 
         ));
     }
     let snapshot = snapshot.map_err(snapshot_error)?;
+    // Pressure may change while an admitted body is read: an ordinary upload
+    // needs normal admission, a completion upload normal or draining (#951).
+    let pressure = runtime.storage_admission().snapshot();
+    if !if context.is_some() { pressure.accepts_leased_work() } else { pressure.accepts_new_work() } {
+        return Err(super::storage_admission::paused(&pressure, false));
+    }
     if let Some(context) = &context
         && let Some(reference) = runtime
             .authorize_completion_upload(context, &expected)
@@ -400,7 +412,7 @@ async fn upload_inner(runtime: Runtime, request: Request, deadline: Instant) -> 
             .await?
     } else {
         runtime
-            .upload_external_local(local, expected, snapshot, expires, quota)
+            .upload_external_transport(local, expected, snapshot, expires, quota)
             .await?
     };
     Ok(upload_response(reference))

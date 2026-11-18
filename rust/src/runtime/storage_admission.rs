@@ -84,6 +84,15 @@ impl Snapshot {
         self.state == State::Normal
     }
 
+    /// Whether an existing lease may still write into the reserve.
+    pub(super) fn accepts_leased_work(&self) -> bool {
+        self.state != State::Fenced
+    }
+
+    pub(super) fn draining(&self) -> bool {
+        self.state == State::Draining
+    }
+
     /// The readiness check's view: no path or source identity.
     pub(super) fn describe(&self) -> Value {
         json!({"enabled":self.enabled,"state":self.state.name(),"reason":self.reason,"observed_at":self.observed_at})
@@ -212,6 +221,22 @@ pub(super) enum Admission {
     Normal,
 }
 
+/// The completion-context header of a draining completion upload.
+pub(super) const COMPLETION_HEADER: &str = "x-durable-workflow-payload-completion";
+
+/// `classify`, plus PHP's draining completion upload: a byte upload that names
+/// the current worker completion lease it belongs to runs while draining. The
+/// handler checks that lease and the per-lease allowance; a fenced or
+/// unavailable observation still refuses it before the handler.
+pub(super) fn classify_request(method: &Method, path: &str, headers: &axum::http::HeaderMap) -> Admission {
+    if *method == Method::POST && path.trim_end_matches('/') == "/api/external-payloads/v1"
+        && headers.contains_key(COMPLETION_HEADER)
+    {
+        return Admission::Drain;
+    }
+    classify(method, path)
+}
+
 /// The route classes of PHP's `EnforceStorageAdmission`, on native paths.
 pub(super) fn classify(method: &Method, path: &str) -> Admission {
     if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
@@ -269,6 +294,23 @@ pub(super) fn refusal(snapshot: &Snapshot, admission: Admission, poll_request_id
         body["claim_admitted"] = json!(false);
     }
     body
+}
+
+/// PHP's `StorageAdmissionPaused` thrown inside an admitted handler. Only a
+/// refusal that admitted nothing (`unadmitted`) says `request_admitted: false`.
+pub(super) fn paused(snapshot: &Snapshot, unadmitted: bool) -> super::RuntimeError {
+    let mut response = refusal(snapshot, Admission::Normal, None);
+    if !unadmitted {
+        response.as_object_mut().expect("refusal object").remove("request_admitted");
+    }
+    super::RuntimeError::Protocol { status: axum::http::StatusCode::SERVICE_UNAVAILABLE, response }
+}
+
+/// Whether a protocol answer is a storage admission refusal, which carries
+/// `Retry-After`.
+pub(super) fn is_refusal(response: &Value) -> bool {
+    response.get("storage_state").is_some()
+        && matches!(response["reason"].as_str(), Some("storage_pressure" | "storage_admission_unavailable"))
 }
 
 #[cfg(test)]
@@ -444,11 +486,23 @@ mod tests {
         ] {
             assert_eq!(classify(&method, path), expected, "{method} {path}");
         }
+        let mut completion = axum::http::HeaderMap::new();
+        assert_eq!(classify_request(&Method::POST, "/api/external-payloads/v1", &completion), Admission::Normal);
+        completion.insert(COMPLETION_HEADER, "{}".parse().unwrap());
+        assert_eq!(classify_request(&Method::POST, "/api/external-payloads/v1", &completion), Admission::Drain);
+        assert_eq!(classify_request(&Method::POST, "/api/workflows", &completion), Admission::Normal);
+        assert_eq!(classify_request(&Method::GET, "/api/external-payloads/v1/ep_1", &completion), Admission::Always);
         let draining = Snapshot { enabled: true, state: State::Draining, reason: Some("storage_pressure"), observed_at: Some(NOW) };
         assert!(admits(Admission::Drain, &draining) && !admits(Admission::Poll, &draining) && !admits(Admission::Normal, &draining));
         assert!(admits(Admission::Always, &Snapshot::UNAVAILABLE) && !admits(Admission::Drain, &Snapshot::UNAVAILABLE));
         let body = refusal(&draining, Admission::Poll, Some("poll-1"));
         assert_eq!((body["poll_request_id"].clone(), body["claim_admitted"].clone(), body["task"].clone()), (json!("poll-1"), json!(false), Value::Null));
         assert_eq!(refusal(&Snapshot::UNAVAILABLE, Admission::Normal, None)["reason"], "storage_admission_unavailable");
+        for (unadmitted, expected) in [(true, Some(json!(false))), (false, None)] {
+            let super::super::RuntimeError::Protocol { status, response } = paused(&draining, unadmitted) else { panic!() };
+            assert_eq!((status, response.get("request_admitted").cloned()), (axum::http::StatusCode::SERVICE_UNAVAILABLE, expected));
+            assert!(is_refusal(&response) && response.get("task").is_none(), "{response}");
+        }
+        assert!(draining.accepts_leased_work() && draining.draining() && !Snapshot::UNAVAILABLE.accepts_leased_work());
     }
 }

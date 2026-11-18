@@ -21,9 +21,14 @@ identity; case-folding database aliases cannot create another allowance.
 Published PHP/SDK tuples and earlier failed originals
 stay unchanged. All database families require qualification before promotion.
 
+Server #951 admits this same activity-result context under draining storage
+admission, within the same per-lease allowance; an exhausted allowance answers
+the storage refusal, and fenced or stale admission refuses it. All-backend
+execution tests cover the draining, fenced, stale and mid-transfer cases.
+
 Workflow/query contexts, activity failure details, prepared version-2 contexts,
-storage-pressure bypass, S3, restart/cleanup/backup faults and full transport
-discovery remain separate gates. Exact-source local controls and genuine
+S3, restart/cleanup/backup faults and full transport discovery remain separate
+gates. Exact-source local controls and genuine
 published PHP/native consumer outcomes are recorded in #458; all-six hosted
 qualification and promotion remain pending. No advertised capability or release
 follows from the local checks.
