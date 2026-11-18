@@ -65,6 +65,8 @@ async fn cluster_info_discovers_runtime_payload_storage_like_php() {
         assert_eq!(info["limits"]["max_workflow_task_completion_bytes"], 33_554_432);
         assert_eq!(info["limits"]["max_memo_bytes"], 262_144);
         assert_eq!(info["limits"]["max_search_attributes"], 100);
+        // Native caps operation names at their 255-character columns (#607).
+        assert_eq!(info["limits"]["max_operation_name_length"], 255);
         assert_eq!(info["default_namespace"], "default");
         assert!(info["server_id"].as_str().is_some_and(|id| !id.is_empty()), "server identity");
         transport = storage["transport"].clone();

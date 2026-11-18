@@ -471,12 +471,18 @@ contract fixture before its correction.
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
   Several of those are cheap to honor: repair timing and the multi-node
   declaration.
-- **Signal and update names PHP cannot store.** Native validates signal,
-  update and query names as PHP does (1 to 256 bytes, no control
-  characters). PHP's signal and update name columns hold 255 bytes, so PHP
-  stores a 256-byte name on SQLite and fails with a database error on MySQL
-  and PostgreSQL. Native refuses such a name, and a name of only spaces,
-  with `invalid_signal_name` or `invalid_update_name` on every database
+- **Signal and update names PHP cannot store.** PHP validates signal,
+  update and query names at 1 to 256 bytes with no control characters, but
+  its signal and update name columns hold 255 characters, so PHP stores a
+  256-byte name on SQLite and fails with a database error on MySQL and
+  PostgreSQL. Native caps every operation name at 255 bytes and refuses a
+  longer one with the typed `422 validation_failed` naming `signal_name`,
+  `update_name` or `query_name` before any write; cluster info advertises
+  `limits.max_operation_name_length` as 255
+  ([#607](https://github.com/durable-workflow/server/issues/607)).
+  `DW_MAX_OPERATION_NAME_LENGTH` still refuses any value but PHP's default,
+  so the cap cannot be raised or disabled past the columns. A name of only
+  spaces is refused with `invalid_signal_name` or `invalid_update_name`
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-poll-waits.md)).
 - **Key order inside plain JSON input** (November 1, closed). For input
   that is not an envelope, published PHP takes an object input's values in

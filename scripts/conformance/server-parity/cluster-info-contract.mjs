@@ -49,9 +49,12 @@ export function checkClusterInfo(fixture, observation, workflowId) {
   assert.deepStrictEqual(Object.keys(state.discovery), Object.keys(definition.namespaces), 'every namespace read');
   for (const [key, discovery] of Object.entries(state.discovery)) {
     assert.equal(discovery.status, 200, `${key} cluster info`);
-    const expectedLimits = nativeDivergence(implementation, 'completion-byte-limit-discovery')
-      ? {...definition.limits, max_workflow_task_completion_bytes: completionVectors.default_limits.max_workflow_task_completion_bytes}
-      : definition.limits;
+    const expectedLimits = {
+      ...definition.limits,
+      ...(nativeDivergence(implementation, 'completion-byte-limit-discovery')
+        ? {max_workflow_task_completion_bytes: completionVectors.default_limits.max_workflow_task_completion_bytes} : {}),
+      ...(nativeDivergence(implementation, 'operation-name-column-cap') ? {max_operation_name_length: 255} : {}),
+    };
     assert.deepStrictEqual(discovery.limits, expectedLimits, `${key} request limits`);
     assert.equal(discovery.default_namespace, definition.default_namespace, `${key} default namespace`);
     assert.equal(discovery.server_id_is_text, true, `${key} server identity`);
