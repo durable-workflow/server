@@ -352,6 +352,59 @@ fn time(at: Option<DateTime<Utc>>) -> Value {
     json!(at.map(|at| at.to_rfc3339_opts(SecondsFormat::Micros, true)))
 }
 
+/// The registrations a worker list asks for.
+pub(crate) struct WorkerListFilter<'a> {
+    pub(crate) task_queue: Option<&'a str>,
+    pub(crate) status: Option<&'a str>,
+    /// The page continues after this worker id.
+    pub(crate) after: Option<&'a str>,
+    pub(crate) page_size: i64,
+}
+
+/// The default and largest worker list page (Server #553).
+pub(crate) const WORKER_PAGE_SIZE: i64 = 100;
+/// How many expired registrations one registration removes inline.
+pub(super) const INLINE_EXPIRY_LIMIT: i64 = 16;
+/// How many expired registrations one maintenance turn removes per namespace.
+pub(super) const MAINTENANCE_EXPIRY_LIMIT: i64 = 500;
+
+/// The opaque continuation after a worker id.
+pub(crate) fn page_token(worker_id: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(worker_id)
+}
+
+/// The worker id a continuation names; None when it is not one.
+pub(crate) fn page_after(token: &str) -> Option<String> {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(token)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|worker_id| !worker_id.is_empty())
+}
+
+/// The worker list statements: by queue or not, then live, stale, or live
+/// with a stored status. The status is compared trimmed and lowercased, and
+/// an empty one is `active`, as worker_summary reports it.
+macro_rules! worker_list {
+    ($queue:literal, $state:literal, $limit:literal) => {
+        concat!("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id>$2", $queue, $state,
+            " ORDER BY worker_id LIMIT ", $limit)
+    };
+}
+const LIST_LIVE: &str = worker_list!("", " AND last_heartbeat_at>=$3 AND LOWER(TRIM(status))<>'stale'", "$4");
+const LIST_QUEUE_LIVE: &str =
+    worker_list!(" AND task_queue=$3", " AND last_heartbeat_at>=$4 AND LOWER(TRIM(status))<>'stale'", "$5");
+const LIST_STALE: &str =
+    worker_list!("", " AND (last_heartbeat_at IS NULL OR last_heartbeat_at<$3 OR LOWER(TRIM(status))='stale')", "$4");
+const LIST_QUEUE_STALE: &str = worker_list!(" AND task_queue=$3",
+    " AND (last_heartbeat_at IS NULL OR last_heartbeat_at<$4 OR LOWER(TRIM(status))='stale')", "$5");
+const LIST_STATUS: &str =
+    worker_list!("", " AND last_heartbeat_at>=$3 AND COALESCE(NULLIF(LOWER(TRIM(status)),''),'active')=$4", "$5");
+const LIST_QUEUE_STATUS: &str = worker_list!(" AND task_queue=$3",
+    " AND last_heartbeat_at>=$4 AND COALESCE(NULLIF(LOWER(TRIM(status)),''),'active')=$5", "$6");
+
 fn status_filter(status: Option<&str>) -> Option<String> {
     status
         .map(|s| s.trim().to_lowercase())
@@ -589,37 +642,96 @@ where
         }))
     }
 
+    /// `GET /api/workers`, one bounded page in worker id order (Server #553).
+    /// Staleness and the status filter are applied before the page is cut,
+    /// so every page but the last is full and `next_page_token` continues
+    /// after the page's last worker id.
     pub(crate) async fn list_workers(
         &self,
-        task_queue: Option<&str>,
-        status: Option<&str>,
+        filter: &WorkerListFilter<'_>,
         config: &QueryTaskConfig,
     ) -> Result<Value> {
         let stale_after = config.worker_stale_after_seconds.max(1);
         let at = now();
+        let cutoff = at - chrono::Duration::seconds(stale_after);
         // PHP filters only on a truthy queue, and "0" is not truthy.
-        let queue = task_queue.filter(|q| !q.is_empty() && *q != "0");
-        let rows = match queue {
-            Some(queue) => Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 ORDER BY last_heartbeat_at DESC")
-                .bind(self.namespace.as_ref()).bind(queue).fetch_all(&self.pool).await?,
-            None => Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 ORDER BY last_heartbeat_at DESC")
-                .bind(self.namespace.as_ref()).fetch_all(&self.pool).await?,
+        let queue = filter.task_queue.filter(|q| !q.is_empty() && *q != "0");
+        let wanted = status_filter(filter.status);
+        // A registration without a heartbeat is stale, as worker_summary has it.
+        let sql = match (queue.is_some(), wanted.as_deref()) {
+            (false, None) => LIST_LIVE,
+            (true, None) => LIST_QUEUE_LIVE,
+            (false, Some("stale")) => LIST_STALE,
+            (true, Some("stale")) => LIST_QUEUE_STALE,
+            (false, Some(_)) => LIST_STATUS,
+            (true, Some(_)) => LIST_QUEUE_STATUS,
         };
-        let filter = status_filter(status);
+        let mut query = Self::query(sql)
+            .bind(self.namespace.as_ref())
+            .bind(filter.after.unwrap_or(""));
+        if let Some(queue) = queue {
+            query = query.bind(queue);
+        }
+        query = query.bind(DB::bind_time(cutoff));
+        if let Some(wanted) = wanted.as_deref().filter(|wanted| *wanted != "stale") {
+            query = query.bind(wanted.to_owned());
+        }
+        let rows = query.bind(filter.page_size + 1).fetch_all(&self.pool).await?;
+        let size = usize::try_from(filter.page_size).unwrap_or(0);
+        let more = rows.len() > size;
         let mut workers = Vec::new();
-        for row in &rows {
-            let summary = Self::worker_summary(row, stale_after, at)?;
-            let stale = summary["status"] == "stale";
-            let keep = match filter.as_deref() {
-                None => !stale,
-                Some("stale") => stale,
-                Some(wanted) => !stale && summary["status"] == wanted,
-            };
-            if keep {
-                workers.push(summary);
+        for row in rows.iter().take(size) {
+            workers.push(Self::worker_summary(row, stale_after, at)?);
+        }
+        let next_page_token = more
+            .then(|| workers.last().and_then(|worker| worker["worker_id"].as_str()).map(page_token))
+            .flatten();
+        Ok(json!({"workers": workers, "stale_after_seconds": stale_after,
+            "registration_retention_seconds": super::query_authority::worker_registration_retention(
+                self.worker_registration_retention_seconds, self.worker_stale_after_seconds),
+            "next_page_token": next_page_token}))
+    }
+
+    /// Server #553: deletes up to `limit` of this namespace's registrations
+    /// with no heartbeat (else update, else creation) within the
+    /// registration retention, oldest first. Active and draining workers
+    /// heartbeat, so only a worker that stopped without deregistering ages
+    /// out; a registration that still owns an unexpired task lease is kept.
+    /// Each deletion retires the registration's incarnation, as
+    /// deregistration does. Build rollouts, pinned runs and their pending
+    /// tasks are separate records, so a build left without workers still
+    /// reports `no_compatible_worker`.
+    pub(super) async fn expire_worker_registrations(&self, limit: i64) -> Result<u64> {
+        let at = now();
+        let retention = super::query_authority::worker_registration_retention(
+            self.worker_registration_retention_seconds,
+            self.worker_stale_after_seconds,
+        );
+        let cutoff = at - chrono::Duration::seconds(retention);
+        let namespace = self.namespace.as_ref();
+        let candidates = Self::query("SELECT worker_id FROM workflow_worker_registrations WHERE namespace=$1 AND COALESCE(last_heartbeat_at,updated_at,created_at)<$2 ORDER BY COALESCE(last_heartbeat_at,updated_at,created_at),worker_id LIMIT $3")
+            .bind(namespace).bind(DB::bind_time(cutoff)).bind(limit.max(1))
+            .fetch_all(&self.pool).await?;
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = self.begin().await?;
+        let mut expired = 0;
+        for candidate in &candidates {
+            let worker_id = DB::string(candidate, "worker_id")?;
+            // Rechecked under the write: a heartbeat or re-registration since
+            // the scan keeps the registration.
+            let deleted = Self::query("DELETE FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND COALESCE(last_heartbeat_at,updated_at,created_at)<$3 AND NOT EXISTS (SELECT 1 FROM workflow_tasks WHERE workflow_tasks.namespace=$4 AND workflow_tasks.lease_owner=$5 AND workflow_tasks.status='leased' AND workflow_tasks.lease_expires_at>$6)")
+                .bind(namespace).bind(&worker_id).bind(DB::bind_time(cutoff))
+                .bind(namespace).bind(&worker_id).bind(DB::bind_time(at))
+                .execute(&mut *tx).await?;
+            if DB::affected(deleted) > 0 {
+                self.retire_incarnation(&mut tx, &worker_id).await?;
+                expired += 1;
             }
         }
-        Ok(json!({"workers": workers, "stale_after_seconds": stale_after}))
+        tx.commit().await?;
+        Ok(expired)
     }
 
     pub(crate) async fn describe_worker(
@@ -688,6 +800,19 @@ mod tests {
         assert_eq!(defaults.capacity, [100, 100, 10]);
         assert_eq!(defaults.slots, [None; 3]);
         assert_eq!(defaults.process_metrics, None);
+    }
+
+    #[test]
+    fn worker_page_tokens_round_trip_and_retention_never_precedes_staleness() {
+        for worker_id in ["w", "worker/λ 1", "a+b=c"] {
+            assert_eq!(page_after(&page_token(worker_id)).as_deref(), Some(worker_id));
+        }
+        for token in ["%%", "", "@@@", "/w=="] {
+            assert_eq!(page_after(token), None, "{token}");
+        }
+        assert_eq!(super::super::query_authority::worker_registration_retention(86_400, 30), 86_400);
+        assert_eq!(super::super::query_authority::worker_registration_retention(10, 30), 30);
+        assert_eq!(super::super::query_authority::worker_registration_retention(-5, 0), 1);
     }
 
     #[test]

@@ -307,6 +307,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.worker_registration_retention_seconds = queries.worker_registration_retention_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
         store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
@@ -330,6 +331,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.worker_registration_retention_seconds = queries.worker_registration_retention_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
         store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
@@ -353,6 +355,7 @@ impl Runtime {
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
         store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
         store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+        store.worker_registration_retention_seconds = queries.worker_registration_retention_seconds;
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
         store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
@@ -1538,13 +1541,12 @@ impl Runtime {
     }
     pub(crate) async fn list_workers(
         &self,
-        task_queue: Option<&str>,
-        status: Option<&str>,
+        filter: &super::worker_management::WorkerListFilter<'_>,
     ) -> Result<Value> {
         match &*self.storage {
-            Storage::Sqlite(store) => store.list_workers(task_queue, status, &self.queries).await,
-            Storage::Postgres(store) => store.list_workers(task_queue, status, &self.queries).await,
-            Storage::MySql(store) => store.list_workers(task_queue, status, &self.queries).await,
+            Storage::Sqlite(store) => store.list_workers(filter, &self.queries).await,
+            Storage::Postgres(store) => store.list_workers(filter, &self.queries).await,
+            Storage::MySql(store) => store.list_workers(filter, &self.queries).await,
         }
     }
     pub(crate) async fn list_task_queues(&self) -> Result<Value> {

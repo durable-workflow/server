@@ -2203,15 +2203,33 @@ async fn system_health(Extension(runtime): Extension<Runtime>) -> Result<Respons
     Ok((status, Json(body)).into_response())
 }
 
+/// `GET /api/workers`: one page of at most 100 registrations (Server #553).
+/// `page_size` is 1 to 100, by default 100; `next_page_token` continues a
+/// listing from the token the previous page returned.
 async fn list_workers(
     Extension(runtime): Extension<Runtime>,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<Value>> {
+    use super::worker_management::{WORKER_PAGE_SIZE, WorkerListFilter, page_after};
+    let page_size = match query.get("page_size").map(|size| size.trim()).filter(|size| !size.is_empty()) {
+        None => WORKER_PAGE_SIZE,
+        Some(size) => size
+            .parse::<i64>()
+            .ok()
+            .filter(|size| (1..=WORKER_PAGE_SIZE).contains(size))
+            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_page_size"))?,
+    };
+    let after = match query.get("next_page_token").filter(|token| !token.is_empty()) {
+        None => None,
+        Some(token) => Some(page_after(token).ok_or_else(|| refuse(StatusCode::BAD_REQUEST, "invalid_page_token"))?),
+    };
     runtime
-        .list_workers(
-            query.get("task_queue").map(String::as_str),
-            query.get("status").map(String::as_str),
-        )
+        .list_workers(&WorkerListFilter {
+            task_queue: query.get("task_queue").map(String::as_str),
+            status: query.get("status").map(String::as_str),
+            after: after.as_deref(),
+            page_size,
+        })
         .await
         .map(Json)
 }

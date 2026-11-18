@@ -1283,8 +1283,16 @@ where
             .map(|row| DB::string(row, "name"))
             .collect::<Result<Vec<_>>>()?;
         for namespace in namespaces {
-            if let Err(error) = self.in_namespace(&namespace).retention_maintenance_pass().await {
+            let store = self.in_namespace(&namespace);
+            if let Err(error) = store.retention_maintenance_pass().await {
                 eprintln!("retention_maintenance_failed: {error}");
+            }
+            // Registrations without a heartbeat past their retention (#553).
+            if let Err(error) = store
+                .expire_worker_registrations(super::worker_management::MAINTENANCE_EXPIRY_LIMIT)
+                .await
+            {
+                eprintln!("worker_registration_expiry_failed: {error}");
             }
         }
         Ok(())
