@@ -51,6 +51,8 @@ for (const [name, mutate] of [
   ['native without its child start turn', state => { delete state.capabilities.child_workflow_start_turn; }],
   ['native without version usage', state => { delete state.capabilities.workflow_version_usage; }],
   ['native declaring version usage unavailable', state => { state.capabilities.workflow_version_usage = false; }],
+  ['native without build retirement', state => { delete state.capabilities.worker_build_retirement; }],
+  ['native declaring build retirement unavailable', state => { state.capabilities.worker_build_retirement = false; }],
   ['native copying a manifest flag it does not publish', state => { state.capabilities.timer_runtime_contract = true; }],
   ['native advertising response compression', state => { state.capabilities.response_compression = ['gzip']; }],
   ['native without its unqualified list', state => { state.native_unqualified = []; }],

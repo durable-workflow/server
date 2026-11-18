@@ -295,6 +295,8 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/task-queues/{task_queue}/build-ids/promote", post(build_id_promote))
         .route("/api/task-queues/{task_queue}/build-ids/drain", post(build_id_drain))
         .route("/api/task-queues/{task_queue}/build-ids/resume", post(build_id_resume))
+        .route("/api/task-queues/{task_queue}/retirement", get(task_queue_retirement))
+        .route("/api/task-queues/{task_queue}/retire", post(task_queue_retire))
         .route("/api/task-queues/{task_queue}/activity-dispatch", get(activity_dispatch))
         .route("/api/task-queues/{task_queue}/activity-dispatch/pause", post(pause_activity_dispatch))
         .route("/api/task-queues/{task_queue}/activity-dispatch/resume", post(resume_activity_dispatch))
@@ -979,7 +981,9 @@ fn task_queue_route(rest: &str) -> Option<Allowed> {
     match rest.split('/').collect::<Vec<_>>().as_slice() {
         [queue, ..] if queue.is_empty() => None,
         [_] | [_, "build-ids" | "priority-fairness" | "activity-dispatch"] => Some(READ),
-        [_, "build-ids", "promote" | "drain" | "resume"] | [_, "activity-dispatch", "pause" | "resume"] => Some(WRITE),
+        // Server #519: retirement inspection reads; the guarded action writes.
+        [_, "retirement"] => Some(READ),
+        [_, "build-ids", "promote" | "drain" | "resume"] | [_, "activity-dispatch", "pause" | "resume"] | [_, "retire"] => Some(WRITE),
         _ => None,
     }
 }
@@ -2288,6 +2292,26 @@ async fn build_id_action(
     let (status, body) = runtime.build_id_action(&task_queue, body, action).await?;
     Ok((status, Json(body)))
 }
+/// `GET /api/task-queues/{name}/retirement` (Server #519): every live
+/// dependency on the queue, read-only.
+async fn task_queue_retirement(
+    Extension(runtime): Extension<Runtime>,
+    Path(task_queue): Path<String>,
+) -> Result<Json<Value>> {
+    runtime.retirement(&task_queue, super::retirement::Target::Queue).await.map(Json)
+}
+/// `POST /api/task-queues/{name}/retire` (Server #519): retire every cohort
+/// on the queue, refused while any live dependency remains.
+async fn task_queue_retire(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path(task_queue): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<Value>)> {
+    let retired_by = super::command_context::server_principal(request.principal());
+    let (status, body) = runtime.retire(&task_queue, super::retirement::Target::Queue, request_json(&body)?, retired_by).await?;
+    Ok((status, Json(body)))
+}
 /// `GET /api/task-queues/{name}/activity-dispatch` (Server #577).
 async fn activity_dispatch(
     Extension(runtime): Extension<Runtime>,
@@ -2334,15 +2358,33 @@ async fn show_deployment(
     Extension(runtime): Extension<Runtime>,
     Path(name): Path<String>,
 ) -> Result<(StatusCode, Json<Value>)> {
+    // Server #519: `{name}/retirement` previews the guarded retirement.
+    if let Some(name) = name.strip_suffix("/retirement") {
+        return Ok((StatusCode::OK, Json(runtime.deployment_retirement(name).await?)));
+    }
     let (status, body) = runtime.deployment(&name).await?;
     Ok((status, Json(body)))
 }
-/// `POST /api/deployments/{name}/{promote|drain|resume|rollback}`.
+/// `POST /api/deployments/{name}/{promote|drain|resume|rollback|retire}`.
 async fn deployment_action(
     Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
     Path(name): Path<String>,
     uri: axum::http::Uri,
+    body: axum::body::Bytes,
 ) -> Response {
+    // Server #519: the guarded retirement, with an optional JSON body.
+    if let Some(name) = name.strip_suffix("/retire") {
+        let retired_by = super::command_context::server_principal(request.principal());
+        let result = match request_json(&body) {
+            Ok(body) => runtime.deployment_retire(name, body, retired_by).await,
+            Err(error) => Err(error),
+        };
+        return match result {
+            Ok((status, body)) => (status, Json(body)).into_response(),
+            Err(error) => error.into_response(),
+        };
+    }
     let Some((name, action)) = name
         .rsplit_once('/')
         .and_then(|(name, action)| super::deployments::Action::named(action).map(|action| (name, action)))

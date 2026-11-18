@@ -1657,6 +1657,36 @@ impl Runtime {
             Storage::MySql(store) => store.deployment_action(name, action).await,
         }
     }
+    /// Server #519: a read-only retirement inventory.
+    pub(crate) async fn retirement(&self, queue: &str, target: super::retirement::Target) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.retirement(queue, target).await,
+            Storage::Postgres(store) => store.retirement(queue, target).await,
+            Storage::MySql(store) => store.retirement(queue, target).await,
+        }
+    }
+    /// Server #519: guarded retirement.
+    pub(crate) async fn retire(&self, queue: &str, target: super::retirement::Target, body: Value, retired_by: Option<Value>) -> Result<(StatusCode, Value)> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.retire(queue, target, &body, retired_by).await,
+            Storage::Postgres(store) => store.retire(queue, target, &body, retired_by).await,
+            Storage::MySql(store) => store.retire(queue, target, &body, retired_by).await,
+        }
+    }
+    pub(crate) async fn deployment_retirement(&self, name: &str) -> Result<Value> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deployment_retirement(name).await,
+            Storage::Postgres(store) => store.deployment_retirement(name).await,
+            Storage::MySql(store) => store.deployment_retirement(name).await,
+        }
+    }
+    pub(crate) async fn deployment_retire(&self, name: &str, body: Value, retired_by: Option<Value>) -> Result<(StatusCode, Value)> {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.deployment_retire(name, &body, retired_by).await,
+            Storage::Postgres(store) => store.deployment_retire(name, &body, retired_by).await,
+            Storage::MySql(store) => store.deployment_retire(name, &body, retired_by).await,
+        }
+    }
     pub(crate) async fn task_queue_build_ids(&self, queue: &str) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.task_queue_build_ids(queue, &self.queries).await,

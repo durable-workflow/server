@@ -813,6 +813,62 @@ paths:
       requestBody: { $ref: "#/components/requestBodies/JsonObject" }
       responses:
         "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /task-queues/{taskQueue}/retirement:
+    get:
+      tags: [task-queues]
+      operationId: getTaskQueueRetirement
+      summary: Inspect whether every cohort on the queue can be retired.
+      description: >
+        Native Server only, advertised by cluster info
+        capabilities.worker_build_retirement (Server #519). Read-only
+        inventory of live dependencies: open runs (waiting, continued and
+        child counts), ready, leased and delayed tasks (activity retries and
+        timers), open activities with their recorded queues, update
+        validations and schedules that start runs on the queue, and open runs with no recorded queue, which make
+        observation.status incomplete. Each blocker has an exact count, at
+        most 20 sample identities and a recovery action. The answer carries
+        retirable, reason, observation.inventory_revision and counts. It is a
+        preview, not a barrier. See docs/worker-build-retirement.md.
+      x-durable-workflow-server-capability: worker_build_retirement
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/TaskQueuePath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /task-queues/{taskQueue}/retire:
+    post:
+      tags: [task-queues]
+      operationId: retireTaskQueue
+      summary: Retire every cohort on the queue, refused while live dependencies remain.
+      description: >
+        Native Server only, advertised by cluster info
+        capabilities.worker_build_retirement (Server #519). Repeats the
+        retirement inventory inside the serialized transition and, only when
+        it is empty and complete, records the terminal drained intent for every cohort known on the queue
+        and marks the workers draining. Otherwise answers 409 with reason
+        unknown_deployment, unknown_task_queue, selected_for_new_starts,
+        inventory_incomplete, live_dependencies or inventory_changed, the
+        full inventory, and changed false. The optional body names
+        expected_inventory_revision from an inspection. Recorded pins,
+        queues, history and deadlines are never changed. Drain keeps its
+        emergency-stop contract.
+      x-durable-workflow-server-capability: worker_build_retirement
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/TaskQueuePath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              properties:
+                expected_inventory_revision: { type: [string, "null"], maxLength: 128 }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
   /task-queues/{taskQueue}/activity-dispatch:
     get:
       tags: [task-queues]
@@ -883,6 +939,63 @@ paths:
         - $ref: "#/components/parameters/DeploymentNamePath"
       responses:
         "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+  /deployments/{name}/retirement:
+    get:
+      tags: [deployments]
+      operationId: getDeploymentRetirement
+      summary: Inspect whether one build on one queue can be retired.
+      description: >
+        Native Server only, advertised by cluster info
+        capabilities.worker_build_retirement (Server #519). Read-only
+        inventory of live dependencies: open runs (waiting, continued and
+        child counts), ready, leased and delayed tasks (activity retries and
+        timers), open activities with their recorded queues, update
+        validations, and open runs with no recorded queue, which make
+        observation.status incomplete. Each blocker has an exact count, at
+        most 20 sample identities and a recovery action. The answer carries
+        retirable, reason, observation.inventory_revision and counts. It is a
+        preview, not a barrier. See docs/worker-build-retirement.md.
+      x-durable-workflow-server-capability: worker_build_retirement
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/DeploymentNamePath"
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "400": { $ref: "#/components/responses/ControlPlaneError" }
+  /deployments/{name}/retire:
+    post:
+      tags: [deployments]
+      operationId: retireDeployment
+      summary: Retire one build on one queue, refused while live dependencies remain.
+      description: >
+        Native Server only, advertised by cluster info
+        capabilities.worker_build_retirement (Server #519). Repeats the
+        retirement inventory inside the serialized transition and, only when
+        it is empty and complete, records the terminal drained intent
+        and marks the workers draining. Otherwise answers 409 with reason
+        unknown_deployment, unknown_task_queue, selected_for_new_starts,
+        inventory_incomplete, live_dependencies or inventory_changed, the
+        full inventory, and changed false. The optional body names
+        expected_inventory_revision from an inspection. Recorded pins,
+        queues, history and deadlines are never changed. Drain keeps its
+        emergency-stop contract.
+      x-durable-workflow-server-capability: worker_build_retirement
+      parameters:
+        - $ref: "#/components/parameters/ControlPlaneVersionHeader"
+        - $ref: "#/components/parameters/DeploymentNamePath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              properties:
+                expected_inventory_revision: { type: [string, "null"], maxLength: 128 }
+      responses:
+        "200": { $ref: "#/components/responses/ControlPlaneEnvelope" }
+        "409": { $ref: "#/components/responses/ControlPlaneError" }
+        "422": { $ref: "#/components/responses/ControlPlaneError" }
   /deployments/{name}/{action}:
     post:
       tags: [deployments]

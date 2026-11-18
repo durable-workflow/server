@@ -37,7 +37,7 @@
       "since": "native source (unreleased)",
       "applies_to": ["schedule-catalog", "schedule-policies"],
       "published_php": "A scheduled, backfilled or drained schedule occurrence starts its run under a generated ULID workflow id.",
-      "native": "As embedded mode (Workflow 2.29.0 PhpClassScheduleStarter::instanceId), an occurrence's run id is schedule.ns:{sha256(namespace), 32 hex}:{byte length}:{schedule_id}:backfill:{unix seconds}, with the schedule id replaced by h:{sha256(schedule_id)} when the id would exceed 191 characters or leave [A-Za-z0-9._:-]. A repeated fire of an occurrence whose run exists is skipped as already_fired_occurrence. Manual triggers keep generated ids.",
+      "native": "As embedded mode (Workflow 2.15.15 and later, PhpClassScheduleStarter::instanceId), an occurrence's run id is schedule.ns:{sha256(namespace), 32 hex}:{byte length}:{schedule_id}:backfill:{unix seconds}, with the schedule id replaced by h:{sha256(schedule_id)} when the id would exceed 191 characters or leave [A-Za-z0-9._:-]. A repeated fire of an occurrence whose run exists is skipped as already_fired_occurrence. Manual triggers keep generated ids.",
       "harness": "Schedule normalization treats the deterministic form as a volatile identity, as it does ULIDs, and the catalog and dispatch-summary checks accept it for the native target only. PHP and embedded observations and frozen fixtures remain unchanged. All-backend execution tests cover ordinary, backfilled, namespaced, hashed and repeated occurrences."
     },
     {
@@ -123,6 +123,15 @@
       "published_php": "POST /api/activities has no duplicate policy. A start whose id is still running is a 422 validation error on activity_id (Standalone activity [id] is already running.), and responses carry no outcome.",
       "native": "POST /api/activities takes workflow start's duplicate_policy (fail, the default, or use-existing). A running id under fail is a typed 409 activity_already_started, outcome rejected_duplicate, naming the running activity_id and workflow_run_id; under use-existing it is 200 with the running activity in the start response shape and outcome returned_existing_active. Neither writes anything, and both are answered before the queue drain check. A closed id starts a new run under either policy; a new run's 201 carries outcome started_new.",
       "harness": "No server-parity scenario starts standalone activities, so no comparator applies it. All-backend execution tests cover the default and explicit fail, use-existing before and after a claim, a closed id under both policies, an invalid policy, a workflow's reserved id and a draining queue."
+    },
+    {
+      "id": "closed-run-queries",
+      "issue": "https://github.com/durable-workflow/server/issues/587",
+      "since": "native source (unreleased)",
+      "applies_to": ["waterline-import"],
+      "published_php": "Queries on failed, cancelled and terminated runs are refused with 409 run_not_active; completed is the only closed status that is queried. A run whose history retention pruned is not refused before a worker claims it.",
+      "native": "A retained run of any status, including failed, cancelled and terminated, is queried read-only on its original run, as embedded WorkflowStub::queryWithArguments replays any run: the same run binding, route and authority fences, with no history or status change. A run whose history retention pruned, or whose WorkflowStarted event is missing, is refused with 409 query_history_unavailable, history_state pruned or missing, run_status and is_terminal, and admits no query task. The query control-plane contract lists that reason after run_not_active.",
+      "harness": "The waterline-import comparator requires query_history_unavailable once, right after run_not_active, in each native query contract and then compares the rest exactly. Published PHP and embedded observations and frozen fixtures remain unchanged. The all-backend execution tests cover completed, failed, cancelled and terminated runs, instance- and run-targeted queries, unchanged history, and pruned and missing history."
     }
   ]
 }
