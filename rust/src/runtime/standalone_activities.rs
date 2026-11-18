@@ -39,7 +39,12 @@ const START_RULES: &laravel_rules::Rules = &[
     ("schedule_to_start_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
     ("schedule_to_close_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
     ("heartbeat_timeout_seconds", &[Rule::Nullable, Rule::Integer, Rule::Min(1)]),
+    // Server #590: workflow start's duplicate policy.
+    ("duplicate_policy", &[Rule::Nullable, Rule::String, Rule::In(&["fail", "use-existing"])]),
 ];
+
+/// Workflow start's message for an unsupported `duplicate_policy`.
+const DUPLICATE_POLICY_MESSAGE: &str = "The duplicate_policy field only supports fail or use-existing.";
 
 /// `ActivityController::index`'s rules.
 const LIST_RULES: &laravel_rules::Rules = &[
@@ -57,6 +62,9 @@ pub(super) struct StartRequest {
     pub(super) business_key: Option<String>,
     /// The worker-facing retry and timeout snapshot.
     pub(super) policy: Value,
+    /// `duplicate_policy: use-existing`: a start whose id is still running
+    /// returns that activity instead of the default 409 (Server #590).
+    pub(super) use_existing: bool,
 }
 
 /// A JSON integer, as PHP's `is_int` sees a decoded request value.
@@ -66,7 +74,15 @@ fn int(value: &Value) -> Option<i64> {
 
 /// Validates a start request (already normalized) like PHP.
 pub(super) fn start_request(body: &Value) -> Result<StartRequest> {
-    laravel_rules::validate(body, START_RULES)?;
+    let mut errors = laravel_rules::errors(body, START_RULES);
+    for (field, messages) in &mut errors {
+        if field == "duplicate_policy" && body["duplicate_policy"].is_string() {
+            *messages = vec![DUPLICATE_POLICY_MESSAGE.to_owned()];
+        }
+    }
+    if let Some(error) = laravel_rules::failure(errors) {
+        return Err(error);
+    }
     let text = |field: &str| body[field].as_str().map(str::to_owned);
     let activity_type = text("activity_type").expect("validated activity type");
     let policy = &body["retry_policy"];
@@ -106,6 +122,7 @@ pub(super) fn start_request(body: &Value) -> Result<StartRequest> {
         task_queue: text("task_queue").unwrap_or_else(|| "default".into()),
         business_key: text("business_key"),
         policy,
+        use_existing: body["duplicate_policy"] == "use-existing",
     })
 }
 
@@ -149,6 +166,20 @@ fn not_found() -> RuntimeError {
     }
 }
 
+/// The default duplicate policy (`fail`): a start whose id is still running
+/// is a typed 409 naming the running activity, as a duplicate workflow start
+/// is (Server #590). Nothing is written.
+fn already_started(activity_id: &str, run_id: &str, status: &str, request: &StartRequest) -> RuntimeError {
+    RuntimeError::Protocol {
+        status: StatusCode::CONFLICT,
+        response: json!({"message":format!("Standalone activity [{activity_id}] is already running."),
+            "reason":"activity_already_started","activity_id":activity_id,"workflow_id":activity_id,
+            "workflow_run_id":run_id,"status":status,"activity_type":request.activity_type,
+            "task_queue":request.task_queue,"outcome":"rejected_duplicate","command_status":"rejected",
+            "rejection_reason":"activity_already_started","command_source":"control_plane"}),
+    }
+}
+
 fn invalid_id(message: String) -> RuntimeError {
     super::laravel_validation::failure_messages(vec![("activity_id".into(), vec![message])])
         .expect("one message")
@@ -189,14 +220,22 @@ where
             self.claim_external_in(&mut tx, &prepared.reference, &prepared.uri).await?;
         }
         let activity_id = request.activity_id.clone().unwrap_or_else(id);
-        let existing = Self::query("SELECT i.namespace,i.workflow_type,i.run_count,r.status AS run_status,r.run_number FROM workflow_instances i LEFT JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
+        let existing = Self::query("SELECT i.namespace,i.workflow_type,i.run_count,i.current_run_id,r.status AS run_status,r.run_number FROM workflow_instances i LEFT JOIN workflow_runs r ON r.id=i.current_run_id WHERE i.id=$1")
             .bind(&activity_id).fetch_optional(&mut *tx).await?;
         // `TaskQueueRoutingGate`, after the identifier reservation check.
         let reserved = match &existing {
             Some(instance) => DB::optional_string(instance, "namespace")?.as_deref() != Some(self.namespace.as_ref()),
             None => false,
         };
-        if !reserved && let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
+        // A start of a running id is answered by its duplicate policy, not
+        // refused as a new start on a draining queue (Server #590).
+        let running = match &existing {
+            Some(instance) if !reserved => DB::string(instance, "workflow_type")? == HOST_TYPE
+                && DB::optional_string(instance, "run_status")?
+                    .is_some_and(|status| matches!(status.as_str(), "pending" | "running" | "waiting")),
+            _ => false,
+        };
+        if !reserved && !running && let Some(block) = Self::routing_block(&mut tx, &self.namespace, &request.task_queue, self.worker_stale_after_seconds).await? {
             let mut response = json!({"message":format!("Task queue [{}] is draining and cannot accept new standalone activity starts until an active worker cohort is available.", request.task_queue),
                 "reason":"task_queue_draining","activity_type":request.activity_type,"task_queue":request.task_queue});
             response.as_object_mut().expect("object").extend(block);
@@ -227,10 +266,19 @@ where
                 if workflow_type != HOST_TYPE {
                     return Err(invalid_id(format!("Identifier [{activity_id}] is already reserved for workflow type [{workflow_type}] and cannot be reused for a standalone activity.")));
                 }
-                if DB::optional_string(instance, "run_status")?
-                    .is_some_and(|status| matches!(status.as_str(), "pending" | "running" | "waiting"))
+                // A running id follows the duplicate policy; a closed one
+                // starts a new run under either policy.
+                if let Some(status) = DB::optional_string(instance, "run_status")?
+                    .filter(|status| matches!(status.as_str(), "pending" | "running" | "waiting"))
                 {
-                    return Err(invalid_id(format!("Standalone activity [{activity_id}] is already running.")));
+                    let current = DB::optional_string(instance, "current_run_id")?.unwrap_or_default();
+                    if request.use_existing {
+                        // The transaction rolls back: any claimed external
+                        // input is released and nothing is written.
+                        return Ok(json!({"activity_id":activity_id,"workflow_run_id":current,
+                            "outcome":"returned_existing_active"}));
+                    }
+                    return Err(already_started(&activity_id, &current, &status, &request));
                 }
                 let number = DB::number(instance, "run_count")?
                     .max(DB::optional_number(instance, "run_number")?.unwrap_or(0))
@@ -289,7 +337,7 @@ where
             "activity_class":request.activity_class,"task_queue":queue,"namespace":self.namespace.as_ref(),
             "status":"running","payload_codec":"avro","started_at":time(Some(started_at)),
             "schedule_to_start_deadline_at":time(schedule_deadline),"schedule_to_close_deadline_at":time(close_deadline),
-            "command_status":"accepted","command_source":"control_plane"}))
+            "outcome":"started_new","command_status":"accepted","command_source":"control_plane"}))
     }
 
     /// The current host run of `activity_id` in this namespace and its

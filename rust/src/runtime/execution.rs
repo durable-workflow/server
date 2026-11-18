@@ -767,11 +767,25 @@ impl Runtime {
             None if input => Some(super::envelope(&body, "input")?),
             None => None,
         };
-        match &*self.storage {
-            Storage::Sqlite(store) => store.start_standalone_activity(request, arguments, external, context).await,
-            Storage::Postgres(store) => store.start_standalone_activity(request, arguments, external, context).await,
-            Storage::MySql(store) => store.start_standalone_activity(request, arguments, external, context).await,
+        let started = match &*self.storage {
+            Storage::Sqlite(store) => store.start_standalone_activity(request, arguments, external, context).await?,
+            Storage::Postgres(store) => store.start_standalone_activity(request, arguments, external, context).await?,
+            Storage::MySql(store) => store.start_standalone_activity(request, arguments, external, context).await?,
+        };
+        if started["outcome"] != "returned_existing_active" {
+            return Ok(started);
         }
+        // `use-existing` (Server #590): the running activity, in the start
+        // response's shape, as it stands now.
+        let activity_id = started["activity_id"].as_str().unwrap_or_default();
+        let view = self.standalone_activity(activity_id).await?;
+        let mut existing = json!({"outcome":"returned_existing_active","command_status":"accepted","command_source":"control_plane"});
+        for key in ["activity_id", "activity_execution_id", "workflow_id", "workflow_run_id", "workflow_type", "activity_type",
+            "activity_class", "task_queue", "namespace", "status", "payload_codec", "started_at",
+            "schedule_to_start_deadline_at", "schedule_to_close_deadline_at"] {
+            existing[key] = view[key].clone();
+        }
+        Ok(existing)
     }
 
     /// `ActivityController::show`.

@@ -116,6 +116,15 @@
       "harness": "The two named retention steps and three named namespace-deletion steps have exact native-only expectations. Re-enabling an already deleted namespace returns 404; shared-object and unused-registration counts remain exact. Every original PHP setup/step remains byte-equivalent as data; held and peer objects, deletion counts, cleanup inventory and final fetch are still required. No storage outage, unavailable original binding or pending cleanup is accepted as a successful deletion."
     },
     {
+      "id": "standalone-activity-duplicate-policy",
+      "issue": "https://github.com/durable-workflow/server/issues/590",
+      "since": "native source (unreleased)",
+      "applies_to": [],
+      "published_php": "POST /api/activities has no duplicate policy. A start whose id is still running is a 422 validation error on activity_id (Standalone activity [id] is already running.), and responses carry no outcome.",
+      "native": "POST /api/activities takes workflow start's duplicate_policy (fail, the default, or use-existing). A running id under fail is a typed 409 activity_already_started, outcome rejected_duplicate, naming the running activity_id and workflow_run_id; under use-existing it is 200 with the running activity in the start response shape and outcome returned_existing_active. Neither writes anything, and both are answered before the queue drain check. A closed id starts a new run under either policy; a new run's 201 carries outcome started_new.",
+      "harness": "No server-parity scenario starts standalone activities, so no comparator applies it. All-backend execution tests cover the default and explicit fail, use-existing before and after a claim, a closed id under both policies, an invalid policy, a workflow's reserved id and a draining queue."
+    },
+    {
       "id": "closed-run-queries",
       "issue": "https://github.com/durable-workflow/server/issues/587",
       "since": "native source (unreleased)",
