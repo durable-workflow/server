@@ -482,6 +482,17 @@ contract fixture before its correction.
   behavior unchanged. The per-namespace variants stay ignored
   ([#982](https://github.com/durable-workflow/server/issues/982),
   [server reference](server-reference.md#native-long-poll-capacity)).
+- **Queries on closed runs.** Published PHP refuses queries on failed,
+  cancelled and terminated runs with `409 run_not_active`, and describe offers
+  no query on them. Native queries a retained run of any status read-only on
+  its original run, as embedded `WorkflowStub::queryWithArguments` replays any
+  run, and describe's `can_query` follows. A run whose history retention
+  pruned, or whose `WorkflowStarted` event is missing, is refused with
+  `409 query_history_unavailable` (`history_state` `pruned` or `missing`)
+  before any query task is admitted; a prune after admission fails the task
+  with the same reason. The query contract lists the reason after
+  `run_not_active`. Divergence `closed-run-queries`
+  ([#587](https://github.com/durable-workflow/server/issues/587)).
 - **Storage permission refusals.** Published PHP reports every storage
   driver failure, including a refused permission, as the retryable storage
   unavailable outcome. Native classifies a local-driver permission refusal

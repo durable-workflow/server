@@ -23,12 +23,23 @@ function nativeActions(value, add) {
     else nativeActions(item, add);
   }
 }
+// Native query contracts also list query_history_unavailable after
+// run_not_active (server#587, waterline-import-contract.mjs).
+function nativeQueryReason(state) {
+  for (const operations of Object.values(state)) {
+    const reasons = operations?.query?.response?.control_plane?.contract?.rejection_reasons;
+    if (Array.isArray(reasons)) reasons.splice(reasons.indexOf('run_not_active') + 1, 0, 'query_history_unavailable');
+  }
+}
 const count = (value) => JSON.stringify(value).split('"can_archive"').length - 1;
 
 for (const [label, fixture, recorded, id, scope, check] of cases) {
   const observed = (add) => {
     const state = structuredClone(recorded);
-    if (add) nativeActions(state, add);
+    if (add) {
+      nativeActions(state, add);
+      nativeQueryReason(state);
+    }
     return {mode: 'http', [scope]: state};
   };
   test(`${label}: the recording has describe actions to check`, () => assert.ok(count(recorded) > 0));

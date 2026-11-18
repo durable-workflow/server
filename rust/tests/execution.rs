@@ -185,6 +185,8 @@ mod lock_free_waiting;
 mod read_snapshots;
 #[path = "execution/query_responses.rs"]
 mod query_responses;
+#[path = "execution/query_closed_runs.rs"]
+mod query_closed_runs;
 #[path = "execution/history_export.rs"]
 mod history_export;
 #[path = "execution/input_envelopes.rs"]
