@@ -262,9 +262,11 @@ async fn every_surface_reports_the_active_history_transaction_limits() {
             assert_eq!((&size, &published_bytes, &published_rows), (&shown.0, &shown.1, &shown.2), "{surface}");
         }
     }
-    // The defaults, from no configuration.
+    // The defaults, from no configuration. Native's byte default is four
+    // times the 32 MiB workflow-task completion cap, not PHP's 16 MiB, so a
+    // completion the cap admits can be recorded (.github#228).
     let app = router(database.open().await.unwrap());
     for (surface, size, bytes, rows) in published_history_limits(&app).await {
-        assert_eq!((size, bytes, rows), (json!(5000), json!(16_777_216), json!(20_000)), "{surface}");
+        assert_eq!((size, bytes, rows), (json!(5000), json!(134_217_728), json!(20_000)), "{surface}");
     }
 }

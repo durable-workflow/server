@@ -178,6 +178,41 @@ async fn a_large_fan_out_completion_is_not_refused_as_one_body() {
     assert_eq!(answer["limit"], 32 * 1024 * 1024, "{answer}");
 }
 
+// .github#228: a fan-out completion the wire cap admits is also within the
+// default history-transaction budget. Each scheduled activity's history event
+// repeats its arguments, so this ~18 MB completion writes more history than
+// PHP's 16 MiB default, which refused it with
+// `history_transaction_limit_exceeded` and blocked the run. A few large
+// arguments keep the row count, and the CI databases' memory, small.
+#[tokio::test]
+async fn a_fan_out_completion_under_the_wire_cap_fits_the_default_history_budget() {
+    let database = TestDatabase::new().await;
+    // The completion's stored receipt holds its whole request in one row, so
+    // a MySQL-family server needs `max_allowed_packet` above the completion
+    // size. MariaDB's 16 MiB default is below it and refuses the write
+    // (1153, `storage_unavailable`); that backend limit is separate from the
+    // history budget this test covers.
+    if matches!(database, TestDatabase::MySql { .. })
+        && task_retry::rows(&database, "SELECT CAST(@@max_allowed_packet AS SIGNED)").await < 32 * 1024 * 1024
+    {
+        database.remove().await;
+        return;
+    }
+    let app = router(database.open().await.unwrap());
+    register(&app, "wide", json!(["echo"]), json!(["act"])).await;
+    start(&app, "wide").await;
+    let task = poll(&app, "wide", "workflow").await;
+    let argument = envelope(Payload::Array(vec![Payload::String("x".repeat(520_000))]));
+    let commands: Vec<Value> = (0..26).map(|_| json!({"type":"schedule_activity","activity_type":"act","arguments":argument})).collect();
+    let commands = Value::Array(commands);
+    let wire = completion(&task, commands.clone()).to_string().len();
+    assert!(wire > 17 * 1024 * 1024 && wire < 32 * 1024 * 1024, "{wire}");
+    let (status, answer) = finish_task(&app, &task, commands).await;
+    assert_eq!(status, StatusCode::OK, "{}", answer.to_string().chars().take(400).collect::<String>());
+    assert_eq!(answer["recorded"], true, "{answer}");
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='ActivityScheduled'").await, 26);
+}
+
 // Portable wire-size vectors are shared with SDK planners. A valid JSON body
 // at the exact cap reaches authentication; the next byte is a typed refusal.
 #[tokio::test]

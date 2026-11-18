@@ -86,6 +86,32 @@ fn configured(suffix: &str, default: usize, invalid: &'static str) -> Result<Opt
 /// span. Native refuses to start unless it keeps this default.
 pub(super) const COMMAND_BATCH_SIZE: i64 = 1000;
 
+/// Published PHP's `history_transaction_bytes` default (Workflow #930).
+pub(super) const PHP_HISTORY_TRANSACTION_BYTES: usize = 16_777_216;
+
+/// Native's history-transaction byte ceiling when none is configured: PHP's
+/// 16 MiB, or four times the workflow-task completion cap
+/// (`limits.max_workflow_task_completion_bytes`, 32 MiB by default), whichever
+/// is larger, so 128 MiB by default (.github#228).
+///
+/// PHP's 16 MiB, eight times its one-payload completion request, was set when
+/// a completion could carry at most one payload limit. Native admits
+/// completions of up to 16 payload limits (Server #1136), and a scheduled
+/// activity's history event repeats its arguments, so with PHP's default any
+/// fan-out completion between about 16 MiB and the advertised 32 MiB was
+/// refused with `history_transaction_limit_exceeded` and its run could not
+/// progress. A scheduled activity, child or timer records each argument it
+/// carries in at most one event of the completion; a local activity's single
+/// attempt records its arguments in its scheduled, started and completed
+/// events. The fourth completion's worth covers the metadata each event adds
+/// (about 1 KB, at most `history_transaction_size` events). Local activity
+/// retries and heartbeats can still meet the ceiling, and are then refused
+/// with the limit named. An explicitly configured value, including `0`, is
+/// honored as is.
+pub(super) fn default_history_bytes() -> usize {
+    PHP_HISTORY_TRANSACTION_BYTES.max(super::payload_limits::max_completion_bytes().saturating_mul(4))
+}
+
 /// `StructuralLimits`' per-run signal and update ceilings and its
 /// single-payload byte ceiling. `None` is a disabled check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,7 +134,8 @@ pub struct StructuralLimits {
     /// completion or a Waterline v1 projection import.
     pub history_events: Option<usize>,
     /// History bytes one transaction may write, measured as PHP measures an
-    /// event (DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES).
+    /// event (DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES). Unset, it is
+    /// [`default_history_bytes`].
     pub history_bytes: Option<usize>,
     /// Metered rows one workflow task completion may write: each history
     /// event and the run position it advances, and each local activity row
@@ -126,7 +153,7 @@ impl Default for StructuralLimits {
             pending_updates: Some(500),
             payload_bytes: Some(2_097_152),
             history_events: Some(5000),
-            history_bytes: Some(16_777_216),
+            history_bytes: Some(default_history_bytes()),
             history_rows: Some(20_000),
         }
     }
@@ -231,6 +258,16 @@ impl Exceeded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_history_byte_default_covers_four_completion_caps() {
+        // .github#228: the default 2 MiB payload limit gives a 32 MiB
+        // completion cap, so 128 MiB; never below PHP's 16 MiB.
+        assert_eq!(super::super::payload_limits::max_completion_bytes(), 33_554_432);
+        assert_eq!(default_history_bytes(), 134_217_728);
+        assert_eq!(StructuralLimits::default().history_bytes, Some(134_217_728));
+        assert!(default_history_bytes() >= PHP_HISTORY_TRANSACTION_BYTES);
+    }
 
     #[test]
     fn published_php_casts_and_alias_priority_are_preserved() {

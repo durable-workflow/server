@@ -178,6 +178,9 @@ pub(super) struct Store<DB: Backend> {
     pub(super) search_attribute_limit: i64,
     /// When a silent registration stops counting (`server.workers.stale_after_seconds`).
     pub(super) worker_stale_after_seconds: i64,
+    /// How long a silent registration is kept before it is deleted
+    /// (DW_WORKER_REGISTRATION_RETENTION_SECONDS, Server #553).
+    pub(super) worker_registration_retention_seconds: i64,
     /// How many abandoned workflow task leases a probe recovers at most
     /// (`server.polling.expired_workflow_task_recovery_scan_limit`).
     pub(super) workflow_task_recovery_scan_limit: i64,
@@ -348,6 +351,7 @@ where
             update_wait_seconds: 10,
             search_attribute_limit: 100,
             worker_stale_after_seconds: 30,
+            worker_registration_retention_seconds: super::query_authority::DEFAULT_WORKER_REGISTRATION_RETENTION_SECONDS,
             workflow_task_recovery_scan_limit: 5,
             repair_codec: Arc::new(Semaphore::new(1)),
             repair_pass_at: Arc::default(),
@@ -376,6 +380,7 @@ where
             update_wait_seconds: self.update_wait_seconds,
             search_attribute_limit: self.search_attribute_limit,
             worker_stale_after_seconds: self.worker_stale_after_seconds,
+            worker_registration_retention_seconds: self.worker_registration_retention_seconds,
             workflow_task_recovery_scan_limit: self.workflow_task_recovery_scan_limit,
             repair_codec: self.repair_codec.clone(),
             repair_pass_at: self.repair_pass_at.clone(),
@@ -2131,6 +2136,15 @@ where
         self.rotate_incarnation(&mut tx, worker_id, &token).await?;
         tx.commit().await?;
         self.wake.notify_waiters();
+        // Each registration also removes a few registrations past their
+        // retention (Server #553), so restarts that never deregister do not
+        // grow the namespace's worker list. Failure never fails registration.
+        if let Err(error) = self
+            .expire_worker_registrations(super::worker_management::INLINE_EXPIRY_LIMIT)
+            .await
+        {
+            eprintln!("worker_registration_expiry_failed: {error}");
+        }
         Ok(
             json!({"worker_id": worker_id, "registration_token":token, "registered": true, "namespace": self.namespace.as_ref(), "task_queue": queue,
             "runtime": body["runtime"], "build_id": body["build_id"], "heartbeat_interval_seconds": config.worker_heartbeat_interval_seconds,
@@ -3780,14 +3794,19 @@ where
             events = events.saturating_add(command_events);
             rows = rows.saturating_add(command_rows);
         }
-        if limits.history_events.is_some_and(|limit| limit > 0 && events > limit)
-            || limits.history_rows.is_some_and(|limit| limit > 0 && rows > limit)
+        let over = |limit: Option<usize>, used: usize| limit.filter(|limit| *limit > 0 && used > *limit).map(|limit| (used, limit));
+        if let Some((kind, (used, limit))) = over(limits.history_events, events).map(|over| ("history_transaction_size", over))
+            .or_else(|| over(limits.history_rows, rows).map(|over| ("history_transaction_rows", over)))
         {
+            // Beyond PHP's fields, the limit met and the counted value
+            // (.github#228).
             return Err(super::RuntimeError::Protocol {
                 status: StatusCode::CONFLICT,
                 response: json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed",
                     "recorded": false, "run_id": run_id, "run_status": null, "created_task_ids": [],
-                    "reason": "completion_budget_exceeded"}),
+                    "reason": "completion_budget_exceeded", "limit_kind": kind, "current_value": used, "configured_limit": limit,
+                    "message": format!("Structural limit exceeded: {kind}: this workflow task completion would write at least {used} {} in one transaction (limit {limit}).",
+                        if kind == "history_transaction_size" { "history events" } else { "rows" })}),
             });
         }
         tx.meter = Some(super::history_meter::Meter::new(&limits, task_id, &body["workflow_task_attempt"]));

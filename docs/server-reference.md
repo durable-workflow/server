@@ -962,6 +962,29 @@ can still ask for the expired diagnostic set with `status=stale`, and stale
 workers stop being considered for query-task dispatch and routing-gate
 admission.
 
+On the native Rust server, `GET /api/workers` returns one page of at most 100
+registrations in worker id order. `page_size` (1 to 100, default 100) sets the
+page length, and the response's `next_page_token` (null on the last page) is
+passed back as `next_page_token` to read the next page. The status filter is
+applied before the page is cut. An out-of-range `page_size` is refused with
+`422 invalid_page_size`, and a token the server did not issue with
+`400 invalid_page_token`. The response also reports
+`registration_retention_seconds`.
+
+The native server deletes a registration that has had no heartbeat for
+`DW_WORKER_REGISTRATION_RETENTION_SECONDS` (default 86400, 24 hours; never
+less than the stale window). A worker that crashed, was OOM-killed or
+SIGKILLed, or stopped without deregistering is listed as `stale` until then,
+and is removed afterwards by the maintenance loop or by a later worker
+registration in its namespace. Active and draining workers heartbeat and are
+never removed, nor is a silent registration that still holds an unexpired
+task lease. Removal retires the registration like deregistration; the
+worker's runs, pinned build ids, rollouts and pending tasks stay, so
+`GET /api/task-queues/{name}/build-ids` still reports a pinned build with
+pending tasks as `no_compatible_worker` after its last worker is removed. To
+remove a worker by hand at any time, call `DELETE /api/workers/{workerId}`
+with an admin token, or let the worker deregister itself on shutdown.
+
 The current server advertises worker protocol `1.20` by default. Worker-plane
 requests should send the highest `X-Durable-Workflow-Protocol-Version` their SDK
 implements, and worker-plane responses always echo the server's advertised
@@ -2013,6 +2036,7 @@ every operator-facing variable the server honors.
 | `DW_WORKFLOW_TASK_TIMEOUT` | `60` | Default workflow-task lease timeout (seconds). |
 | `DW_ACTIVITY_TASK_TIMEOUT` | `300` | Default activity-task lease timeout (seconds). |
 | `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_HEARTBEAT_INTERVAL_SECONDS * 3, 30)` | Seconds before a worker heartbeat is considered stale. |
+| `DW_WORKER_REGISTRATION_RETENTION_SECONDS` | `86400` | Native server only: seconds without a heartbeat after which a worker registration is deleted. Never less than `DW_WORKER_STALE_AFTER_SECONDS`. |
 | `DW_WORKER_HEARTBEAT_INTERVAL_SECONDS` | `10` | Cadence in seconds advertised to SDK workers for fleet heartbeats. |
 | `DW_MAX_HISTORY_EVENTS` | `50000` | Has no effect. No Server release reads it and history per run is not capped. Bound long histories with continue-as-new. |
 | `DW_HISTORY_RETENTION_DAYS` | `30` | Default retention for closed-run history (namespaces can override). |
@@ -2073,7 +2097,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_LIMIT_MEMO_SIZE_BYTES` | `262144` | Package-level memo byte ceiling. |
 | `DW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES` | `40960` | Package-level search-attribute byte ceiling. |
 | `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` | `5000` | Package-level history-transaction event ceiling. |
-| `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` | `16777216` | Package-level history-transaction byte ceiling, also applied to Waterline v1 projection imports. Zero disables this dimension. |
+| `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` | `16777216` (native: four workflow-task completion caps, `134217728` by default) | Package-level history-transaction byte ceiling, also applied to Waterline v1 projection imports. Zero disables this dimension. Unset, native uses four times `limits.max_workflow_task_completion_bytes` (never below 16 MiB), so a completion the wire cap admits, whose scheduled activities repeat their arguments in history, can be recorded. A completion over any history-transaction limit is refused with `409` and names `limit_kind`, `current_value` and `configured_limit`. |
 | `DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT` | `80` | Percent of a structural limit at which the package warns. |
 | `DW_V2_TASK_DISPATCH_MODE` | `queue` | Package-level workflow-task dispatch mode. Usually overridden by the server via `DW_TASK_DISPATCH_MODE`. |
 | `DW_V2_MATCHING_ROLE_QUEUE_WAKE` | `true` | Whether queue workers run the in-worker matching-role wake on every Looping event. In the supplied Compose stacks, `false` also skips the scheduler's unscoped repair pass. Set it to `false` only when a dedicated `php artisan workflow:v2:repair-pass --loop` daemon owns the sweep. |
