@@ -173,6 +173,14 @@ where
         command: &Value,
     ) -> Result<()> {
         let task_id = DB::string(task, "id")?;
+        // Server #1201: the marker is a closed set, refused before any write.
+        let interrupted = super::timeout_cleanup::interruption_marker(command)?;
+        if Self::active_timeout_cleanup(tx, run).await?.is_some() {
+            return Self::fail_timeout_cleanup(tx, run, task, command, interrupted).await;
+        }
+        if interrupted {
+            return Err(refuse(StatusCode::CONFLICT, "timeout_cleanup_interruption_not_active"));
+        }
         if Self::cancellation_request(run)?.is_some() {
             return Self::finish_root_cancellation(tx, run, Some(task)).await;
         }
@@ -226,6 +234,36 @@ where
             .execute(&mut **tx)
             .await?;
         Self::resolve_child(tx, run, ChildResolution::Failed(&payload), at).await?;
+        Ok(())
+    }
+
+    /// `fail_workflow` while the engine's timeout request is open (Server
+    /// #1201). Only the reserved interruption marker, from a claim that
+    /// negotiated timeout cleanup, means the interruption went uncaught, so
+    /// cleanup completed. Any other failure is recorded and linked as the
+    /// cleanup's failure. Either way the run closes timed out.
+    async fn fail_timeout_cleanup(tx: &mut Transaction<'_, DB>, run: &DB::Row, task: &DB::Row, command: &Value,
+        interrupted: bool) -> Result<()> {
+        let at = now();
+        let outcome = if interrupted {
+            let payload = DB::document_row(task, "payload")?;
+            let capable = payload[super::cooperative::CLAIM_KEY]["capabilities"].as_array()
+                .is_some_and(|items| items.iter().any(|item| item == super::timeout_cleanup::CAPABILITY));
+            if !Self::claim_supports_cancellation(task)? || !capable {
+                return Err(refuse(StatusCode::CONFLICT, "timeout_cleanup_not_supported"));
+            }
+            Self::timeout_cleanup_outcome(tx, run, "completed", None, at).await?
+        } else {
+            let failure = validate(command)?;
+            let run_id = DB::string(run, "id")?;
+            let failure_id = id();
+            Self::query("INSERT INTO workflow_failures(id,workflow_run_id,source_kind,source_id,propagation_kind,failure_category,exception_class,message,non_retryable,handled,file,line,trace_preview,created_at,updated_at) VALUES ($1,$2,'workflow_run',$3,'timeout_cleanup',$4,$5,$6,TRUE,FALSE,'',0,'',$7,$8)")
+                .bind(&failure_id).bind(&run_id).bind(&run_id).bind(failure.category).bind(&failure.class).bind(stored_message(&failure.message).as_ref())
+                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
+            Self::timeout_cleanup_outcome(tx, run, "failed", Some(&failure_id), at).await?
+        };
+        let closing = super::timeout_cleanup::Closing { timeout_cleanup: Some(outcome), cancellation_cleanup: None };
+        Self::time_out_run_with(tx, run, task, &Value::Null, Some(closing)).await?;
         Ok(())
     }
 }

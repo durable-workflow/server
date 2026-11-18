@@ -67,31 +67,7 @@ pub(super) async fn encode_command(value: Value, semaphore: Arc<Semaphore>) -> R
     })?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        use crate::codec::{Value as Datum, ValueCodec};
-        fn datum(value: Value) -> Datum {
-            match value {
-                Value::Null => Datum::Null,
-                Value::Bool(value) => Datum::Boolean(value),
-                Value::String(value) => Datum::String(value),
-                Value::Array(values) => Datum::Array(values.into_iter().map(datum).collect()),
-                Value::Object(values) => Datum::Map(
-                    values
-                        .into_iter()
-                        .map(|(key, value)| (key, datum(value)))
-                        .collect::<BTreeMap<_, _>>(),
-                ),
-                // There are no numeric fields in the authored root context.
-                Value::Number(_) => unreachable!("server-authored root cancellation context"),
-            }
-        }
-        ValueCodec::new()
-            .and_then(|codec| codec.encode(&datum(value)))
-            .map_err(|_| {
-                refuse(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "cancellation_codec_unavailable",
-                )
-            })
+        encode_command_now(value)
     })
     .await
     .map_err(|_| {
@@ -100,6 +76,36 @@ pub(super) async fn encode_command(value: Value, semaphore: Arc<Semaphore>) -> R
             "cancellation_codec_unavailable",
         )
     })?
+}
+
+/// The same encoding in place, for the engine's own small request written
+/// under the run lock (Server #1201).
+pub(super) fn encode_command_now(value: Value) -> Result<String> {
+    use crate::codec::{Value as Datum, ValueCodec};
+    fn datum(value: Value) -> Datum {
+        match value {
+            Value::Null => Datum::Null,
+            Value::Bool(value) => Datum::Boolean(value),
+            Value::String(value) => Datum::String(value),
+            Value::Array(values) => Datum::Array(values.into_iter().map(datum).collect()),
+            Value::Object(values) => Datum::Map(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, datum(value)))
+                    .collect::<BTreeMap<_, _>>(),
+            ),
+            // There are no numeric fields in the authored root context.
+            Value::Number(_) => unreachable!("server-authored root cancellation context"),
+        }
+    }
+    ValueCodec::new()
+        .and_then(|codec| codec.encode(&datum(value)))
+        .map_err(|_| {
+            refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "cancellation_codec_unavailable",
+            )
+        })
 }
 
 use super::memo_limits::COMMAND_BATCH_SIZE as PARALLEL_SPAN_LIMIT;
@@ -1246,6 +1252,21 @@ where
         run: &DB::Row,
         task: Option<&DB::Row>,
     ) -> Result<()> {
+        // Deadline-triggered cleanup (Server #1201) always ends timed out,
+        // with its outcome beside the timeout; on an opted-in run a user's
+        // request still open at the hard deadline loses to the timeout.
+        if let Some(closing) = Self::cooperative_timeout_closing(tx, run, now()).await? {
+            let control;
+            let task = match task {
+                Some(task) => task,
+                None => {
+                    control = Self::timeout_cleanup_control_task(tx, run, "cleanup_deadline_expired").await?;
+                    &control
+                }
+            };
+            Self::time_out_run_with(tx, run, task, &Value::Null, Some(closing)).await?;
+            return Ok(());
+        }
         let run_id = DB::string(run, "id")?;
         let task_id = task.map(|task| DB::string(task, "id")).transpose()?;
         let task_id = task_id.as_deref();
@@ -1432,6 +1453,15 @@ where
         // Read the original durable receipt before checking terminal state or
         // current registrations. A duplicate never creates a new budget.
         if let Some(pending) = Self::cancellation_request(&run)? {
+            // During timeout cleanup (Server #1201) the user's request is
+            // audited beside the engine's, which it neither replaces nor
+            // renews.
+            if matches!(run_status.as_str(), "pending" | "running" | "waiting")
+                && Self::active_timeout_cleanup(&mut tx, &run).await?.is_some()
+            {
+                self.audit_timeout_cleanup_request(&mut tx, &run, reason, codec, context, if selected_run.is_some() { "run" } else { "instance" }).await?;
+                tx.commit().await?;
+            }
             return Ok((StatusCode::OK, response(true, pending)));
         }
         if !matches!(
@@ -1486,7 +1516,8 @@ where
         }
         let request_id = id();
         let at = now();
-        let deadline = at + chrono::Duration::seconds(budget);
+        // An opted-in run's hard deadline caps every cleanup budget.
+        let deadline = Self::timeout_cleanup_capped_deadline(&mut tx, &run, at + chrono::Duration::seconds(budget)).await?;
         // The authenticated request's context; a direct call records the
         // legacy administrator.
         let command_context = context.unwrap_or_else(|| json!({"caller":{"type":"server","label":"Standalone Server"},
