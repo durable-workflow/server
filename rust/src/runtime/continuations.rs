@@ -235,10 +235,20 @@ where
             .bind(&link).bind(sequence).bind(&workflow).bind(&old).bind(&workflow).bind(&next)
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).execute(&mut **tx).await?;
         let parent = Self::continue_child_links(tx, &old, &next, number, &class, &kind, started).await?;
-        Self::append(tx,&next,"WorkflowStarted",json!({"workflow_class":class,"workflow_type":kind,
-            "workflow_instance_id":workflow,"workflow_run_id":next,"continued_from_run_id":old,"workflow_link_id":link,
-            "child_call_id":parent["child_call_id"],"parent_workflow_instance_id":parent["parent_workflow_instance_id"],
-            "parent_workflow_run_id":parent["parent_workflow_run_id"],"parent_sequence":parent["parent_sequence"]}),None,None).await?;
+        let mut successor_started = json!({"workflow_class":class,"workflow_type":kind,
+            "workflow_instance_id":workflow,"workflow_run_id":next});
+        // Server #1201: the successor inherits the allowance; its execution
+        // work deadline stays the original and its run clock is its own.
+        if let Some(allowance) = Self::timeout_cleanup_allowance(tx, &old).await? {
+            successor_started[super::timeout_cleanup::STARTED_KEY] = super::timeout_cleanup::started_payload(allowance,
+                DB::optional_instant(run, "execution_deadline_at")?, deadline);
+        }
+        for (key, value) in [("continued_from_run_id", json!(old)), ("workflow_link_id", json!(link)),
+            ("child_call_id", parent["child_call_id"].clone()), ("parent_workflow_instance_id", parent["parent_workflow_instance_id"].clone()),
+            ("parent_workflow_run_id", parent["parent_workflow_run_id"].clone()), ("parent_sequence", parent["parent_sequence"].clone())] {
+            successor_started[key] = value;
+        }
+        Self::append(tx,&next,"WorkflowStarted",successor_started,None,None).await?;
         // Server #1143 (.github#243): a scheduled run's continuation is the
         // same scheduled execution, so it keeps the schedule origin. The
         // successor records the source's ScheduleTriggered unchanged, after

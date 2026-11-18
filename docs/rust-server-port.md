@@ -529,6 +529,17 @@ contract fixture before its correction.
   unchanged, and cluster info advertises `capabilities.worker_build_retirement`
   ([#519](https://github.com/durable-workflow/server/issues/519),
   [guide](worker-build-retirement.md)).
+- **Deadline-triggered timeout cleanup.** Published PHP does not
+  admit `timeout_cleanup_seconds` on service starts. Native admits it (1 to 86,400,
+  shorter than each hard timeout) only where a live worker on the queue
+  advertises `timeout_cleanup`, records the allowance in `WorkflowStarted`,
+  enters cleanup once at the work deadline (idle wake, claim or completion)
+  and closes `WorkflowTimedOut`, `WorkflowTerminated` or `WorkflowCancelled`
+  with the embedded 2.29.0 `timeout_cleanup` outcome. Children opt in on
+  their own, and describe reports the cleanup state; both are registered
+  native divergences. The server capability stays unadvertised until
+  installed cross-SDK acceptance
+  ([#1201](https://github.com/durable-workflow/server/issues/1201)).
 - **Signal and update names PHP cannot store.** PHP validates signal,
   update and query names at 1 to 256 bytes with no control characters, but
   its signal and update name columns hold 255 characters, so PHP stores a

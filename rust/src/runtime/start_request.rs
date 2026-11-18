@@ -15,6 +15,8 @@ pub(super) struct StartRequest {
     pub(super) use_existing: bool,
     pub(super) execution_timeout: Option<i64>,
     pub(super) run_timeout: Option<i64>,
+    /// Server #1201's opt-in cleanup allowance.
+    pub(super) timeout_cleanup: Option<i64>,
     pub(super) priority: i64,
     pub(super) fairness_key: Option<String>,
     pub(super) fairness_weight: i64,
@@ -42,6 +44,7 @@ const RULES: &[(&str, &[Rule])] = &[
     ("duplicate_policy", &[Nullable, Rule::String, In(&["fail", "use-existing"])]),
     ("execution_timeout_seconds", &[Nullable, Integer, Min(1)]),
     ("run_timeout_seconds", &[Nullable, Integer, Min(1)]),
+    ("timeout_cleanup_seconds", &[Nullable, Integer, Min(1), Max(super::timeout_cleanup::MAX_ALLOWANCE_SECONDS)]),
     ("priority", &[Nullable, Integer, Min(0), Max(9)]),
     ("fairness_key", &[Nullable, Rule::String, Max(64), Pattern(fairness_key_pattern)]),
     ("fairness_weight", &[Nullable, Integer, Min(1), Max(1000)]),
@@ -121,6 +124,18 @@ pub(super) fn validate(body: &Value) -> Result<StartRequest> {
             return Err(failure_messages(vec![(field.to_owned(), vec![message])]).expect("one message"));
         }
     }
+    // `StartOptions::normalizeTimeoutCleanup` (Server #1201): the allowance
+    // never extends a hard timeout.
+    let timeout_cleanup = whole(body, "timeout_cleanup_seconds");
+    // An opt-in is never dropped: only a JSON integer is taken, so any other
+    // admitted form is refused rather than ignored.
+    if timeout_cleanup.is_none() && body.get("timeout_cleanup_seconds").is_some_and(|value| !value.is_null()) {
+        let message = "The timeout cleanup seconds field must be an integer.".to_owned();
+        return Err(failure_messages(vec![("timeout_cleanup_seconds".to_owned(), vec![message])]).expect("one message"));
+    }
+    if let Some(message) = timeout_cleanup.and_then(|allowance| super::timeout_cleanup::admission_error(allowance, execution_timeout, run_timeout)) {
+        return Err(failure_messages(vec![("timeout_cleanup_seconds".to_owned(), vec![message])]).expect("one message"));
+    }
     let workflow_type = text(body, "workflow_type").ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"))?;
     Ok(StartRequest {
         workflow_id: text(body, "workflow_id"),
@@ -130,6 +145,7 @@ pub(super) fn validate(body: &Value) -> Result<StartRequest> {
         use_existing: body["duplicate_policy"] == "use-existing",
         execution_timeout,
         run_timeout,
+        timeout_cleanup,
         priority: whole(body, "priority").unwrap_or(5),
         fairness_key: text(body, "fairness_key").map(|key| key.to_lowercase()),
         fairness_weight: whole(body, "fairness_weight").unwrap_or(1),
@@ -222,10 +238,31 @@ mod tests {
             "priority":"4","fairness_weight":7,"execution_timeout_seconds":"60","foo":1}))).unwrap();
         assert_eq!(request, StartRequest {
             workflow_id: None, workflow_type: "t".into(), task_queue: "default".into(), business_key: None, use_existing: false,
-            execution_timeout: None, run_timeout: None, priority: 5, fairness_key: Some("tenant-a".into()), fairness_weight: 7,
+            execution_timeout: None, run_timeout: None, timeout_cleanup: None, priority: 5, fairness_key: Some("tenant-a".into()), fairness_weight: 7,
         });
         assert_eq!(validate(&json!({"workflow_type":"t","priority":2.0})).unwrap().priority, 5);
         assert_eq!(validate(&json!({"workflow_type":"t","priority":0})).unwrap().priority, 0);
+    }
+
+    #[test]
+    fn timeout_cleanup_admission_is_validated() {
+        let request = validate(&json!({"workflow_type":"t","execution_timeout_seconds":70,"timeout_cleanup_seconds":10})).unwrap();
+        assert_eq!(request.timeout_cleanup, Some(10));
+        assert_eq!(validate(&json!({"workflow_type":"t"})).unwrap().timeout_cleanup, None);
+        for (body, message) in [
+            (json!({"workflow_type":"t","execution_timeout_seconds":70,"timeout_cleanup_seconds":0}), "The timeout cleanup seconds field must be at least 1."),
+            (json!({"workflow_type":"t","execution_timeout_seconds":100000,"timeout_cleanup_seconds":86401}),
+                "The timeout cleanup seconds field must not be greater than 86400."),
+            (json!({"workflow_type":"t","execution_timeout_seconds":70,"timeout_cleanup_seconds":"10"}), "The timeout cleanup seconds field must be an integer."),
+            (json!({"workflow_type":"t","timeout_cleanup_seconds":10}),
+                "Workflow v2 timeout cleanup needs an execution or run timeout to reserve time from."),
+            (json!({"workflow_type":"t","execution_timeout_seconds":10,"timeout_cleanup_seconds":10}),
+                "Workflow v2 timeout cleanup (10 s) must be shorter than the execution timeout (10 s)."),
+            (json!({"workflow_type":"t","execution_timeout_seconds":70,"run_timeout_seconds":5,"timeout_cleanup_seconds":10}),
+                "Workflow v2 timeout cleanup (10 s) must be shorter than the run timeout (5 s)."),
+        ] {
+            assert_eq!(errors(body), json!({"timeout_cleanup_seconds":[message]}));
+        }
     }
 
     #[test]
