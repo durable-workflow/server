@@ -83,30 +83,31 @@ async fn a_task_that_arrives_during_the_default_wait_is_claimed() {
 }
 
 // `WorkflowController::validateOperationName` runs first on a signal, update
-// or query: a name is one to 256 bytes without control characters.
+// or query: a name is one to 255 bytes without control characters. PHP allows
+// 256 bytes, but signal and update names are stored in 255-character columns,
+// so native caps every operation name at 255 (Server #607) and refuses a
+// longer one with the typed field error before any write.
 #[tokio::test]
 async fn operation_names_are_validated_like_php() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
     start(&app, "named").await;
-    // PHP stores signal and update names in 255-byte columns, so native
-    // refuses a 256-byte name its validation would pass.
-    let (status, body) = request(&app, "POST", &format!("/api/workflows/named/signal/{}", "s".repeat(255)), json!([])).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "a 255-byte signal name is accepted: {body}");
-    for (kind, reason) in [("signal", "invalid_signal_name"), ("update", "invalid_update_name")] {
-        let (status, body) = request(&app, "POST", &format!("/api/workflows/named/{kind}/{}", "s".repeat(256)), json!({})).await;
-        assert_eq!((status, body["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some(reason)), "{body}");
+    // "é" is two bytes, percent-encoded in the path.
+    for name in ["s".repeat(255), "%C3%A9".repeat(127)] {
+        let (status, body) = request(&app, "POST", &format!("/api/workflows/named/signal/{name}"), json!([])).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "a 255- or 254-byte signal name is accepted: {body}");
     }
-    let (status, body) = request(&app, "POST", &format!("/api/workflows/missing/query/{}", "q".repeat(256)), json!({})).await;
-    assert_eq!((status, body["reason"].as_str()), (StatusCode::NOT_FOUND, Some("instance_not_found")), "a 256-byte query name passes validation: {body}");
+    let (status, body) = request(&app, "POST", &format!("/api/workflows/missing/query/{}", "q".repeat(255)), json!({})).await;
+    assert_eq!((status, body["reason"].as_str()), (StatusCode::NOT_FOUND, Some("instance_not_found")), "a 255-byte query name passes validation: {body}");
 
-    let too_long = "s".repeat(257);
+    let (too_long, multibyte) = ("s".repeat(256), "%C3%A9".repeat(128));
     for (kind, name, message) in [
-        ("signal", too_long.as_str(), "The signal name exceeds the maximum length of 256 bytes."),
+        ("signal", too_long.as_str(), "The signal name exceeds the maximum length of 255 bytes."),
+        ("signal", multibyte.as_str(), "The signal name exceeds the maximum length of 255 bytes."),
         ("signal", "bad%0Aname", "The signal name must not contain control characters."),
-        ("update", too_long.as_str(), "The update name exceeds the maximum length of 256 bytes."),
+        ("update", too_long.as_str(), "The update name exceeds the maximum length of 255 bytes."),
         ("update", "bad%7Fname", "The update name must not contain control characters."),
-        ("query", too_long.as_str(), "The query name exceeds the maximum length of 256 bytes."),
+        ("query", too_long.as_str(), "The query name exceeds the maximum length of 255 bytes."),
         ("query", "bad%09name", "The query name must not contain control characters."),
     ] {
         let (status, body) = request(&app, "POST", &format!("/api/workflows/named/{kind}/{name}"), json!({})).await;

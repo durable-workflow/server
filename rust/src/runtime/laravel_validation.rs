@@ -264,15 +264,20 @@ fn messages(
     found
 }
 
+/// The most bytes an operation name may have. PHP's
+/// DW_MAX_OPERATION_NAME_LENGTH defaults to 256 (native runs only at that
+/// default), but signal and update names are stored in 255-character
+/// columns, so native caps every operation name at 255 bytes (Server #607).
+pub(super) const MAX_OPERATION_NAME_BYTES: usize = 255;
+
 /// `WorkflowController::validateOperationName`, which a signal, update or
-/// query request runs first: the name is one to 256 bytes
-/// (DW_MAX_OPERATION_NAME_LENGTH, which native runs only at its default)
-/// without ASCII control characters.
+/// query request runs first: the name is one to
+/// [`MAX_OPERATION_NAME_BYTES`] bytes without ASCII control characters.
 pub(super) fn operation_name(name: &str, kind: &str) -> super::Result<()> {
     let message = if name.is_empty() {
         format!("The {kind} name must not be empty.")
-    } else if name.len() > 256 {
-        format!("The {kind} name exceeds the maximum length of 256 bytes.")
+    } else if name.len() > MAX_OPERATION_NAME_BYTES {
+        format!("The {kind} name exceeds the maximum length of {MAX_OPERATION_NAME_BYTES} bytes.")
     } else if name.bytes().any(|byte| byte < 0x20 || byte == 0x7f) {
         format!("The {kind} name must not contain control characters.")
     } else {
