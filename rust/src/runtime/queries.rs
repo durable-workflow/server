@@ -263,27 +263,24 @@ fn route_refusal(workflow_id: &str, run_id: &str, name: &str, route: &super::que
     )
 }
 
-/// `terminalRunQueryFailure`: failed, cancelled and terminated runs refuse
-/// queries.
-fn run_not_active(workflow_id: &str, run_id: &str, name: &str, status: &str) -> super::RuntimeError {
-    let mut error = query_refusal(
-        StatusCode::CONFLICT,
-        workflow_id,
-        run_id,
-        name,
-        "run_not_active",
-        &format!("Workflow query [{name}] cannot execute because run [{run_id}] is terminal with status [{status}]."),
-    );
+/// A retained run of any status answers queries read-only, as embedded
+/// `WorkflowStub::queryWithArguments` replays any run (Server #587). A run
+/// whose history retention pruned, or whose `WorkflowStarted` event is
+/// missing, has nothing to replay: it is refused explicitly instead of being
+/// delivered as an empty history.
+fn history_unavailable(workflow_id: &str, run_id: &str, name: &str, status: &str, pruned: bool) -> super::RuntimeError {
+    let message = if pruned {
+        format!("Workflow query [{name}] cannot execute because the history of run [{run_id}] was pruned by retention.")
+    } else {
+        format!("Workflow query [{name}] cannot execute because the history of run [{run_id}] is missing.")
+    };
+    let mut error = query_refusal(StatusCode::CONFLICT, workflow_id, run_id, name, "query_history_unavailable", &message);
     if let super::RuntimeError::Protocol { response, .. } = &mut error {
         response["run_status"] = json!(status);
-        response["is_terminal"] = json!(true);
+        response["is_terminal"] = json!(super::retention::terminal(status));
+        response["history_state"] = json!(if pruned { "pruned" } else { "missing" });
     }
     error
-}
-
-/// The run statuses PHP still answers queries for.
-fn admits_queries(status: &str) -> bool {
-    matches!(status, "pending" | "running" | "waiting" | "completed")
 }
 
 /// `validateContractedQueryArguments`: a run that declares no queries leaves
@@ -744,9 +741,11 @@ where
         config: &QueryTaskConfig,
         command: Option<&Value>,
     ) -> Result<QueryAttempt> {
-        // PHP's refusal order: terminal run, query contract, then route. These
-        // reads run before the transaction so that no request holds one
-        // connection while waiting for another.
+        // Refusal order: retained history, query contract, then route. A
+        // closed run is queried read-only like an open one (Server #587;
+        // published PHP refused failed, cancelled and terminated runs with
+        // `run_not_active`). These reads run before the transaction so that
+        // no request holds one connection while waiting for another.
         let lookup = "SELECT r.* FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE i.id=$1 AND r.id=COALESCE($2,i.current_run_id) AND r.namespace=$3";
         let run = Self::query(lookup)
             .bind(workflow_id).bind(selected_run).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
@@ -758,12 +757,11 @@ where
             return Err(refuse(StatusCode::NOT_FOUND, "instance_not_found"));
         }
         let run_id = DB::string(&run, "id")?;
-        let status = DB::string(&run, "status")?;
-        if !admits_queries(&status) {
-            return Err(run_not_active(workflow_id, &run_id, name, &status));
-        }
         let contract = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-            .bind(&run_id).fetch_one(&self.pool).await?;
+            .bind(&run_id).fetch_optional(&self.pool).await?;
+        let Some(contract) = contract else {
+            return Err(history_unavailable(workflow_id, &run_id, name, &DB::string(&run, "status")?, DB::optional_instant(&run, "details_pruned_at")?.is_some()));
+        };
         // The worker receives a declared query's normalized arguments, encoded
         // again (`Serializer::serializeWithCodec`).
         let normalized = check_query_contract(&DB::document_row(&contract, "payload")?, workflow_id, &run_id, name, values)?;
@@ -779,9 +777,6 @@ where
             .filter(|row| DB::string(row, "id").ok().as_deref() == Some(run_id.as_str()))
             .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "instance_not_found"))?;
         let status = DB::string(&run, "status")?;
-        if !admits_queries(&status) {
-            return Err(run_not_active(workflow_id, &run_id, name, &status));
-        }
         // `enqueue`: a workflow task leased now fixes the query's history
         // cutoff at the run's current sequence. Without one, the claim reads
         // the history it finds then. Either way the query waits for its claim.
@@ -805,6 +800,11 @@ where
         // Native delivers one bounded history page; a run already past it
         // cannot be queried.
         let (history, next) = Self::history_page_connection(&mut tx, &run_id, 0, 1000).await?;
+        // Retention may have pruned the run since the first read.
+        let pruned = DB::optional_instant(&run, "details_pruned_at")?.is_some();
+        if history.is_empty() || pruned {
+            return Err(history_unavailable(workflow_id, &run_id, name, &status, pruned));
+        }
         if next.is_some() || serde_json::to_vec(&history)?.len() > SNAPSHOT_BYTES {
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -1414,6 +1414,13 @@ where
             history.retain(|event| event["sequence"].as_i64().is_some_and(|sequence| sequence <= cutoff));
         }
         let complete = next.is_none() || cutoff.is_some_and(|cutoff| covered >= cutoff);
+        // A run pruned after admission has no history to replay (Server #587).
+        if history.is_empty() {
+            task["status"] = json!("failed");
+            task["failure"] = json!({"reason":"query_history_unavailable",
+                "message":"The run's history is no longer retained."});
+            return Ok(false);
+        }
         if !complete || serde_json::to_vec(&history)?.len() > SNAPSHOT_BYTES {
             task["status"] = json!("failed");
             task["failure"] = json!({"reason":"query_snapshot_exceeds_budget",

@@ -733,6 +733,55 @@ signal, query, update, cancel, terminate, repair, and archive; they only forward
 when `{runId}` is the current run and reject historical-run commands with `409`
 and `reason: "historical_run_command_rejected"`.
 
+#### Workflow queries
+
+A query is answered by a query-capable worker that replays the run's history.
+It never changes the run: no history event, status change or workflow task is
+written. The native Server queries any retained run, whatever its status:
+pending, running, waiting, completed, failed, cancelled or terminated. That is
+the embedded-mode rule (`WorkflowStub::queryWithArguments` in Workflow 2.29
+replays any run), and a failed run is where a query helps most with debugging.
+The query binds the run it was admitted for, through the same route, lease and
+deadline fences as an open run, so the worker receives that run's id, status
+and complete history up to its terminal event. Published PHP Server 2.x
+refuses failed, cancelled and terminated runs with `409 run_not_active` and
+queries completed runs only. Describe reports `actions.can_query: true` on the
+current run when its history is retained and a compatible query worker is
+registered.
+
+A run whose history is no longer available cannot be replayed, so it is
+refused instead of being queried against an empty history. That covers runs
+whose details retention pruned (`history_state: "pruned"`) and runs whose
+`WorkflowStarted` event is missing (`history_state: "missing"`).
+
+Every query failure has the query response shape (`workflow_id`, `run_id`,
+`target_scope`, `query_name`, `result: null`, `reason`, `message`, and the
+`control_plane` envelope). The reasons:
+
+| Status | `reason` | Meaning for the caller |
+| --- | --- | --- |
+| 404 | `instance_not_found` | The workflow does not exist in this namespace. |
+| 409 | `historical_run_command_rejected` | A run-targeted query named a run that is not the current run. Query the current run. |
+| 409 | `query_history_unavailable` | The run's history was pruned or is missing; `history_state`, `run_status` and `is_terminal` say which run. Retrying cannot succeed. Use a retained export or archive instead. |
+| 422 | `validation_failed` | `input` is not an array. |
+| 404 | `rejected_unknown_query` | The run's recorded contract, or the worker, does not declare this query name. |
+| 422 | `invalid_query_arguments` | The arguments do not match the declared query contract; `validation_errors` lists each problem. |
+| 409 | `query_worker_unavailable` | No active worker on the task queue accepts query tasks. The request first waits up to `DW_QUERY_TASK_TIMEOUT` for one to register. Start or register a query-capable worker. |
+| 409 | `query_worker_incompatible` | Query-capable workers exist, but none advertise the workflow type, the run's build compatibility or its recorded definition fingerprint. Refused at once. Deploy a compatible worker. |
+| 429 | `query_task_queue_full` | The task queue already holds `DW_QUERY_TASK_MAX_PENDING_PER_QUEUE` pending queries. Retry later. |
+| 413 | `query_snapshot_exceeds_budget` | The run's history is larger than one query snapshot. |
+| 409 | worker-supplied, default `query_rejected` | The worker failed the query; `message` carries its explanation. |
+| 504 | `query_task_not_claimed` | No compatible worker claimed the query before its deadline, for example because every worker was busy. If the route disappeared meanwhile, the route's 409 reason is returned instead. Safe to retry. |
+| 504 | `query_worker_execution_timeout` | A worker claimed the query but did not answer before the deadline, for example during a long replay. The message names the worker. Retry, or raise `DW_QUERY_TASK_TIMEOUT` for runs with long histories. |
+| 504 | `query_worker_timeout` | The query ended in another state without an answer before the deadline; the message names the last task status. Safe to retry. |
+| 409 | `query_task_timed_out` | The query task's record expired before its answer was read. Submit the query again. |
+
+The query deadline is `DW_QUERY_TASK_TIMEOUT`: by default
+`min(max(DW_WORKER_POLL_TIMEOUT + 15, 40), 55)` seconds, so 45 seconds with the
+default 30-second worker poll. A worker's lease on a query task is
+`DW_QUERY_TASK_LEASE_TIMEOUT` and never extends that deadline. A timed-out
+query is not resumed; submit it again as a new query.
+
 A signal or update `request_id` is a durable command key on the workflow
 instance (native Server 3.9.0 and later, advertised as
 `capabilities.command_request_keys`). The first accepted signal or update under
@@ -1348,7 +1397,7 @@ so a workflow that needs a loser's effect must await it before returning.
 - `POST /api/schedules/{id}/backfill` — Backfill missed runs
 
 A scheduled, backfilled or drained buffered occurrence starts its run under a
-deterministic workflow ID, the same one embedded mode uses (Workflow 2.29.0),
+deterministic workflow ID, the same one embedded mode has used since Workflow 2.15.15,
 so an application can derive the run for an occurrence
 ([#599](https://github.com/durable-workflow/server/issues/599)):
 
