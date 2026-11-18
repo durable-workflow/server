@@ -862,6 +862,25 @@ environment and follow the
 [external-payload backing-storage setup](contracts/external-payload-storage.md#self-hosted-backing-storage)
 before enabling an S3 namespace policy.
 
+On the native Rust server (local driver), storage failures are classified
+([#589](https://github.com/durable-workflow/server/issues/589)). Each reason
+below is returned on the payload transport upload and fetch, on workflow
+start, on worker task completion, and by the storage diagnostic. None of them
+includes the storage location or the storage's own error text.
+
+| Reason | Status | Retryable | Meaning and fix |
+| --- | --- | --- | --- |
+| `external_payload_storage_access_denied` | 424 | no | The storage refused the server's identity: the local directory or object is not readable or writable by the server's user (EACCES/EPERM). Give the server's user read and write access to the namespace's storage root and everything under it, then retry. Retrying earlier will not succeed. |
+| `external_payload_unavailable` | 503 | yes | Any other storage failure: a missing or unmounted root, a path that is not a directory, a full disk, an I/O error. Restore the storage, then retry. |
+| `external_payload_not_found` | 404 | no | The referenced object is gone from the storage. |
+
+A failed native storage diagnostic answers with the same status and also
+names the step: `operation` is `put`, `get` or `delete`, and `payload` is
+`small_payload` or `large_payload`. When the read fails after a successful
+write, the diagnostic still deletes the object it wrote, once, and reports
+that in `cleanup` (`{"operation":"delete","outcome":"deleted"}` or
+`"failed"`) without replacing the read failure. `cleanup` is null otherwise.
+
 Every non-health, non-discovery control-plane endpoint must send
 `X-Durable-Workflow-Control-Plane-Version: 2` on the request. That
 covers namespace, schedule, search-attribute, task-queue, worker-management,

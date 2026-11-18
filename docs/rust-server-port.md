@@ -482,6 +482,16 @@ contract fixture before its correction.
   behavior unchanged. The per-namespace variants stay ignored
   ([#982](https://github.com/durable-workflow/server/issues/982),
   [server reference](server-reference.md#native-long-poll-capacity)).
+- **Storage permission refusals.** Published PHP reports every storage
+  driver failure, including a refused permission, as the retryable storage
+  unavailable outcome. Native classifies a local-driver permission refusal
+  (EACCES or EPERM) as `external_payload_storage_access_denied`: 424,
+  `retryable: false`, a constant message and no storage location, on the
+  transport upload and fetch, workflow start, worker task completion and the
+  storage diagnostic, which also names the failed step. Any other storage
+  failure stays `external_payload_unavailable` (503, retryable). The
+  transport manifest's `typed_outcomes` lists the new outcome
+  ([#589](https://github.com/durable-workflow/server/issues/589)).
 - **Worker registration retention and a paged worker list.** Published PHP
   keeps a registration until the worker deregisters or its namespace is
   deleted, and `GET /api/workers` returns every registration, newest

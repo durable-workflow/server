@@ -143,3 +143,72 @@ async fn storage_diagnostic_requests_are_validated_as_published_php_does() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// Server #589: a storage diagnostic failure names the step and its
+/// classified reason. A permission refusal is the non-retryable
+/// `external_payload_storage_access_denied` (424); any other storage failure
+/// stays the retryable `external_payload_unavailable` (503). Neither shows
+/// the storage location.
+#[tokio::test]
+async fn storage_diagnostic_failures_name_the_step_and_classify_access() {
+    use std::os::unix::fs::PermissionsExt;
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let root = tempfile::tempdir().unwrap();
+    let policy = json!({"driver":"local","enabled":true,"config":{"uri":format!("file://{}", root.path().display())}});
+    assert_eq!(request(&app, "PUT", "/api/namespaces/default/external-storage", policy).await.0, StatusCode::OK);
+    let sizes = json!({"small_payload_bytes":64,"large_payload_bytes":70000});
+    let failed = |reason: &str, operation: &str, retryable: bool, cleanup: Value| {
+        let message = if reason == "external_payload_unavailable" {
+            "External payload storage is temporarily unavailable."
+        } else {
+            "External payload storage refused the server's access. Check the storage permissions for the server's identity; retrying will not succeed until they change."
+        };
+        json!({"status":"failed","reason":reason,"message":message,"namespace":"default","driver":"local",
+            "operation":operation,"payload":"small_payload","retryable":retryable,"cleanup":cleanup})
+    };
+    let location = root.path().display().to_string();
+
+    // An outage: the object directory cannot be created.
+    std::fs::write(root.path().join("avro"), b"not a directory").unwrap();
+    let (status, outage) = request(&app, "POST", "/api/storage/test", sizes.clone()).await;
+    assert_eq!((status, outage.clone()), (StatusCode::SERVICE_UNAVAILABLE,
+        failed("external_payload_unavailable", "put", true, Value::Null)));
+    assert!(!outage.to_string().contains(&location));
+    std::fs::remove_file(root.path().join("avro")).unwrap();
+
+    // A superuser ignores modes, so the refusals are asserted only when the
+    // mode is effective.
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let effective = std::fs::File::create(root.path().join("probe")).is_err();
+    if effective {
+        let (status, denied) = request(&app, "POST", "/api/storage/test", sizes.clone()).await;
+        assert_eq!((status, denied.clone()), (StatusCode::FAILED_DEPENDENCY,
+            failed("external_payload_storage_access_denied", "put", false, Value::Null)));
+        assert!(!denied.to_string().contains(&location));
+    } else {
+        std::fs::remove_file(root.path().join("probe")).unwrap();
+    }
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // The write and read succeed, and the delete is refused.
+    let (status, passed) = request(&app, "POST", "/api/storage/test", sizes.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{passed}");
+    let small = vec![b's'; 64];
+    let sha = digest(&small);
+    let prefix = root.path().join("avro").join(&sha[..2]);
+    std::fs::write(prefix.join(&sha), &small).unwrap();
+    std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if effective {
+        let (status, denied) = request(&app, "POST", "/api/storage/test", sizes.clone()).await;
+        assert_eq!((status, denied), (StatusCode::FAILED_DEPENDENCY,
+            failed("external_payload_storage_access_denied", "delete", false, Value::Null)));
+        assert!(prefix.join(&sha).exists());
+    }
+    std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(request(&app, "POST", "/api/storage/test", sizes).await.0, StatusCode::OK);
+    assert!(!prefix.join(&sha).exists());
+    runtime.close().await;
+    database.remove().await;
+}

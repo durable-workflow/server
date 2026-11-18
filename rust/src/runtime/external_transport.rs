@@ -33,6 +33,7 @@ pub(super) const TYPED_REASONS: &[&str] = &[
     "external_payload_expired",
     "external_payload_unauthorized",
     "external_payload_unavailable",
+    "external_payload_storage_access_denied",
     "external_payload_storage_binding_unavailable",
     "external_payload_oversized",
     "external_payload_unsupported",
@@ -49,7 +50,7 @@ pub(super) const TYPED_REASONS: &[&str] = &[
 /// PHP's message for a reference refused as a request is resolved. PHP
 /// words a few reasons differently on other paths; the reason, status and
 /// retryability are the contract.
-fn message(reason: &str) -> &str {
+pub(super) fn message(reason: &str) -> &str {
     match reason {
         "external_payload_not_found" => "External payload reference was not found in this namespace.",
         "external_payload_expired" => "External payload reference has expired.",
@@ -57,6 +58,7 @@ fn message(reason: &str) -> &str {
         "external_payload_unsupported" => "External payload envelopes must contain exactly codec and external_payload.",
         "external_payload_integrity_mismatch" => "External payload envelope codec does not match the runtime reference.",
         "external_payload_unavailable" => "External payload storage is temporarily unavailable.",
+        "external_payload_storage_access_denied" => "External payload storage refused the server's access. Check the storage permissions for the server's identity; retrying will not succeed until they change.",
         "external_payload_storage_binding_unavailable" => "The original external payload storage binding is unavailable or invalid.",
         "external_payload_completion_invalid" => "A canonical worker completion context is required.",
         "external_payload_completion_lease_rejected" => "The payload upload does not belong to a current worker completion lease.",
@@ -139,7 +141,15 @@ fn response_error(error: RuntimeError) -> Response {
 }
 
 pub(super) fn snapshot_error(error: SnapshotError) -> RuntimeError {
-    let (status, reason) = match error {
+    let (status, reason) = snapshot_outcome(&error);
+    refuse(status, reason)
+}
+
+/// The typed status and reason of a storage failure. An access refusal is a
+/// non-retryable dependency failure (424), not an outage (Server #589).
+pub(super) fn snapshot_outcome(error: &SnapshotError) -> (StatusCode, &'static str) {
+    match error {
+        SnapshotError::AccessDenied => (StatusCode::FAILED_DEPENDENCY, "external_payload_storage_access_denied"),
         SnapshotError::Oversized => (StatusCode::PAYLOAD_TOO_LARGE, "external_payload_oversized"),
         SnapshotError::IntegrityMismatch => (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -150,8 +160,7 @@ pub(super) fn snapshot_error(error: SnapshotError) -> RuntimeError {
             StatusCode::SERVICE_UNAVAILABLE,
             "external_payload_unavailable",
         ),
-    };
-    refuse(status, reason)
+    }
 }
 
 fn header<'a>(headers: &'a HeaderMap, key: &str) -> Result<&'a str> {

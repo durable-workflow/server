@@ -82,6 +82,7 @@ pub(crate) fn transport_manifest() -> Value {
             "external_payload_expired": {"status": 410, "retryable": false},
             "external_payload_unauthorized": {"statuses": [401, 403], "retryable": false},
             "external_payload_unavailable": {"status": 503, "retryable": true},
+            "external_payload_storage_access_denied": {"status": 424, "retryable": false},
             "external_payload_oversized": {"status": 413, "retryable": false},
             "external_payload_unsupported": {"statuses": [415, 422], "retryable": false},
             "external_payload_integrity_mismatch": {"status": 422, "retryable": false},
