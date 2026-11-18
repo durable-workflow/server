@@ -62,7 +62,8 @@ marked run without recreating its deleted summary. Check `/api/system/health`,
 
 A projection import writes its history in one transaction. It uses
 `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` (5,000 events by default) and
-`DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` (16 MiB by default). Setting either
+`DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` (16 MiB by default on PHP; on native,
+four workflow-task completion caps, 128 MiB by default). Setting either
 dimension to `0` disables that dimension. These limits supplement the HTTP
 request payload limit.
 

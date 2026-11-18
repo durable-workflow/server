@@ -3783,14 +3783,19 @@ where
             events = events.saturating_add(command_events);
             rows = rows.saturating_add(command_rows);
         }
-        if limits.history_events.is_some_and(|limit| limit > 0 && events > limit)
-            || limits.history_rows.is_some_and(|limit| limit > 0 && rows > limit)
+        let over = |limit: Option<usize>, used: usize| limit.filter(|limit| *limit > 0 && used > *limit).map(|limit| (used, limit));
+        if let Some((kind, (used, limit))) = over(limits.history_events, events).map(|over| ("history_transaction_size", over))
+            .or_else(|| over(limits.history_rows, rows).map(|over| ("history_transaction_rows", over)))
         {
+            // Beyond PHP's fields, the limit met and the counted value
+            // (.github#228).
             return Err(super::RuntimeError::Protocol {
                 status: StatusCode::CONFLICT,
                 response: json!({"task_id": task_id, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed",
                     "recorded": false, "run_id": run_id, "run_status": null, "created_task_ids": [],
-                    "reason": "completion_budget_exceeded"}),
+                    "reason": "completion_budget_exceeded", "limit_kind": kind, "current_value": used, "configured_limit": limit,
+                    "message": format!("Structural limit exceeded: {kind}: this workflow task completion would write at least {used} {} in one transaction (limit {limit}).",
+                        if kind == "history_transaction_size" { "history events" } else { "rows" })}),
             });
         }
         tx.meter = Some(super::history_meter::Meter::new(&limits, task_id, &body["workflow_task_attempt"]));

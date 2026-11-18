@@ -6,6 +6,8 @@
 //! hard structural limit the completion is refused with PHP's response and
 //! its transaction rolls back, so nothing it wrote survives and the task
 //! keeps its lease. A run's deadline close happens before the meter starts.
+//! Beyond PHP's fields, the refusal names the limit it met: `limit_kind`,
+//! the measured `current_value` and the `configured_limit` (.github#228).
 use super::memo_limits::StructuralLimits;
 use super::RuntimeError;
 use axum::http::StatusCode;
@@ -15,6 +17,13 @@ use serde_json::{Value, json};
 /// `record_local_activity`: one event, a lower bound
 /// (`WorkflowCommandNormalizer::MIN_COMMAND_HISTORY_EVENTS`).
 pub(super) const MIN_COMMAND_HISTORY_EVENTS: usize = 1;
+
+/// Each dimension's structural limit kind (`StructuralLimitKind`) and unit.
+const LIMIT_KINDS: [(&str, &str); 3] = [
+    ("history_transaction_size", "history events"),
+    ("history_transaction_bytes", "history bytes"),
+    ("history_transaction_rows", "rows"),
+];
 
 #[derive(Clone, Debug)]
 pub(super) struct Meter {
@@ -61,8 +70,15 @@ impl Meter {
         }
         // An overflow can only exceed every limit.
         let next = self.used[dimension].checked_add(amount).unwrap_or(usize::MAX);
-        if self.limits[dimension].is_some_and(|limit| limit > 0 && next > limit) {
+        if let Some(limit) = self.limits[dimension].filter(|limit| *limit > 0 && next > *limit) {
             self.tripped = true;
+            let (kind, measure) = LIMIT_KINDS[dimension];
+            let int = |value: usize| i64::try_from(value).unwrap_or(i64::MAX);
+            self.refusal["limit_kind"] = json!(kind);
+            self.refusal["current_value"] = json!(int(next));
+            self.refusal["configured_limit"] = json!(int(limit));
+            self.refusal["message"] = json!(format!(
+                "Structural limit exceeded: {kind}: this workflow task completion would write {next} {measure} in one transaction (limit {limit})."));
             return Err(self.refused());
         }
         self.used[dimension] = next;
@@ -131,6 +147,11 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(response["reason"], "history_transaction_limit_exceeded");
         assert_eq!((response["task_id"].clone(), response["recorded"].clone()), (json!("task"), json!(false)));
+        // .github#228: the refusal names the limit met and the measured value.
+        assert_eq!((&response["limit_kind"], &response["current_value"], &response["configured_limit"]),
+            (&json!("history_transaction_rows"), &json!(6), &json!(5)));
+        assert_eq!(response["message"],
+            "Structural limit exceeded: history_transaction_rows: this workflow task completion would write 6 rows in one transaction (limit 5).");
         // A tripped meter refuses everything after, and its commit.
         assert!(meter.charge_rows(0).is_err());
         assert!(matches!(meter.tripped(), Some(RuntimeError::Protocol { status: StatusCode::CONFLICT, .. })));
