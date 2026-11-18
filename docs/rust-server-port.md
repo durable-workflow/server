@@ -471,6 +471,22 @@ contract fixture before its correction.
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
   Several of those are cheap to honor: repair timing and the multi-node
   declaration.
+- **Worker registration retention and a paged worker list.** Published PHP
+  keeps a registration until the worker deregisters or its namespace is
+  deleted, and `GET /api/workers` returns every registration, newest
+  heartbeat first. Native deletes a registration with no heartbeat for
+  `DW_WORKER_REGISTRATION_RETENTION_SECONDS` (default 24 hours, never less
+  than the stale window), unless it still holds an unexpired task lease. The
+  maintenance loop removes up to 500 per namespace a minute and each
+  registration up to 16 more in its namespace. Removal retires the
+  registration's incarnation, as deregistration does; runs, pinned build ids,
+  rollouts and pending tasks are kept, so a pinned build left without
+  workers still reports `no_compatible_worker`. The worker list is one page
+  of at most 100 in worker id order, with `page_size` (1 to 100),
+  `next_page_token`, and `registration_retention_seconds`; an out-of-range
+  page size is `422 invalid_page_size` and a foreign token
+  `400 invalid_page_token`
+  ([#553](https://github.com/durable-workflow/server/issues/553)).
 - **Signal and update names PHP cannot store.** PHP validates signal,
   update and query names at 1 to 256 bytes with no control characters, but
   its signal and update name columns hold 255 characters, so PHP stores a
