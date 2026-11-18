@@ -119,6 +119,10 @@ pub(super) fn capabilities() -> Value {
     for name in unpublished {
         map.insert(name.into(), Value::Bool(false));
     }
+    // Server #1201: published only once native passes installed acceptance.
+    if let Some(advertised) = super::timeout_cleanup::advertisement() {
+        map.insert(super::timeout_cleanup::CAPABILITY.into(), advertised);
+    }
     map.insert("payload_codecs".into(), json!(["avro"]));
     map.insert(
         "avro_value_protocol".into(),

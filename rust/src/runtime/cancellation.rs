@@ -355,6 +355,10 @@ where
         terminal["closed_reason"] = json!(closed_as);
         terminal["exception_class"] = json!(exception);
         terminal["message"] = json!(message);
+        // A hard cancel or terminate ends deadline-triggered cleanup early.
+        if let Some(preempted) = Self::preempted_timeout_cleanup(tx, run, at).await? {
+            terminal[super::timeout_cleanup::STARTED_KEY] = preempted;
+        }
         Self::query("UPDATE workflow_runs SET status=$1,closed_reason=$2,closed_at=$3,last_progress_at=$4 WHERE id=$5")
             .bind(closed_as).bind(closed_as).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut **tx).await?;
         Self::append(
@@ -525,17 +529,46 @@ where
         task: &DB::Row,
         attempt: &Value,
     ) -> Result<Value> {
+        Self::time_out_run_with(tx, run, task, attempt, None).await
+    }
+
+    /// `timeoutRun` with the timeout cleanup outcome (Server #1201) a caller
+    /// already decided. Without one, an opted-in run's hard timeout records
+    /// how its cleanup ended; a run without the opt-in closes as before.
+    pub(super) async fn time_out_run_with(
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
+        task: &DB::Row,
+        attempt: &Value,
+        closing: Option<super::timeout_cleanup::Closing>,
+    ) -> Result<Value> {
         let run_id = DB::string(run, "id")?;
         let task_id = DB::string(task, "id")?;
         let at = now();
+        let closing = match closing {
+            Some(closing) => Some(closing),
+            None => Self::hard_deadline_closing(tx, run, at).await?,
+        };
+        let (timeout_cleanup, cancellation_cleanup) =
+            closing.map_or((None, None), |closing| (closing.timeout_cleanup, closing.cancellation_cleanup));
         let execution_deadline = DB::optional_instant(run, "execution_deadline_at")?;
         let run_deadline = DB::optional_instant(run, "run_deadline_at")?;
         let iso = |time: Option<chrono::DateTime<chrono::Utc>>| time.map(|time| time.format("%Y-%m-%dT%H:%M:%S+00:00").to_string());
-        let (timeout_kind, message) = if execution_deadline.is_some_and(|deadline| deadline <= at) {
+        // The cleanup's kind wins: cleanup may end before its hard deadline.
+        let execution_timed_out = match timeout_cleanup.as_ref().and_then(|cleanup| cleanup["timeout_kind"].as_str()) {
+            Some(kind) => kind == "execution",
+            None => execution_deadline.is_some_and(|deadline| deadline <= at),
+        };
+        let (timeout_kind, mut message) = if execution_timed_out {
             ("execution_timeout", format!("Workflow execution deadline expired at {}.", iso(execution_deadline).unwrap_or_default()))
         } else {
             ("run_timeout", format!("Workflow run deadline expired at {}.", iso(run_deadline).unwrap_or_default()))
         };
+        // The failure row's message is what describe, the export and the
+        // failure list show.
+        if let Some(summary) = timeout_cleanup.as_ref().and_then(super::timeout_cleanup::summary) {
+            message = format!("{message} {summary}");
+        }
         let exception = "Workflow\\V2\\Exceptions\\WorkflowTimeoutException";
         let activities = Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id")
             .bind(&run_id).fetch_all(&mut **tx).await?;
@@ -559,9 +592,16 @@ where
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).execute(&mut **tx).await?;
         Self::query("UPDATE workflow_runs SET status='failed',closed_reason='timed_out',closed_at=$1,last_progress_at=$2 WHERE id=$3")
             .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&run_id).execute(&mut **tx).await?;
-        let timed_out = json!({"failure_id":failure_id,"timeout_kind":timeout_kind,"failure_category":"timeout",
+        let mut timed_out = json!({"failure_id":failure_id,"timeout_kind":timeout_kind,"failure_category":"timeout",
             "message":message,"exception_class":exception,"execution_deadline_at":iso(execution_deadline),
-            "run_deadline_at":iso(run_deadline),"task":Self::task_snapshot(task)?});
+            "run_deadline_at":iso(run_deadline)});
+        if let Some(cleanup) = timeout_cleanup {
+            timed_out[super::timeout_cleanup::STARTED_KEY] = cleanup;
+        }
+        if let Some(cleanup) = cancellation_cleanup {
+            timed_out["cancellation_cleanup"] = cleanup;
+        }
+        timed_out["task"] = Self::task_snapshot(task)?;
         Self::append(tx, &run_id, "WorkflowTimedOut", timed_out.clone(), Some(&task_id), None).await?;
         Self::close_pending_updates(tx, &run_id, Some(task)).await?;
         Self::enforce_parent_close_policies(tx, run, "timed_out", 0).await?;

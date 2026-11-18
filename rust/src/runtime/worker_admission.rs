@@ -125,6 +125,18 @@ pub(super) fn manifest(body: &Value) -> Value {
         }
         normalized.insert((*capability).to_owned(), item);
     }
+    // Server #1201: a worker's timeout-cleanup entry is kept as sent, with a
+    // strict boolean and an integer version, so admission can read it.
+    if let Some(entry) = body["capability_manifest"].get(super::timeout_cleanup::CAPABILITY).filter(|entry| entry.is_object()) {
+        let mut item = json!({"supported": entry["supported"] == Value::Bool(true)});
+        if let Some(floor) = entry["minimum_protocol_version"].as_str().map(str::trim).filter(|text| !text.is_empty()) {
+            item["minimum_protocol_version"] = json!(floor);
+        }
+        if let Some(version) = entry["version"].as_i64() {
+            item["version"] = json!(version);
+        }
+        normalized.insert(super::timeout_cleanup::CAPABILITY.to_owned(), item);
+    }
     Value::Object(normalized)
 }
 
