@@ -959,6 +959,10 @@ where
             "run_timeout_seconds": DB::optional_number(&row,"run_timeout_seconds")?,
             "execution_deadline_at": super::run_describe::iso8601(DB::optional_instant(&row,"execution_deadline_at")?),
             "run_deadline_at": super::run_describe::iso8601(DB::optional_instant(&row,"run_deadline_at")?)});
+        // Server #1201: only an opted-in run reports its cleanup state.
+        if let Some(view) = Self::timeout_cleanup_view(&mut **tx, &row).await? {
+            described[super::timeout_cleanup::STARTED_KEY] = view;
+        }
         if let Some(stale_after) = stale_after {
             let fields = self
                 .describe_fields(tx, &row, current, terminal, &described["input_envelope"], &described["output_envelope"], stale_after)
@@ -2699,10 +2703,15 @@ where
                     continue;
                 }
             }
-            let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
+            let mut run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+            // Server #1201: a workflow claim past the work deadline enters
+            // timeout cleanup first, so this claim carries the interruption.
+            if kind == "workflow" && self.enter_timeout_cleanup(tx, &run, now()).await? {
+                run = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut **tx).await?;
+            }
             tx.remember_run_tags(&run_id,&run);
             let cancellation = Self::cancellation_request(&run)?;
             if cancellation.is_some()
@@ -3781,6 +3790,14 @@ where
         } else {
             self.close_expired_run(tx, &run, &task, &body["workflow_task_attempt"]).await?
         };
+        // Server #1201: a completion that first notices the work deadline
+        // enters timeout cleanup before its commands apply, so the outcome
+        // does not depend on whether the idle wake ran first.
+        let run = if !deferred && self.enter_timeout_cleanup(&mut tx, &run, now()).await? {
+            Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut *tx).await?
+        } else {
+            run
+        };
         // Workflow #930: the deadline close above is never metered. Before
         // the worker's first write, its local activities' exact events and
         // rows (other commands at one event) must fit the limits; then the
@@ -4071,7 +4088,7 @@ where
         } else if command["type"] == "start_child_workflow" {
             Self::guard_pending(tx, &run_id, super::memo_limits::Pending::Children, &limits, task_id, attempt).await?;
             sequence += 1;
-            let started = Self::start_child(tx, &run, task_id, command, sequence).await?;
+            let started = Self::start_child(tx, &run, task_id, command, sequence, self.worker_stale_after_seconds).await?;
             created.push(started.task);
             if command["await"] == super::children::AWAIT_STARTED {
                 let mut turn = start_turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

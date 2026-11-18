@@ -94,6 +94,14 @@ async fn deliver(app: &Router, task: &Value) {
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
+/// With `DW_TIMEOUT_CLEANUP_DUMP` set to a directory, writes a scenario's
+/// history there for the key-for-key comparison with embedded 2.29.0.
+fn dump(scenario: &str, history: &Value) {
+    if let Ok(directory) = std::env::var("DW_TIMEOUT_CLEANUP_DUMP") {
+        std::fs::write(format!("{directory}/native-{scenario}.json"), serde_json::to_string_pretty(&json!({"events": history})).unwrap()).unwrap();
+    }
+}
+
 fn terminal<'a>(history: &'a Value, kind: &str) -> &'a Value {
     let events = events_of(history, kind);
     assert_eq!(events.len(), 1, "{kind}: {history}");
@@ -252,6 +260,7 @@ async fn an_idle_run_enters_cleanup_once_at_its_work_deadline_and_completes_time
     assert_eq!(cleanup["started_at"], entered["detected_at"]);
     assert_eq!(cleanup["cleanup_deadline_at"], entered["cleanup_deadline_at"]);
     assert_eq!(names_tail(&history), ["CooperativeCancellationDelivered", "WorkflowTimedOut"]);
+    dump("completed", &history);
     let (status, described) = request(&app, "GET", "/api/workflows/tc-completed", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{described}");
     assert_eq!(described["status"], "failed");
@@ -304,6 +313,9 @@ async fn cleanup_failures_are_linked_and_the_interruption_marker_is_a_closed_set
         let (status, body) = cleanup_finish(&app, &task, json!([failure])).await;
         assert_eq!(status, StatusCode::OK, "{workflow}: {body}");
         let history = run_history(&app, &json!(workflow), &run).await;
+        if !marker {
+            dump("failed", &history);
+        }
         assert!(events_of(&history, "WorkflowFailed").is_empty(), "{workflow}");
         let timed_out = terminal(&history, "WorkflowTimedOut");
         assert_eq!(timed_out["failure_category"], "timeout", "{workflow}");
@@ -337,6 +349,7 @@ async fn cleanup_expires_at_the_hard_deadline_without_a_worker() {
     database.execute("UPDATE workflow_runs SET execution_deadline_at='2000-01-01 00:00:00',cancellation_deadline_at='2000-01-01 00:00:00'").await;
     let history = wait_for(&app, "tc-expired", &run, "WorkflowTimedOut").await;
     assert_eq!(names_tail(&history), ["TimerCancelled", "WorkflowTimedOut"]);
+    dump("expired", &history);
     let timed_out = terminal(&history, "WorkflowTimedOut");
     assert_eq!(timed_out["timeout_cleanup"]["outcome"], "expired");
     assert!(timed_out["timeout_cleanup"]["started_at"].is_string());
@@ -372,6 +385,7 @@ async fn terminate_and_hard_cancel_preempt_cleanup() {
         assert_eq!(status, StatusCode::OK, "{body}");
         let history = run_history(&app, &json!(workflow), &run).await;
         assert!(events_of(&history, "WorkflowTimedOut").is_empty());
+        dump(if verb == "terminate" { "preempted_terminate" } else { "preempted_cancel" }, &history);
         let closed = terminal(&history, event);
         assert_eq!(closed["timeout_cleanup"]["outcome"], "preempted", "{closed}");
         assert_eq!(closed["timeout_cleanup"]["timeout_kind"], "execution");
@@ -402,6 +416,7 @@ async fn an_earlier_user_request_owns_cleanup_and_loses_to_the_hard_timeout() {
     assert!(events_of(&history, "WorkflowTimeoutCleanupStarted").is_empty(), "an earlier request owns cleanup");
     database.execute("UPDATE workflow_runs SET execution_deadline_at='2000-01-01 00:00:00',cancellation_deadline_at='2000-01-01 00:00:00'").await;
     let history = wait_for(&app, "tc-user", &run, "WorkflowTimedOut").await;
+    dump("user_request_preempted", &history);
     assert!(events_of(&history, "WorkflowCancelled").is_empty());
     let timed_out = terminal(&history, "WorkflowTimedOut");
     assert!(timed_out.get("timeout_cleanup").is_none(), "{timed_out}");
@@ -436,4 +451,253 @@ async fn continue_as_new_carries_the_allowance_and_execution_clock() {
     let run_deadline = chrono::DateTime::parse_from_rfc3339(run["run_deadline_at"].as_str().unwrap()).unwrap();
     let expected = (run_deadline - chrono::Duration::seconds(ALLOWANCE)).format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
     assert_eq!(cleanup["work_deadlines"]["run"], json!(expected));
+}
+
+/// Renames the recorded work deadlines so the idle wake does not see them:
+/// the run stays opted in (its allowance is unchanged) and only a claim or a
+/// completion can notice the work deadline.
+async fn hide_from_idle_wake(database: &TestDatabase) {
+    match database {
+        TestDatabase::Sqlite(_) => database.execute("UPDATE workflow_history_events SET payload=replace(payload,'\"work_deadlines\"','\"hidden_work_deadlines\"') WHERE event_type='WorkflowStarted'").await,
+        TestDatabase::Postgres { .. } => database.execute("UPDATE workflow_history_events SET payload=replace(payload::text,'\"work_deadlines\"','\"hidden_work_deadlines\"')::json WHERE event_type='WorkflowStarted'").await,
+        TestDatabase::MySql { .. } => database.execute("UPDATE workflow_history_events SET payload=REPLACE(payload,'\"work_deadlines\"','\"hidden_work_deadlines\"') WHERE event_type='WorkflowStarted'").await,
+    }
+}
+
+fn instant(value: &Value) -> chrono::DateTime<chrono::FixedOffset> {
+    chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap()
+}
+
+async fn until_work_deadline_passed(history: &Value) {
+    let hard = instant(&terminal(history, "WorkflowStarted")["execution_deadline_at"]);
+    let work = hard - chrono::Duration::seconds(ALLOWANCE) + chrono::Duration::milliseconds(400);
+    let wait = (work.with_timezone(&chrono::Utc) - chrono::Utc::now()).to_std().unwrap_or_default();
+    tokio::time::sleep(wait).await;
+}
+
+// Vector 5 at a claim and at a completion: whichever notices the work
+// deadline enters cleanup; the cleanup deadline stays the hard deadline,
+// never detection plus the allowance.
+#[tokio::test]
+async fn a_claim_or_a_completion_that_first_notices_the_work_deadline_enters_cleanup() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    cleanup_worker(&app, "cleanup-worker", true).await;
+    // At a claim.
+    let started = start_opted_in(&app, "tc-claimed").await;
+    hide_from_idle_wake(&database).await;
+    let history = run_history(&app, &json!("tc-claimed"), &started["run_id"]).await;
+    until_work_deadline_passed(&history).await;
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let before = run_history(&app, &json!("tc-claimed"), &started["run_id"]).await;
+    assert!(events_of(&before, "WorkflowTimeoutCleanupStarted").is_empty(), "the idle wake must not see a hidden deadline");
+    let claimed = cleanup_poll(&app, "cleanup-worker").await;
+    assert!(!claimed.is_null());
+    let history = run_history(&app, &json!("tc-claimed"), &started["run_id"]).await;
+    let entered = terminal(&history, "WorkflowTimeoutCleanupStarted");
+    assert_eq!(claimed["cancellation_request"]["request_id"], entered["workflow_command_id"], "{claimed}");
+    let hard = instant(&terminal(&history, "WorkflowStarted")["execution_deadline_at"]);
+    let detected = instant(&entered["detected_at"]);
+    assert!(detected > hard - chrono::Duration::seconds(ALLOWANCE), "{entered}");
+    assert_eq!(entered["cleanup_deadline_at"], json!(hard.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()));
+    assert_eq!(entered["hard_deadline_at"], entered["cleanup_deadline_at"]);
+
+    // At a completion: it enters before its commands apply.
+    let started = start_opted_in(&app, "tc-completion").await;
+    hide_from_idle_wake(&database).await;
+    let task = cleanup_poll(&app, "cleanup-worker").await;
+    assert_eq!(task["workflow_id"], "tc-completion");
+    let history = run_history(&app, &json!("tc-completion"), &started["run_id"]).await;
+    until_work_deadline_passed(&history).await;
+    let (status, body) = cleanup_finish(&app, &task, json!([{"type": "start_timer", "delay_seconds": 3600}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &json!("tc-completion"), &started["run_id"]).await;
+    let names = types(&history);
+    let at = names.iter().position(|name| name == "WorkflowTimeoutCleanupStarted").expect("entered at completion");
+    assert_eq!(&names[at..at + 3], ["WorkflowTimeoutCleanupStarted", "CooperativeCancellationRequested", "TimerScheduled"]);
+    let resumed = cleanup_poll(&app, "cleanup-worker").await;
+    assert_eq!(resumed["cancellation_request"]["request_id"], terminal(&history, "WorkflowTimeoutCleanupStarted")["workflow_command_id"]);
+}
+
+// Vector 9: the run deadline is earlier, so cleanup is for kind `run` and
+// ends at the run deadline. Describe follows the state.
+#[tokio::test]
+async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_state() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    cleanup_worker(&app, "cleanup-worker", true).await;
+    let (status, started) = start_with(&app, "tc-run-kind", json!({"execution_timeout_seconds": 30, "run_timeout_seconds": EXECUTION,
+        "timeout_cleanup_seconds": ALLOWANCE})).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let run = started["run_id"].clone();
+    let (_, described) = request(&app, "GET", "/api/workflows/tc-run-kind", Value::Null).await;
+    assert_eq!(described["timeout_cleanup"]["state"], "armed", "{described}");
+    assert_eq!(described["timeout_cleanup"]["cause"], Value::Null);
+    assert_eq!(described["timeout_cleanup"]["allowance_seconds"], ALLOWANCE);
+    assert_eq!(described["timeout_cleanup"]["timeout_kind"], "run");
+    let first = cleanup_poll(&app, "cleanup-worker").await;
+    let (status, body) = cleanup_finish(&app, &first, json!([{"type": "start_timer", "delay_seconds": 3600}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = wait_for(&app, "tc-run-kind", &run, "WorkflowTimeoutCleanupStarted").await;
+    let entered = terminal(&history, "WorkflowTimeoutCleanupStarted");
+    let run_deadline = instant(&terminal(&history, "WorkflowStarted")["run_deadline_at"]);
+    let iso = run_deadline.format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
+    assert_eq!(entered["timeout_kind"], "run");
+    assert_eq!(entered["cleanup_deadline_at"], json!(iso));
+    assert_eq!(entered["work_deadline_at"], terminal(&history, "WorkflowStarted")["timeout_cleanup"]["work_deadlines"]["run"]);
+    let (_, described) = request(&app, "GET", "/api/workflows/tc-run-kind", Value::Null).await;
+    let view = &described["timeout_cleanup"];
+    assert_eq!((view["state"].as_str(), view["cause"].as_str()), (Some("cancellation_cleanup_running"), Some("timeout")), "{view}");
+    assert_eq!(view["started_at"], entered["detected_at"]);
+    assert_eq!(view["cleanup_deadline_at"], json!(iso));
+    let task = cleanup_poll(&app, "cleanup-worker").await;
+    deliver(&app, &task).await;
+    let (status, body) = cleanup_finish(&app, &task, json!([{"type": "complete_workflow", "result": envelope(Payload::Null)}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &json!("tc-run-kind"), &run).await;
+    let timed_out = terminal(&history, "WorkflowTimedOut");
+    assert_eq!(timed_out["timeout_kind"], "run_timeout");
+    assert_eq!(timed_out["timeout_cleanup"]["timeout_kind"], "run");
+    assert!(timed_out["message"].as_str().unwrap().starts_with(&format!("Workflow run deadline expired at {iso}.")), "{timed_out}");
+    let (_, described) = request(&app, "GET", &format!("/api/workflows/tc-run-kind/runs/{}", run.as_str().unwrap()), Value::Null).await;
+    assert_eq!(described["timeout_cleanup"]["state"], "finished", "{described}");
+    assert_eq!(described["timeout_cleanup"]["outcome"], "completed");
+}
+
+// Vector 6 and worker replacement: the task holding the cleanup turn moves
+// to another worker; nothing is entered twice and no deadline moves.
+#[tokio::test]
+async fn a_replaced_worker_keeps_one_entry_and_the_original_deadline() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    cleanup_worker(&app, "cleanup-worker", true).await;
+    let (run, _) = idle_in_cleanup(&app, "tc-replaced").await;
+    let original = cleanup_poll(&app, "cleanup-worker").await;
+    assert!(!original.is_null());
+    database.execute("UPDATE workflow_tasks SET lease_expires_at='2000-01-01 00:00:00' WHERE status='leased'").await;
+    cleanup_worker(&app, "replacement-worker", true).await;
+    let replacement = cleanup_poll(&app, "replacement-worker").await;
+    assert_eq!(replacement["task_id"], original["task_id"], "{replacement}");
+    assert_ne!(replacement["workflow_task_attempt"], original["workflow_task_attempt"]);
+    assert_eq!(replacement["cancellation_request"]["request_id"], original["cancellation_request"]["request_id"]);
+    assert_eq!(replacement["cancellation_request"]["cleanup_deadline_at"], original["cancellation_request"]["cleanup_deadline_at"]);
+    let (status, stale) = cleanup_finish(&app, &original, json!([{"type": "complete_workflow", "result": envelope(Payload::Null)}])).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+    deliver(&app, &replacement).await;
+    let (status, body) = cleanup_finish(&app, &replacement, json!([{"type": "complete_workflow", "result": envelope(Payload::Null)}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &json!("tc-replaced"), &run).await;
+    assert_eq!(events_of(&history, "WorkflowTimeoutCleanupStarted").len(), 1);
+    assert_eq!(events_of(&history, "CooperativeCancellationRequested").len(), 1);
+    assert_eq!(terminal(&history, "WorkflowTimedOut")["timeout_cleanup"]["outcome"], "completed");
+}
+
+// A replay-blocking task failure during cleanup stays blocked for repair:
+// it is never a cleanup failure. The hard deadline still expires it.
+#[tokio::test]
+async fn a_replay_blocking_failure_during_cleanup_stays_blocked_and_then_expires() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    cleanup_worker(&app, "cleanup-worker", true).await;
+    let (run, _) = idle_in_cleanup(&app, "tc-blocked").await;
+    let task = cleanup_poll(&app, "cleanup-worker").await;
+    let (status, body) = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{}/fail", task["task_id"].as_str().unwrap()),
+        json!({"lease_owner": task["lease_owner"], "workflow_task_attempt": task["workflow_task_attempt"],
+            "failure": {"type": "NondeterministicReplayException", "message": "nondeterministic replay of cleanup"}}), "1.20").await;
+    assert!(status.is_success(), "{status}: {body}");
+    let history = run_history(&app, &json!("tc-blocked"), &run).await;
+    assert!(events_of(&history, "WorkflowTimedOut").is_empty() && events_of(&history, "WorkflowFailed").is_empty(), "{history}");
+    let (_, described) = request(&app, "GET", "/api/workflows/tc-blocked", Value::Null).await;
+    assert_eq!(described["timeout_cleanup"]["state"], "cancellation_cleanup_running", "{described}");
+    database.execute("UPDATE workflow_runs SET execution_deadline_at='2000-01-01 00:00:00',cancellation_deadline_at='2000-01-01 00:00:00'").await;
+    let history = wait_for(&app, "tc-blocked", &run, "WorkflowTimedOut").await;
+    assert_eq!(terminal(&history, "WorkflowTimedOut")["timeout_cleanup"]["outcome"], "expired");
+}
+
+// A child opts in on its own: the start's admission rules, on the child's
+// queue. The parent's allowance never carries over.
+#[tokio::test]
+async fn a_child_opts_in_under_the_same_admission_rules() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    cleanup_worker(&app, "cleanup-worker", true).await;
+    let child = |extra: Value| {
+        let mut command = json!({"type": "start_child_workflow", "workflow_type": "echo", "arguments": envelope(Payload::Array(vec![]))});
+        for (key, value) in extra.as_object().unwrap() {
+            command[key] = value.clone();
+        }
+        command
+    };
+    let (status, parent) = start_with(&app, "tc-parent", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "{parent}");
+    let task = cleanup_poll(&app, "cleanup-worker").await;
+    for (extra, message) in [
+        (json!({"timeout_cleanup_seconds": 10}), "Workflow v2 timeout cleanup needs an execution or run timeout to reserve time from."),
+        (json!({"execution_timeout_seconds": 10, "timeout_cleanup_seconds": 10}),
+            "Workflow v2 timeout cleanup (10 s) must be shorter than the execution timeout (10 s)."),
+        (json!({"execution_timeout_seconds": 100, "timeout_cleanup_seconds": 0}), "The commands.0.timeout_cleanup_seconds field must be at least 1."),
+    ] {
+        let (status, refused) = cleanup_finish(&app, &task, json!([child(extra.clone())])).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{extra}: {refused}");
+        assert_eq!(refused["errors"]["commands.0.timeout_cleanup_seconds"], json!([message]), "{extra}: {refused}");
+    }
+    let (status, refused) = cleanup_finish(&app, &task, json!([{"type": "start_timer", "delay_seconds": 5, "timeout_cleanup_seconds": 2}])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    // No live capable worker on the child's queue: refused, nothing written.
+    let before = run_history(&app, &json!("tc-parent"), &parent["run_id"]).await;
+    let (status, refused) = cleanup_finish(&app, &task, json!([child(json!({"queue": "elsewhere", "execution_timeout_seconds": 600,
+        "timeout_cleanup_seconds": ALLOWANCE}))])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["reason"], "timeout_cleanup_not_supported", "{refused}");
+    assert_eq!(run_history(&app, &json!("tc-parent"), &parent["run_id"]).await, before);
+    let (status, body) = cleanup_finish(&app, &task, json!([child(json!({"execution_timeout_seconds": 600, "run_timeout_seconds": 300,
+        "timeout_cleanup_seconds": ALLOWANCE}))])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &json!("tc-parent"), &parent["run_id"]).await;
+    assert!(terminal(&history, "WorkflowStarted").get("timeout_cleanup").is_none(), "the parent did not opt in");
+    let started = &events_of(&history, "ChildRunStarted")[0]["payload"];
+    let child_history = run_history(&app, &started["child_workflow_instance_id"], &started["child_workflow_run_id"]).await;
+    let child_started = terminal(&child_history, "WorkflowStarted");
+    let hard = instant(&child_started["execution_deadline_at"]);
+    let run_hard = instant(&child_started["run_deadline_at"]);
+    let iso = |at: chrono::DateTime<chrono::FixedOffset>| at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
+    assert_eq!(child_started["timeout_cleanup"], json!({"allowance_seconds": ALLOWANCE, "work_deadlines": {
+        "execution": iso(hard - chrono::Duration::seconds(ALLOWANCE)), "run": iso(run_hard - chrono::Duration::seconds(ALLOWANCE))}}));
+}
+
+// Scoped descendants never inherit the root's cause: a child cancelled
+// through the timeout request sees an ordinary cancellation.
+#[tokio::test]
+async fn descendants_of_the_timeout_request_do_not_inherit_its_cause() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    cleanup_worker(&app, "cleanup-worker", true).await;
+    let started = start_opted_in(&app, "tc-descendants").await;
+    let run = started["run_id"].clone();
+    let first = cleanup_poll(&app, "cleanup-worker").await;
+    let (status, body) = cleanup_finish(&app, &first, json!([{"type": "start_child_workflow", "workflow_type": "echo",
+        "queue": "test", "arguments": envelope(Payload::Array(vec![])), "cancellation_policy": "try_cancel"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = wait_for(&app, "tc-descendants", &run, "WorkflowTimeoutCleanupStarted").await;
+    let request_id = terminal(&history, "WorkflowTimeoutCleanupStarted")["workflow_command_id"].clone();
+    let child = &events_of(&history, "ChildRunStarted")[0]["payload"];
+    // The parent's turn delivers at the child boundary.
+    let mut task = cleanup_poll(&app, "cleanup-worker").await;
+    while task["workflow_id"] != "tc-descendants" {
+        assert!(!task.is_null(), "the parent's cleanup turn");
+        task = cleanup_poll(&app, "cleanup-worker").await;
+    }
+    let (status, delivered) = request_protocol(&app, "POST",
+        &format!("/api/worker/workflow-tasks/{}/deliver-cancellation", task["task_id"].as_str().unwrap()),
+        json!({"lease_owner": task["lease_owner"], "workflow_task_attempt": task["workflow_task_attempt"],
+            "request_id": request_id, "sequence": 1, "call_kind": "child"}), "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{delivered}");
+    let child_history = run_history(&app, &child["child_workflow_instance_id"], &child["child_workflow_run_id"]).await;
+    let requested = events_of(&child_history, "CooperativeCancellationRequested");
+    assert_eq!(requested.len(), 1, "{child_history}");
+    let context = &requested[0]["payload"]["cancellation"];
+    assert!(context.get("cause").is_none(), "{context}");
+    assert_eq!(context["root_request_id"], request_id);
+    assert_eq!(context["parent_request_id"], request_id);
+    assert!(events_of(&child_history, "WorkflowTimeoutCleanupStarted").is_empty());
 }

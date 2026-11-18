@@ -131,6 +131,8 @@ const COMMAND: &[(&str, &[Check])] = &[
     ("worker_session.allow_reacquire_after_failure", &[NUL, BOOL]),
     ("execution_timeout_seconds", &[NUL, INT, min(1)]),
     ("run_timeout_seconds", &[NUL, INT, min(1)]),
+    // Server #1201: a child's own timeout cleanup allowance.
+    ("timeout_cleanup_seconds", &[NUL, INT, min(1), max(super::timeout_cleanup::MAX_ALLOWANCE_SECONDS)]),
     ("workflow_type", &[NUL, STR, max(255)]),
     ("delay_seconds", &[NUL, INT, min(0)]),
     ("message", &[NUL, STR]),
@@ -239,6 +241,7 @@ const INTEGER_FIELDS: &[&str] = &[
     "heartbeat_timeout",
     "execution_timeout_seconds",
     "run_timeout_seconds",
+    "timeout_cleanup_seconds",
     "delay_seconds",
     "version",
     "min_supported",
@@ -514,7 +517,7 @@ fn controller_scopes(commands: &[Value]) -> Vec<(String, Vec<String>)> {
         if has_value(command, "worker_session") && kind != "schedule_activity" {
             add(at("worker_session"), "worker_session is only supported for schedule_activity commands.".into());
         }
-        for field in ["execution_timeout_seconds", "run_timeout_seconds"] {
+        for field in ["execution_timeout_seconds", "run_timeout_seconds", "timeout_cleanup_seconds"] {
             if has_value(command, field) && kind != "start_child_workflow" {
                 add(at(field), format!("{field} is only supported for start_child_workflow commands."));
             }
@@ -559,6 +562,14 @@ fn controller_scopes(commands: &[Value]) -> Vec<(String, Vec<String>)> {
             && run > execution
         {
             add(at("run_timeout_seconds"), "run_timeout_seconds cannot exceed execution_timeout_seconds.".into());
+        }
+        // Server #1201: a child opts in under the start's admission rules.
+        if kind == "start_child_workflow"
+            && let Some(allowance) = int(command, "timeout_cleanup_seconds")
+            && let Some(message) = super::timeout_cleanup::admission_error(allowance,
+                int(command, "execution_timeout_seconds"), int(command, "run_timeout_seconds"))
+        {
+            add(at("timeout_cleanup_seconds"), message);
         }
     }
     found
@@ -799,7 +810,7 @@ const READS: &[(&str, &[&str])] = &[
         "cancellation_policy", "worker_session"]),
     ("start_timer", &["delay_seconds", "cancellation_cleanup"]),
     ("start_child_workflow", &["workflow_type", "arguments", "payload_codec", "connection", "queue", "retry_policy",
-        "execution_timeout_seconds", "run_timeout_seconds", "parent_close_policy", "cancellation_policy", "await"]),
+        "execution_timeout_seconds", "run_timeout_seconds", "timeout_cleanup_seconds", "parent_close_policy", "cancellation_policy", "await"]),
     ("continue_as_new", &["arguments", "payload_codec", "workflow_type", "queue"]),
     ("complete_update", &["update_id", "result", "payload_codec"]),
     ("fail_update", &["update_id", "message", "exception_class", "exception_type", "non_retryable"]),
@@ -821,7 +832,7 @@ const PARALLEL_LEAVES: &[&str] = &["schedule_activity", "start_timer", "start_ch
 
 /// Fields a scope check refuses on the wrong command, so they must reach it.
 const SCOPED_FIELDS: &[&str] = &["retry_policy", "start_to_close_timeout", "schedule_to_start_timeout", "schedule_to_close_timeout",
-    "heartbeat_timeout", "worker_session", "execution_timeout_seconds", "run_timeout_seconds", "cancellation_policy",
+    "heartbeat_timeout", "worker_session", "execution_timeout_seconds", "run_timeout_seconds", "timeout_cleanup_seconds", "cancellation_policy",
     "non_retryable", "exception", "failed_step_sequence", "failed_activity_execution_id", "timeout_kind",
     "parent_close_policy", "cancellation_scope_id", "cancellation_cleanup", "delay_seconds", "timeout_seconds",
     "payload_codec", "entries", "principal_subject", "principal_method", "principal_roles", "principal_tenant",

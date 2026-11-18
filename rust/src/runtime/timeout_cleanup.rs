@@ -283,7 +283,8 @@ store_methods! {
         let Some((kind, hard)) = earliest_hard_deadline(execution, run_deadline) else {
             return Ok(false);
         };
-        if at >= hard {
+        // Nothing to read before the largest allowance could apply.
+        if at >= hard || at < hard - chrono::Duration::seconds(MAX_ALLOWANCE_SECONDS) {
             return Ok(false);
         }
         let run_id = DB::string(run, "id")?;
@@ -366,6 +367,53 @@ store_methods! {
         tx.commit().await?;
         self.wake.notify_waiters();
         Ok(())
+    }
+
+    /// Describe's `timeout_cleanup` (a native addition, registered as the
+    /// `describe-timeout-cleanup-state` divergence: embedded describe shows
+    /// neither the state nor the outcome). Only an opted-in run has it:
+    /// `armed` before the work deadline is noticed,
+    /// `cancellation_cleanup_running` with `cause: timeout` while the
+    /// engine's request is open, then `finished` with the recorded outcome,
+    /// or `not_entered` when the run closed without entering cleanup.
+    pub(super) async fn timeout_cleanup_view(executor: &mut DB::Connection, run: &DB::Row) -> Result<Option<Value>> {
+        let execution = DB::optional_instant(run, "execution_deadline_at")?;
+        let run_deadline = DB::optional_instant(run, "run_deadline_at")?;
+        let Some((kind, hard)) = earliest_hard_deadline(execution, run_deadline) else {
+            return Ok(None);
+        };
+        let run_id = DB::string(run, "id")?;
+        let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
+            .bind(&run_id).fetch_optional(&mut *executor).await?;
+        let Some(allowance) = started.map(|row| DB::document_row(&row, "payload")).transpose()?.as_ref().and_then(allowance) else {
+            return Ok(None);
+        };
+        let entered = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowTimeoutCleanupStarted' ORDER BY sequence LIMIT 1")
+            .bind(&run_id).fetch_optional(&mut *executor).await?
+            .map(|row| DB::document_row(&row, "payload")).transpose()?;
+        let open = matches!(DB::string(run, "status")?.as_str(), "pending" | "running" | "waiting");
+        let outcome = if open {
+            Value::Null
+        } else {
+            Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('WorkflowTimedOut','WorkflowTerminated','WorkflowCancelled') ORDER BY sequence DESC LIMIT 1")
+                .bind(&run_id).fetch_optional(&mut *executor).await?
+                .map(|row| DB::document_row(&row, "payload")).transpose()?
+                .map_or(Value::Null, |payload| payload[STARTED_KEY].clone())
+        };
+        let state = match (&entered, open, outcome.is_object()) {
+            (_, false, true) => "finished",
+            (Some(_), true, _) => "cancellation_cleanup_running",
+            (None, true, _) => "armed",
+            _ => "not_entered",
+        };
+        let entered = entered.unwrap_or(Value::Null);
+        Ok(Some(json!({"state": state, "cause": if entered.is_null() { Value::Null } else { json!(CAUSE_TIMEOUT) },
+            "allowance_seconds": allowance, "timeout_kind": entered.get("timeout_kind").cloned().unwrap_or_else(|| json!(kind)),
+            "work_deadline_at": entered.get("work_deadline_at").cloned().unwrap_or_else(|| json!(iso(hard - chrono::Duration::seconds(allowance)))),
+            "cleanup_deadline_at": entered.get("cleanup_deadline_at").cloned().unwrap_or_else(|| json!(iso(hard))),
+            "started_at": entered.get("detected_at").cloned().unwrap_or(Value::Null),
+            "outcome": outcome.get("outcome").cloned().unwrap_or(Value::Null),
+            "failure_id": outcome.get("failure_id").cloned().unwrap_or(Value::Null)})))
     }
 
     /// A user's cooperative request during timeout cleanup: an accepted
