@@ -519,6 +519,17 @@ contract fixture before its correction.
   page size is `422 invalid_page_size` and a foreign token
   `400 invalid_page_token`
   ([#553](https://github.com/durable-workflow/server/issues/553)).
+- **Completions above a MySQL-family packet.** Native's workflow-task
+  completion receipt keeps a SHA-256 digest of the request and its created
+  task IDs, not the request, so a completion up to the 32 MiB cap records on
+  MariaDB's 16 MiB default `max_allowed_packet`; native 3.13.0 and earlier
+  answered a retried `503 storage_unavailable` there. A completion the
+  database refuses with a packet error (1153 or 1301) is answered
+  `413 payload_too_large`, `limit_kind: database_max_allowed_packet`. Native
+  reads the packet at startup and logs
+  `database_packet_limit_below_payload_headroom` when it is under four times
+  `DW_MAX_PAYLOAD_BYTES`
+  ([#1234](https://github.com/durable-workflow/server/issues/1234)).
 - **Guarded worker build and task queue retirement (native only).**
   Published PHP's drain gives no pinned-run or recorded-queue inventory and
   has no retirement action. Native serves

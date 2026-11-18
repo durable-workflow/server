@@ -187,17 +187,6 @@ async fn a_large_fan_out_completion_is_not_refused_as_one_body() {
 #[tokio::test]
 async fn a_fan_out_completion_under_the_wire_cap_fits_the_default_history_budget() {
     let database = TestDatabase::new().await;
-    // The completion's stored receipt holds its whole request in one row, so
-    // a MySQL-family server needs `max_allowed_packet` above the completion
-    // size. MariaDB's 16 MiB default is below it and refuses the write
-    // (1153, `storage_unavailable`); that backend limit is separate from the
-    // history budget this test covers.
-    if matches!(database, TestDatabase::MySql { .. })
-        && task_retry::rows(&database, "SELECT CAST(@@max_allowed_packet AS SIGNED)").await < 32 * 1024 * 1024
-    {
-        database.remove().await;
-        return;
-    }
     let app = router(database.open().await.unwrap());
     register(&app, "wide", json!(["echo"]), json!(["act"])).await;
     start(&app, "wide").await;
@@ -211,6 +200,63 @@ async fn a_fan_out_completion_under_the_wire_cap_fits_the_default_history_budget
     assert_eq!(status, StatusCode::OK, "{}", answer.to_string().chars().take(400).collect::<String>());
     assert_eq!(answer["recorded"], true, "{answer}");
     assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='ActivityScheduled'").await, 26);
+}
+
+// Server #1234: no admitted completion is written to one row. A completion
+// above MariaDB's 16 MiB default `max_allowed_packet` (and below the 32 MiB
+// wire cap) records on every backend, with the database's own settings,
+// instead of failing with a retried `503 storage_unavailable`. Its receipt
+// keeps a digest, so an identical repeat still replays the original answer
+// and any other completion for the task is refused.
+#[tokio::test]
+async fn a_completion_above_the_default_mariadb_packet_records_on_every_backend() {
+    let database = TestDatabase::new().await;
+    if let TestDatabase::MySql { .. } = database {
+        // Report what the backend enforces; nothing here raises it.
+        let packet = task_retry::rows(&database, "SELECT CAST(@@max_allowed_packet AS SIGNED)").await;
+        eprintln!("max_allowed_packet={packet}");
+    }
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "packet", json!(["echo"]), json!(["act"])).await;
+    start(&app, "packet").await;
+    let task = poll(&app, "packet", "workflow").await;
+    // Many small activities, the shape of the issue's `all()` fan-out.
+    let argument = envelope(Payload::Array(vec![Payload::String("y".repeat(22_000))]));
+    let commands: Vec<Value> = (0..720).map(|_| json!({"type":"schedule_activity","activity_type":"act","arguments":argument})).collect();
+    let commands = Value::Array(commands);
+    let wire = completion(&task, commands.clone()).to_string().len();
+    assert!(wire > 20 * 1024 * 1024 && wire < 32 * 1024 * 1024, "{wire}");
+    let (status, answer) = finish_task(&app, &task, commands.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{}", answer.to_string().chars().take(400).collect::<String>());
+    assert_eq!(answer["recorded"], true, "{answer}");
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='ActivityScheduled'").await, 720);
+    let created = answer["created_task_ids"].clone();
+
+    // The stored receipt is bounded: a digest and the created task IDs.
+    let receipts = text_rows(&database, "SELECT task_id, receipt FROM dw_task_completions",
+        "SELECT task_id, receipt::text FROM dw_task_completions",
+        "SELECT task_id, CAST(receipt AS CHAR) FROM dw_task_completions").await;
+    let (_, receipt) = receipts.iter().find(|(id, _)| Some(id.as_str()) == task["task_id"].as_str()).expect("receipt");
+    let receipt: Value = serde_json::from_str(receipt).unwrap();
+    let stored = &receipt["workflow_task_completion"];
+    assert!(stored.get("request").is_none(), "{}", receipt.to_string().chars().take(400).collect::<String>());
+    assert!(stored["request_sha256"].as_str().is_some_and(|digest| digest.len() == 64), "{receipt}");
+    assert!(receipt.to_string().len() < 64 * 1024, "{}", receipt.to_string().len());
+
+    // An identical repeat replays; a different completion is not recorded.
+    let (status, replay) = finish_task(&app, &task, commands).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!((&replay["recorded"], &replay["reason"]), (&json!(false), &json!("already_completed")), "{replay}");
+    assert_eq!(replay["created_task_ids"], created);
+    let other = json!([{"type":"complete_workflow","result":envelope(Payload::Long(1))}]);
+    let (status, refused) = finish_task(&app, &task, other).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["recorded"], false, "{refused}");
+    assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='ActivityScheduled'").await, 720);
+    drop(app);
+    runtime.close().await;
+    database.remove().await;
 }
 
 // Portable wire-size vectors are shared with SDK planners. A valid JSON body
