@@ -743,6 +743,17 @@ named. These are the ones a client moving from 2.x can observe:
   as final. A workflow that needs a loser's effect must await it before
   returning. The parity harness records this as the named divergence
   `run-close-settles-open-work`.
+- **Open children at continue-as-new (native source, unreleased; Server
+  #1184).** PHP 2.x leaves a child that is still open when its parent
+  continues as new to itself: no run of the chain applies its parent-close
+  policy, and a later failure is never retried. Native follows Core
+  workflow#868 and workflow#1107 (Workflow 2.26.0). The continued run
+  supervises the child and the chain's final run applies its
+  `request_cancel`, `terminate` or `request_cancellation` policy when it
+  closes, recording the outcome in its own history; a child that fails while
+  the chain supervises it is retried under its recorded retry policy. A chain
+  continued before the upgrade keeps the 2.x behavior. The parity harness
+  records this as the named divergence `continue-as-new-child-supervision`.
 
 ## Design
 

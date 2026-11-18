@@ -50,6 +50,21 @@ pub(super) struct ChildBoundary {
     pub(super) policy: String,
 }
 
+/// A child whose parent-close policy a closing run applies: one it started,
+/// or one an earlier run of its continue-as-new chain handed to it.
+struct PolicyTarget {
+    /// The child's original link; a handed-over child's may no longer be
+    /// retained once the run that started it is pruned.
+    link_id: Option<String>,
+    sequence: Option<i64>,
+    policy: String,
+    child_instance: String,
+    child_run: String,
+    /// The run that started the child, which keys its child call.
+    origin_run: Option<String>,
+    handed_over: bool,
+}
+
 /// `CancellationContext::forDescendant`: the root's request, reason,
 /// requester, source, request time and deadline, with the child appended to
 /// the lineage under its own request id.
@@ -181,22 +196,59 @@ where
     /// - `request_cancellation` asks the child to cancel under the parent's
     ///   cooperative request, once. A parent without one first records its
     ///   own policy-owned root (`ParentCloseCancellation::ensureOrigin`).
+    ///
+    /// The children the run started come first, then those an earlier run
+    /// of its continue-as-new chain handed to it (`ChildSupervision`).
     pub(super) async fn enforce_parent_close_policies(tx: &mut Transaction<'_, DB>, parent: &DB::Row, closed_reason: &str, depth: u8) -> Result<()> {
         let parent_run = DB::string(parent, "id")?;
         let mut context = Self::current_cancellation_context(tx, &parent_run).await?;
         let links = Self::query("SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND link_type='child_workflow' AND parent_close_policy IN ('request_cancel','terminate','request_cancellation') ORDER BY sequence,id LIMIT 1001")
             .bind(&parent_run).fetch_all(&mut **tx).await?;
-        for link in links {
-            let policy = DB::string(&link, "parent_close_policy")?;
-            let boundary = ChildBoundary {
-                child_instance: DB::string(&link, "child_workflow_instance_id")?,
-                child_run: DB::string(&link, "child_workflow_run_id")?,
-                policy: policy.clone(),
+        let mut targets = Vec::with_capacity(links.len());
+        for link in &links {
+            targets.push(PolicyTarget {
+                link_id: Some(DB::string(link, "id")?),
+                sequence: DB::optional_number(link, "sequence")?,
+                policy: DB::string(link, "parent_close_policy")?,
+                child_instance: DB::string(link, "child_workflow_instance_id")?,
+                child_run: DB::string(link, "child_workflow_run_id")?,
+                origin_run: Some(parent_run.clone()),
+                handed_over: false,
+            });
+        }
+        // Then each open child an earlier run of its continue-as-new chain
+        // handed to this run (workflow#868). It keeps its original link,
+        // sequence, call and policy; this run only applies the policy, to
+        // the child's current run.
+        for child in Self::handed_over_children(tx, parent).await? {
+            targets.push(PolicyTarget {
+                link_id: child.link_id,
+                sequence: Some(child.sequence),
+                policy: child.policy,
+                child_instance: child.child_instance,
+                child_run: child.child_run,
+                origin_run: child.origin_run,
+                handed_over: true,
+            });
+        }
+        for target in targets {
+            let child = if target.handed_over {
+                match Self::current_child_run(tx, &target.child_run, &target.child_instance).await? {
+                    Some(child) => child,
+                    None => continue,
+                }
+            } else {
+                Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&target.child_run).fetch_one(&mut **tx).await?
             };
-            let child = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&boundary.child_run).fetch_one(&mut **tx).await?;
             if !matches!(DB::string(&child, "status")?.as_str(), "pending" | "running" | "waiting") {
                 continue;
             }
+            let policy = target.policy.clone();
+            let boundary = ChildBoundary {
+                child_instance: target.child_instance.clone(),
+                child_run: DB::string(&child, "id")?,
+                policy: policy.clone(),
+            };
             let reason = format!("Parent workflow closed ({closed_reason}); parent-close policy: {policy}.");
             if policy != "request_cancellation" {
                 let command = if policy == "terminate" {
@@ -208,15 +260,16 @@ where
                 let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,
                     "policy": policy, "reason": reason});
                 if error.is_none()
-                    && let Some(sequence) = DB::optional_number(&link, "sequence")?
+                    && let (Some(sequence), Some(origin_run)) = (target.sequence, target.origin_run.as_deref())
                 {
-                    // `markChildCallClosedByParentPolicy`: the parent's open
-                    // call for this child is closed with the policy, whichever
-                    // run the child continued into.
+                    // `markChildCallClosedByParentPolicy`: the open call for
+                    // this child is closed with the policy, whichever run the
+                    // child continued into. The call stays keyed by the run
+                    // that started the child.
                     let at = now();
                     Self::query("UPDATE workflow_child_calls SET status=$1,closed_reason=$2,closed_at=$3,updated_at=$4 WHERE parent_workflow_run_id=$5 AND sequence=$6 AND status IN ('scheduled','started')")
                         .bind(command.closed()).bind(command.closed()).bind(DB::bind_time(at)).bind(DB::bind_time(at))
-                        .bind(&parent_run).bind(sequence)
+                        .bind(origin_run).bind(sequence)
                         .execute(&mut **tx).await?;
                 }
                 let kind = match error {
@@ -229,7 +282,7 @@ where
                 Self::append(tx, &parent_run, kind, payload, None, None).await?;
                 continue;
             }
-            Self::apply_request_cancellation_policy(tx, parent, &link, &boundary, closed_reason, &mut context).await?;
+            Self::apply_request_cancellation_policy(tx, parent, &target, &boundary, closed_reason, &mut context).await?;
         }
         Ok(())
     }
@@ -240,7 +293,7 @@ where
     async fn apply_request_cancellation_policy(
         tx: &mut Transaction<'_, DB>,
         parent: &DB::Row,
-        link: &DB::Row,
+        target: &PolicyTarget,
         boundary: &ChildBoundary,
         closed_reason: &str,
         context: &mut Option<Value>,
@@ -280,11 +333,12 @@ where
             return Ok(());
         };
         // `CommandContext::workflow`: the enforcer asks as the parent,
-        // naming the child's link and its sequence.
+        // naming the child's original link and its sequence, also for a
+        // child an earlier run of the chain started.
         let policy_caller = json!({"caller": {"type": "workflow", "label": "Workflow"},
             "auth": {"status": "not_applicable", "method": "none"},
             "workflow": {"parent_instance_id": DB::string(parent, "workflow_instance_id")?, "parent_run_id": parent_run,
-                "sequence": DB::optional_number(link, "sequence")?.unwrap_or(0), "child_call_id": DB::string(link, "id")?}});
+                "sequence": target.sequence.unwrap_or(0), "child_call_id": target.link_id}});
         let requested =
             Self::request_child_cancellation_from_parent(tx, boundary, context, Some(&policy_caller), Arc::new(Semaphore::new(1))).await?;
         let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,

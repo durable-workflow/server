@@ -524,6 +524,15 @@ where
             "pending" | "running" | "waiting"
         ) || DB::string(&parent, "current_run_id")? != parent_run
         {
+            // A child its parent handed over at continue-as-new (workflow#868)
+            // is retried under the policy the parent recorded while a run of
+            // the chain still supervises it (workflow#1107). The closed
+            // parent's history stays final.
+            if matches!(resolution, ChildResolution::Failed(_))
+                && !matches!(DB::string(&parent, "status")?.as_str(), "pending" | "running" | "waiting")
+            {
+                Self::retry_handed_over_child(tx, &parent, link, child, sequence, &original).await?;
+            }
             return Ok(());
         }
         if DB::string(&parent, "workflow_instance_id")?
@@ -577,7 +586,7 @@ where
         // `dispatchParentResumeTasksForRun`: a failed child is retried, when
         // its policy allows, before the parent sees it fail.
         if matches!(resolution, ChildResolution::Failed(_))
-            && Self::start_child_retry(tx, &parent, link, call, child, sequence, &call_id).await?
+            && Self::start_child_retry(tx, &parent, link, call, child, sequence, &call_id, false).await?
         {
             return Ok(());
         }
@@ -656,6 +665,7 @@ where
     /// attempts left and the failure is retryable, the child instance starts
     /// a new run after the policy's backoff, and the parent keeps waiting on
     /// the same call. Returns whether a retry started.
+    #[allow(clippy::too_many_arguments)]
     async fn start_child_retry(
         tx: &mut Transaction<'_, DB>,
         parent: &DB::Row,
@@ -664,6 +674,7 @@ where
         failed: &DB::Row,
         sequence: i64,
         call_id: &str,
+        handed_over: bool,
     ) -> Result<bool> {
         let parent_run = DB::string(parent, "id")?;
         let failed_run = DB::string(failed, "id")?;
@@ -775,7 +786,13 @@ where
             fields.retain(|_, value| !value.is_null());
         }
         super::selections::merge(&mut started, &parallel);
-        Self::append(tx, &parent_run, "ChildRunStarted", started, None, None).await?;
+        // `ChildRunHistory::recordRetryStarted`: a handed-over child's closed
+        // parent records nothing; its supervisions move to the retry run.
+        if handed_over {
+            Self::follow_child_retry(tx, parent, sequence, &instance, &retry_run, at).await?;
+        } else {
+            Self::append(tx, &parent_run, "ChildRunStarted", started, None, None).await?;
+        }
         let mut child_started = json!({"workflow_class":workflow_class,"workflow_type":workflow_type,"workflow_instance_id":instance,
             "workflow_run_id":retry_run,"parent_workflow_instance_id":DB::string(parent, "workflow_instance_id")?,
             "parent_workflow_run_id":parent_run,"parent_sequence":sequence,"workflow_link_id":retry_link,"child_call_id":call_id,
@@ -802,7 +819,58 @@ where
         Self::query("UPDATE workflow_child_calls SET resolved_child_instance_id=$1,resolved_child_run_id=$2,status='started',started_at=$3,metadata=$4,updated_at=$5 WHERE id=$6")
             .bind(&instance).bind(&retry_run).bind(DB::bind_time(at)).bind(DB::document(&metadata)).bind(DB::bind_time(at))
             .bind(DB::number(call, "id")?).execute(&mut **tx).await?;
-        tx.summary_changed(&parent_run);
+        if !handed_over {
+            tx.summary_changed(&parent_run);
+        }
         Ok(true)
+    }
+
+    /// `ChildRetryStart::start` for a handed-over child: the parent that
+    /// started it has continued as new and a later run of its chain still
+    /// supervises it, so its failure is retried under the parent's recorded
+    /// policy, with the same call and attempt count, as if the parent were
+    /// open. Anything that does not match the parent's latest attempt of the
+    /// call leaves the failure final.
+    async fn retry_handed_over_child(
+        tx: &mut Transaction<'_, DB>,
+        parent: &DB::Row,
+        link: &DB::Row,
+        failed: &DB::Row,
+        sequence: i64,
+        original: &Value,
+    ) -> Result<()> {
+        let parent_run = DB::string(parent, "id")?;
+        let failed_run = DB::string(failed, "id")?;
+        let child_instance = DB::string(failed, "workflow_instance_id")?;
+        if DB::string(link, "child_workflow_instance_id")? != child_instance
+            || DB::string(parent, "workflow_instance_id")? != DB::string(link, "parent_workflow_instance_id")?
+            || !Self::handed_over_child_supervised(tx, parent, sequence, &child_instance).await?
+        {
+            return Ok(());
+        }
+        // `ChildRunHistory::latestLinkForSequence`: only the call's latest
+        // attempt is retried.
+        let latest = Self::query("SELECT child_workflow_run_id FROM workflow_links WHERE parent_workflow_run_id=$1 AND sequence=$2 AND link_type='child_workflow' ORDER BY created_at DESC,id DESC LIMIT 1")
+            .bind(&parent_run).bind(sequence).fetch_optional(&mut **tx).await?;
+        if latest.map(|row| DB::string(&row, "child_workflow_run_id")).transpose()?.as_deref() != Some(failed_run.as_str()) {
+            return Ok(());
+        }
+        let calls = Self::query("SELECT * FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence=$2 LIMIT 2")
+            .bind(&parent_run).bind(sequence).fetch_all(&mut **tx).await?;
+        let [call] = calls.as_slice() else {
+            return Ok(());
+        };
+        // The call's id, as an open parent's resolution reads it: a
+        // continued or retried child names its first call.
+        let call_id = if original["continued_from_run_id"].is_string() || original["retry_of_child_workflow_run_id"].is_string() {
+            match original["child_call_id"].as_str() {
+                Some(call_id) => call_id.to_owned(),
+                None => return Ok(()),
+            }
+        } else {
+            DB::string(link, "id")?
+        };
+        Self::start_child_retry(tx, parent, link, call, failed, sequence, &call_id, true).await?;
+        Ok(())
     }
 }

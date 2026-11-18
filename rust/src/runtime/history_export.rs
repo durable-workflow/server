@@ -139,7 +139,7 @@ pub(super) const LINKS: &[(&str, Column)] = &[
 // A related run of another namespace is never exported, whatever a link
 // row says (Server #765); a command's signal or update must share its
 // instance.
-pub(super) const PARENTS_SQL: &str = "SELECT l.*,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS is_primary_parent_flag,r.run_number,r.workflow_type,r.workflow_class,r.status,r.closed_reason FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.parent_workflow_run_id WHERE l.child_workflow_run_id=$1 AND (r.id IS NULL OR r.namespace=(SELECT m.namespace FROM workflow_runs m WHERE m.id=l.child_workflow_run_id)) ORDER BY l.created_at,l.id";
+pub(super) const PARENTS_SQL: &str = "SELECT l.*,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS is_primary_parent_flag,r.run_number,r.workflow_type,r.workflow_class,r.status,r.closed_reason FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.parent_workflow_run_id WHERE l.child_workflow_run_id=$1 AND l.link_type<>'child_supervision' AND (r.id IS NULL OR r.namespace=(SELECT m.namespace FROM workflow_runs m WHERE m.id=l.child_workflow_run_id)) ORDER BY l.created_at,l.id";
 pub(super) const CHILDREN_SQL: &str = "SELECT l.*,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS is_primary_parent_flag,r.run_number,r.workflow_type,r.workflow_class,r.status,r.closed_reason FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.child_workflow_run_id WHERE l.parent_workflow_run_id=$1 AND l.link_type='continue_as_new' AND (r.id IS NULL OR r.namespace=(SELECT m.namespace FROM workflow_runs m WHERE m.id=l.parent_workflow_run_id)) ORDER BY l.created_at,l.id";
 
 /// The rows `forRun` reads for one run.

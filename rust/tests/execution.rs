@@ -393,6 +393,8 @@ mod worker_error_bodies;
 mod child_descriptions;
 #[path = "execution/child_retries.rs"]
 mod child_retries;
+#[path = "execution/child_supervision.rs"]
+mod child_supervision;
 #[path = "execution/deep_json_bodies.rs"]
 mod deep_json_bodies;
 #[path = "execution/key_order.rs"]

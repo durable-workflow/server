@@ -46,6 +46,7 @@ mod scope_checkpoint;
 mod child_retries;
 mod child_summary;
 mod child_cancellation;
+mod child_supervision;
 mod children;
 mod cluster_info;
 mod command_context;

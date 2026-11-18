@@ -52,7 +52,7 @@ pub(super) const PRUNED: &[(&str, &str, usize)] = &[
     ("signals_deleted", "DELETE FROM workflow_signal_records WHERE workflow_run_id=$1 OR requested_workflow_run_id=$2 OR resolved_workflow_run_id=$3", 3),
     ("messages_deleted", "DELETE FROM workflow_messages WHERE workflow_run_id=$1", 1),
     ("child_calls_deleted", "DELETE FROM workflow_child_calls WHERE parent_workflow_run_id=$1", 1),
-    ("links_deleted", "DELETE FROM workflow_links WHERE parent_workflow_run_id=$1 OR child_workflow_run_id=$2", 2),
+    ("links_deleted", "DELETE FROM workflow_links WHERE parent_workflow_run_id=$1 OR (child_workflow_run_id=$2 AND link_type<>'child_supervision')", 2),
     ("activity_executions_deleted", "DELETE FROM activity_executions WHERE workflow_run_id=$1", 1),
     ("commands_deleted", "DELETE FROM workflow_commands WHERE workflow_run_id=$1 OR requested_workflow_run_id=$2 OR resolved_workflow_run_id=$3", 3),
     ("failures_deleted", "DELETE FROM workflow_failures WHERE workflow_run_id=$1", 1),
