@@ -32,6 +32,15 @@
       "harness": "The native cluster-info comparator requires the exact field and shared-vector default value. PHP and embedded observations and frozen fixtures remain unchanged. Actual HTTP boundary and TCP refusal tests consume the shared completion-limit vectors."
     },
     {
+      "id": "deterministic-schedule-run-ids",
+      "issue": "https://github.com/durable-workflow/server/issues/599",
+      "since": "native source (unreleased)",
+      "applies_to": ["schedule-catalog", "schedule-policies"],
+      "published_php": "A scheduled, backfilled or drained schedule occurrence starts its run under a generated ULID workflow id.",
+      "native": "As embedded mode (Workflow 2.29.0 PhpClassScheduleStarter::instanceId), an occurrence's run id is schedule.ns:{sha256(namespace), 32 hex}:{byte length}:{schedule_id}:backfill:{unix seconds}, with the schedule id replaced by h:{sha256(schedule_id)} when the id would exceed 191 characters or leave [A-Za-z0-9._:-]. A repeated fire of an occurrence whose run exists is skipped as already_fired_occurrence. Manual triggers keep generated ids.",
+      "harness": "Schedule normalization treats the deterministic form as a volatile identity, as it does ULIDs, and the catalog and dispatch-summary checks accept it for the native target only. PHP and embedded observations and frozen fixtures remain unchanged. All-backend execution tests cover ordinary, backfilled, namespaced, hashed and repeated occurrences."
+    },
+    {
       "id": "operation-name-column-cap",
       "issue": "https://github.com/durable-workflow/server/issues/607",
       "since": "native source (unreleased)",

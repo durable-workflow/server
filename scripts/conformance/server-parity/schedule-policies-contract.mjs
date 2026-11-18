@@ -9,8 +9,11 @@ const EXPECTED = JSON.parse(readFileSync(new URL('../../../tests/Fixtures/Server
 // addresses and signed continuation tokens differ between servers and runs.
 // Next fire times are checked on their own, against the published cron
 // corpus semantics.
+// Native names a schedule occurrence's run deterministically (registered
+// divergence deterministic-schedule-run-ids); that identity is volatile too.
+export const OCCURRENCE_RUN_ID = /^schedule\.ns:[0-9a-f]{32}:(?:\d+:[A-Za-z0-9._:-]+|h:[0-9a-f]{64}):backfill:-?\d+$/;
 const VOLATILE = [/^\d{4}-\d{2}-\d{2}T/, /^[0-9A-Za-z]{26}$/, /^sha256:[0-9a-f]{64}$/, /^generated::/,
-  /^api\.schedules\./, /^\d+\.\d+\.\d+\.\d+$/, /^[A-Za-z0-9_-]{40,}\.[0-9a-f]{64}$/];
+  /^api\.schedules\./, /^\d+\.\d+\.\d+\.\d+$/, /^[A-Za-z0-9_-]{40,}\.[0-9a-f]{64}$/, OCCURRENCE_RUN_ID];
 // How late a backfilled or scheduled occurrence fired depends on the clock.
 const VOLATILE_FIELDS = new Set(['fire_lag_ms']);
 
