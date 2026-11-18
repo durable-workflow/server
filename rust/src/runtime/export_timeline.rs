@@ -685,11 +685,22 @@ fn summary(
         ),
         "MessageCursorAdvanced" => format!("Message cursor advanced to {}.", int(&payload["new_position"]).unwrap_or(0)),
         "WorkflowCompleted" => "Workflow completed.".to_owned(),
-        "WorkflowTimedOut" => match payload["timeout_kind"].as_str() {
-            Some("execution_timeout") => "Workflow execution deadline expired.".to_owned(),
-            Some("run_timeout") => "Workflow run deadline expired.".to_owned(),
-            _ => message.map_or_else(|| "Workflow timed out.".to_owned(), |message| format!("Workflow timed out: {message}.")),
-        },
+        "WorkflowTimedOut" => {
+            let timed_out = match payload["timeout_kind"].as_str() {
+                Some("execution_timeout") => "Workflow execution deadline expired.".to_owned(),
+                Some("run_timeout") => "Workflow run deadline expired.".to_owned(),
+                _ => message.map_or_else(|| "Workflow timed out.".to_owned(), |message| format!("Workflow timed out: {message}.")),
+            };
+            // How deadline-triggered cleanup ended, said plainly (#1201).
+            match super::timeout_cleanup::summary(&payload[super::timeout_cleanup::STARTED_KEY]) {
+                Some(summary) => format!("{timed_out} {summary}"),
+                None => timed_out,
+            }
+        }
+        "WorkflowTimeoutCleanupStarted" => format!(
+            "Work deadline passed; timeout cleanup runs until {}.",
+            string(&payload["cleanup_deadline_at"]).unwrap_or("the hard deadline")
+        ),
         "WorkflowFailed" => message.map_or_else(|| "Workflow failed.".to_owned(), |message| format!("Workflow failed: {message}.")),
         "ScheduleCreated" => format!("Schedule {} created.", text("schedule_id")),
         "SchedulePaused" => format!("Schedule {} paused.", text("schedule_id")),
@@ -834,7 +845,7 @@ fn command_outcome(kind: &str, command: Option<&Value>, payload: &Value) -> Valu
         "UpdateAccepted" | "UpdateApplied" => Value::Null,
         "UpdateCompleted" => json!(if payload.get("failure_id").is_some() { "update_failed" } else { "update_completed" }),
         "CancelRequested" => json!("cancelled"),
-        "CooperativeCancellationRequested" => json!("cancellation_requested"),
+        "CooperativeCancellationRequested" | "WorkflowTimeoutCleanupStarted" => json!("cancellation_requested"),
         "TerminateRequested" => json!("terminated"),
         "ArchiveRequested" => json!("archived"),
         _ => command.map_or(Value::Null, |command| string_value(&command["outcome"])),
