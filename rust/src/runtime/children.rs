@@ -55,6 +55,7 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
             "retry_policy",
             "execution_timeout_seconds",
             "run_timeout_seconds",
+            "timeout_cleanup_seconds",
             "await",
         ],
     )?;
@@ -322,12 +323,14 @@ where
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn start_child(
         tx: &mut Transaction<'_, DB>,
         parent: &DB::Row,
         task_id: &str,
         command: &Value,
         sequence: i64,
+        stale_after: i64,
     ) -> Result<StartedChild> {
         let parent_run = DB::string(parent, "id")?;
         let parent_instance = DB::string(parent, "workflow_instance_id")?;
@@ -362,6 +365,15 @@ where
         let run_deadline = super::child_retries::deadline(started_at, run_timeout)?;
         let retry_policy = super::child_retries::retry_snapshot(command);
         let timeout_policy = super::child_retries::timeout_snapshot(execution_timeout, run_timeout);
+        // Server #1201: a child has its own opt-in, admitted like a start's
+        // on the child's queue; the parent's never carries over.
+        let timeout_cleanup = command.get("timeout_cleanup_seconds").and_then(Value::as_i64);
+        if let Some(allowance) = timeout_cleanup {
+            if let Some(_message) = super::timeout_cleanup::admission_error(allowance, execution_timeout, run_timeout) {
+                return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_timeout_cleanup"));
+            }
+            Self::assert_timeout_cleanup_worker(tx, namespace.as_deref().unwrap_or("default"), &queue, stale_after).await?;
+        }
         Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,started_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)")
             .bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at,compatibility,run_timeout_seconds,execution_deadline_at,run_deadline_at) VALUES ($1,$2,$3,$4,$5,1,'pending','avro',$6,$7,$8,$9,$10,$11,$12,NULLIF($13,0),$14,$15)")
@@ -417,6 +429,10 @@ where
         let mut child_started = json!({"workflow_class":workflow_type,"workflow_type":workflow_type,"workflow_instance_id":child_instance,"workflow_run_id":child_run,"parent_workflow_instance_id":parent_instance,"parent_workflow_run_id":parent_run,"parent_sequence":sequence,"workflow_link_id":call,"child_call_id":call,"retry_policy":retry_policy,"timeout_policy":timeout_policy});
         for (field, value) in deadlines.as_object().expect("an object") {
             child_started[field] = value.clone();
+        }
+        if let Some(allowance) = timeout_cleanup {
+            child_started[super::timeout_cleanup::STARTED_KEY] =
+                super::timeout_cleanup::started_payload(allowance, execution_deadline, run_deadline);
         }
         Self::attach_workflow_contract(tx, &queue, workflow_type, None, &mut child_started).await?;
         Self::append(tx, &child_run, "WorkflowStarted", child_started, None, None).await?;
@@ -801,6 +817,12 @@ where
             for (field, value) in source.as_object().expect("an object") {
                 child_started[field] = value.clone();
             }
+        }
+        // Server #1201: a retried child keeps its allowance, derived from
+        // the retry's own clocks.
+        if let Some(allowance) = Self::timeout_cleanup_allowance(tx, &failed_run).await? {
+            child_started[super::timeout_cleanup::STARTED_KEY] =
+                super::timeout_cleanup::started_payload(allowance, execution_deadline, run_deadline);
         }
         let queue = DB::string(failed, "queue")?;
         Self::attach_workflow_contract(tx, &queue, &workflow_type, None, &mut child_started).await?;

@@ -595,6 +595,7 @@ where
         };
         let execution_timeout = request.execution_timeout;
         let run_timeout = request.run_timeout;
+        let timeout_cleanup = request.timeout_cleanup;
         if memo.is_none() && body.get("memo").is_some_and(|value| !value.is_null()) {
             return Err(refuse(
                 StatusCode::CONFLICT,
@@ -615,6 +616,11 @@ where
         // reservation, routing and duplicate checks; its refusals name
         // `workflow_type`, as the controller reports Core's LogicException.
         let prepared_attributes = search_attributes.map(|attributes| attributes.prepare()).transpose()?;
+        // Server #1201: the opt-in is admitted only where a worker can
+        // deliver the timeout interruption, never as a silent hard timeout.
+        if timeout_cleanup.is_some() {
+            Self::assert_timeout_cleanup_worker(tx, namespace, queue, stale_after).await?;
+        }
         let run_id = id();
         let command_id = id();
         let started_at = now();
@@ -698,6 +704,11 @@ where
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
+        // The admitted allowance and derived work deadlines, immutable here;
+        // native reads them back from this event (#1201).
+        if let Some(allowance) = timeout_cleanup {
+            started[super::timeout_cleanup::STARTED_KEY] = super::timeout_cleanup::started_payload(allowance, execution_deadline, run_deadline);
+        }
         if let Some(fingerprint) = cohort.as_ref().and_then(|cohort| super::start_definition::fingerprint_for(&workers, workflow_type, cohort)) {
             started["workflow_definition_fingerprint"] = json!(fingerprint);
             started["workflow_definition_fingerprint_source"] = json!("worker");
@@ -953,6 +964,10 @@ where
             "run_timeout_seconds": DB::optional_number(&row,"run_timeout_seconds")?,
             "execution_deadline_at": super::run_describe::iso8601(DB::optional_instant(&row,"execution_deadline_at")?),
             "run_deadline_at": super::run_describe::iso8601(DB::optional_instant(&row,"run_deadline_at")?)});
+        // Server #1201: only an opted-in run reports its cleanup state.
+        if let Some(view) = Self::timeout_cleanup_view(&mut **tx, &row).await? {
+            described[super::timeout_cleanup::STARTED_KEY] = view;
+        }
         if let Some(stale_after) = stale_after {
             let fields = self
                 .describe_fields(tx, &row, current, terminal, &described["input_envelope"], &described["output_envelope"], stale_after)
@@ -2703,10 +2718,15 @@ where
                     continue;
                 }
             }
-            let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
+            let mut run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+            // Server #1201: a workflow claim past the work deadline enters
+            // timeout cleanup first, so this claim carries the interruption.
+            if kind == "workflow" && self.enter_timeout_cleanup(tx, &run, now()).await? {
+                run = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut **tx).await?;
+            }
             tx.remember_run_tags(&run_id,&run);
             let cancellation = Self::cancellation_request(&run)?;
             if cancellation.is_some()
@@ -3785,6 +3805,14 @@ where
         } else {
             self.close_expired_run(tx, &run, &task, &body["workflow_task_attempt"]).await?
         };
+        // Server #1201: a completion that first notices the work deadline
+        // enters timeout cleanup before its commands apply, so the outcome
+        // does not depend on whether the idle wake ran first.
+        let run = if !deferred && self.enter_timeout_cleanup(&mut tx, &run, now()).await? {
+            Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut *tx).await?
+        } else {
+            run
+        };
         // Workflow #930: the deadline close above is never metered. Before
         // the worker's first write, its local activities' exact events and
         // rows (other commands at one event) must fit the limits; then the
@@ -4075,7 +4103,7 @@ where
         } else if command["type"] == "start_child_workflow" {
             Self::guard_pending(tx, &run_id, super::memo_limits::Pending::Children, &limits, task_id, attempt).await?;
             sequence += 1;
-            let started = Self::start_child(tx, &run, task_id, command, sequence).await?;
+            let started = Self::start_child(tx, &run, task_id, command, sequence, self.worker_stale_after_seconds).await?;
             created.push(started.task);
             if command["await"] == super::children::AWAIT_STARTED {
                 let mut turn = start_turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -4676,6 +4704,8 @@ where
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {
         // Expired root authority wins before any ordinary due timer fires.
         self.expire_cooperative_deadlines().await?;
+        // An opted-in run reaches its work deadline even while idle (#1201).
+        self.enter_due_timeout_cleanups().await?;
         self.expire_activity_deadlines().await?;
         // An activity task whose lease expired is settled, not re-claimed.
         self.expire_activity_leases().await?;
@@ -6158,6 +6188,10 @@ fn capabilities_template() -> Value {
         "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
     value[super::continuation::CAPABILITY] = super::continuation::capability();
+    // Gated off until installed acceptance (Server #1201).
+    if let Some(advertised) = super::timeout_cleanup::advertisement() {
+        value[super::timeout_cleanup::CAPABILITY] = advertised;
+    }
     value["runtime_external_payload_transport"] = Value::Null;
     value["supported_workflow_task_commands"]
         .as_array_mut()

@@ -69,6 +69,28 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 3.1.0 / Server 3.13.0 (native)
+
+A drop-in upgrade from Chart 3.0.0. The chart selects native Server 3.13.0 and
+keeps every value; Chart 3.0.x values files work unchanged. Server 3.13.0 has no
+schema change, so there is no `schema-upgrade` step and the default
+`RollingUpdate` replaces pods in place. Rolling back to Chart 3.0.0 is an
+ordinary Helm rollback.
+
+Behavior changes to review (details in
+[Server 3.13.0](../../../../docs/releases/3.13.0.md)):
+
+- When `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` is unset, the per-transaction
+  history budget defaults to four times the completion cap, so fan-outs within
+  the documented 32 MiB completion size complete. On MariaDB, completions over
+  about 16 MiB also need `max_allowed_packet` of at least 64 MiB.
+- Stale worker registrations expire after `DW_WORKER_REGISTRATION_RETENTION_SECONDS`
+  (default 24 hours), and `GET /api/workers` is paged at 100.
+- Schedule occurrences start runs under deterministic ids.
+- Storage permission failures return `external_payload_storage_access_denied`
+  (424, not retryable).
+- Over-long failure classes and operation names are refused with `422`.
+
 ### Chart 3.0.0 / Server 3.12.0 (native)
 
 **Every backend needs an explicit native schema upgrade from 3.11.x.** Chart
