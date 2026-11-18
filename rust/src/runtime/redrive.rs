@@ -426,6 +426,11 @@ where
             ("replayed_started_at", json!(replayed)), ("workflow_link_id", json!(link_id))] {
             started[key] = value;
         }
+        // Server #1201: the successor keeps the source's allowance, with its
+        // work deadlines derived from its own clocks.
+        if let Some(allowance) = super::timeout_cleanup::allowance(&started) {
+            started[super::timeout_cleanup::STARTED_KEY] = super::timeout_cleanup::started_payload(allowance, execution_deadline, run_deadline);
+        }
         Self::append(&mut tx, &run_id, "WorkflowStarted", started, None, Some(&command_id)).await?;
         // Core's redrive writer copies each reused step in step
         // order. A step reused more than once keeps the time it first ran.

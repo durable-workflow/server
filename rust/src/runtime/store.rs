@@ -585,6 +585,7 @@ where
         };
         let execution_timeout = request.execution_timeout;
         let run_timeout = request.run_timeout;
+        let timeout_cleanup = request.timeout_cleanup;
         if memo.is_none() && body.get("memo").is_some_and(|value| !value.is_null()) {
             return Err(refuse(
                 StatusCode::CONFLICT,
@@ -605,6 +606,11 @@ where
         // reservation, routing and duplicate checks; its refusals name
         // `workflow_type`, as the controller reports Core's LogicException.
         let prepared_attributes = search_attributes.map(|attributes| attributes.prepare()).transpose()?;
+        // Server #1201: the opt-in is admitted only where a worker can
+        // deliver the timeout interruption, never as a silent hard timeout.
+        if timeout_cleanup.is_some() {
+            Self::assert_timeout_cleanup_worker(tx, namespace, queue, stale_after).await?;
+        }
         let run_id = id();
         let command_id = id();
         let started_at = now();
@@ -688,6 +694,11 @@ where
         started["run_timeout_seconds"] = json!(run_timeout);
         started["execution_deadline_at"] = json!(execution_deadline);
         started["run_deadline_at"] = json!(run_deadline);
+        // The admitted allowance and derived work deadlines, immutable here;
+        // native reads them back from this event (#1201).
+        if let Some(allowance) = timeout_cleanup {
+            started[super::timeout_cleanup::STARTED_KEY] = super::timeout_cleanup::started_payload(allowance, execution_deadline, run_deadline);
+        }
         if let Some(fingerprint) = cohort.as_ref().and_then(|cohort| super::start_definition::fingerprint_for(&workers, workflow_type, cohort)) {
             started["workflow_definition_fingerprint"] = json!(fingerprint);
             started["workflow_definition_fingerprint_source"] = json!("worker");
@@ -4642,6 +4653,8 @@ where
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {
         // Expired root authority wins before any ordinary due timer fires.
         self.expire_cooperative_deadlines().await?;
+        // An opted-in run reaches its work deadline even while idle (#1201).
+        self.enter_due_timeout_cleanups().await?;
         self.expire_activity_deadlines().await?;
         // An activity task whose lease expired is settled, not re-claimed.
         self.expire_activity_leases().await?;
@@ -6124,6 +6137,10 @@ fn capabilities_template() -> Value {
         "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
     value[super::continuation::CAPABILITY] = super::continuation::capability();
+    // Gated off until installed acceptance (Server #1201).
+    if let Some(advertised) = super::timeout_cleanup::advertisement() {
+        value[super::timeout_cleanup::CAPABILITY] = advertised;
+    }
     value["runtime_external_payload_transport"] = Value::Null;
     value["supported_workflow_task_commands"]
         .as_array_mut()

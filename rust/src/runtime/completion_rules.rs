@@ -791,8 +791,9 @@ const BLOB_FIELDS: &[(&str, &str)] = &[
 /// scope checks refuse on the wrong command.
 const READS: &[(&str, &[&str])] = &[
     ("complete_workflow", &["result", "payload_codec"]),
+    // `failure` carries Server #1201's interruption marker.
     ("fail_workflow", &["message", "exception_class", "exception_type", "non_retryable", "exception",
-        "failed_step_sequence", "failed_activity_execution_id"]),
+        "failed_step_sequence", "failed_activity_execution_id", "failure"]),
     ("schedule_activity", &["activity_type", "arguments", "payload_codec", "connection", "queue", "retry_policy",
         "start_to_close_timeout", "schedule_to_start_timeout", "schedule_to_close_timeout", "heartbeat_timeout",
         "cancellation_policy", "worker_session"]),
