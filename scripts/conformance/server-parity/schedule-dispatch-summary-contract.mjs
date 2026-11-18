@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 
-export function checkDispatchSummary(summary) {
+/// `workflowIdentity` is the started workflow's identity form: a generated
+/// ULID unless the caller names native's deterministic occurrence id.
+export function checkDispatchSummary(summary, workflowIdentity = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/) {
   assert.ok(summary && typeof summary === 'object', 'complete dispatch summary');
   assert.deepStrictEqual(Object.keys(summary).sort(), ['buffered_actions_count', 'last_outcome', 'state', 'version']);
   assert.equal(summary.version, 1, 'dispatch summary version');
@@ -27,7 +29,7 @@ export function checkDispatchSummary(summary) {
   assert.ok(['started', 'buffered', 'skipped', 'failed'].includes(last.outcome), 'dispatch outcome kind');
   if (last.outcome === 'started') {
     assert.equal(last.reason, null);
-    assert.match(last.workflow_instance_id, ulid);
+    assert.match(last.workflow_instance_id, workflowIdentity);
     assert.match(last.workflow_run_id, ulid);
   } else {
     assert.deepStrictEqual([last.workflow_instance_id, last.workflow_run_id], [null, null]);

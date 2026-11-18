@@ -84,6 +84,16 @@ fn ulid(value: &str) -> bool {
             .all(|byte| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&byte))
 }
 
+/// A started workflow's instance id: a generated ULID, or the
+/// deterministic id of a schedule occurrence's run (Server #599), bounded
+/// by the 191-character instance column and its alphabet.
+fn workflow_instance(value: &str) -> bool {
+    ulid(value)
+        || value.starts_with("schedule.ns:")
+            && value.len() <= 191
+            && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+}
+
 fn instant(value: &str) -> bool {
     value.len() == 27
         && value.is_ascii()
@@ -125,7 +135,7 @@ impl Outcome {
                         .workflow_instance_id
                         .as_ref()
                         .map(String::as_str)
-                        .is_some_and(ulid)
+                        .is_some_and(workflow_instance)
                     && self
                         .workflow_run_id
                         .as_ref()
@@ -347,6 +357,23 @@ mod tests {
             ));
         }
         assert!(matches!(Summary::read(Some("{\"version\":1,\"version\":1,\"state\":\"never\",\"last_outcome\":null,\"buffered_actions_count\":0}")).state, State::Unavailable));
+    }
+
+    /// Server #599: a schedule occurrence's run is named deterministically.
+    #[test]
+    fn started_outcomes_name_occurrence_runs() {
+        let started = |workflow: &str| {
+            let outcome = Outcome::new(Kind::Started, "2026-11-06T08:00:00.123000Z".parse().unwrap(), None,
+                Some(workflow), Some("01ARZ3NDEKTSV4RRFFQ69G5FAX"));
+            Summary::read(Some(&Summary::recorded(outcome, Some(0)).encoded())).state
+        };
+        let occurrence = "schedule.ns:37a8eec1ce19687d132fe29051dca629:7:nightly:backfill:1794992400";
+        assert!(matches!(started(occurrence), State::Known));
+        let hashed = format!("schedule.ns:37a8eec1ce19687d132fe29051dca629:h:{}:backfill:1794992400", "a".repeat(64));
+        assert!(matches!(started(&hashed), State::Known));
+        for invalid in ["nightly", "schedule.ns:bad id", &format!("schedule.ns:{}", "a".repeat(180))] {
+            assert!(matches!(started(invalid), State::Unavailable), "{invalid}");
+        }
     }
 
     #[test]

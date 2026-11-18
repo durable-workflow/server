@@ -1306,6 +1306,28 @@ so a workflow that needs a loser's effect must await it before returning.
 - `POST /api/schedules/{id}/trigger` — Trigger immediately
 - `POST /api/schedules/{id}/backfill` — Backfill missed runs
 
+A scheduled, backfilled or drained buffered occurrence starts its run under a
+deterministic workflow ID, the same one embedded mode uses (Workflow 2.29.0),
+so an application can derive the run for an occurrence
+([#599](https://github.com/durable-workflow/server/issues/599)):
+
+```text
+schedule.ns:{namespace digest}:{schedule ID byte length}:{schedule ID}:backfill:{occurrence Unix seconds}
+```
+
+The namespace digest is the first 32 hex digits of the SHA-256 of the
+schedule's namespace name, so equal schedule IDs in two namespaces name
+different runs. A schedule ID that would make the workflow ID longer than 191
+characters, or that uses a character outside `A-Z a-z 0-9 . _ : -`, is replaced
+by `h:{SHA-256 of the schedule ID, 64 hex}`. For example, schedule `nightly` in
+namespace `default` at `2026-11-18T09:00:00Z` starts
+`schedule.ns:37a8eec1ce19687d132fe29051dca629:7:nightly:backfill:1794992400`.
+The suffix reads `backfill` for every occurrence, as in embedded mode. If the
+run for an occurrence already exists, a repeated fire of it records the skip
+`already_fired_occurrence` and starts nothing. A manual trigger has no
+occurrence, so its run gets a generated ULID. Runs started before this change
+keep their generated IDs.
+
 The native development [scalar summary draft](schedule-list-scalar-summary.md) adds
 counters, latest-instance identity, a nullable current-run summary and the stored
 `last_skip_reason` / `last_skipped_at` pair. The reason is nullable complete text
@@ -1329,8 +1351,9 @@ Native list rows and describe responses also carry a top-level
 
 A known outcome has exactly `id`, `outcome`, `recorded_at`, `reason`,
 `workflow_instance_id` and `workflow_run_id`. Outcomes are `started`, `buffered`,
-`skipped` or `failed`. Started outcomes name both new uppercase ULIDs and have
-a null reason. Other outcomes have null workflow identities. Skipped and failed
+`skipped` or `failed`. Started outcomes name the new workflow instance (a
+generated ULID, or an occurrence's deterministic ID above) and its run's
+uppercase ULID, and have a null reason. Other outcomes have null workflow identities. Skipped and failed
 outcomes keep the complete reason, including empty strings and whitespace;
 buffered outcomes have a null reason. Times are UTC with six fractional digits.
 The complete summary is bounded to 4096 serialized UTF-8 bytes. An outcome that

@@ -555,7 +555,7 @@ where
             &mut tx,
             &body,
             &self.namespace,
-            StartMetadata { memo: Some(&memo), search_attributes: search_attributes.as_ref() },
+            StartMetadata { memo: Some(&memo), search_attributes: search_attributes.as_ref(), instance_id: None },
             arguments.as_deref(),
             context.as_ref(),
             self.worker_stale_after_seconds,
@@ -578,9 +578,9 @@ where
         stale_after: i64,
     ) -> Result<Value> {
         let request = super::start_request::validate(body)?;
-        let StartMetadata { memo, search_attributes } = metadata;
+        let StartMetadata { memo, search_attributes, instance_id } = metadata;
         // PHP names an instance the request leaves unnamed.
-        let workflow_id = request.workflow_id.clone().unwrap_or_else(id);
+        let workflow_id = request.workflow_id.clone().or_else(|| instance_id.map(str::to_owned)).unwrap_or_else(id);
         let workflow_id = workflow_id.as_str();
         let workflow_type = request.workflow_type.as_str();
         let queue = request.task_queue.as_str();
@@ -6176,9 +6176,14 @@ fn capabilities_template() -> Value {
 #[path = "store_record_tests.rs"]
 mod record_tests;
 
-/// What a start records besides its request: the prepared initial memo and
-/// the validated search attributes.
+/// What a start records besides its request: the prepared initial memo, the
+/// validated search attributes and, for a start the server names itself, the
+/// instance id.
 pub(super) struct StartMetadata<'a> {
     pub(super) memo: Option<&'a super::memos::PreparedMemo>,
     pub(super) search_attributes: Option<&'a super::search_attribute_upserts::StartSearchAttributes>,
+    /// An instance id the server derives (a schedule occurrence's), used
+    /// when the request names none. It is bounded by the 191-character
+    /// column, not the request's 128-character `workflow_id` rule.
+    pub(super) instance_id: Option<&'a str>,
 }
