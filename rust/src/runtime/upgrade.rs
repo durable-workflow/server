@@ -160,6 +160,7 @@ pub(super) fn native_relation(name: &str) -> bool {
             | "dw_run_command_contracts"
             | "dw_task_queue_pauses"
             | "dw_command_intents"
+            | "dw_child_supervisions"
     )
 }
 
@@ -192,6 +193,11 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_task_queue_pauses_pkey"
                 | "dw_command_intents_pkey"
                 | "dw_command_intents_namespace"
+                | "dw_child_supervisions_pkey"
+                | "dw_child_supervisions_run_link"
+                | "dw_child_supervisions_link"
+                | "dw_child_supervisions_child"
+                | "dw_child_supervisions_namespace"
         )
 }
 

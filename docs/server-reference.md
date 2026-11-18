@@ -1472,9 +1472,36 @@ it as final and not retry. Replay must ignore an `ActivityCancelled` whose
 never resolves a selection, a parallel group member or an activity outcome.
 Native refuses the `abandon` activity cancellation policy, so it never keeps
 an activity running past its run's close and never writes the
-`abandoned_activities` list that Core writes for one. Children are unchanged:
-they follow their parent-close policy. Published PHP 2.x left this work open,
-so a workflow that needs a loser's effect must await it before returning.
+`abandoned_activities` list that Core writes for one. Children are not
+settled: they follow their parent-close policy. Published PHP 2.x left this
+work open, so a workflow that needs a loser's effect must await it before
+returning.
+
+When a run continues as new while children it started are still open (native
+source, unreleased; Server #1184, Core workflow#868 in Workflow 2.26.0), the
+continued run takes over their supervision in the same transaction. The child
+link, child call, child identity, deadlines and `parent_close_policy` stay as
+recorded, and the child's `WorkflowStarted` still names the run that started
+it. The continued run gets no handle on the child or its result, and its
+description and links do not list it. When the chain's final run completes,
+fails, times out, is cancelled or is terminated, it applies each handed-over
+child's `request_cancel`, `terminate` or `request_cancellation` policy to the
+child's current run, following the child across its own continue-as-new, and
+records `ParentClosePolicyApplied` or `ParentClosePolicyFailed` (and
+`ParentCloseCancellationRequested` for `request_cancellation`) in its own
+history. `abandon` stays `abandon`. A run that continues again passes on every
+child it still supervises. A handed-over child that closes appends nothing to
+the closed predecessor and creates no task for it. One that fails while a run
+of the chain still supervises it is retried under the retry policy the
+starting run recorded, with the same call and attempt count; the retry's
+`WorkflowStarted` names the original parent and sequence, the predecessor's
+history is not changed, and supervision follows the retry run. Once the chain
+has closed, a child's failure is final. A run that continued before this
+change recorded no supervision, so its children are left running as before.
+Native keeps each transfer, with the columns of Core's
+`workflow_child_supervisions`, in its own `dw_child_supervisions` table; no
+link listing, description or export shows it.
+Published PHP 2.x applies no policy to a child whose parent continued as new.
 
 ### Schedules
 - `GET /api/schedules` — List schedules with visibility filters and cursor paging

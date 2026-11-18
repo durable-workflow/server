@@ -132,6 +132,15 @@
       "published_php": "Queries on failed, cancelled and terminated runs are refused with 409 run_not_active; completed is the only closed status that is queried. A run whose history retention pruned is not refused before a worker claims it.",
       "native": "A retained run of any status, including failed, cancelled and terminated, is queried read-only on its original run, as embedded WorkflowStub::queryWithArguments replays any run: the same run binding, route and authority fences, with no history or status change. A run whose history retention pruned, or whose WorkflowStarted event is missing, is refused with 409 query_history_unavailable, history_state pruned or missing, run_status and is_terminal, and admits no query task. The query control-plane contract lists that reason after run_not_active.",
       "harness": "The waterline-import comparator requires query_history_unavailable once, right after run_not_active, in each native query contract and then compares the rest exactly. Published PHP and embedded observations and frozen fixtures remain unchanged. The all-backend execution tests cover completed, failed, cancelled and terminated runs, instance- and run-targeted queries, unchanged history, and pruned and missing history."
+    },
+    {
+      "id": "continue-as-new-child-supervision",
+      "issue": "https://github.com/durable-workflow/server/issues/1184",
+      "since": "native source (unreleased)",
+      "applies_to": [],
+      "published_php": "A child still open when its parent continues as new stays with the closed predecessor: no run of the chain applies its parent-close policy, and a later failure of the child is never retried.",
+      "native": "As Core workflow#868 and workflow#1107 (Workflow 2.26.0), the continued run supervises each open child in the continue-as-new transaction. The chain's final run applies its request_cancel, terminate or request_cancellation policy to the child's current run when it closes and records ParentClosePolicyApplied or ParentClosePolicyFailed (and ParentCloseCancellationRequested) in its own history. A child that fails while a run of the chain supervises it is retried under its recorded retry policy, and nothing is appended to the closed predecessor. A chain continued before this change keeps the published behavior.",
+      "harness": "No shared fixture closes a chain that continued over an open non-abandon child or fails such a child afterward, so no fixture section names this divergence and every PHP and embedded recording is unchanged. The all-backend native execution suite (child_supervision) covers the behavior against Core's V2ContinueAsNewOpenChildSupervisionTest and V2WorkflowTaskBridgeTest cases."
     }
   ]
 }

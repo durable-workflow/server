@@ -1524,6 +1524,8 @@ where
             intents = intents.bind(run_id);
         }
         intents.execute(&mut *tx).await?;
+        // A run's child supervisions go with it (`WorkflowRunRetentionCleanup`).
+        Self::query(retention::CHILD_SUPERVISIONS_PRUNED).bind(run_id).execute(&mut *tx).await?;
         for (key, sql, binds) in retention::PRUNED {
             let mut query = Self::query(sql);
             for _ in 0..*binds {

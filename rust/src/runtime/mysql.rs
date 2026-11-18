@@ -15,8 +15,8 @@ use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 /// 13, and keyed command intents (server#934): MySQL 15, MariaDB 14.
 /// Immutable external storage bindings are MySQL 17 / MariaDB 16.
 /// `Flavor::version` selects the one a server needs.
-pub const MYSQL_VERSION: i64 = 17;
-pub const MARIADB_VERSION: i64 = 16;
+pub const MYSQL_VERSION: i64 = 18;
+pub const MARIADB_VERSION: i64 = 17;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -43,6 +43,88 @@ impl Flavor {
         })
     }
     fn migrator(self) -> &'static Migrator {
+        static MYSQL: OnceLock<Migrator> = OnceLock::new();
+        static MARIA: OnceLock<Migrator> = OnceLock::new();
+        let (slot, sql) = match self {
+            Self::MySql => (
+                &MYSQL,
+                concat!(
+                    include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0013_json_text.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0014_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0015_command_intents.sql"), "\n", include_str!("../../migrations/mysql/0016_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mysql/0017_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mysql/0018_child_supervisions.sql")
+                ),
+            ),
+            Self::MariaDb => (
+                &MARIA,
+                concat!(
+                    include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0014_command_intents.sql"), "\n", include_str!("../../migrations/mariadb/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mariadb/0016_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mariadb/0017_child_supervisions.sql")
+                ),
+            ),
+        };
+        slot.get_or_init(|| {
+            let description = match self {
+                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new",
+                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new",
+            };
+            let mut migrations = Migrator::with_migrations(vec![Migration::new(
+                self.version(),
+                description.into(),
+                MigrationType::Simple,
+                AssertSqlSafe(self.bootstrap_sql(sql)).into_sql_str(),
+                false,
+            )]);
+            // A bounded named lock on this dedicated initialization connection
+            // covers preflight, DDL, resumption and final marking.
+            migrations.set_locking(false);
+            migrations
+        })
+    }
+    // Keep the exact released schema bootstraps before child supervisions.
+    fn retained_supervision_predecessor(self) -> &'static Migrator {
         static MYSQL: OnceLock<Migrator> = OnceLock::new();
         static MARIA: OnceLock<Migrator> = OnceLock::new();
         let (slot, sql) = match self {
@@ -111,7 +193,7 @@ impl Flavor {
                 Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings",
             };
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
-                self.version(),
+                match self { Self::MySql => 17, Self::MariaDb => 16 },
                 description.into(),
                 MigrationType::Simple,
                 AssertSqlSafe(self.bootstrap_sql(sql)).into_sql_str(),
@@ -213,8 +295,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0017_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0016_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0018_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0017_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -320,6 +402,8 @@ impl Flavor {
     static DISPATCH_MYSQL: OnceLock<Migration> = OnceLock::new();
     static DISPATCH_MARIADB: OnceLock<Migration> = OnceLock::new();
         match (self, version) {
+            (Self::MySql, 17) => self.retained_supervision_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0017_catalog.json"))),
+            (Self::MariaDb, 16) => self.retained_supervision_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0016_catalog.json"))),
             (Self::MySql, 16) => self.retained_storage_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0016_catalog.json"))),
             (Self::MariaDb, 15) => self.retained_storage_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0015_catalog.json"))),
             (Self::MariaDb, 14) => Some((DISPATCH_MARIADB.get_or_init(|| Migration::new(14, "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents".into(), MigrationType::Simple, AssertSqlSafe(self.bootstrap_sql(concat!(
@@ -730,6 +814,8 @@ impl Flavor {
     /// The step file that moves a native database from `version` to the next.
     fn step(self, version: i64) -> Option<&'static str> {
         match (self, version) {
+            (Self::MySql, 17) => Some(include_str!("../../migrations/mysql/0018_child_supervisions.sql")),
+            (Self::MariaDb, 16) => Some(include_str!("../../migrations/mariadb/0017_child_supervisions.sql")),
             (Self::MySql, 16) => Some(include_str!("../../migrations/mysql/0017_external_storage_bindings.sql")),
             (Self::MariaDb, 15) => Some(include_str!("../../migrations/mariadb/0016_external_storage_bindings.sql")),
             (Self::MySql, 7) => Some(include_str!("../../migrations/mysql/0008_external_payload_deletions.sql")),
@@ -976,6 +1062,16 @@ pub(super) async fn ensure_external_storage_bindings(connection: &mut MySqlConne
         if after.get(table) != current.get(table) { return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")); }
     }
     Ok(())
+}
+
+/// The step that creates the child supervision table (server#1184):
+/// MySQL's from 17, MariaDB's from 16.
+fn child_supervisions_step(flavor: Flavor) -> i64 {
+    match flavor { Flavor::MySql => 17, Flavor::MariaDb => 16 }
+}
+
+pub(super) async fn ensure_child_supervisions(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    ensure_native_table(connection, flavor, child_supervisions_step(flavor), "dw_child_supervisions").await
 }
 
 fn dispatch_summary_step(flavor: Flavor) -> i64 {
@@ -1525,6 +1621,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         // Each step's own marker update names the development engine, so it
         // changes nothing while the marker fences the upgrade.
         for version in from..flavor.version() {
+            if version == child_supervisions_step(flavor) {
+                ensure_child_supervisions(&mut connection, flavor).await?;
+                continue;
+            }
             if version == storage_binding_step(flavor) {
                 ensure_external_storage_bindings(&mut connection, flavor).await?;
                 continue;
@@ -1754,6 +1854,23 @@ mod pool_tests;
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn supervision_predecessors_keep_their_pinned_source_checksums() {
+        for (flavor, version, pinned) in [
+            (Flavor::MySql, 17, include_str!("../../migrations/mysql/0017_checksum.txt")),
+            (Flavor::MariaDb, 16, include_str!("../../migrations/mariadb/0016_checksum.txt")),
+        ] {
+            assert_eq!(checksum_hex(flavor.earlier(version).unwrap().0), pinned.trim());
+            assert_eq!(child_supervisions_step(flavor), version);
+            let previous: &str = flavor.earlier(version).unwrap().0.sql.as_ref();
+            assert!(!previous.contains("dw_child_supervisions"));
+            let sql: &str = flavor.migration().sql.as_ref();
+            assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_child_supervisions (").count(), 1);
+            assert!(flavor.step(version).unwrap().contains("CREATE TABLE dw_child_supervisions ("));
+        }
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (18, 17));
+    }
 
     #[test]
     fn storage_predecessors_keep_their_pinned_source_checksums_and_bootstrap_has_no_alters() {
@@ -3197,7 +3314,7 @@ mod tests {
         assert_eq!(checksum_hex(Flavor::MariaDb.earlier(12).unwrap().0),
             include_str!("../../migrations/mariadb/0012_checksum.txt").trim());
         let sql: &str = Flavor::MySql.migration().sql.as_ref();
-        assert_eq!(Flavor::MySql.version(), 17);
+        assert_eq!(Flavor::MySql.version(), 18);
         assert!(!sql.contains("ALTER TABLE `activity_executions`"), "upgrade ALTERs are folded into the bootstrap");
         assert!(!regex_lite::Regex::new(r"(?i)`?\w+`? json( |,)").unwrap().is_match(sql), "no json column remains");
         assert_eq!(sql.matches("CHECK (json_valid(").count(), 75);
@@ -3376,7 +3493,7 @@ mod tests {
             include_str!("../../migrations/mysql/0014_checksum.txt").trim());
         assert_eq!(checksum_hex(Flavor::MariaDb.earlier(13).unwrap().0),
             include_str!("../../migrations/mariadb/0013_checksum.txt").trim());
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (17, 16));
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (18, 17));
         for flavor in [Flavor::MySql, Flavor::MariaDb] {
             let sql: &str = flavor.migration().sql.as_ref();
             assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_command_intents (").count(), 1);

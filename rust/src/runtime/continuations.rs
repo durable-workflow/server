@@ -1,5 +1,6 @@
 //! Atomic continue-as-new. Received signals, pending updates and message
-//! stream cursors move to the continued run like PHP; everything else the
+//! stream cursors move to the continued run like PHP, and the continued run
+//! supervises the open children (`child_supervision`); everything else the
 //! run has open stays with the closed predecessor.
 use super::transaction::Transaction;
 use super::{
@@ -171,9 +172,11 @@ where
             ));
         }
         // Core settles the predecessor's open activities and timers before
-        // its terminal event (Server #1193, workflow#1117). Its children and
-        // waits stay with the closed predecessor, and no parent-close policy
-        // applies. Message streams pass to the next run when the completion
+        // its terminal event (Server #1193, workflow#1117). Its waits stay
+        // with the closed predecessor. Its open children keep their links,
+        // calls and policies, and the continued run supervises them and
+        // applies those policies when the chain closes (Server #1184,
+        // workflow#868). Message streams pass to the next run when the completion
         // records its stream acknowledgements. Durable output streams are
         // rows of their run and stay with the predecessor. Core touches
         // neither service calls nor query tasks: a call keeps the predecessor
@@ -259,6 +262,8 @@ where
             Self::append(tx, &next, "ScheduleTriggered", DB::document_row(&origin, "payload")?, None, None).await?;
         }
         Self::transfer_messages(tx, &old, &next, &workflow).await?;
+        // `ChildSupervision::transferToContinuedRun`.
+        Self::transfer_child_supervision(tx, self.namespace.as_ref(), &old, &next, started).await?;
         let task_id = DB::string(task, "id")?;
         Self::settle_closing_open_work(tx, &old, &task_id, started).await?;
         Self::query("UPDATE workflow_runs SET status='completed',closed_reason='continued',closed_at=$1,last_progress_at=$2 WHERE id=$3")

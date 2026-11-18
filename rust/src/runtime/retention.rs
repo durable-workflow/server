@@ -76,6 +76,11 @@ pub(super) const PRUNED: &[(&str, &str, usize)] = &[
 pub(super) const COMMAND_INTENTS_PRUNED: &str = "DELETE FROM dw_command_intents WHERE command_id IN (SELECT id FROM workflow_commands WHERE workflow_run_id=$1 OR requested_workflow_run_id=$2 OR resolved_workflow_run_id=$3)";
 pub(super) const COMMAND_INTENTS_PRUNED_BINDS: usize = 3;
 
+/// Core's `WorkflowRunRetentionCleanup` deletes a run's child supervisions
+/// with it (Server #1184): each row belongs to the run that applies the
+/// policy and outlives the earlier run that started the child.
+pub(super) const CHILD_SUPERVISIONS_PRUNED: &str = "DELETE FROM dw_child_supervisions WHERE supervising_workflow_run_id=$1";
+
 /// PHP's terminal run statuses.
 pub(super) fn terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled" | "terminated")
