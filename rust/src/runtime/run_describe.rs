@@ -279,7 +279,6 @@ where
         stale_after: i64,
     ) -> Result<Map<String, Value>> {
         let run_id = DB::string(run, "id")?;
-        let status = DB::string(run, "status")?;
         // One start-payload read serves the description and the query route.
         let started = Self::started_payload(&mut **tx, &run_id).await?;
         let summary = Self::query("SELECT wait_kind,wait_reason FROM workflow_run_summaries WHERE id=$1")
@@ -291,10 +290,12 @@ where
             None => (None, None),
         };
         let compatibility = self.compatibility_fields_in(&mut **tx, run).await?;
-        // `canServeQuery`: failed, cancelled and terminated runs refuse
-        // queries; others need a registered route.
+        // `canServeQuery`: a run of any status with retained history is
+        // queried through a registered route (Server #587; published PHP
+        // refused failed, cancelled and terminated runs).
         let query_servable = current
-            && (!terminal || status == "completed")
+            && !started.is_null()
+            && DB::optional_instant(run, "details_pruned_at")?.is_none()
             && self.query_route_in(&mut **tx, run, &started, stale_after).await?.servable;
         let archived = DB::optional_instant(run, "archived_at")?.is_some();
         let (input_omitted, output_omitted) = (oversized(input), oversized(output));

@@ -44,6 +44,54 @@ test('the recording covers every refusal and read', () => {
   }
 });
 
+// server#587: native's query contract adds query_history_unavailable right
+// after run_not_active; it is checked and projected away for native only.
+const nativeObservation = (reasons) => observation(state => {
+  for (const step of ['refuse_running', 'refuse_completed']) {
+    state[step].query.response.control_plane.contract.rejection_reasons = reasons(
+      [...state[step].query.response.control_plane.contract.rejection_reasons]);
+  }
+  for (const value of Object.values(state)) addRedrive(value);
+});
+const addRedrive = (value) => {
+  if (Array.isArray(value)) return value.forEach(addRedrive);
+  if (!value || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'actions' && item && typeof item === 'object' && Object.hasOwn(item, 'can_archive')) {
+      Object.assign(item, {can_redrive: false, redrive_blocked_reason: 'run_not_failed'});
+    } else addRedrive(item);
+  }
+};
+const insertAfter = (reasons, after, reason) => {
+  reasons.splice(reasons.indexOf(after) + 1, 0, reason);
+  return reasons;
+};
+
+test('the published query contracts list run_not_active to place the native reason after', () => {
+  for (const step of ['refuse_running', 'refuse_completed']) {
+    const reasons = fixture.waterline_import.expected[step].query.response.control_plane.contract.rejection_reasons;
+    assert.ok(reasons.includes('run_not_active') && !reasons.includes('query_history_unavailable'), step);
+  }
+});
+
+test('native query contracts list query_history_unavailable after run_not_active', () => {
+  const native = nativeObservation(reasons => insertAfter(reasons, 'run_not_active', 'query_history_unavailable'));
+  assert.deepStrictEqual(checkWaterlineImport(fixture, native, id, 'rust'), {scope: 'waterline_import'});
+  // Published PHP never lists it.
+  assert.throws(() => check(native), /waterline import/);
+});
+
+for (const [label, reasons] of [
+  ['without it', reasons => reasons],
+  ['out of place', reasons => [...reasons, 'query_history_unavailable']],
+  ['twice', reasons => [...insertAfter(reasons, 'run_not_active', 'query_history_unavailable'), 'query_history_unavailable']],
+]) {
+  test(`a native query contract ${label} is refused`, () => {
+    assert.throws(() => checkWaterlineImport(fixture, nativeObservation(reasons), id, 'rust'),
+      /native query contract lists query_history_unavailable once after run_not_active/);
+  });
+}
+
 for (const [label, change, message] of [
   // Native answered 501 for the import route before this fixture.
   ['an unimplemented route', state => {
