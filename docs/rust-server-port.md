@@ -471,6 +471,17 @@ contract fixture before its correction.
   ([checkpoint](rust-server-port-checkpoints/2026-10-22-environment-contract.md)).
   Several of those are cheap to honor: repair timing and the multi-node
   declaration.
+- **Long-poll capacity.** Native honors `DW_WORKER_LONG_POLL_MAX_CONCURRENT`
+  and `DW_QUERY_TASK_POLL_MAX_CONCURRENT` as node-wide caps on held waits,
+  with PHP's `429 long_poll_capacity_exhausted` refusal and `Retry-After: 1`
+  for a poll that would wait past the cap. Update-validation polls use the
+  query-task budget, as PHP's do. Native has no request-worker pool, so
+  `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` reserves database connections
+  instead: poll probes share the rest of the node's pool, leaving the reserve
+  to health, readiness and admin requests. Unset, all three leave native's
+  behavior unchanged. The per-namespace variants stay ignored
+  ([#982](https://github.com/durable-workflow/server/issues/982),
+  [server reference](server-reference.md#native-long-poll-capacity)).
 - **Worker registration retention and a paged worker list.** Published PHP
   keeps a registration until the worker deregisters or its namespace is
   deleted, and `GET /api/workers` returns every registration, newest

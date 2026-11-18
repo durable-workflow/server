@@ -892,7 +892,9 @@ where
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         let mut pace = super::poll_readiness::ReadPace::new();
         let mut first = true;
+        let mut wait_slot = None;
         loop {
+            let probe = self.poll_capacity.probe().await;
             let wake = self.wake.notified();
             if (std::mem::take(&mut first) || self.validation_waiting(task_queue).await?)
                 && let Some(task_id) = self.claim_update_validation(worker_id, task_queue).await?
@@ -902,6 +904,10 @@ where
             if tokio::time::Instant::now() >= deadline {
                 return Ok(None);
             }
+            // PHP waits for validation tasks in the query-task pool.
+            self.poll_capacity.hold(&mut wait_slot, super::poll_capacity::Pool::QueryTask,
+                &self.namespace, task_queue, "update_validation_task")?;
+            drop(probe);
             pace.wait(wake, deadline).await;
         }
     }
@@ -980,7 +986,9 @@ where
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         let mut pace = super::poll_readiness::ReadPace::new();
         let mut first = true;
+        let mut wait_slot = None;
         loop {
+            let probe = self.poll_capacity.probe().await;
             let wake = self.wake.notified();
             let first_probe = std::mem::take(&mut first);
             let current = match &fence {
@@ -1018,6 +1026,11 @@ where
                 }
                 return Ok(Leased::Workflow(json!({"task":null,"poll_status":"empty","server_capabilities":super::store::capabilities()})));
             }
+            // A workflow poll that also takes validation tasks waits in the
+            // worker pool, as a workflow poll does.
+            self.poll_capacity.hold(&mut wait_slot, super::poll_capacity::Pool::Worker,
+                &self.namespace, &task_queue, "workflow_task")?;
+            drop(probe);
             pace.wait(wake, deadline).await;
         }
     }

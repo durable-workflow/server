@@ -1036,7 +1036,9 @@ where
         let mut first = true;
         let mut held = false;
         let mut pace = super::poll_readiness::ReadPace::new();
+        let mut wait_slot = None;
         loop {
+            let probe = self.poll_capacity.probe().await;
             let wake = self.wake.notified();
             // `performPoll`: a registration replaced or silenced during the
             // wait ends the poll empty, leasing nothing.
@@ -1071,6 +1073,10 @@ where
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":super::store::capabilities()}),
                 );
             }
+            // Idle query-task polls wait in their own pool (Server #982).
+            self.poll_capacity.hold(&mut wait_slot, super::poll_capacity::Pool::QueryTask,
+                &self.namespace, text(body, "task_queue")?, "query_task")?;
+            drop(probe);
             pace.wait(wake, deadline).await;
         }
     }

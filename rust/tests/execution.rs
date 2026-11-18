@@ -146,6 +146,8 @@ mod worker_history_presentation;
 mod message_streams;
 #[path = "execution/poll_waits.rs"]
 mod poll_waits;
+#[path = "execution/poll_capacity.rs"]
+mod poll_capacity;
 #[path = "execution/child_cascade.rs"]
 mod child_cascade;
 #[path = "execution/completion_open_work.rs"]

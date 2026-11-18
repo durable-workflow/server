@@ -52,6 +52,7 @@ mod command_context;
 mod command_intent;
 mod command_requests;
 pub mod storage_admission;
+pub mod poll_capacity;
 mod continuations;
 mod definition_routing;
 #[cfg(test)]
@@ -317,7 +318,18 @@ impl IntoResponse for RuntimeError {
             Self::Protocol { status, response } if response["schema"] == external_transport::TYPED_SCHEMA => {
                 return external_transport::typed_response(status, response);
             }
-            Self::Protocol { status, response } => return (status, Json(response)).into_response(),
+            Self::Protocol { status, response } => {
+                // `WorkerPollBackpressure` advertises its retry delay.
+                let retry = poll_capacity::is_exhausted(&response);
+                let mut answer = (status, Json(response)).into_response();
+                if retry {
+                    answer.headers_mut().insert(
+                        axum::http::header::RETRY_AFTER,
+                        axum::http::HeaderValue::from(poll_capacity::RETRY_AFTER_SECONDS),
+                    );
+                }
+                return answer;
+            }
             Self::Refused { status, reason } if external_transport::TYPED_REASONS.contains(&reason) => {
                 return external_transport::typed_refusal(status, reason);
             }
