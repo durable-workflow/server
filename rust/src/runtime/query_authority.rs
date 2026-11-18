@@ -13,6 +13,10 @@ pub struct QueryTaskConfig {
     pub lease_timeout_seconds: i64,
     pub receipt_ttl_seconds: i64,
     pub worker_stale_after_seconds: i64,
+    /// How long a registration may go without a heartbeat before it is
+    /// deleted (DW_WORKER_REGISTRATION_RETENTION_SECONDS, Server #553). Never
+    /// shorter than the stale window.
+    pub worker_registration_retention_seconds: i64,
     /// `server.polling.expired_workflow_task_recovery_scan_limit`: how many
     /// abandoned workflow task leases a probe recovers at most.
     pub workflow_task_recovery_scan_limit: i64,
@@ -42,6 +46,7 @@ impl Default for QueryTaskConfig {
             lease_timeout_seconds: 60,
             receipt_ttl_seconds: 180,
             worker_stale_after_seconds: 30,
+            worker_registration_retention_seconds: DEFAULT_WORKER_REGISTRATION_RETENTION_SECONDS,
             workflow_task_recovery_scan_limit: 5,
             worker_heartbeat_interval_seconds: 10,
             workflow_task_lease_seconds: 60,
@@ -53,6 +58,18 @@ impl Default for QueryTaskConfig {
             worker_poll_timeout_seconds: 30,
         }
     }
+}
+
+/// The native-only setting that bounds how long a silent worker registration
+/// is kept (Server #553).
+pub(crate) const WORKER_REGISTRATION_RETENTION: &str = "DW_WORKER_REGISTRATION_RETENTION_SECONDS";
+/// Registrations without a heartbeat for 24 hours are deleted by default.
+pub const DEFAULT_WORKER_REGISTRATION_RETENTION_SECONDS: i64 = 86_400;
+
+/// A registration is deleted only once it is stale: the retention is never
+/// shorter than the stale window.
+pub(super) fn worker_registration_retention(configured: i64, stale_after: i64) -> i64 {
+    configured.max(stale_after.max(1))
 }
 
 impl QueryTaskConfig {
@@ -87,6 +104,17 @@ impl QueryTaskConfig {
             "WORKFLOW_SERVER_WORKER_HEARTBEAT_INTERVAL_SECONDS",
             10,
         )?;
+        let stale_after = integer(
+            "DW_WORKER_STALE_AFTER_SECONDS",
+            "WORKFLOW_SERVER_WORKER_STALE_AFTER_SECONDS",
+            heartbeat.saturating_mul(3).max(30),
+        )?
+        .max(1);
+        let retention = match env::var(WORKER_REGISTRATION_RETENTION) {
+            Ok(value) => environment_integer(&value).unwrap_or(DEFAULT_WORKER_REGISTRATION_RETENTION_SECONDS),
+            Err(env::VarError::NotPresent) => DEFAULT_WORKER_REGISTRATION_RETENTION_SECONDS,
+            Err(_) => return Err(refuse(StatusCode::BAD_REQUEST, "invalid_query_configuration")),
+        };
         Ok(Self {
             timeout_seconds: integer(
                 "DW_QUERY_TASK_TIMEOUT",
@@ -106,12 +134,8 @@ impl QueryTaskConfig {
                 180,
             )?
             .max(60),
-            worker_stale_after_seconds: integer(
-                "DW_WORKER_STALE_AFTER_SECONDS",
-                "WORKFLOW_SERVER_WORKER_STALE_AFTER_SECONDS",
-                heartbeat.saturating_mul(3).max(30),
-            )?
-            .max(1),
+            worker_stale_after_seconds: stale_after,
+            worker_registration_retention_seconds: worker_registration_retention(retention, stale_after),
             workflow_task_recovery_scan_limit: integer(
                 "DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT",
                 "WORKFLOW_SERVER_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT",

@@ -424,9 +424,12 @@ async fn registration_status(database: &TestDatabase, worker: &str) -> String {
     text_rows(database, &sql, &sql, &sql).await.pop().map(|(_, status)| status).unwrap_or_default()
 }
 
+/// Stale for an hour: past the stale window, within registration retention
+/// (Server #553), so a later registration does not delete the owner.
 async fn silence(database: &TestDatabase, worker: &str) {
+    let heard = (chrono::Utc::now() - chrono::Duration::hours(1)).format("%Y-%m-%d %H:%M:%S");
     database.execute(sqlx::AssertSqlSafe(format!(
-        "UPDATE workflow_worker_registrations SET last_heartbeat_at='2000-01-01 00:00:00' WHERE worker_id='{worker}'"))).await;
+        "UPDATE workflow_worker_registrations SET last_heartbeat_at='{heard}' WHERE worker_id='{worker}'"))).await;
 }
 
 /// An owner whose lease has already expired is not fenced: the expired lease

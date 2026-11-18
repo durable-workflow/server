@@ -50,6 +50,15 @@
       "harness": "The native cluster-info comparator requires the one added typed outcome. PHP and embedded observations and frozen fixtures remain unchanged. All-backend execution tests cover access refusal and outage on the transport fetch, workflow start, worker task completion and each storage diagnostic step."
     },
     {
+      "id": "worker-registration-retention",
+      "issue": "https://github.com/durable-workflow/server/issues/553",
+      "since": "native source (unreleased)",
+      "applies_to": ["worker-listing"],
+      "published_php": "Registrations are kept until deregistration or namespace deletion, and GET /api/workers returns every registration in the namespace, newest heartbeat first, with no limit.",
+      "native": "A registration with no heartbeat for DW_WORKER_REGISTRATION_RETENTION_SECONDS (default 86400, never less than the stale window) is deleted unless it holds an unexpired task lease. GET /api/workers returns at most 100 registrations in worker id order with page_size (1 to 100), next_page_token and registration_retention_seconds; 422 invalid_page_size and 400 invalid_page_token refuse a bad page request.",
+      "harness": "The worker-listing comparator checks each listed worker and the stale window and does not depend on order or extra top-level fields, so it is unchanged. Its recording registers two workers, well under one page, and none ages past retention. The all-backend execution tests cover paging, expiry, retained draining, recently stale and lease-holding workers, and pinned-build diagnostics after expiry."
+    },
+    {
       "id": "request-id-reuse-conflict",
       "issue": "https://github.com/durable-workflow/server/issues/934",
       "since": "native 3.9.0",
