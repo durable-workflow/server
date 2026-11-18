@@ -67,7 +67,7 @@ impl Store<Postgres> {
         for index in 0..100 {
             let started = Self::start_in(transaction, &json!({"workflow_id":format!("ordered-{index}"),
                 "workflow_type":"ordered","task_queue":"ordered","input":input}), "default",
-                StartMetadata {memo:None,search_attributes:None}, None,None,120).await.unwrap();
+                StartMetadata {memo:None,search_attributes:None,instance_id:None}, None,None,120).await.unwrap();
             let run = started["run_id"].as_str().unwrap().to_owned();
             Self::query("UPDATE workflow_runs SET compatibility=$1,status=$2 WHERE id=$3")
                 .bind(if index % 3 == 0 {Some("build")} else {None})

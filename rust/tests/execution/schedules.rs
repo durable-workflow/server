@@ -691,3 +691,118 @@ async fn reapplying_an_unchanged_schedule_records_nothing_and_keeps_its_next_fir
     assert_ne!(moved, next);
     assert_eq!(events[2]["payload"]["next_fire_at"], moved);
 }
+
+/// The run id of a schedule occurrence in the default namespace, as embedded
+/// mode's `PhpClassScheduleStarter::instanceId` names it (Workflow 2.29.0):
+/// `schedule.ns:{sha256("default"), 32 hex}:{length}:{schedule id}:backfill:{unix seconds}`.
+fn default_occurrence_id(schedule: &str, occurrence: &str) -> String {
+    let seconds = chrono::DateTime::parse_from_rfc3339(occurrence).unwrap().timestamp();
+    format!("schedule.ns:37a8eec1ce19687d132fe29051dca629:{}:{schedule}:backfill:{seconds}", schedule.len())
+}
+
+// Server #599: a scheduled, backfilled or repeated fire of one occurrence
+// names its run deterministically from the schedule's namespace, schedule id
+// and occurrence time, as embedded mode does, so the application can derive
+// the run for an occurrence and a repeat resolves to that one run.
+#[tokio::test]
+async fn schedule_occurrences_start_runs_with_embedded_mode_ids() {
+    use super::namespaces::{create as create_namespace, scoped};
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+
+    // A normal scheduler fire.
+    let schedule = "det-tick";
+    create(&app, schedule, "PT2S", Some(1)).await;
+    let occurrence = audit(&app, schedule).await[0]["payload"]["next_fire_at"].as_str().unwrap().to_owned();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let fired = loop {
+        if let Some(trigger) = audit(&app, schedule).await.into_iter().find(|event| event["event_type"] == "ScheduleTriggered") {
+            break trigger;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the scheduler did not fire the occurrence");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let expected = default_occurrence_id(schedule, &occurrence);
+    assert_eq!(fired["workflow_instance_id"], expected, "{fired}");
+    let (status, described) = request(&app, "GET", &format!("/api/workflows/{expected}"), Value::Null).await;
+    assert_eq!((status, described["run_id"].clone()), (StatusCode::OK, fired["workflow_run_id"].clone()), "{described}");
+
+    // Backfilled occurrences, in this namespace and another.
+    create_namespace(&app, "alpha").await;
+    let body = json!({"schedule_id":"det-bf","spec":{"cron_expressions":["0 3 * * *"],"timezone":"UTC"},
+        "action":action(),"overlap_policy":"allow_all"});
+    let range = json!({"start_time":"2026-01-01T00:00:00Z","end_time":"2026-01-03T00:00:00Z"});
+    let mut first = Vec::new();
+    for namespace in ["default", "alpha"] {
+        let created = scoped(&app, namespace, "POST", "/api/schedules", body.clone()).await;
+        assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+        let backfill = scoped(&app, namespace, "POST", "/api/schedules/det-bf/backfill", range.clone()).await;
+        assert_eq!(backfill.0, StatusCode::OK, "{}", backfill.1);
+        let results = backfill.1["results"].as_array().unwrap().clone();
+        assert_eq!(results.len(), 2, "{}", backfill.1);
+        for result in &results {
+            assert_eq!(result["outcome"], "started", "{result}");
+            let id = result["workflow_id"].as_str().unwrap();
+            let time = result["fire_time"].as_str().unwrap();
+            if namespace == "default" {
+                assert_eq!(id, default_occurrence_id("det-bf", time));
+            } else {
+                // Equal schedule ids in two namespaces name different runs.
+                let seconds = chrono::DateTime::parse_from_rfc3339(time).unwrap().timestamp();
+                assert!(id.starts_with("schedule.ns:") && id.ends_with(&format!(":6:det-bf:backfill:{seconds}")), "{id}");
+                assert_ne!(id, default_occurrence_id("det-bf", time));
+            }
+            let (status, _) = scoped(&app, namespace, "GET", &format!("/api/workflows/{id}"), Value::Null).await;
+            assert_eq!(status, StatusCode::OK, "{id}");
+        }
+        if namespace == "default" {
+            first = results;
+        }
+    }
+
+    // A repeated fire of one occurrence resolves to the occurrence's one run.
+    let again = request(&app, "POST", "/api/schedules/det-bf/backfill", range).await;
+    assert_eq!(again.0, StatusCode::OK, "{}", again.1);
+    for (result, original) in again.1["results"].as_array().unwrap().iter().zip(&first) {
+        assert_eq!(result, &json!({"fire_time":original["fire_time"],"outcome":"skipped"}));
+    }
+    for original in &first {
+        let id = original["workflow_id"].as_str().unwrap();
+        let (_, runs) = request(&app, "GET", &format!("/api/workflows/{id}/runs"), Value::Null).await;
+        assert_eq!(runs["runs"].as_array().map(Vec::len), Some(1), "{runs}");
+    }
+    // A run already holding an occurrence's id is that occurrence's run,
+    // even without the schedule's own trigger record.
+    let created = request(&app, "POST", "/api/schedules", json!({"schedule_id":"det-held",
+        "spec":{"cron_expressions":["0 3 * * *"],"timezone":"UTC"},"action":action(),"overlap_policy":"allow_all"})).await;
+    assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    let held = default_occurrence_id("det-held", "2026-01-01T03:00:00Z");
+    let mut start = action();
+    start["workflow_id"] = json!(held);
+    let (status, started) = request(&app, "POST", "/api/workflows", start).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let backfill = request(&app, "POST", "/api/schedules/det-held/backfill",
+        json!({"start_time":"2026-01-01T00:00:00Z","end_time":"2026-01-02T00:00:00Z"})).await;
+    assert_eq!(backfill.1["results"], json!([{"fire_time":"2026-01-01T03:00:00+00:00","outcome":"skipped"}]), "{}", backfill.1);
+    let skips: Vec<Value> = audit(&app, "det-held").await.into_iter()
+        .filter(|event| event["event_type"] == "ScheduleTriggerSkipped").map(|event| event["payload"]["reason"].clone()).collect();
+    assert_eq!(skips, [json!("already_fired_occurrence")]);
+    let history = run_history(&app, &json!(held), &started["run_id"]).await;
+    assert!(history.as_array().unwrap().iter().all(|event| event["event_type"] != "ScheduleTriggered"), "{history}");
+
+    // A schedule id outside the instance id alphabet is hashed, and the run
+    // is addressable although its id is longer than a caller may choose.
+    let created = request(&app, "POST", "/api/schedules", json!({"schedule_id":"det report",
+        "spec":{"cron_expressions":["0 3 * * *"],"timezone":"UTC"},"action":action()})).await;
+    assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    let backfill = request(&app, "POST", "/api/schedules/det%20report/backfill",
+        json!({"start_time":"2026-01-01T00:00:00Z","end_time":"2026-01-02T00:00:00Z"})).await;
+    let id = backfill.1["results"][0]["workflow_id"].as_str().unwrap_or_default().to_owned();
+    assert_eq!(id, "schedule.ns:37a8eec1ce19687d132fe29051dca629:h:45d123be1efbca557b4fbda97c7715b7e5eb12e589393d13c9a8e5a5b0244853:backfill:1767236400",
+        "{}", backfill.1);
+    let (status, _) = request(&app, "GET", &format!("/api/workflows/{id}"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    runtime.close().await;
+    database.remove().await;
+}
