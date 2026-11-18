@@ -756,6 +756,10 @@ async fn schedule_occurrences_start_runs_with_embedded_mode_ids() {
             let (status, _) = scoped(&app, namespace, "GET", &format!("/api/workflows/{id}"), Value::Null).await;
             assert_eq!(status, StatusCode::OK, "{id}");
         }
+        // The dispatch summary names the occurrence's run.
+        let (_, described) = scoped(&app, namespace, "GET", "/api/schedules/det-bf", Value::Null).await;
+        assert_eq!(described["dispatch_summary"]["state"], "known", "{described}");
+        assert_eq!(described["dispatch_summary"]["last_outcome"]["workflow_instance_id"], results[1]["workflow_id"], "{described}");
         if namespace == "default" {
             first = results;
         }
