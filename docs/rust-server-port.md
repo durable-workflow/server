@@ -1085,6 +1085,21 @@ support is not evidence of multi-node safety.
 
 ## Decisions
 
+- **November 18: native serves `GET /metrics` for autoscalers (#534).** A
+  native-only Prometheus text exposition of the requested namespace's task
+  queue backlog (ready, due, delayed, leased, oldest due age, dispatchable,
+  active pollers and slots, by queue, kind and bounded build id), admission
+  state and remaining capacity, activity retry pressure, schedule gauges and
+  the JSON summary's run and activity families. It is read with the
+  scrape-only `metrics` role (`DW_METRICS_TOKEN`, or a tenant-bound runtime
+  credential), which reaches no other route, and advertised as
+  `capabilities.prometheus_text_metrics`. Native has no server dispatch or
+  lease budgets, so admission is `unlimited` except while an activity
+  dispatch pause makes the activity kind `throttled` with no capacity. A
+  failed read answers 503 with no samples. Published PHP has no such route;
+  schedule fire, failure and skip counters stay out until they have durable
+  counter storage.
+
 - **November 2: explicit activity cancellation policies follow Core, except
   abandon (#958, #971).** Native 3.0.x refused `cancellation_policy` on
   `schedule_activity` and treated every activity as `try_cancel` on whole-run

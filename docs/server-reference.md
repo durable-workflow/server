@@ -640,6 +640,8 @@ workflow-task command payload.
 - `GET /api/system/external-payload-cleanup` — External-payload cleanup backlog, outcomes, and storage-failure diagnostics
 - `POST /api/system/external-payload-cleanup/pass` — Retry one bounded namespace cleanup pass
 
+- `GET /metrics` — Native only (Server #534). Prometheus text exposition of the requested namespace's task queue backlog, admission, retry pressure, schedule state and run and activity series, for Prometheus, KEDA and HPA adapters. See [Prometheus scrape and autoscaling](#prometheus-scrape-and-autoscaling).
+
 `POST /api/system/repair/pass` accepts optional `connection`, `queue`,
 `run_ids`, and `instance_id` filters. Set `respect_throttle=true` when a
 dedicated matching-role loop should skip a pass rather than duplicate work
@@ -1494,6 +1496,143 @@ retention pass. Those observations support the default guidance for the
 tested artifacts and limits; they do not set a capacity promise for other
 workflow shapes or hardware.
 
+### Prometheus scrape and autoscaling
+
+The native Server serves `GET /metrics` in Prometheus text format 0.0.4
+(`Content-Type: text/plain; version=0.0.4`). Workers poll for tasks, so a
+worker Deployment scaled to zero emits no metrics of its own. These series are
+read from the Server's task rows, so due work is visible while no worker runs,
+and an autoscaler can start the first worker. Published PHP 2.x has no such
+route; its `GET /api/system/prometheus-metrics` stays the admin-only JSON
+summary.
+
+**Authentication.** Scrape with the scrape-only `metrics` role:
+
+- `DW_METRICS_TOKEN`, a server-wide bearer token that can read `GET /metrics`
+  for any namespace and reaches no other route. Startup refuses a value equal
+  to `DW_AUTH_TOKEN` or any role token.
+- or a database runtime credential with `"roles":["metrics"]` and a `tenant`,
+  which reads only its own namespace's scrape
+  (`DW_RUNTIME_CREDENTIALS_ENABLED=true`).
+
+An admin token can also scrape. The control-plane version header is optional
+on this route; a version other than `2` is still refused.
+
+**Namespace.** Each scrape reads one namespace: the `X-Namespace` header, else
+the `namespace` query parameter, else `default`. Every sample carries a
+`namespace` label, so one Prometheus job per namespace merges cleanly. In a
+Prometheus scrape config, pass `params: {namespace: [orders]}`.
+
+**Availability.** A failed storage read fails the whole scrape with HTTP 503
+and no samples, so Prometheus records the target as down (`up == 0`) and the
+series go stale. Missing telemetry is never rendered as an empty queue or as
+unlimited capacity.
+
+**Cardinality.** Labels are namespace, task queue, task kind (`workflow` or
+`activity`), build id, workflow type, activity type and fixed state names.
+Workflow, run and task identifiers are never labels. Each family reports at
+most 100 task queues (by name), and at most 10 build ids per queue and kind;
+further build ids are summed under `build_id="__other__"`. The workflow and
+activity families report at most 100 label sets each. `dw_metrics_series_limit`,
+`dw_metrics_series_observed` and `dw_metrics_series_truncated` (by `family`:
+`task_queues`, `activity_retries`, `workflows`, `activities`) disclose
+truncation.
+
+#### Task queue series
+
+Labels: `namespace`, `task_queue`, `task_kind`, and `build_id` where shown.
+A workflow task's `build_id` is its own compatibility marker, else its run's,
+as the build-id rollout view groups pending workflow tasks. Activity tasks are
+not routed by build id and carry `build_id=""`. Unversioned work also carries
+`build_id=""`.
+
+| Series | Labels | Meaning |
+| --- | --- | --- |
+| `dw_task_queue_ready_tasks` | queue, kind, build | Ready tasks, due now or later. |
+| `dw_task_queue_due_tasks` | queue, kind, build | Ready tasks whose availability time has passed: work waiting for a worker now. |
+| `dw_task_queue_delayed_tasks` | queue, kind, build | Ready tasks scheduled for later (retry backoff, delayed work). Not a reason to scale up. |
+| `dw_task_queue_leased_tasks` | queue, kind, build | Tasks leased to a worker and not yet completed. |
+| `dw_task_queue_expired_leases` | queue, kind, build | Leased tasks whose lease expired and awaits repair. |
+| `dw_task_queue_oldest_due_task_age_seconds` | queue, kind, build | Seconds the oldest due task has been ready (its ready origin, or its availability time when later); `0` with no due task. Absent when due tasks have no recorded readiness time. |
+| `dw_task_queue_dispatchable_tasks` | queue, kind, build | Due tasks that admission lets a worker lease now. This is the scale-up signal. |
+| `dw_task_queue_admission_state` | queue, kind, `state` | `1` for the current state, `0` for the others: `accepting` (a budget applies and has capacity), `throttled` (a budget is exhausted or dispatch is paused) or `unlimited`. |
+| `dw_task_queue_admission_remaining_capacity` | queue, kind | Tasks the admission budget still lets workers lease. Absent when unlimited. |
+| `dw_task_queue_activity_dispatch_paused` | queue | `1` while an operator pause holds activity dispatch on the queue. |
+| `dw_task_queue_active_pollers` | queue, build | Workers registered on the queue with a fresh heartbeat. `0` (with `build_id=""`) when none runs. |
+| `dw_task_queue_worker_slots` | queue, kind | Concurrent task slots the fresh workers declare. |
+| `dw_task_queue_available_worker_slots` | queue, kind | Free slots the fresh workers last reported. |
+
+A queue is reported while it has ready or leased tasks, a fresh worker or an
+activity dispatch pause. When a queue drains and its workers stop, its backlog
+series disappear; sum them in queries (`sum(...)` of nothing is no data, so
+add `or vector(0)`).
+
+Native enforces no server-side lease or dispatch budgets, so its admission
+state is `unlimited` except while an operator pause
+([`POST /api/task-queues/{task_queue}/activity-dispatch/pause`](contracts/task-queue-activity-dispatch-pause.md))
+holds a queue's activity dispatch: the activity kind is then `throttled` with
+remaining capacity `0`, and its dispatchable tasks are `0` however large the
+due backlog grows.
+
+#### Retry and schedule series
+
+| Series | Labels | Meaning |
+| --- | --- | --- |
+| `dw_activity_retrying` | queue | Activities waiting for a retry attempt after a failed attempt. |
+| `dw_activity_oldest_retrying_age_seconds` | queue | Seconds since the oldest retrying activity first started; `0` with none. |
+| `dw_activity_failed_attempts` | queue | Failed activity attempts of retained runs. Retention pruning lowers it. |
+| `dw_schedules` | `state` (`active`, `paused`) | Schedules by state. |
+| `dw_schedules_missed` | — | Active schedules whose next fire time passed without firing. |
+| `dw_schedule_oldest_missed_age_seconds` | — | Seconds since the most overdue next fire time; `0` with none. |
+
+Schedule fire, failure and skip totals are not exported. The stored totals
+cover only existing schedules, so they fall when a schedule is deleted; they
+are not counters.
+
+#### Run and activity series
+
+These are the families of the JSON `GET /api/system/prometheus-metrics`
+summary, labeled by `task_queue` and `workflow_type` (plus `activity_type` for
+activities). They count rows retained in visibility, so retention pruning
+lowers them; they are gauges, not counters.
+
+| Series | Meaning |
+| --- | --- |
+| `dw_workflow_runs_retained` | Retained runs of the queue and type. |
+| `dw_workflow_runs{status}` | Retained runs by `status`: `running`, `completed`, `failed`, `cancelled`, `terminated`. |
+| `dw_workflow_run_duration_seconds` | Histogram of closed run durations (buckets 0.1 to 900 seconds). |
+| `dw_activity_executions_retained` | Retained activity executions. |
+| `dw_activity_executions{status}` | Executions by `status`: `running` (pending or running), `completed`, `failed`, `cancelled`. |
+| `dw_activity_execution_duration_seconds` | Histogram of closed execution durations. |
+
+Because pruning lowers the histogram counts, which Prometheus reads as a
+counter reset, use them for ratios and quantiles over a window rather than
+`rate()` across retention passes.
+
+#### Scale workers from zero
+
+Scale a worker Deployment on work it could take now plus work it holds:
+
+```promql
+sum(dw_task_queue_dispatchable_tasks{namespace="orders",task_queue="orders"})
+  + sum(dw_task_queue_leased_tasks{namespace="orders",task_queue="orders"})
+  or vector(0)
+```
+
+With a target of the worker's concurrent slots per replica, the first started
+workflow makes this `1` and wakes one worker; when every task is completed it
+returns to `0` and the autoscaler can scale back to zero after its cooldown.
+Delayed tasks (retry backoff) never add replicas, and a throttled queue's
+growing due backlog contributes nothing until its admission reopens, so the
+autoscaler does not add workers that cannot take work. Both series come from
+the same rows, so they are present or absent together. To scale one build-id cohort, add its `build_id` label; follow the
+[build-id rollout guidance](https://durable-workflow.github.io/docs/2.0/polyglot/worker-build-id-rollout#pending-workflow-tasks-by-cohort)
+before scaling a cohort to zero, because pending work pinned to an older
+build needs a compatible worker even when the queue total looks idle.
+
+KEDA's Prometheus scaler, a Prometheus `ServiceMonitor` and the values for the
+Helm chart are in [`k8s/helm/examples/autoscaling`](../k8s/helm/examples/autoscaling).
+
 ## Authentication
 
 Set the `X-Namespace` header to target a specific namespace (defaults to `default`).
@@ -1521,6 +1660,11 @@ worker-read, namespace-read, and diagnostic `/api/worker/register` endpoints.
 `admin` tokens can call admin operations such as `/api/system/*`, namespace
 create/update/delete, worker deletion, diagnostic `/api/worker/register`, and
 can also use operator endpoints.
+
+The native Server also accepts a scrape-only `metrics` role
+(`DW_METRICS_TOKEN`, or a runtime credential with `"roles":["metrics"]`). It
+reads `GET /metrics` and nothing else; see
+[Prometheus scrape and autoscaling](#prometheus-scrape-and-autoscaling).
 
 ```bash
 curl -H "Authorization: Bearer operator-secret" \
@@ -1562,8 +1706,9 @@ DW_RUNTIME_CREDENTIALS_ENABLED=true
 
 Use an existing static admin token with the versioned
 `/api/runtime-credentials` endpoints. `PUT /api/runtime-credentials/{id}`
-accepts a caller-generated bearer token, subject, `operator` or `worker` role,
-and required tenant namespace. Repeating an identical `PUT` is idempotent;
+accepts a caller-generated bearer token, subject, `operator` or `worker` role
+(native also accepts the scrape-only `metrics` role), and required tenant
+namespace. Repeating an identical `PUT` is idempotent;
 different attributes return `409`. The Server stores only the SHA-256 token
 hash and a non-secret prefix. Rotation and revocation take effect without a
 restart:
@@ -2070,6 +2215,7 @@ every operator-facing variable the server honors.
 | `DW_WORKER_TOKEN` | (unset) | Bearer token for worker registration, deregistration, polling, heartbeat, and completion. |
 | `DW_OPERATOR_TOKEN` | (unset) | Bearer token for the operator control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_ADMIN_TOKEN` | (unset) | Bearer token for the admin control plane and diagnostic worker registration; polling remains worker-only. |
+| `DW_METRICS_TOKEN` | (unset) | Native only. Scrape-only bearer token for `GET /metrics` in any namespace; reaches no other route and must differ from every other token. |
 | `DW_PRINCIPAL_TOKENS` | (unset) | JSON token map for named bearer-token principals used by audit attribution. |
 | `DW_RUNTIME_CREDENTIALS_ENABLED` | `false` | Enable durable, namespace-bound operator and worker credentials managed through the admin API. |
 | `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for worker registration, deregistration, polling, heartbeat, and completion. |

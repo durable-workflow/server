@@ -1,0 +1,14 @@
+# Plain Prometheus (no Operator): a scrape job for the native Server's
+# GET /metrics (Server #534). Put the DW_METRICS_TOKEN value in the file
+# named by credentials_file.
+scrape_configs:
+  - job_name: durable-workflow-default
+    metrics_path: /metrics
+    scrape_interval: 15s
+    params:
+      namespace: [default]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/durable-workflow-metrics-token
+    static_configs:
+      - targets: ["durable-workflow-server.durable-workflow.svc:8080"]

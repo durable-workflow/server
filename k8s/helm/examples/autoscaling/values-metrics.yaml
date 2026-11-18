@@ -1,0 +1,14 @@
+# Server #534: give the native Server a scrape-only credential for GET /metrics.
+# Merge into your chart values (helm upgrade ... -f values-metrics.yaml).
+#
+# The chart renders `auth.extra` entries into its app Secret, which the native
+# Server reads as environment. With `auth.existingSecret`, add a
+# DW_METRICS_TOKEN key to that Secret instead.
+#
+# DW_METRICS_TOKEN reads GET /metrics for any namespace and reaches no other
+# route. It must differ from DW_AUTH_TOKEN and every role token; the Server
+# refuses to start otherwise. Requires a native Server release that serves
+# GET /metrics (cluster info capability `prometheus_text_metrics`).
+auth:
+  extra:
+    DW_METRICS_TOKEN: "replace-with-a-long-random-scrape-token"
