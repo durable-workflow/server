@@ -124,6 +124,7 @@ async fn round_trip(
     local: &crate::external_payload::LocalStorage,
     fill: u8,
     bytes: i64,
+    payload_name: &str,
 ) -> Result<Value> {
     let payload = vec![fill; usize::try_from(bytes).unwrap_or_default()];
     let sha256 = hex(Sha256::digest(&payload));
@@ -137,7 +138,7 @@ async fn round_trip(
     let uri = local
         .uri_for(&reference)
         .map_err(super::external_transport::snapshot_error)?;
-    runtime
+    let outcome = runtime
         .storage_test_round_trip(
             local,
             reference,
@@ -146,6 +147,19 @@ async fn round_trip(
             runtime.external.workers.clone(),
         )
         .await?;
+    if let Err(failure) = outcome {
+        // Only the step, the classified reason and the cleanup outcome are
+        // reported: never a path, URI or the storage's own error text.
+        let (status, reason) = super::external_transport::snapshot_outcome(&failure.error);
+        let retryable = status == StatusCode::SERVICE_UNAVAILABLE;
+        return Err(RuntimeError::Protocol {
+            status,
+            response: json!({"status":"failed","reason":reason,
+                "message":super::external_transport::message(reason),"namespace":runtime.namespace(),
+                "driver":"local","operation":failure.operation,"payload":payload_name,"retryable":retryable,
+                "cleanup":failure.cleanup.map(|outcome| json!({"operation":"delete","outcome":outcome}))}),
+        });
+    }
     Ok(json!({"status":"passed","bytes":bytes,"sha256":sha256,
         "reference_identity_sha256":hex(Sha256::digest(uri.as_bytes()))}))
 }
@@ -220,8 +234,8 @@ pub(super) async fn storage_test(runtime: &Runtime, body: Value) -> Result<Value
         .map_err(|_| unavailable())?;
     // Validation accepted both sizes as integers.
     let size = |value: &Option<Value>| value.as_ref().and_then(integer).unwrap_or_default();
-    let small = round_trip(runtime, &local, b's', size(&small)).await?;
-    let large = round_trip(runtime, &local, b'l', size(&large)).await?;
+    let small = round_trip(runtime, &local, b's', size(&small), "small_payload").await?;
+    let large = round_trip(runtime, &local, b'l', size(&large), "large_payload").await?;
     Ok(
         json!({"status":"passed","namespace":namespace,"driver":driver,
         "small_payload":small,"large_payload":large}),

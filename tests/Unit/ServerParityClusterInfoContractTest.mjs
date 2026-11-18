@@ -44,6 +44,8 @@ test('the reviewed native differences are each a published member', () => {
   unchanged.upload.completion_context.prepared_schema = php.upload.completion_context.prepared_schema;
   unchanged.upload.completion_context.scope_schema = php.upload.completion_context.scope_schema;
   unchanged.audit_events = php.audit_events;
+  assert.deepStrictEqual(native.typed_outcomes.external_payload_storage_access_denied, {status: 424, retryable: false});
+  delete unchanged.typed_outcomes.external_payload_storage_access_denied;
   assert.deepStrictEqual(unchanged, php, 'native differs only in the reviewed members');
 });
 
@@ -76,6 +78,12 @@ for (const [label, implementation, mutate] of [
   ['PHP acquiring an unreviewed completion budget', null, state => { read(state, 'available').limits.max_workflow_task_completion_bytes = 33554432; }],
   ['native advertising the 256-byte operation name PHP cannot store', 'rust', state => { read(state, 'available').limits.max_operation_name_length = 256; }],
   ['PHP acquiring the unreviewed native operation-name cap', null, state => { read(state, 'available').limits.max_operation_name_length = 255; }],
+  ['native without its access-denied outcome', 'rust', state => {
+    for (const key of Object.keys(state.discovery)) delete read(state, key).transport_capability.typed_outcomes.external_payload_storage_access_denied;
+  }],
+  ['PHP acquiring the unreviewed access-denied outcome', null, state => {
+    for (const key of Object.keys(state.discovery)) read(state, key).transport_capability.typed_outcomes.external_payload_storage_access_denied = {status: 424, retryable: false};
+  }],
   ['another request limit', null, state => { read(state, 'missing').limits.max_payload_bytes = 1048576; }],
   ['an exposed provider', 'rust', state => { read(state, 'available').namespace.external_payload_storage.provider_details_exposed = true; }],
   ['a lost policy', 'rust', state => { state.policies.disabled.status = 422; }],

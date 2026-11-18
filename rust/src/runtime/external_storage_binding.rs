@@ -5,6 +5,16 @@ use crate::external_payload::{LocalStorage, Reference, StorageBinding};
 use axum::http::StatusCode;
 use serde_json::Value;
 
+/// A recorded binding whose storage cannot be opened. A permission refusal
+/// is reported as access denied (Server #589); any other failure keeps the
+/// binding-unavailable refusal.
+pub(super) fn storage_failure(error: crate::external_payload::SnapshotError) -> RuntimeError {
+    match error {
+        crate::external_payload::SnapshotError::AccessDenied => super::external_transport::snapshot_error(error),
+        _ => unavailable(),
+    }
+}
+
 pub(super) fn unavailable() -> RuntimeError {
     refuse(
         StatusCode::CONFLICT,
@@ -149,14 +159,14 @@ store_methods! {
         let stored = DB::optional_string(&row, "storage_binding")?;
         let binding = Self::retained_storage_binding(&mut tx, self.namespace.as_ref(), expected, uri, stored.as_deref()).await?;
         tx.commit().await?;
-        binding.storage().await.map_err(|_| unavailable())
+        binding.storage().await.map_err(storage_failure)
     }
 
     pub(super) async fn bound_deletion_policy(
         tx: &mut Transaction<'_, DB>, namespace: &str, reference: &Reference, uri: &str, stored: Option<&str>,
     ) -> Result<Value> {
         let binding = Self::retained_storage_binding(tx, namespace, reference, uri, stored).await?;
-        binding.storage().await.map_err(|_| unavailable())?;
+        binding.storage().await.map_err(storage_failure)?;
         Ok(binding.deletion_policy())
     }
 }

@@ -49,6 +49,14 @@ fn mismatch() -> super::RuntimeError {
     )
 }
 
+/// The storage diagnostic step that failed, its classified failure, and
+/// the outcome of deleting the written object afterwards, if attempted.
+pub(crate) struct StorageStepFailure {
+    pub(crate) operation: &'static str,
+    pub(crate) error: crate::external_payload::SnapshotError,
+    pub(crate) cleanup: Option<&'static str>,
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -121,6 +129,11 @@ where
     /// under the object lock that uploads and cleanup take. Local objects are
     /// content-addressed, so a registered payload with the same bytes keeps
     /// its object: the diagnostic deletes only an object nothing references.
+    ///
+    /// A storage refusal names the step it happened at (Server #589). When the
+    /// read fails after a write, the unreferenced object is still deleted once;
+    /// that cleanup's outcome is reported beside the read failure, never in
+    /// its place.
     pub(super) async fn storage_test_round_trip(
         &self,
         local: &crate::external_payload::LocalStorage,
@@ -128,7 +141,7 @@ where
         payload: Vec<u8>,
         max_bytes: u64,
         workers: std::sync::Arc<tokio::sync::Semaphore>,
-    ) -> Result<()> {
+    ) -> Result<std::result::Result<(), StorageStepFailure>> {
         use super::external_transport::snapshot_error;
         let uri = local.uri_for(&reference).map_err(snapshot_error)?;
         let mut tx = self.begin().await?;
@@ -148,26 +161,28 @@ where
         )
         .await
         .map_err(snapshot_error)?;
-        local
-            .put(reference.clone(), snapshot)
-            .await
-            .map_err(snapshot_error)?;
+        let failure = |operation, error, cleanup| Ok(Err(StorageStepFailure { operation, error, cleanup }));
+        if let Err(error) = local.put(reference.clone(), snapshot).await {
+            return failure("put", error, None);
+        }
         // Fetch verifies the stored size and digest against the reference.
-        local
-            .fetch(
-                reference.clone(),
-                &uri,
-                max_bytes,
-                std::env::temp_dir(),
-                workers,
-            )
+        if let Err(error) = local
+            .fetch(reference.clone(), &uri, max_bytes, std::env::temp_dir(), workers)
             .await
-            .map_err(snapshot_error)?;
-        if !registered {
-            local.delete(&reference).await.map_err(snapshot_error)?;
+        {
+            let cleanup = if registered {
+                None
+            } else {
+                Some(if local.delete(&reference).await.is_ok() { "deleted" } else { "failed" })
+            };
+            tx.commit().await?;
+            return failure("get", error, cleanup);
+        }
+        if !registered && let Err(error) = local.delete(&reference).await {
+            return failure("delete", error, None);
         }
         tx.commit().await?;
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// The caller commits this writing row before any provider effect. A retry
@@ -233,7 +248,7 @@ where
         let binding = DB::optional_string(&admitted, "storage_binding")?.ok_or_else(super::external_storage_binding::unavailable)?;
         let binding = crate::external_payload::StorageBinding::decode_stored(&binding, self.namespace.as_ref(), &reference, uri)
             .ok_or_else(super::external_storage_binding::unavailable)?;
-        let local = binding.storage().await.map_err(|_| super::external_storage_binding::unavailable())?;
+        let local = binding.storage().await.map_err(super::external_storage_binding::storage_failure)?;
         if let Some(context) = completion {
             self.completion_upload_lease(&mut tx, context).await?;
         }

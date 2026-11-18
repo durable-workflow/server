@@ -1441,3 +1441,91 @@ async fn stalled_upload_keeps_original_timeout_and_releases_capacity_for_next_or
     runtime.close().await;
     database.remove().await;
 }
+
+/// Server #589: a stored payload the storage refuses to read is the
+/// non-retryable `external_payload_storage_access_denied` (424) on the
+/// transport fetch, on workflow start and on worker task completion. A
+/// storage outage stays `external_payload_unavailable` (503). Neither body
+/// shows the storage location.
+#[tokio::test]
+async fn storage_access_refusals_are_access_denied_not_unavailable() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("objects");
+    let (database, runtime, app) = setup(ExternalPayloadConfig::default(), &root).await;
+    let blob = durable_workflow_server::codec::ValueCodec::new().unwrap()
+        .encode(&Payload::String("refused bytes".into())).unwrap();
+    let (status, _, bytes) = request(&app, "POST", "/api/external-payloads/v1", "worker-token", "default",
+        Some(&metadata(blob.as_bytes())), Body::from(blob.clone())).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let uploaded: Value = serde_json::from_slice(&bytes).unwrap();
+    let reference = uploaded["reference"].clone();
+    let object = root.join("avro").join(&digest(blob.as_bytes())[..2]).join(digest(blob.as_bytes()));
+    assert!(object.is_file());
+    let fetch_path = format!("/api/external-payloads/v1/{}", reference["reference_id"].as_str().unwrap());
+    let envelope = json!({"codec":"avro","external_payload":reference});
+    let location = root.display().to_string();
+    let typed = |status: u16, reason: &str, retryable: bool| (reason.to_owned(), retryable, status);
+    let read = |body: &[u8]| -> (String, bool, u16) {
+        let body: Value = serde_json::from_slice(body).unwrap();
+        (body["reason"].as_str().unwrap().to_owned(), body["retryable"].as_bool().unwrap(), body["status"].as_u64().unwrap() as u16)
+    };
+
+    // A worker with a leased workflow task to complete.
+    assert_eq!(json_request(&app, "POST", "/api/worker/register", "worker-token", json!({"worker_id":"denied-reader",
+        "task_queue":"denied-queue","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[]})).await.0,
+        StatusCode::CREATED);
+    let (status, started) = json_request(&app, "POST", "/api/workflows", "operator-token", json!({"workflow_id":"denied-completion",
+        "workflow_type":"echo","task_queue":"denied-queue"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let (_, delivery) = json_request(&app, "POST", "/api/worker/workflow-tasks/poll", "worker-token",
+        json!({"worker_id":"denied-reader","task_queue":"denied-queue","timeout_seconds":0})).await;
+    let task = delivery["task"].clone();
+    let complete = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let result = completion(&task, json!([{"type":"complete_workflow","result":envelope.clone()}]));
+
+    // An outage: the object is no longer a file.
+    std::fs::rename(&object, object.with_extension("moved")).unwrap();
+    std::fs::create_dir(&object).unwrap();
+    let (status, _, body) = request(&app, "GET", &fetch_path, "worker-token", "default", Some(&reference), Body::empty()).await;
+    assert_eq!((status, read(&body)), (StatusCode::SERVICE_UNAVAILABLE, typed(503, "external_payload_unavailable", true)));
+    let (status, body) = json_request(&app, "POST", "/api/workflows", "operator-token",
+        json!({"workflow_id":"denied-start","workflow_type":"echo","task_queue":"denied-queue","input":envelope.clone()})).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::SERVICE_UNAVAILABLE, json!("external_payload_unavailable")), "{body}");
+    std::fs::remove_dir(&object).unwrap();
+    std::fs::rename(object.with_extension("moved"), &object).unwrap();
+
+    // The storage refuses the server's read.
+    std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&object).is_ok() {
+        // A superuser ignores the mode; nothing more can be asserted here.
+        std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o644)).unwrap();
+        runtime.close().await;
+        database.remove().await;
+        return;
+    }
+    let (status, _, body) = request(&app, "GET", &fetch_path, "worker-token", "default", Some(&reference), Body::empty()).await;
+    assert_eq!((status, read(&body)), (StatusCode::FAILED_DEPENDENCY, typed(424, "external_payload_storage_access_denied", false)));
+    assert!(!String::from_utf8_lossy(&body).contains(&location));
+    let (status, body) = json_request(&app, "POST", "/api/workflows", "operator-token",
+        json!({"workflow_id":"denied-start","workflow_type":"echo","task_queue":"denied-queue","input":envelope.clone()})).await;
+    assert_eq!((status, body["reason"].clone(), body["retryable"].clone()),
+        (StatusCode::FAILED_DEPENDENCY, json!("external_payload_storage_access_denied"), json!(false)), "{body}");
+    assert!(!body.to_string().contains(&location));
+    let (status, body) = json_request(&app, "POST", &complete, "worker-token", result.clone()).await;
+    assert_eq!((status, body["reason"].clone(), body["retryable"].clone()),
+        (StatusCode::FAILED_DEPENDENCY, json!("external_payload_storage_access_denied"), json!(false)), "{body}");
+    assert!(!body.to_string().contains(&location));
+    let (_, run) = json_request(&app, "GET", "/api/workflows/denied-start", "operator-token", Value::Null).await;
+    assert_ne!(run["status"], "running", "a refused start admits nothing: {run}");
+
+    // Once the permission is restored, the same requests succeed.
+    std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (status, body) = json_request(&app, "POST", "/api/workflows", "operator-token",
+        json!({"workflow_id":"denied-start","workflow_type":"echo","task_queue":"denied-queue","input":envelope})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = json_request(&app, "POST", &complete, "worker-token", result).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    runtime.close().await;
+    database.remove().await;
+}
