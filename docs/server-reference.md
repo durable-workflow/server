@@ -1350,7 +1350,7 @@ Published PHP 2.x applies no policy to a child whose parent continued as new.
 - `POST /api/schedules/{id}/backfill` — Backfill missed runs
 
 A scheduled, backfilled or drained buffered occurrence starts its run under a
-deterministic workflow ID, the same one embedded mode uses (Workflow 2.29.0),
+deterministic workflow ID, the same one embedded mode has used since Workflow 2.15.15,
 so an application can derive the run for an occurrence
 ([#599](https://github.com/durable-workflow/server/issues/599)):
 
