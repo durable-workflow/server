@@ -216,7 +216,8 @@ async fn a_completion_above_the_default_mariadb_packet_records_on_every_backend(
         let packet = task_retry::rows(&database, "SELECT CAST(@@max_allowed_packet AS SIGNED)").await;
         eprintln!("max_allowed_packet={packet}");
     }
-    let app = router(database.open().await.unwrap());
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
     register(&app, "packet", json!(["echo"]), json!(["act"])).await;
     start(&app, "packet").await;
     let task = poll(&app, "packet", "workflow").await;
@@ -253,6 +254,8 @@ async fn a_completion_above_the_default_mariadb_packet_records_on_every_backend(
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
     assert_eq!(refused["recorded"], false, "{refused}");
     assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_history_events WHERE event_type='ActivityScheduled'").await, 720);
+    drop(app);
+    runtime.close().await;
     database.remove().await;
 }
 
