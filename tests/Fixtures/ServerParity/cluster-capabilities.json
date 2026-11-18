@@ -303,6 +303,10 @@
         "value": "{absent}",
         "reason": "Native reads no DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES."
       },
+      "structural_limits.history_transaction_bytes": {
+        "value": 134217728,
+        "reason": "Native admits a workflow task completion of up to 16 payload limits (server#1136), so an unset DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES defaults to four completion caps, 128 MiB, instead of PHP's 16 MiB, which refused fan-outs under the advertised completion cap (.github#228)."
+      },
       "discovery.diagnostics_query": {
         "value": "{absent}",
         "reason": "Native serves no include=diagnostics view."
