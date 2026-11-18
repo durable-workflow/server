@@ -1,6 +1,6 @@
 //! Content-addressed local storage. The registry must commit a writing row
 //! before put and hold the object lock until the ready promotion commits.
-use super::{Reference, Snapshot, SnapshotError, capture};
+use super::{Reference, Snapshot, SnapshotError, capture, snapshot::io_failure};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -31,7 +31,7 @@ impl LocalStorage {
     /// An explicitly configured legacy root may use an alias. Resolve that
     /// admitted name without creating directories, then pin the canonical root.
     pub(crate) async fn open_declared_existing(root: PathBuf) -> Result<Self, SnapshotError> {
-        let root = tokio::task::spawn_blocking(move || root.canonicalize().map_err(unavailable))
+        let root = tokio::task::spawn_blocking(move || root.canonicalize().map_err(io_failure))
             .await
             .map_err(unavailable)??;
         Self::open_existing(root).await
@@ -41,7 +41,7 @@ impl LocalStorage {
     /// original root. A later symlink must not redirect the recorded owner.
     pub(crate) async fn open_existing(root: PathBuf) -> Result<Self, SnapshotError> {
         let root = tokio::task::spawn_blocking(move || {
-            let canonical = root.canonicalize().map_err(unavailable)?;
+            let canonical = root.canonicalize().map_err(io_failure)?;
             if canonical.as_os_str() != root.as_os_str()
                 || !canonical.is_dir()
                 || canonical.to_str().is_none()
@@ -74,8 +74,8 @@ impl LocalStorage {
 
     pub async fn open(root: PathBuf) -> Result<Self, SnapshotError> {
         let root = tokio::task::spawn_blocking(move || {
-            fs::create_dir_all(&root).map_err(unavailable)?;
-            let root = root.canonicalize().map_err(unavailable)?;
+            fs::create_dir_all(&root).map_err(io_failure)?;
+            let root = root.canonicalize().map_err(io_failure)?;
             if !root.is_dir() || root.to_str().is_none() {
                 return Err(SnapshotError::Unavailable);
             }
@@ -129,8 +129,8 @@ impl LocalStorage {
         let root = self.root.clone();
         tokio::task::spawn_blocking(move || {
             let directory = path.parent().ok_or(SnapshotError::Unavailable)?;
-            fs::create_dir_all(directory).map_err(unavailable)?;
-            let directory = directory.canonicalize().map_err(unavailable)?;
+            fs::create_dir_all(directory).map_err(io_failure)?;
+            let directory = directory.canonicalize().map_err(io_failure)?;
             if !directory.starts_with(root.as_ref()) || directory == *root {
                 return Err(SnapshotError::Unavailable);
             }
@@ -143,7 +143,7 @@ impl LocalStorage {
                 .create(true)
                 .truncate(false)
                 .open(&path)
-                .map_err(unavailable)?;
+                .map_err(io_failure)?;
             // The DB object lock serializes native writes/deletion. The OS lock
             // also respects PHP's existing local writer during source controls.
             // Do not strand a blocking worker behind an unbounded foreign lock.
@@ -151,9 +151,9 @@ impl LocalStorage {
             let mut hash = Sha256::new();
             let mut buffer = [0; 8192];
             let mut size = 0_u64;
-            if output.metadata().map_err(unavailable)?.len() == snapshot.size_bytes() {
+            if output.metadata().map_err(io_failure)?.len() == snapshot.size_bytes() {
                 loop {
-                    let count = output.read(&mut buffer).map_err(unavailable)?;
+                    let count = output.read(&mut buffer).map_err(io_failure)?;
                     if count == 0 {
                         break;
                     }
@@ -168,15 +168,15 @@ impl LocalStorage {
                 .collect();
             if size != snapshot.size_bytes() || digest != snapshot.sha256() {
                 snapshot.rewind()?;
-                output.rewind().map_err(unavailable)?;
-                output.set_len(0).map_err(unavailable)?;
-                let copied = std::io::copy(&mut snapshot, &mut output).map_err(unavailable)?;
+                output.rewind().map_err(io_failure)?;
+                output.set_len(0).map_err(io_failure)?;
+                let copied = std::io::copy(&mut snapshot, &mut output).map_err(io_failure)?;
                 if copied != snapshot.size_bytes() {
                     return Err(SnapshotError::Unavailable);
                 }
             }
-            output.flush().map_err(unavailable)?;
-            output.sync_all().map_err(unavailable)?;
+            output.flush().map_err(io_failure)?;
+            output.sync_all().map_err(io_failure)?;
             // Persist a newly created directory entry before registry readiness.
             for parent in [
                 directory.as_path(),
@@ -185,7 +185,7 @@ impl LocalStorage {
             ] {
                 File::open(parent)
                     .and_then(|directory| directory.sync_all())
-                    .map_err(unavailable)?;
+                    .map_err(io_failure)?;
             }
             Ok(())
         })
@@ -200,7 +200,7 @@ impl LocalStorage {
         tokio::task::spawn_blocking(move || match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(unavailable(error)),
+            Err(error) => Err(io_failure(error)),
         })
         .await
         .map_err(unavailable)?
@@ -214,7 +214,7 @@ impl LocalStorage {
         tokio::task::spawn_blocking(move || match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(unavailable(error)),
+            Err(error) => Err(io_failure(error)),
         })
         .await
         .map_err(unavailable)?
@@ -368,6 +368,33 @@ mod tests {
         .unwrap();
         storage.put(expected.clone(), snapshot).await.unwrap();
         expected
+    }
+
+    /// Server #589: only a permission refusal is access denied; every other
+    /// I/O failure, and a refused read during capture, keeps its meaning.
+    #[tokio::test]
+    async fn permission_refusals_are_access_denied_and_other_failures_unavailable() {
+        use std::io::{Error, ErrorKind};
+        for errno in [libc::EACCES, libc::EPERM] {
+            assert_eq!(io_failure(Error::from_raw_os_error(errno)), SnapshotError::AccessDenied, "{errno}");
+        }
+        assert_eq!(io_failure(Error::from(ErrorKind::PermissionDenied)), SnapshotError::AccessDenied);
+        for errno in [libc::EIO, libc::ENOSPC, libc::ENOTDIR, libc::EROFS, libc::ETIMEDOUT, libc::ECONNREFUSED] {
+            assert_eq!(io_failure(Error::from_raw_os_error(errno)), SnapshotError::Unavailable, "{errno}");
+        }
+        assert_eq!(io_failure(Error::other("provider text")), SnapshotError::Unavailable);
+        struct Refusing(ErrorKind);
+        impl Read for Refusing {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(Error::from(self.0))
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        for (kind, expected) in [(ErrorKind::PermissionDenied, SnapshotError::AccessDenied),
+            (ErrorKind::NotFound, SnapshotError::NotFound), (ErrorKind::TimedOut, SnapshotError::Unavailable)] {
+            let captured = capture(Refusing(kind), reference(b"x"), 8, temp.path().into(), Arc::new(Semaphore::new(1))).await;
+            assert_eq!(captured.err(), Some(expected), "{kind:?}");
+        }
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ use super::{
     Result, RuntimeError,
     backend::Backend,
     refuse, schedules,
-    store::{Store, id, now},
+    store::{Store, now},
 };
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
@@ -384,7 +384,10 @@ where
         let action = schedules::normalize_action_timeouts(
             &DB::optional_document_row(row, "action")?.unwrap_or(Value::Null),
         );
-        let mut start = json!({"workflow_id":id(),"workflow_type":action["workflow_type"],
+        // An occurrence's run is named for it (Server #599); a manual trigger
+        // has no occurrence and keeps a generated id.
+        let instance_id = occurrence.map(|occurrence| Self::occurrence_instance_id(row, occurrence)).transpose()?;
+        let mut start = json!({"workflow_type":action["workflow_type"],
             "task_queue":action["task_queue"].as_str().filter(|queue| !queue.trim().is_empty()).map(str::trim).unwrap_or("default"),
             "input":action.get("input").filter(|input| !input.is_null()).cloned().unwrap_or_else(empty_arguments)});
         for field in ["execution_timeout_seconds", "run_timeout_seconds"] {
@@ -396,7 +399,7 @@ where
             Some(memo) => super::memos::initial(memo)?,
             None => Default::default(),
         };
-        let started = Self::start_in(tx, &start, &self.namespace, super::store::StartMetadata { memo: Some(&memo), search_attributes: None }, None, None, self.worker_stale_after_seconds).await?;
+        let started = Self::start_in(tx, &start, &self.namespace, super::store::StartMetadata { memo: Some(&memo), search_attributes: None, instance_id: instance_id.as_deref() }, None, None, self.worker_stale_after_seconds).await?;
         let workflow = started["workflow_id"].as_str().unwrap_or_default().to_owned();
         let run = started["run_id"].as_str().unwrap_or_default().to_owned();
         let fires = DB::number(row, "fires_count")?;
@@ -522,13 +525,30 @@ where
         Ok(())
     }
 
-    /// `hasFiredOccurrence`, including history written without the key.
+    /// [`schedule_instance_id`] for a schedule row; a row without a
+    /// namespace hashes the empty string, as embedded mode does.
+    fn occurrence_instance_id(row: &DB::Row, occurrence: DateTime<Utc>) -> Result<String> {
+        let namespace = DB::optional_string(row, "namespace")?;
+        let schedule = DB::string(row, "schedule_id")?;
+        Ok(schedule_instance_id(namespace.as_deref().unwrap_or(""), &schedule, occurrence))
+    }
+
+    /// `hasFiredOccurrence`, including history written without the key, or
+    /// the occurrence's deterministic run already exists (Server #599): a
+    /// repeated fire of one occurrence, even by a schedule recreated under
+    /// the same id, resolves to its one run instead of starting another.
     async fn has_fired(
         &self,
         tx: &mut Transaction<'_, DB>,
         row: &DB::Row,
         occurrence: DateTime<Utc>,
     ) -> Result<bool> {
+        let instance = Self::occurrence_instance_id(row, occurrence)?;
+        if Self::query("SELECT id FROM workflow_instances WHERE id=$1")
+            .bind(instance.as_str()).fetch_optional(&mut **tx).await?.is_some()
+        {
+            return Ok(true);
+        }
         let key = DB::string(row, "id")?;
         let wanted = occurrence_key(occurrence);
         let found = Self::query("SELECT id FROM workflow_schedule_history_events WHERE workflow_schedule_id=$1 AND event_type='ScheduleTriggered' AND occurrence_at_utc=$2 LIMIT 1")
@@ -819,6 +839,27 @@ where
     }
 }
 
+/// The workflow instance id of a schedule occurrence's run, as embedded
+/// mode's `PhpClassScheduleStarter::instanceId` (Workflow 2.29.0) names it
+/// for a scheduled, backfilled or drained occurrence (Server #599):
+///
+///   schedule.ns:{sha256(namespace), 32 hex}:{byte length}:{schedule_id}:backfill:{unix seconds}
+///
+/// Instance ids are global but schedule ids are unique per namespace, so
+/// the namespace digest keeps two namespaces' schedules apart. When the id
+/// would be over the 191-character instance bound or use a character
+/// outside `[A-Za-z0-9._:-]`, the schedule id is replaced by
+/// `h:{sha256(schedule_id)}`; `h` cannot be a length.
+pub(super) fn schedule_instance_id(namespace: &str, schedule_id: &str, occurrence: DateTime<Utc>) -> String {
+    use sha2::{Digest, Sha256};
+    let hex = |text: &str| Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let prefix = format!("schedule.ns:{}:", &hex(namespace)[..32]);
+    let suffix = format!("backfill:{}", occurrence.timestamp());
+    let named = format!("{prefix}{}:{schedule_id}:{suffix}", schedule_id.len());
+    let valid = named.len() <= 191 && named.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte));
+    if valid { named } else { format!("{prefix}h:{}:{suffix}", hex(schedule_id)) }
+}
+
 /// `utcOccurrenceKey`.
 fn occurrence_key(time: DateTime<Utc>) -> String {
     time.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
@@ -849,6 +890,36 @@ where
 mod tests {
     use super::*;
     use crate::codec::{Value as Payload, ValueCodec};
+
+    /// Server #599: the vectors Workflow 2.29.0's
+    /// `PhpClassScheduleStarter::instanceId` computes for these inputs.
+    #[test]
+    fn occurrence_instance_ids_match_embedded_mode() {
+        let at = DateTime::parse_from_rfc3339("2026-11-18T09:00:00Z").unwrap().with_timezone(&Utc);
+        let named = |hash: &str, schedule: &str| format!("schedule.ns:{hash}:{}:{schedule}:backfill:1794992400", schedule.len());
+        let hashed = |hash: &str, digest: &str| format!("schedule.ns:{hash}:h:{digest}:backfill:1794992400");
+        let default = "37a8eec1ce19687d132fe29051dca629";
+        for (namespace, schedule, expected) in [
+            ("default", "nightly".to_owned(), named(default, "nightly")),
+            // Namespaces keep equal schedule ids apart; no namespace hashes "".
+            ("billing", "nightly".to_owned(), named("0c95c7ece1ce1a9750275ef1c6d7ad6b", "nightly")),
+            ("", "nightly".to_owned(), named("e3b0c44298fc1c149afbf4c8996fb924", "nightly")),
+            // Outside the instance id alphabet, or over 191 characters.
+            ("default", "nightly report".to_owned(),
+                hashed(default, "1425b8cd4af8d2ad2482d097c0cfaf75db28d2be35fbc4320a9d88de5e292271")),
+            ("default", "s".repeat(122), named(default, &"s".repeat(122))),
+            ("default", "s".repeat(123),
+                hashed(default, "fbf3d521e095b355be5cdea6259ad695304e399e869f381485c005d0739c4ff9")),
+            ("default", "é".to_owned(),
+                hashed(default, "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c")),
+        ] {
+            let id = schedule_instance_id(namespace, &schedule, at);
+            assert_eq!(id, expected, "{namespace} {schedule}");
+            assert!(id.len() <= 191, "{id}");
+        }
+        // Each occurrence second has its own id.
+        assert_ne!(schedule_instance_id("default", "nightly", at), schedule_instance_id("default", "nightly", at + chrono::Duration::seconds(1)));
+    }
 
     /// A one-run interval schedule whose stored occurrence is already due.
     async fn due_schedule(store: &Store<sqlx::Sqlite>, schedule: &str, overdue_seconds: i64) -> DateTime<Utc> {

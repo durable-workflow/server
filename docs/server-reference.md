@@ -862,6 +862,25 @@ environment and follow the
 [external-payload backing-storage setup](contracts/external-payload-storage.md#self-hosted-backing-storage)
 before enabling an S3 namespace policy.
 
+On the native Rust server (local driver), storage failures are classified
+([#589](https://github.com/durable-workflow/server/issues/589)). Each reason
+below is returned on the payload transport upload and fetch, on workflow
+start, on worker task completion, and by the storage diagnostic. None of them
+includes the storage location or the storage's own error text.
+
+| Reason | Status | Retryable | Meaning and fix |
+| --- | --- | --- | --- |
+| `external_payload_storage_access_denied` | 424 | no | The storage refused the server's identity: the local directory or object is not readable or writable by the server's user (EACCES/EPERM). Give the server's user read and write access to the namespace's storage root and everything under it, then retry. Retrying earlier will not succeed. |
+| `external_payload_unavailable` | 503 | yes | Any other storage failure: a missing or unmounted root, a path that is not a directory, a full disk, an I/O error. Restore the storage, then retry. |
+| `external_payload_not_found` | 404 | no | The referenced object is gone from the storage. |
+
+A failed native storage diagnostic answers with the same status and also
+names the step: `operation` is `put`, `get` or `delete`, and `payload` is
+`small_payload` or `large_payload`. When the read fails after a successful
+write, the diagnostic still deletes the object it wrote, once, and reports
+that in `cleanup` (`{"operation":"delete","outcome":"deleted"}` or
+`"failed"`) without replacing the read failure. `cleanup` is null otherwise.
+
 Every non-health, non-discovery control-plane endpoint must send
 `X-Durable-Workflow-Control-Plane-Version: 2` on the request. That
 covers namespace, schedule, search-attribute, task-queue, worker-management,
@@ -1306,6 +1325,28 @@ so a workflow that needs a loser's effect must await it before returning.
 - `POST /api/schedules/{id}/trigger` — Trigger immediately
 - `POST /api/schedules/{id}/backfill` — Backfill missed runs
 
+A scheduled, backfilled or drained buffered occurrence starts its run under a
+deterministic workflow ID, the same one embedded mode uses (Workflow 2.29.0),
+so an application can derive the run for an occurrence
+([#599](https://github.com/durable-workflow/server/issues/599)):
+
+```text
+schedule.ns:{namespace digest}:{schedule ID byte length}:{schedule ID}:backfill:{occurrence Unix seconds}
+```
+
+The namespace digest is the first 32 hex digits of the SHA-256 of the
+schedule's namespace name, so equal schedule IDs in two namespaces name
+different runs. A schedule ID that would make the workflow ID longer than 191
+characters, or that uses a character outside `A-Z a-z 0-9 . _ : -`, is replaced
+by `h:{SHA-256 of the schedule ID, 64 hex}`. For example, schedule `nightly` in
+namespace `default` at `2026-11-18T09:00:00Z` starts
+`schedule.ns:37a8eec1ce19687d132fe29051dca629:7:nightly:backfill:1794992400`.
+The suffix reads `backfill` for every occurrence, as in embedded mode. If the
+run for an occurrence already exists, a repeated fire of it records the skip
+`already_fired_occurrence` and starts nothing. A manual trigger has no
+occurrence, so its run gets a generated ULID. Runs started before this change
+keep their generated IDs.
+
 The native development [scalar summary draft](schedule-list-scalar-summary.md) adds
 counters, latest-instance identity, a nullable current-run summary and the stored
 `last_skip_reason` / `last_skipped_at` pair. The reason is nullable complete text
@@ -1329,8 +1370,9 @@ Native list rows and describe responses also carry a top-level
 
 A known outcome has exactly `id`, `outcome`, `recorded_at`, `reason`,
 `workflow_instance_id` and `workflow_run_id`. Outcomes are `started`, `buffered`,
-`skipped` or `failed`. Started outcomes name both new uppercase ULIDs and have
-a null reason. Other outcomes have null workflow identities. Skipped and failed
+`skipped` or `failed`. Started outcomes name the new workflow instance (a
+generated ULID, or an occurrence's deterministic ID above) and its run's
+uppercase ULID, and have a null reason. Other outcomes have null workflow identities. Skipped and failed
 outcomes keep the complete reason, including empty strings and whitespace;
 buffered outcomes have a null reason. Times are UTC with six fractional digits.
 The complete summary is bounded to 4096 serialized UTF-8 bytes. An outcome that

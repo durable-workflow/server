@@ -21,10 +21,24 @@ pub enum SnapshotError {
     IntegrityMismatch,
     #[error("external_payload_unavailable")]
     Unavailable,
+    /// The storage refused the server's identity (Server #589). Unlike an
+    /// outage, retrying cannot succeed until the storage permissions change.
+    #[error("external_payload_storage_access_denied")]
+    AccessDenied,
     #[error("external_payload_not_found")]
     NotFound,
     #[error("external_payload_transfer_cancelled")]
     Cancelled,
+}
+
+/// A storage I/O failure: a permission refusal (EACCES or EPERM) is access
+/// denied, anything else is a transient outage (Server #589).
+pub(crate) fn io_failure(error: io::Error) -> SnapshotError {
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        SnapshotError::AccessDenied
+    } else {
+        SnapshotError::Unavailable
+    }
 }
 
 /// A verified copy owns its bytes independently of the backing object.
@@ -195,7 +209,7 @@ fn capture_blocking<R: Read>(
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(SnapshotError::NotFound);
             }
-            Err(_) => return Err(SnapshotError::Unavailable),
+            Err(error) => return Err(io_failure(error)),
         };
         if count == 0 {
             break;

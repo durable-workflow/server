@@ -46,8 +46,11 @@ function nativeModel() {
   nativeHistory(steps);
   let sequence = 1;
   for (const step of steps) {
+    // Native names each backfilled run for its occurrence (deterministic-schedule-run-ids).
+    const schedule = step.response.schedule_id;
     for (const result of step.response.results ?? []) {
-      if (result.outcome === 'started') result.workflow_id = String(sequence++).padStart(26, '0');
+      if (result.outcome === 'started') result.workflow_id
+        = `schedule.ns:${'0'.repeat(32)}:${schedule.length}:${schedule}:backfill:${Date.parse(result.fire_time) / 1000}`;
     }
     for (const item of step.response.schedules ?? []) Object.assign(item, {
       failures_count: 0, skipped_trigger_count: 0, latest_workflow_instance_id: null, current_run: null,

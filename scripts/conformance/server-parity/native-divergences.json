@@ -32,6 +32,15 @@
       "harness": "The native cluster-info comparator requires the exact field and shared-vector default value. PHP and embedded observations and frozen fixtures remain unchanged. Actual HTTP boundary and TCP refusal tests consume the shared completion-limit vectors."
     },
     {
+      "id": "deterministic-schedule-run-ids",
+      "issue": "https://github.com/durable-workflow/server/issues/599",
+      "since": "native source (unreleased)",
+      "applies_to": ["schedule-catalog", "schedule-policies"],
+      "published_php": "A scheduled, backfilled or drained schedule occurrence starts its run under a generated ULID workflow id.",
+      "native": "As embedded mode (Workflow 2.29.0 PhpClassScheduleStarter::instanceId), an occurrence's run id is schedule.ns:{sha256(namespace), 32 hex}:{byte length}:{schedule_id}:backfill:{unix seconds}, with the schedule id replaced by h:{sha256(schedule_id)} when the id would exceed 191 characters or leave [A-Za-z0-9._:-]. A repeated fire of an occurrence whose run exists is skipped as already_fired_occurrence. Manual triggers keep generated ids.",
+      "harness": "Schedule normalization treats the deterministic form as a volatile identity, as it does ULIDs, and the catalog and dispatch-summary checks accept it for the native target only. PHP and embedded observations and frozen fixtures remain unchanged. All-backend execution tests cover ordinary, backfilled, namespaced, hashed and repeated occurrences."
+    },
+    {
       "id": "operation-name-column-cap",
       "issue": "https://github.com/durable-workflow/server/issues/607",
       "since": "native source (unreleased)",
@@ -39,6 +48,15 @@
       "published_php": "limits.max_operation_name_length advertises the configured DW_MAX_OPERATION_NAME_LENGTH, 256 by default, though signal and update names are stored in 255-character columns.",
       "native": "Signal, update and query names are capped at 255 bytes, the column size, with the typed 422 validation_failed naming signal_name, update_name or query_name; limits.max_operation_name_length advertises 255. DW_MAX_OPERATION_NAME_LENGTH still refuses any value but its default, so the cap cannot be raised or disabled.",
       "harness": "The native cluster-info comparator requires 255 for this one limit. PHP and embedded observations and frozen fixtures remain unchanged. The all-backend execution tests cover the 255-byte boundary and the refusal."
+    },
+    {
+      "id": "external-storage-access-denied",
+      "issue": "https://github.com/durable-workflow/server/issues/589",
+      "since": "native source (unreleased)",
+      "applies_to": ["cluster-info"],
+      "published_php": "Every storage driver failure, including a refused permission, is the retryable external payload storage unavailable outcome, and the transport manifest lists no access-denied outcome.",
+      "native": "A storage permission refusal (EACCES or EPERM from the local driver) is external_payload_storage_access_denied: 424, retryable false, with a constant message and no storage location, on the transport upload and fetch, workflow start, worker task completion and the storage diagnostic, which also names the failed step (put, get or delete). Any other storage failure stays external_payload_unavailable, 503 and retryable. The transport manifest's typed_outcomes lists the new outcome.",
+      "harness": "The native cluster-info comparator requires the one added typed outcome. PHP and embedded observations and frozen fixtures remain unchanged. All-backend execution tests cover access refusal and outage on the transport fetch, workflow start, worker task completion and each storage diagnostic step."
     },
     {
       "id": "worker-registration-retention",
