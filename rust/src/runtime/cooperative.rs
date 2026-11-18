@@ -1053,7 +1053,7 @@ where
         // (`startChildRetryIfAvailable`) adds a link per retry, and the call
         // names the current attempt's run.
         let links = Self::query(
-            "SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND sequence=$2 AND link_type<>'child_supervision' ORDER BY id LIMIT 101",
+            "SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 AND sequence=$2 ORDER BY id LIMIT 101",
         )
         .bind(run_id)
         .bind(sequence)
@@ -1488,7 +1488,7 @@ where
                 });
             }
         }
-        let children = Self::query("SELECT * FROM workflow_links WHERE (parent_workflow_run_id=$1 OR child_workflow_run_id=$2) AND link_type<>'child_supervision' ORDER BY id LIMIT 1001")
+        let children = Self::query("SELECT * FROM workflow_links WHERE parent_workflow_run_id=$1 OR child_workflow_run_id=$2 ORDER BY id LIMIT 1001")
             .bind(run_id).bind(run_id).fetch_all(&mut *tx).await?;
         if children.len() > 1000 {
             return Err(refuse(

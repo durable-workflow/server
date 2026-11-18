@@ -53,15 +53,14 @@ pub(super) struct ChildBoundary {
 /// A child whose parent-close policy a closing run applies: one it started,
 /// or one an earlier run of its continue-as-new chain handed to it.
 struct PolicyTarget {
-    /// The child's original link; a handed-over child's may no longer be
-    /// retained once the run that started it is pruned.
-    link_id: Option<String>,
+    /// The child's original link.
+    link_id: String,
     sequence: Option<i64>,
     policy: String,
     child_instance: String,
     child_run: String,
     /// The run that started the child, which keys its child call.
-    origin_run: Option<String>,
+    origin_run: String,
     handed_over: bool,
 }
 
@@ -207,12 +206,12 @@ where
         let mut targets = Vec::with_capacity(links.len());
         for link in &links {
             targets.push(PolicyTarget {
-                link_id: Some(DB::string(link, "id")?),
+                link_id: DB::string(link, "id")?,
                 sequence: DB::optional_number(link, "sequence")?,
                 policy: DB::string(link, "parent_close_policy")?,
                 child_instance: DB::string(link, "child_workflow_instance_id")?,
                 child_run: DB::string(link, "child_workflow_run_id")?,
-                origin_run: Some(parent_run.clone()),
+                origin_run: parent_run.clone(),
                 handed_over: false,
             });
         }
@@ -220,10 +219,10 @@ where
         // handed to this run (workflow#868). It keeps its original link,
         // sequence, call and policy; this run only applies the policy, to
         // the child's current run.
-        for child in Self::handed_over_children(tx, parent).await? {
+        for child in Self::handed_over_children(tx, &parent_run).await? {
             targets.push(PolicyTarget {
                 link_id: child.link_id,
-                sequence: Some(child.sequence),
+                sequence: child.sequence,
                 policy: child.policy,
                 child_instance: child.child_instance,
                 child_run: child.child_run,
@@ -260,7 +259,7 @@ where
                 let mut payload = json!({"child_instance_id": boundary.child_instance, "child_run_id": boundary.child_run,
                     "policy": policy, "reason": reason});
                 if error.is_none()
-                    && let (Some(sequence), Some(origin_run)) = (target.sequence, target.origin_run.as_deref())
+                    && let Some(sequence) = target.sequence
                 {
                     // `markChildCallClosedByParentPolicy`: the open call for
                     // this child is closed with the policy, whichever run the
@@ -269,7 +268,7 @@ where
                     let at = now();
                     Self::query("UPDATE workflow_child_calls SET status=$1,closed_reason=$2,closed_at=$3,updated_at=$4 WHERE parent_workflow_run_id=$5 AND sequence=$6 AND status IN ('scheduled','started')")
                         .bind(command.closed()).bind(command.closed()).bind(DB::bind_time(at)).bind(DB::bind_time(at))
-                        .bind(origin_run).bind(sequence)
+                        .bind(&target.origin_run).bind(sequence)
                         .execute(&mut **tx).await?;
                 }
                 let kind = match error {

@@ -40,10 +40,10 @@ async fn count(database: &TestDatabase, sql: String) -> i64 {
 /// The supervision rows naming `child_instance`: (supervising run, child run)
 /// and (policy, sequence), in transfer order.
 async fn supervisions(database: &TestDatabase, child_instance: &str) -> Vec<((String, String), (String, String))> {
-    let filter = format!("FROM workflow_links WHERE link_type='child_supervision' AND child_workflow_instance_id='{child_instance}' ORDER BY created_at,id");
-    let runs = text_rows(database, &format!("SELECT parent_workflow_run_id,child_workflow_run_id {filter}"),
-        &format!("SELECT parent_workflow_run_id::text,child_workflow_run_id::text {filter}"),
-        &format!("SELECT CAST(parent_workflow_run_id AS CHAR),CAST(child_workflow_run_id AS CHAR) {filter}")).await;
+    let filter = format!("FROM dw_child_supervisions WHERE child_workflow_instance_id='{child_instance}' ORDER BY created_at,id");
+    let runs = text_rows(database, &format!("SELECT supervising_workflow_run_id,child_workflow_run_id {filter}"),
+        &format!("SELECT supervising_workflow_run_id::text,child_workflow_run_id::text {filter}"),
+        &format!("SELECT CAST(supervising_workflow_run_id AS CHAR),CAST(child_workflow_run_id AS CHAR) {filter}")).await;
     let policies = text_rows(database, &format!("SELECT parent_close_policy,CAST(sequence AS TEXT) {filter}"),
         &format!("SELECT parent_close_policy::text,sequence::text {filter}"),
         &format!("SELECT CAST(parent_close_policy AS CHAR),CAST(sequence AS CHAR) {filter}")).await;
@@ -184,6 +184,16 @@ async fn continue_as_new_hands_an_open_child_to_the_continued_run_which_applies_
 
         assert_eq!(supervisions(&database, &chain.child).await,
             [((s(&last), s(&chain.child_run)), (policy.to_owned(), chain.sequence.to_string()))], "{policy}");
+        // The transfer records Core's columns: where it came from and the
+        // child's original link, starting run and instance.
+        let from = format!("FROM dw_child_supervisions WHERE supervising_workflow_run_id='{}'", s(&last));
+        assert_eq!(text(&database, "transferred_from_workflow_run_id", &from).await, s(&first));
+        assert_eq!(text(&database, "workflow_link_id", &from).await, s(&chain.link));
+        assert_eq!(text(&database, "parent_workflow_run_id", &from).await, s(&first));
+        assert_eq!(text(&database, "parent_workflow_instance_id", &from).await, "handed-parent");
+        assert_eq!(text(&database, "namespace", &from).await, "default");
+        // No reader of links sees the transfer.
+        assert_eq!(count(&database, "SELECT COUNT(*) FROM workflow_links WHERE link_type NOT IN ('child_workflow','continue_as_new')".to_owned()).await, 0);
         // The link and call stay with the run that started the child.
         assert_eq!(count(&database, format!("SELECT COUNT(*) FROM workflow_links WHERE link_type='child_workflow' AND parent_workflow_run_id='{}' AND parent_close_policy='{policy}'", s(&first))).await, 1);
         assert_eq!(count(&database, format!("SELECT COUNT(*) FROM workflow_child_calls WHERE parent_workflow_run_id='{}'", s(&first))).await, 1);
@@ -461,7 +471,7 @@ async fn a_chain_continued_without_supervision_leaves_its_children_as_before() {
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let chain = chain(&app, &database, "legacy-chain", child_with("request_cancel", Some(3)), 1).await;
-    database.execute(sqlx::AssertSqlSafe("DELETE FROM workflow_links WHERE link_type='child_supervision'".to_owned())).await;
+    database.execute(sqlx::AssertSqlSafe("DELETE FROM dw_child_supervisions".to_owned())).await;
     let predecessor = chain.history(&app, chain.first()).await;
     chain.complete(&app).await;
     let history = chain.history(&app, chain.last()).await;
@@ -472,6 +482,39 @@ async fn a_chain_continued_without_supervision_leaves_its_children_as_before() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(count(&database, format!("SELECT COUNT(*) FROM workflow_runs WHERE workflow_instance_id='{}'", chain.child)).await, 1);
     assert_eq!(chain.history(&app, chain.first()).await, predecessor);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Retention may prune the run that started a handed-over child while its
+// chain is still open. The supervision keeps the child's original identity,
+// as Core's row does, so the final run still applies the policy under the
+// original link and sequence. Pruning the supervising run removes its rows.
+#[tokio::test]
+async fn a_pruned_starting_run_keeps_the_handed_over_childs_identity() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let chain = chain(&app, &database, "pruned-origin", child_with("request_cancellation", None), 1).await;
+    let (status, report) = request(&app, "POST", "/api/system/retention/pass", json!({"run_ids":[chain.first()]})).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["pruned"], 1, "{report}");
+    assert_eq!(count(&database, format!("SELECT COUNT(*) FROM workflow_links WHERE parent_workflow_run_id='{}'", s(chain.first()))).await, 0);
+    assert_eq!(supervisions(&database, &chain.child).await.len(), 1);
+    chain.complete(&app).await;
+
+    let history = chain.history(&app, chain.last()).await;
+    let applied = events_of(&history, "ParentClosePolicyApplied");
+    assert_eq!(applied.len(), 1, "{history}");
+    let request_id = applied[0]["payload"]["request_id"].as_str().unwrap();
+    let context: Value = serde_json::from_str(&text(&database, "context", &format!("FROM workflow_commands WHERE id='{request_id}'")).await).unwrap();
+    assert_eq!(context["workflow"], json!({"parent_instance_id":"pruned-origin","parent_run_id":chain.last(),
+        "sequence":chain.sequence,"child_call_id":chain.link}), "{context}");
+
+    let (status, report) = request(&app, "POST", "/api/system/retention/pass", json!({"run_ids":[chain.last()]})).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["pruned"], 1, "{report}");
+    assert!(supervisions(&database, &chain.child).await.is_empty());
     runtime.close().await;
     database.remove().await;
 }

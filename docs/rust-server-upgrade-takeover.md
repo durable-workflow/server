@@ -752,8 +752,11 @@ named. These are the ones a client moving from 2.x can observe:
   `request_cancel`, `terminate` or `request_cancellation` policy when it
   closes, recording the outcome in its own history; a child that fails while
   the chain supervises it is retried under its recorded retry policy. A chain
-  continued before the upgrade keeps the 2.x behavior. The parity harness
-  records this as the named divergence `continue-as-new-child-supervision`.
+  continued before the upgrade keeps the 2.x behavior. Transfers are kept in
+  the native table `dw_child_supervisions`, so this release changes the native
+  schema (SQLite 16, PostgreSQL 17, MySQL 18, MariaDB 17) and needs the
+  `schema-upgrade` step below. The parity harness records this as the named
+  divergence `continue-as-new-child-supervision`.
 
 ## Design
 

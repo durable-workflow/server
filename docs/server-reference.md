@@ -1336,6 +1336,9 @@ starting run recorded, with the same call and attempt count; the retry's
 history is not changed, and supervision follows the retry run. Once the chain
 has closed, a child's failure is final. A run that continued before this
 change recorded no supervision, so its children are left running as before.
+Native keeps each transfer, with the columns of Core's
+`workflow_child_supervisions`, in its own `dw_child_supervisions` table; no
+link listing, description or export shows it.
 Published PHP 2.x applies no policy to a child whose parent continued as new.
 
 ### Schedules

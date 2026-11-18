@@ -263,7 +263,7 @@ where
         }
         Self::transfer_messages(tx, &old, &next, &workflow).await?;
         // `ChildSupervision::transferToContinuedRun`.
-        Self::transfer_child_supervision(tx, &old, &next, &workflow, started).await?;
+        Self::transfer_child_supervision(tx, self.namespace.as_ref(), &old, &next, started).await?;
         let task_id = DB::string(task, "id")?;
         Self::settle_closing_open_work(tx, &old, &task_id, started).await?;
         Self::query("UPDATE workflow_runs SET status='completed',closed_reason='continued',closed_at=$1,last_progress_at=$2 WHERE id=$3")

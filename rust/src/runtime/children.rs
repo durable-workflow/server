@@ -805,7 +805,7 @@ where
         // `ChildRunHistory::recordRetryStarted`: a handed-over child's closed
         // parent records nothing; its supervisions move to the retry run.
         if handed_over {
-            Self::follow_child_retry(tx, parent, sequence, &instance, &retry_run, at).await?;
+            Self::follow_child_retry(tx, &parent_run, sequence, &instance, &retry_run, at).await?;
         } else {
             Self::append(tx, &parent_run, "ChildRunStarted", started, None, None).await?;
         }

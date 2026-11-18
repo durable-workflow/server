@@ -313,9 +313,9 @@ where
         parents: bool,
     ) -> Result<Value> {
         let max = if parents {
-            "SELECT MAX(id) AS ceiling FROM workflow_links WHERE child_workflow_run_id=$1 AND child_workflow_instance_id=$2 AND link_type<>'child_supervision'"
+            "SELECT MAX(id) AS ceiling FROM workflow_links WHERE child_workflow_run_id=$1 AND child_workflow_instance_id=$2"
         } else {
-            "SELECT MAX(id) AS ceiling FROM workflow_links WHERE parent_workflow_run_id=$1 AND parent_workflow_instance_id=$2 AND link_type<>'child_supervision'"
+            "SELECT MAX(id) AS ceiling FROM workflow_links WHERE parent_workflow_run_id=$1 AND parent_workflow_instance_id=$2"
         };
         let ceiling = Self::query(max)
             .bind(run)
@@ -509,5 +509,5 @@ where
     }
 }
 
-const PARENTS: &str = "SELECT l.id AS link_id,l.link_type,l.sequence,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS primary_parent,l.parent_close_policy,l.parent_workflow_instance_id AS instance_id,l.parent_workflow_run_id AS run_id,r.id AS related_id,r.workflow_instance_id AS related_instance,r.namespace AS related_namespace,r.workflow_class AS class,r.workflow_type,r.status,r.closed_reason,r.closed_at,r.details_pruned_at FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.parent_workflow_run_id AND r.workflow_instance_id=l.parent_workflow_instance_id AND r.namespace=$1 WHERE l.child_workflow_run_id=$2 AND l.child_workflow_instance_id=$3 AND l.link_type<>'child_supervision' AND l.id>'' AND l.id<=$4 ORDER BY l.id LIMIT 51";
-const CHILDREN: &str = "SELECT l.id AS link_id,l.link_type,l.sequence,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS primary_parent,l.parent_close_policy,l.child_workflow_instance_id AS instance_id,l.child_workflow_run_id AS run_id,r.id AS related_id,r.workflow_instance_id AS related_instance,r.namespace AS related_namespace,r.workflow_class AS class,r.workflow_type,r.status,r.closed_reason,r.closed_at,r.details_pruned_at FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.child_workflow_run_id AND r.workflow_instance_id=l.child_workflow_instance_id AND r.namespace=$1 WHERE l.parent_workflow_run_id=$2 AND l.parent_workflow_instance_id=$3 AND l.link_type<>'child_supervision' AND l.id>'' AND l.id<=$4 ORDER BY l.id LIMIT 51";
+const PARENTS: &str = "SELECT l.id AS link_id,l.link_type,l.sequence,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS primary_parent,l.parent_close_policy,l.parent_workflow_instance_id AS instance_id,l.parent_workflow_run_id AS run_id,r.id AS related_id,r.workflow_instance_id AS related_instance,r.namespace AS related_namespace,r.workflow_class AS class,r.workflow_type,r.status,r.closed_reason,r.closed_at,r.details_pruned_at FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.parent_workflow_run_id AND r.workflow_instance_id=l.parent_workflow_instance_id AND r.namespace=$1 WHERE l.child_workflow_run_id=$2 AND l.child_workflow_instance_id=$3 AND l.id>'' AND l.id<=$4 ORDER BY l.id LIMIT 51";
+const CHILDREN: &str = "SELECT l.id AS link_id,l.link_type,l.sequence,CASE WHEN l.is_primary_parent THEN 1 ELSE 0 END AS primary_parent,l.parent_close_policy,l.child_workflow_instance_id AS instance_id,l.child_workflow_run_id AS run_id,r.id AS related_id,r.workflow_instance_id AS related_instance,r.namespace AS related_namespace,r.workflow_class AS class,r.workflow_type,r.status,r.closed_reason,r.closed_at,r.details_pruned_at FROM workflow_links l LEFT JOIN workflow_runs r ON r.id=l.child_workflow_run_id AND r.workflow_instance_id=l.child_workflow_instance_id AND r.namespace=$1 WHERE l.parent_workflow_run_id=$2 AND l.parent_workflow_instance_id=$3 AND l.id>'' AND l.id<=$4 ORDER BY l.id LIMIT 51";
