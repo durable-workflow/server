@@ -16,6 +16,10 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
+/// `GET /metrics`, the text exposition built from these families (Server #534).
+#[path = "prometheus_exposition.rs"]
+mod exposition;
+
 /// PHP's default series limit for each family.
 const SERIES_LIMIT: usize = 100;
 

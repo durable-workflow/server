@@ -557,6 +557,8 @@ pub const NATIVE_HONORED: &[Setting] = &[
     Setting { name: "DW_NATIVE_POLL_SWEEP_BATCH_SIZE", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY", legacy: None, disposition: Honored },
     Setting { name: "DW_WORKER_REGISTRATION_RETENTION_SECONDS", legacy: None, disposition: Honored },
+    // Server #534: the scrape-only credential for `GET /metrics`.
+    Setting { name: "DW_METRICS_TOKEN", legacy: None, disposition: Honored },
     Setting { name: "DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS", legacy: Some("WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS"), disposition: Honored },
 ];
 

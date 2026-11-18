@@ -421,6 +421,8 @@ mod continuations_v1;
 
 #[path = "execution/workflow_poll_clock.rs"]
 mod workflow_poll_clock;
+#[path = "execution/prometheus_exposition.rs"]
+mod prometheus_exposition;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),

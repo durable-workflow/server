@@ -1,0 +1,46 @@
+# Scale a worker Deployment from zero on the native Server's backlog
+# (Server #534). KEDA queries Prometheus, which scrapes GET /metrics with the
+# scrape-only credential (servicemonitor.yaml). The worker Deployment itself
+# emits nothing while it has no replicas; the Server's backlog wakes it.
+#
+# Signal: work a worker could lease now plus work workers hold. Delayed
+# tasks (retry backoff) are excluded, and a throttled queue (for example an
+# activity-dispatch pause) contributes no dispatchable tasks however large
+# its backlog grows, so KEDA does not add workers the queue cannot use.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: orders-worker
+spec:
+  scaleTargetRef:
+    name: orders-worker            # your worker Deployment
+  minReplicaCount: 0               # scale to zero when idle
+  maxReplicaCount: 20
+  pollingInterval: 15
+  cooldownPeriod: 300              # seconds idle before 1 -> 0
+  fallback:
+    # When Prometheus or the scrape is unavailable, hold this many replicas
+    # rather than reading missing data as an empty queue.
+    failureThreshold: 3
+    replicas: 1
+  triggers:
+    - type: prometheus
+      metadata:
+        # Your Prometheus query endpoint. Prefer TLS; KEDA takes a CA or
+        # client certificate through a TriggerAuthentication.
+        serverAddress: https://prometheus.monitoring.svc:9090
+        # One replica per `threshold` tasks; set it to the worker's
+        # concurrent task slots.
+        threshold: "10"
+        # Any work at all wakes the first replica.
+        activationThreshold: "0"
+        # Missing data is an error (KEDA then applies `fallback`), not zero.
+        ignoreNullValues: "false"
+        # A drained queue has no series, so the query falls back to 0 only
+        # while the Server scrape is up; adjust `job` to your scrape job.
+        query: |
+          (
+            sum(dw_task_queue_dispatchable_tasks{namespace="default",task_queue="orders"})
+            + sum(dw_task_queue_leased_tasks{namespace="default",task_queue="orders"})
+          )
+          or (vector(0) and on() up{job="durable-workflow-server"} == 1)

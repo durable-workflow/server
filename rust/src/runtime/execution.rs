@@ -38,6 +38,10 @@ pub struct Runtime {
     storage: Arc<Storage>,
     pub(crate) token: Arc<str>,
     pub(crate) role_tokens: [Option<Arc<str>>; 3],
+    /// `DW_METRICS_TOKEN`: the scrape-only credential for `GET /metrics`
+    /// (Server #534). It is not a role token, so it never changes the legacy
+    /// token's access.
+    pub(crate) metrics_token: Option<Arc<str>>,
     /// `DW_AUTH_DRIVER=none` and `DW_RUNTIME_CREDENTIALS_ENABLED`.
     pub(crate) auth: AuthOptions,
     scheduler: Arc<TimerScheduler>,
@@ -243,6 +247,12 @@ impl Runtime {
         self
     }
 
+    /// The scrape-only `metrics` credential (`DW_METRICS_TOKEN`, Server #534).
+    pub fn with_metrics_token(mut self, token: Option<String>) -> Self {
+        self.metrics_token = token.filter(|value| !value.is_empty()).map(Arc::from);
+        self
+    }
+
     /// Replaces the storage admission settings (Server #951) for this
     /// runtime's request guard, polls and maintenance loop.
     pub fn with_storage_admission(self, settings: super::storage_admission::Settings) -> Self {
@@ -396,6 +406,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: token.into(),
             role_tokens: [None, None, None],
+            metrics_token: None,
             auth: AuthOptions::default(),
             scheduler: Arc::new(TimerScheduler::new()),
             signal_codec: Arc::new(Semaphore::new(1)),
@@ -475,6 +486,7 @@ impl Runtime {
             storage: Arc::new(storage),
             token: self.token.clone(),
             role_tokens: self.role_tokens.clone(),
+            metrics_token: self.metrics_token.clone(),
             auth: self.auth,
             scheduler: self.scheduler.clone(),
             signal_codec: self.signal_codec.clone(),
@@ -503,6 +515,7 @@ impl Runtime {
     delegate!(repair_pass(request: &super::repair_pass::PassRequest) -> Result<Value>);
     delegate!(system_metrics() -> Result<Value>);
     delegate!(prometheus_metrics() -> Result<Value>);
+    delegate!(prometheus_exposition() -> Result<String>);
     delegate!(payload_cleanup_status(config: &super::operator_metrics::MetricsConfig) -> Result<Value>);
     /// Reclaim each registered object through its original storage binding.
     pub(crate) async fn payload_cleanup_pass(&self, limit: i64) -> Result<Value> {

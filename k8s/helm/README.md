@@ -10,6 +10,10 @@ standalone server, together with the example values files and CI fixtures.
   the native Server, the chart default. The others keep an existing PHP 2.x
   installation (`runtime: php`): production with externally-managed secrets,
   dev, and an External Secrets Operator companion.
+* `examples/autoscaling/` — scale worker Deployments from zero on the native
+  Server's `GET /metrics` backlog: a scrape-only credential, a
+  `ServiceMonitor` or plain Prometheus scrape job, and a KEDA `ScaledObject`
+  that also stays down while a queue is throttled.
 * `durable-workflow/ci/` — minimum-viable values fixtures used by chart-CI
   (`helm lint`, `helm template`, `ct lint-and-install`).
 
