@@ -27,6 +27,9 @@ mod visibility_collation;
 #[path = "execution/version_usage.rs"]
 mod version_usage;
 
+#[path = "execution/retirement.rs"]
+mod retirement;
+
 #[path = "execution/memos.rs"]
 mod memos;
 
@@ -187,6 +190,8 @@ mod lock_free_waiting;
 mod read_snapshots;
 #[path = "execution/query_responses.rs"]
 mod query_responses;
+#[path = "execution/query_closed_runs.rs"]
+mod query_closed_runs;
 #[path = "execution/history_export.rs"]
 mod history_export;
 #[path = "execution/input_envelopes.rs"]

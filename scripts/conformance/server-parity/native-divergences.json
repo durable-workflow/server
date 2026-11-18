@@ -116,6 +116,15 @@
       "harness": "The two named retention steps and three named namespace-deletion steps have exact native-only expectations. Re-enabling an already deleted namespace returns 404; shared-object and unused-registration counts remain exact. Every original PHP setup/step remains byte-equivalent as data; held and peer objects, deletion counts, cleanup inventory and final fetch are still required. No storage outage, unavailable original binding or pending cleanup is accepted as a successful deletion."
     },
     {
+      "id": "closed-run-queries",
+      "issue": "https://github.com/durable-workflow/server/issues/587",
+      "since": "native source (unreleased)",
+      "applies_to": ["waterline-import"],
+      "published_php": "Queries on failed, cancelled and terminated runs are refused with 409 run_not_active; completed is the only closed status that is queried. A run whose history retention pruned is not refused before a worker claims it.",
+      "native": "A retained run of any status, including failed, cancelled and terminated, is queried read-only on its original run, as embedded WorkflowStub::queryWithArguments replays any run: the same run binding, route and authority fences, with no history or status change. A run whose history retention pruned, or whose WorkflowStarted event is missing, is refused with 409 query_history_unavailable, history_state pruned or missing, run_status and is_terminal, and admits no query task. The query control-plane contract lists that reason after run_not_active.",
+      "harness": "The waterline-import comparator requires query_history_unavailable once, right after run_not_active, in each native query contract and then compares the rest exactly. Published PHP and embedded observations and frozen fixtures remain unchanged. The all-backend execution tests cover completed, failed, cancelled and terminated runs, instance- and run-targeted queries, unchanged history, and pruned and missing history."
+    },
+    {
       "id": "continue-as-new-child-supervision",
       "issue": "https://github.com/durable-workflow/server/issues/1184",
       "since": "native source (unreleased)",

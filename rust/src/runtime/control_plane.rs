@@ -307,8 +307,8 @@ impl Operation<'_> {
             Self::Query(_) => (
                 "workflow_id run_id query_name target_scope result reason message run_status \
                  is_terminal blocked_reason validation_errors",
-                "instance_not_found historical_run_command_rejected run_not_active query_not_found \
-                 rejected_unknown_query invalid_query_arguments workflow_definition_unavailable \
+                "instance_not_found historical_run_command_rejected run_not_active query_history_unavailable \
+                 query_not_found rejected_unknown_query invalid_query_arguments workflow_definition_unavailable \
                  query_rejected query_worker_unavailable query_worker_incompatible \
                  query_task_queue_full query_task_queue_unavailable query_task_not_claimed \
                  query_worker_execution_timeout query_worker_timeout v1_projection_read_only",
