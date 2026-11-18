@@ -237,6 +237,8 @@ pub fn router(runtime: Runtime) -> Router {
         .route("/api/system/health", get(system_health))
         .route("/api/system/metrics", get(system_metrics).post(system_metrics))
         .route("/api/system/prometheus-metrics", get(prometheus_metrics))
+        // Server #534: the Prometheus text exposition autoscalers scrape.
+        .route("/metrics", get(prometheus_exposition))
         .route("/api/system/external-payload-cleanup", get(payload_cleanup_status))
         .route("/api/system/external-payload-cleanup/pass", post(payload_cleanup_pass))
         .route("/api/system/external-payload-backup-hold", get(backup_hold_status))
@@ -481,6 +483,15 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
                 return Some((Principal::role(role, "token", false), false));
             }
         }
+        // The scrape-only credential (Server #534). Startup refuses a value
+        // shared with any other token, so the order cannot widen it.
+        if runtime
+            .metrics_token
+            .as_ref()
+            .is_some_and(|secret| bool::from(provided.as_bytes().ct_eq(secret.as_bytes())))
+        {
+            return Some((Principal::role("metrics", "token", false), false));
+        }
         bool::from(provided.as_bytes().ct_eq(runtime.token.as_bytes())).then(|| {
             let mut principal = Principal::role(
                 "admin",
@@ -541,6 +552,10 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
             .contains_key("x-durable-workflow-payload-completion")
     {
         &["worker"]
+    } else if path == METRICS_PATH {
+        // The scrape reads the namespace's queue and run aggregates only. The
+        // `metrics` role reaches no other route.
+        &["metrics", "admin"]
     } else if payload || path == "/api/worker/register" || path == "/api/cluster/info" {
         &["worker", "operator", "admin"]
     } else if worker {
@@ -613,7 +628,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
             })
         })
     } else {
-        requested == Some(version) || path == "/api/cluster/info" && requested.is_none()
+        // A scraper cannot be relied on to send the control-plane header.
+        requested == Some(version) || (path == "/api/cluster/info" || path == METRICS_PATH) && requested.is_none()
     };
     if !compatible && !payload {
         let missing = requested.is_none();
@@ -939,6 +955,8 @@ fn exact_namespace_route(path: &str) -> Option<Allowed> {
         "/api/workflows" | "/api/activities" | "/api/search-attributes" => READ_WRITE,
         // The metrics describe the namespace's own state, read by GET or POST.
         "/api/system/metrics" => READ_WRITE,
+        // The scrape exposition reads only the requested namespace (Server #534).
+        METRICS_PATH => READ,
         // An import writes into the requested namespace.
         "/api/external-payloads/v1" | "/api/storage/test" | "/api/workflows/import/embedded-v2"
         | "/api/workflows/import/waterline-v1" => WRITE,
@@ -2154,6 +2172,35 @@ async fn system_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<V
 
 async fn prometheus_metrics(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {
     Ok(Json(runtime.prometheus_metrics().await?))
+}
+
+/// The Prometheus text exposition route (Server #534).
+const METRICS_PATH: &str = "/metrics";
+
+/// `GET /metrics`: the namespace's backlog, admission, retry, schedule, run
+/// and activity series in Prometheus text format 0.0.4. A failed read is a
+/// 503 with no samples, so a scraper records the target as down and an
+/// autoscaler never reads missing telemetry as an empty queue.
+async fn prometheus_exposition(Extension(runtime): Extension<Runtime>) -> Response {
+    match runtime.prometheus_exposition().await {
+        Ok(text) => (
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8")),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            ],
+            text,
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8")),
+                (header::RETRY_AFTER, HeaderValue::from_static("5")),
+            ],
+            "# Durable Workflow metrics are unavailable: a storage read failed.\n",
+        )
+            .into_response(),
+    }
 }
 
 async fn payload_cleanup_status(Extension(runtime): Extension<Runtime>) -> Result<Json<Value>> {

@@ -205,6 +205,32 @@ fn token_setting(primary: &str, legacy: &str) -> Result<Option<String>, Box<dyn 
     Ok(value)
 }
 
+/// `DW_METRICS_TOKEN` (Server #534), native's scrape-only credential. It has
+/// no legacy name; an empty value leaves it unset.
+fn metrics_token_setting() -> Result<Option<String>, Box<dyn Error>> {
+    auth_value("DW_METRICS_TOKEN")?;
+    let value = config_audit::effective(|key| env::var(key).ok(), "DW_METRICS_TOKEN", None)
+        .map(|value| value.string().to_owned())
+        .filter(|value| !value.is_empty());
+    if let Some(token) = &value
+        && (token.trim() != token || token.chars().any(char::is_control))
+    {
+        return Err("DW_METRICS_TOKEN has leading or trailing whitespace or a control character, such as a trailing newline from a Secret file; remove it".into());
+    }
+    Ok(value)
+}
+
+/// The scrape credential must be its own secret: one shared with another
+/// token would let a scraper's secret act with that token's role.
+fn distinct_metrics_token(metrics: Option<&str>, others: &[Option<&str>]) -> Result<(), &'static str> {
+    match metrics {
+        Some(metrics) if others.iter().flatten().any(|other| *other == metrics) => Err(
+            "DW_METRICS_TOKEN must differ from DW_AUTH_TOKEN and every role token; a shared value would grant the scraper that token's role",
+        ),
+        _ => Ok(()),
+    }
+}
+
 fn token_shape(primary: &str, legacy: &str, token: &str) -> Result<(), String> {
     if token.trim() != token || token.chars().any(char::is_control) {
         return Err(format!(
@@ -651,12 +677,17 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let worker_token = token_setting("DW_WORKER_TOKEN", "WORKFLOW_SERVER_WORKER_TOKEN")?;
     let operator_token = token_setting("DW_OPERATOR_TOKEN", "WORKFLOW_SERVER_OPERATOR_TOKEN")?;
     let admin_token = token_setting("DW_ADMIN_TOKEN", "WORKFLOW_SERVER_ADMIN_TOKEN")?;
+    let metrics_token = metrics_token_setting()?;
     let token = auth_setting("DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN")?
         .ok_or("DW_AUTH_TOKEN (or WORKFLOW_SERVER_AUTH_TOKEN) is required")?;
     if token.trim().is_empty() {
         return Err("DW_AUTH_TOKEN must not be empty".into());
     }
     token_shape("DW_AUTH_TOKEN", "WORKFLOW_SERVER_AUTH_TOKEN", &token)?;
+    distinct_metrics_token(
+        metrics_token.as_deref(),
+        &[Some(token.as_str()), worker_token.as_deref(), operator_token.as_deref(), admin_token.as_deref()],
+    )?;
     let address: SocketAddr = env::var("DW_BIND_ADDRESS")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
@@ -700,6 +731,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     };
     let runtime = runtime
         .with_role_tokens(worker_token, operator_token, admin_token)
+        .with_metrics_token(metrics_token)
         .with_auth_options(anonymous, runtime_credentials);
     let listener = tokio::net::TcpListener::bind(address).await?;
     // A release build names its version; a source build stays a development runtime.
@@ -750,6 +782,17 @@ mod startup_tests {
         ))));
         assert!(!unreachable(&RuntimeError::Database(sqlx::Error::RowNotFound)));
         assert!(!unreachable(&RuntimeError::Io(refused())));
+    }
+
+    #[test]
+    fn the_metrics_token_must_be_its_own_secret() {
+        assert_eq!(distinct_metrics_token(None, &[Some("auth"), None]), Ok(()));
+        assert_eq!(distinct_metrics_token(Some("scrape"), &[Some("auth"), Some("worker"), None, None]), Ok(()));
+        for others in [[Some("scrape"), None], [Some("auth"), Some("scrape")]] {
+            let refusal = distinct_metrics_token(Some("scrape"), &others).unwrap_err();
+            assert!(refusal.starts_with("DW_METRICS_TOKEN must differ"), "{refusal}");
+            assert!(!refusal.contains("scrape\""), "{refusal}");
+        }
     }
 
     #[test]

@@ -1,0 +1,47 @@
+# Prometheus Operator scrape of the native Server's GET /metrics (Server #534).
+# Apply in the release namespace after installing the chart with
+# values-metrics.yaml. One endpoint per Durable Workflow namespace: each
+# scrape reads the namespace named by the `namespace` parameter.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: durable-workflow-metrics-token
+type: Opaque
+stringData:
+  # The same value as DW_METRICS_TOKEN.
+  token: "replace-with-a-long-random-scrape-token"
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: durable-workflow-server
+spec:
+  selector:
+    matchLabels:
+      # The chart's Service labels; adjust `instance` to your release name.
+      app.kubernetes.io/name: durable-workflow
+      app.kubernetes.io/instance: durable-workflow
+      app.kubernetes.io/component: server
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      params:
+        namespace: ["default"]
+      authorization:
+        type: Bearer
+        credentials:
+          name: durable-workflow-metrics-token
+          key: token
+    # Repeat an endpoint for each further Durable Workflow namespace:
+    # - port: http
+    #   path: /metrics
+    #   interval: 15s
+    #   params:
+    #     namespace: ["orders"]
+    #   authorization:
+    #     type: Bearer
+    #     credentials:
+    #       name: durable-workflow-metrics-token
+    #       key: token

@@ -2,7 +2,8 @@
 //! and authenticates them (`RuntimeCredential`, `RuntimeCredentialController`
 //! and `ConfiguredAuthProvider`). A credential is a hashed bearer token for a
 //! principal with worker or operator roles, scoped to one namespace (its
-//! tenant).
+//! tenant). Native also accepts the scrape-only `metrics` role (Server #534),
+//! which reads `GET /metrics` for its tenant and nothing else.
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
@@ -96,7 +97,7 @@ const CREDENTIAL_RULES: &Rules = &[
     ("name", &[Rule::Nullable, Rule::String, Rule::Max(255)]),
     ("subject", &[Rule::Required, Rule::String, Rule::Max(255)]),
     ("roles", &[Rule::Required, Rule::Array, Rule::Min(1)]),
-    ("roles.*", &[Rule::Required, Rule::String, Rule::In(&["operator", "worker"])]),
+    ("roles.*", &[Rule::Required, Rule::String, Rule::In(&["operator", "worker", "metrics"])]),
     ("tenant", &[Rule::Required, Rule::String, Rule::Max(128), Rule::Pattern(tenant_format)]),
     ("claims", &[Rule::Sometimes, Rule::Array]),
     ("expires_at", &[Rule::Sometimes, Rule::Nullable, Rule::Date]),
