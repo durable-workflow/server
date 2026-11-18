@@ -1803,6 +1803,7 @@ impl Runtime {
                 store
                     .complete_or_checkpoint(task_id, body, self.transition_codec.clone(), external, worker, polling, self.structural, checkpoint, signal.as_ref())
                     .await
+                    .map_err(super::payload_limits::packet_refusal)
             }
         }
     }
@@ -1971,7 +1972,8 @@ impl Runtime {
             Storage::Postgres(store) => store.complete_activity_continuation(task_id, body, continuation, external, result,
                 commands, command_external, self.transition_codec.clone(), worker, polling, self.structural).await,
             Storage::MySql(store) => store.complete_activity_continuation(task_id, body, continuation, external, result,
-                commands, command_external, self.transition_codec.clone(), worker, polling, self.structural).await,
+                commands, command_external, self.transition_codec.clone(), worker, polling, self.structural).await
+                .map_err(super::payload_limits::packet_refusal),
         }
     }
     delegate!(continuation_history(task_id: &str, body: Value) -> Result<Value>);

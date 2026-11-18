@@ -12,6 +12,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 use futures_util::{StreamExt, stream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// How many payloads' worth of bytes one completion that carries workflow
@@ -45,6 +46,63 @@ pub(super) fn max_payload_bytes() -> usize {
 
 pub(super) fn max_completion_bytes() -> usize {
     max_payload_bytes().saturating_mul(COMPLETION_PAYLOADS)
+}
+
+/// The connected MySQL-family server's `max_allowed_packet`, read when the
+/// runtime opens (Server #1234); zero when unknown or not MySQL-family.
+static DATABASE_PACKET_BYTES: AtomicU64 = AtomicU64::new(0);
+/// MySQL and MariaDB refusals of a statement or value over
+/// `max_allowed_packet`: `ER_NET_PACKET_TOO_LARGE` and
+/// `ER_WARN_ALLOWED_PACKET_OVERFLOWED`.
+const PACKET_ERRORS: [u32; 2] = [1153, 1301];
+
+/// The largest value native writes in one row for an admitted request is one
+/// payload: workflow-task completion receipts keep a digest, and each command
+/// argument is written in its own rows. A history event can carry an argument
+/// beside its metadata, so require headroom of several payloads.
+fn packet_headroom_bytes() -> u64 {
+    (max_payload_bytes() as u64).saturating_mul(4)
+}
+
+/// The packet limit recorded when the runtime opened, or zero.
+#[cfg(test)]
+pub(super) fn database_packet_bytes() -> u64 {
+    DATABASE_PACKET_BYTES.load(Ordering::Relaxed)
+}
+
+/// Record the connected server's `max_allowed_packet` and say, once at
+/// startup, whether it holds the configured payload limit with headroom.
+pub(super) fn record_database_packet(bytes: u64) {
+    DATABASE_PACKET_BYTES.store(bytes, Ordering::Relaxed);
+    let required = packet_headroom_bytes();
+    let event = if bytes >= required { "database_packet_limit" } else { "database_packet_limit_below_payload_headroom" };
+    eprintln!("{}", json!({"event": event, "max_allowed_packet": bytes, "max_payload_bytes": max_payload_bytes(),
+        "max_workflow_task_completion_bytes": max_completion_bytes(), "recommended_min_max_allowed_packet": required}));
+}
+
+/// A MySQL-family packet refusal while applying a request is a fact about
+/// the request's size against the database's configuration, not a passing
+/// outage: retrying the same request can never succeed. Answer with a typed,
+/// non-retryable `413` instead of `503 storage_unavailable`. A server that
+/// drops the connection before its error arrives surfaces as an I/O error,
+/// which stays a storage failure; the startup headroom check covers that.
+pub(super) fn packet_refusal(error: super::RuntimeError) -> super::RuntimeError {
+    let number = match &error {
+        super::RuntimeError::Database(sqlx::Error::Database(database)) => database
+            .try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>()
+            .map(|mysql| u32::from(mysql.number())),
+        _ => None,
+    };
+    let Some(number) = number.filter(|number| PACKET_ERRORS.contains(number)) else { return error };
+    let packet = DATABASE_PACKET_BYTES.load(Ordering::Relaxed);
+    eprintln!("{}", json!({"event": "runtime_database_packet_refusal", "driver_error_number": number,
+        "max_allowed_packet": (packet > 0).then_some(packet)}));
+    super::RuntimeError::Protocol {
+        status: StatusCode::PAYLOAD_TOO_LARGE,
+        response: json!({"reason": "payload_too_large", "limit_kind": "database_max_allowed_packet",
+            "limit": (packet > 0).then_some(packet),
+            "message": "The request needs a database write larger than the database's max_allowed_packet. Raise max_allowed_packet or offload large payloads."}),
+    }
 }
 
 fn oversized_response(response: Response, mut incoming: BodyDataStream) -> Response {

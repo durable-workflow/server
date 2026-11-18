@@ -3991,7 +3991,7 @@ where
         {
             created.push(next);
         }
-        Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {"request": body, "created_task_ids": created}})).await?;
+        Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {COMPLETION_REQUEST_DIGEST: completion_request_digest(&body), "created_task_ids": created}})).await?;
         // PHP's executor leaves every run a completed task did not close
         // waiting, even when the task recorded only markers or side effects.
         let current = Self::query("SELECT status FROM workflow_runs WHERE id=$1")
@@ -4857,11 +4857,11 @@ where
         // receipt. A later completion must refuse it, not decode SQL NULL.
         let receipt = DB::optional_document_row(task, "receipt")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
-        let receipt = match receipt.get(COMPLETION_RECEIPT) {
-            Some(stored) => stored["request"].clone(),
-            None => receipt,
+        let matches = match receipt.get(COMPLETION_RECEIPT) {
+            Some(stored) => completion_receipt_matches(stored, body),
+            None => receipt == *body,
         };
-        if receipt == *body {
+        if matches {
             return Ok(true);
         }
         // Any other result for a closed activity task comes from an attempt
@@ -6016,10 +6016,36 @@ impl<R> Clone for Apply<'_, R> {
 }
 impl<R> Copy for Apply<'_, R> {}
 
-/// A workflow task completion's stored receipt: its request and the tasks it
-/// created, so a repeat answers as the original did. Older receipts, and
-/// activity receipts, are the bare request.
+/// A workflow task completion's stored receipt: a digest of its request and
+/// the tasks it created, so a repeat answers as the original did. Older
+/// receipts hold the whole request under `request`; activity receipts are the
+/// bare request.
 const COMPLETION_RECEIPT: &str = "workflow_task_completion";
+/// Server #1234: the receipt keeps the request's SHA-256, not its body. A
+/// completion may be up to `limits.max_workflow_task_completion_bytes` (32 MiB
+/// by default), above MariaDB's 16 MiB default `max_allowed_packet`, so a
+/// receipt that copied it into one row refused admitted completions there.
+const COMPLETION_REQUEST_DIGEST: &str = "request_sha256";
+
+/// The exact authored request's digest. Object member order is transport
+/// spelling, as it is for `Value` equality; every value and array position
+/// counts.
+fn completion_request_digest(body: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let mut canonical = body.clone();
+    canonical.sort_all_objects();
+    Sha256::digest(canonical.to_string().as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Whether a workflow task completion receipt records exactly `body`.
+fn completion_receipt_matches(stored: &Value, body: &Value) -> bool {
+    match (stored.get(COMPLETION_REQUEST_DIGEST), stored.get("request")) {
+        (Some(digest), _) => digest.as_str() == Some(completion_request_digest(body).as_str()),
+        // A receipt written before #1234 holds the whole request.
+        (None, Some(request)) => request == body,
+        (None, None) => false,
+    }
+}
 
 /// PHP's `TERMINAL_TYPES`: the commands that close the run.
 fn is_terminal(command: &Value) -> bool {
@@ -6201,4 +6227,33 @@ pub(super) struct StartMetadata<'a> {
     /// when the request names none. It is bounded by the 191-character
     /// column, not the request's 128-character `workflow_id` rule.
     pub(super) instance_id: Option<&'a str>,
+}
+
+#[cfg(test)]
+mod completion_receipt_tests {
+    use super::*;
+
+    // Server #1234: a receipt keeps the request's digest. Receipts written
+    // before it keep the whole request and still replay.
+    #[test]
+    fn a_receipt_matches_its_exact_request_by_digest_or_legacy_body() {
+        let body = json!({"lease_owner":"w","workflow_task_attempt":1,"commands":[{"type":"start_timer","delay_seconds":5}]});
+        let reordered: Value = serde_json::from_str(r#"{"commands":[{"delay_seconds":5,"type":"start_timer"}],"workflow_task_attempt":1,"lease_owner":"w"}"#).unwrap();
+        let digest = json!({COMPLETION_REQUEST_DIGEST: completion_request_digest(&body), "created_task_ids": []});
+        assert!(completion_receipt_matches(&digest, &body));
+        assert!(completion_receipt_matches(&digest, &reordered));
+        assert_eq!(completion_request_digest(&body).len(), 64);
+        for other in [
+            json!({"lease_owner":"w","workflow_task_attempt":2,"commands":[{"type":"start_timer","delay_seconds":5}]}),
+            json!({"lease_owner":"w","workflow_task_attempt":1,"commands":[{"type":"start_timer","delay_seconds":5.0}]}),
+            json!({"lease_owner":"w","workflow_task_attempt":1,"commands":[{"type":"start_timer","delay_seconds":5}],"extra":null}),
+        ] {
+            assert!(!completion_receipt_matches(&digest, &other), "{other}");
+        }
+        let legacy = json!({"request": body.clone(), "created_task_ids": []});
+        assert!(completion_receipt_matches(&legacy, &reordered));
+        assert!(!completion_receipt_matches(&legacy, &json!({})));
+        assert!(!completion_receipt_matches(&json!({"created_task_ids": []}), &body));
+        assert!(!completion_receipt_matches(&json!({COMPLETION_REQUEST_DIGEST: null}), &body));
+    }
 }

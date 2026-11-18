@@ -668,6 +668,28 @@ The [shared size vectors](../resources/platform-protocol-specs/workflow-task-com
 cover exact and over-cap bodies on both completion routes. Published SDK worker
 qualification remains required before claiming this correction delivered.
 
+Native never writes an admitted completion to one database row
+([#1234](https://github.com/durable-workflow/server/issues/1234)). The
+completion receipt that lets an identical retry replay the original answer keeps
+a SHA-256 digest of the request and the created task IDs, not the request body;
+each command's arguments are stored in their own rows and are bounded by
+`limits.max_payload_bytes`. A completion up to the 32 MiB default cap therefore
+records on MariaDB with its 16 MiB default `max_allowed_packet`, as well as on
+MySQL, PostgreSQL and SQLite, without raising any database setting. Receipts
+written by an earlier native release keep the full request and still replay.
+
+On MySQL and MariaDB, native reads `max_allowed_packet` at startup and logs
+`database_packet_limit`, or `database_packet_limit_below_payload_headroom` when
+the packet is below four times `DW_MAX_PAYLOAD_BYTES` (8 MiB with the default
+2 MiB payload limit). Raise `max_allowed_packet` or lower `DW_MAX_PAYLOAD_BYTES`
+when that warning appears: below that headroom a single large argument can
+exceed the packet. When the database reports such a refusal (MySQL error 1153
+or 1301) for a completion, nothing is recorded and native answers HTTP 413
+with `reason: payload_too_large`, `limit_kind: database_max_allowed_packet` and
+the packet size as `limit`, which is not retryable. A database that instead
+drops the connection mid-statement still surfaces as
+`503 storage_unavailable`, so keep the recommended headroom.
+
 ### Namespaces
 - `GET /api/namespaces` — List namespaces
 - `POST /api/namespaces` — Create namespace
@@ -1897,6 +1919,18 @@ to the exact Docker Hub or GHCR tag or digest you intend to run before applying 
 [`helm-validation.md`](helm-validation.md) for the Helm contract and
 validation harness, and [`k8s/helm/durable-workflow/docs/UPGRADING.md`](../k8s/helm/durable-workflow/docs/UPGRADING.md)
 for chart upgrade steps.
+
+The chart and the raw manifests do not configure the external database.
+`externalDatabase.connection: mariadb` needs no `max_allowed_packet` change for
+native Servers that include
+[#1234](https://github.com/durable-workflow/server/issues/1234): MariaDB's
+16 MiB default holds every admitted workflow-task completion (see the
+`limits.max_workflow_task_completion_bytes` notes under [System](#system)). Native Server 3.13.0 and
+earlier, packaged by Chart 3.1.0 and earlier, store the whole completion in one
+row; on MariaDB, raise `max_allowed_packet` to at least 64 MiB for those
+releases or completions over about 16 MiB fail with a retried
+`503 storage_unavailable`. On any MySQL-family database, keep
+`max_allowed_packet` at least four times `DW_MAX_PAYLOAD_BYTES`.
 
 The supported apply order is configuration first, migration second, and
 long-running workloads last. The helper script enforces that order, deletes any

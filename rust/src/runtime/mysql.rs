@@ -1696,6 +1696,9 @@ impl MySqlStorage {
         connection.close().await?;
         result?;
         let pool = runtime_pool_options().connect_with(connect_options).await?;
+        // Server #1234: every session starts with the global packet limit.
+        let packet: u64 = sqlx::query_scalar("SELECT CAST(@@max_allowed_packet AS UNSIGNED)").fetch_one(&pool).await?;
+        super::payload_limits::record_database_packet(packet);
         Ok(Self { pool })
     }
     /// Open an initialized native database for an offline console command
@@ -1851,6 +1854,39 @@ mod tests {
         ] {
             assert_eq!(canonical(kept), kept);
         }
+    }
+
+    /// Server #1234: a statement over the server's `max_allowed_packet` is a
+    /// size fact, not an outage. A completion that meets it is refused with a
+    /// typed, non-retryable 413, never `503 storage_unavailable`.
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_packet_overflow_is_a_typed_size_refusal() {
+        let database = Database::new().await;
+        let storage = MySqlStorage::open(database.options.clone()).await.unwrap();
+        let pool = storage.into_pool();
+        let packet: u64 = sqlx::query_scalar("SELECT CAST(@@max_allowed_packet AS UNSIGNED)").fetch_one(&pool).await.unwrap();
+        assert_eq!(super::super::payload_limits::database_packet_bytes(), packet);
+        if packet <= 128 * 1024 * 1024 {
+            let oversized = "z".repeat(packet as usize + 1024);
+            let error = sqlx::query_scalar::<_, i64>("SELECT CAST(LENGTH(?) AS SIGNED)").bind(oversized)
+                .fetch_one(&pool).await.map_err(super::super::RuntimeError::from).unwrap_err();
+            match super::super::payload_limits::packet_refusal(error) {
+                super::super::RuntimeError::Protocol { status, response } => {
+                    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+                    assert_eq!(response["reason"], "payload_too_large");
+                    assert_eq!(response["limit_kind"], "database_max_allowed_packet");
+                    assert_eq!(response["limit"], packet);
+                }
+                other => panic!("packet overflow was not a typed refusal: {other:?}"),
+            }
+        }
+        // Other storage errors keep their own classification.
+        let error = sqlx::query("SELECT * FROM dw_no_such_table").execute(&pool).await
+            .map_err(super::super::RuntimeError::from).unwrap_err();
+        assert!(matches!(super::super::payload_limits::packet_refusal(error), super::super::RuntimeError::Database(_)));
+        pool.close().await;
+        database.remove().await;
     }
 
     /// Server #1174: a runtime pool connection keeps a working set larger
