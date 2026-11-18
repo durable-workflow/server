@@ -17,6 +17,10 @@ export function expectedTransport(definition, implementation) {
       assert.ok(Object.hasOwn(parent, last), `reviewed native difference ${path} names a published member`);
       parent[last] = value;
     }
+    // A storage permission refusal is its own non-retryable outcome (#589).
+    if (nativeDivergence(implementation, 'external-storage-access-denied')) {
+      transport.typed_outcomes.external_payload_storage_access_denied = {status: 424, retryable: false};
+    }
   }
   return transport;
 }

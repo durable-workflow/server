@@ -85,7 +85,8 @@ async fn cluster_info_discovers_runtime_payload_storage_like_php() {
     assert_eq!((context["prepared_schema"].clone(), context["scope_schema"].clone()), (Value::Null, Value::Null));
     assert_eq!(context["max_slots_per_lease"], 128);
     assert_eq!(transport["audit_events"], json!([]));
-    assert_eq!(transport["typed_outcomes"].as_object().map(|outcomes| outcomes.len()), Some(14));
+    assert_eq!(transport["typed_outcomes"].as_object().map(|outcomes| outcomes.len()), Some(15));
+    assert_eq!(transport["typed_outcomes"]["external_payload_storage_access_denied"], json!({"status": 424, "retryable": false}));
 
     // Every worker response carries the same capability, as PHP's do.
     register(&app, "discovery-worker", json!(["discovery"]), json!([])).await;

@@ -509,7 +509,7 @@ impl Runtime {
             payload: Vec<u8>,
             max_bytes: u64,
             workers: Arc<Semaphore>,
-        ) -> Result<()>
+        ) -> Result<std::result::Result<(), super::external_registry::StorageStepFailure>>
     );
     delegate!(create_search_attribute(body: Value) -> Result<Value>);
     delegate!(delete_search_attribute(name: &str) -> Result<Value>);

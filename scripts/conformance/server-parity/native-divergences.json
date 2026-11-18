@@ -41,6 +41,15 @@
       "harness": "The native cluster-info comparator requires 255 for this one limit. PHP and embedded observations and frozen fixtures remain unchanged. The all-backend execution tests cover the 255-byte boundary and the refusal."
     },
     {
+      "id": "external-storage-access-denied",
+      "issue": "https://github.com/durable-workflow/server/issues/589",
+      "since": "native source (unreleased)",
+      "applies_to": ["cluster-info"],
+      "published_php": "Every storage driver failure, including a refused permission, is the retryable external payload storage unavailable outcome, and the transport manifest lists no access-denied outcome.",
+      "native": "A storage permission refusal (EACCES or EPERM from the local driver) is external_payload_storage_access_denied: 424, retryable false, with a constant message and no storage location, on the transport upload and fetch, workflow start, worker task completion and the storage diagnostic, which also names the failed step (put, get or delete). Any other storage failure stays external_payload_unavailable, 503 and retryable. The transport manifest's typed_outcomes lists the new outcome.",
+      "harness": "The native cluster-info comparator requires the one added typed outcome. PHP and embedded observations and frozen fixtures remain unchanged. All-backend execution tests cover access refusal and outage on the transport fetch, workflow start, worker task completion and each storage diagnostic step."
+    },
+    {
       "id": "request-id-reuse-conflict",
       "issue": "https://github.com/durable-workflow/server/issues/934",
       "since": "native 3.9.0",
