@@ -194,6 +194,9 @@ pub(super) struct Store<DB: Backend> {
     /// The storage pressure observation (Server #951), shared by every
     /// namespace's store, the request guard and the maintenance loop.
     pub(super) storage_admission: Arc<super::storage_admission::StorageAdmission>,
+    /// The node's long-poll wait slots and probe permits (Server #982),
+    /// shared by every namespace's store.
+    pub(super) poll_capacity: Arc<super::poll_capacity::PollCapacity>,
     // A per-store source-test clock for deterministic claim arithmetic. All
     // production claims continue to sample the existing canonical clock.
     #[cfg(test)]
@@ -358,6 +361,7 @@ where
             poll_sweep_config: super::poll_sweeps::Config::default(),
             poll_sweeps: Arc::default(),
             storage_admission: Arc::default(),
+            poll_capacity: Arc::default(),
             #[cfg(test)]
             test_claim_at: None,
             #[cfg(test)]
@@ -387,6 +391,7 @@ where
             poll_sweep_config: self.poll_sweep_config,
             poll_sweeps: self.poll_sweeps.clone(),
             storage_admission: self.storage_admission.clone(),
+            poll_capacity: self.poll_capacity.clone(),
             #[cfg(test)]
             test_claim_at: self.test_claim_at,
             #[cfg(test)]
@@ -2254,7 +2259,11 @@ where
         let mut first = true;
         let mut pace = super::poll_readiness::ReadPace::new();
         let worker_id = text(&body, "worker_id")?;
+        let mut wait_slot = None;
         loop {
+            // Each probe's database work takes a probe permit, so polls
+            // leave the reserved connections free (Server #982).
+            let probe = self.poll_capacity.probe().await;
             // A waiting poll rechecks storage admission before each probe
             // and claims nothing under pressure (Server #951).
             let pressure = self.storage_admission.snapshot();
@@ -2328,6 +2337,12 @@ where
                 return self.no_task_answer(&body, poll_request.as_ref(), "task_queue_changed", encoding).await
                     .map(|answer| activity_server_time(kind, answer));
             }
+            // `LongPoller::until`: only a poll that would wait takes a wait
+            // slot, and answers 429 when none is free (Server #982).
+            let task_kind = if kind == "workflow" { "workflow_task" } else { "activity_task" };
+            self.poll_capacity.hold(&mut wait_slot, super::poll_capacity::Pool::Worker,
+                &self.namespace, text(&body, "task_queue")?, task_kind)?;
+            drop(probe);
             #[cfg(debug_assertions)]
             if let Some(request) = &poll_request {
                 super::poll_pauses::stop_at(&request.id, super::poll_pauses::PollPoint::Waiting).await;

@@ -250,6 +250,17 @@ impl Runtime {
         self
     }
 
+    /// Replaces the long-poll capacity settings (Server #982) for every
+    /// namespace's polls on this node.
+    pub fn with_poll_capacity(self, settings: super::poll_capacity::Settings) -> Self {
+        match &*self.storage {
+            Storage::Sqlite(store) => store.poll_capacity.set(settings, store.pool.options().get_max_connections()),
+            Storage::Postgres(store) => store.poll_capacity.set(settings, store.pool.options().get_max_connections()),
+            Storage::MySql(store) => store.poll_capacity.set(settings, store.pool.options().get_max_connections()),
+        }
+        self
+    }
+
     pub(super) fn storage_admission(&self) -> Arc<super::storage_admission::StorageAdmission> {
         match &*self.storage {
             Storage::Sqlite(store) => store.storage_admission.clone(),
@@ -311,6 +322,10 @@ impl Runtime {
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
         store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
+        store.poll_capacity = Arc::new(super::poll_capacity::PollCapacity::new(
+            super::poll_capacity::Settings::from_env(),
+            store.pool.options().get_max_connections(),
+        ));
         Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
     }
 
@@ -335,6 +350,10 @@ impl Runtime {
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
         store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
+        store.poll_capacity = Arc::new(super::poll_capacity::PollCapacity::new(
+            super::poll_capacity::Settings::from_env(),
+            store.pool.options().get_max_connections(),
+        ));
         Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
     }
 
@@ -359,6 +378,10 @@ impl Runtime {
         store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
         store.poll_sweep_config = poll_sweeps;
         store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
+        store.poll_capacity = Arc::new(super::poll_capacity::PollCapacity::new(
+            super::poll_capacity::Settings::from_env(),
+            store.pool.options().get_max_connections(),
+        ));
         Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
     }
 

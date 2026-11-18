@@ -1726,6 +1726,42 @@ Unavailable local lock storage refuses an idle wait rather than exceeding its
 configured limits. Immediate task claims still happen before wait admission;
 a wait slot does not grant a task lease.
 
+#### Native long-poll capacity
+
+The native Rust server reads the same settings
+([#982](https://github.com/durable-workflow/server/issues/982)). Its waits
+are not processes: a held poll is a parked task on one async runtime, so the
+caps bound how many idle polls hold connections and probe the database, not
+how many request workers are busy.
+
+- `DW_WORKER_LONG_POLL_MAX_CONCURRENT` caps held workflow and activity waits
+  (including workflow polls that also take update-validation tasks), and
+  `DW_QUERY_TASK_POLL_MAX_CONCURRENT` caps held query-task and
+  update-validation waits. Each cap covers the whole node, across namespaces.
+  A value is read as PHP reads it: a numeric value, floored at zero, is the
+  cap; zero refuses every wait; unset or not numeric leaves the budget
+  unbounded, which is native's default.
+- A poll probes for work first. Only a poll that found nothing and would wait
+  takes a slot, and it keeps the slot until it answers. A poll that cannot
+  take one answers at once with the `429 long_poll_capacity_exhausted`
+  response described above (`Retry-After: 1`, `retryable: true`,
+  `retry_after_seconds: 1`, `wait_pool` `worker` or `query-task`). A poll
+  with `timeout_seconds: 0` never needs a slot. A slot is released when the
+  poll answers, fails or its client disconnects.
+- `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` reserves database connections.
+  A native node has a fixed pool of database connections (four on MySQL,
+  PostgreSQL and file SQLite), which health, readiness, admin and every other
+  request share. With a positive value, every poll probe takes one of
+  `pool size - reserved` probe permits (at least one) and returns it before
+  waiting, so polls never occupy the reserved connections. Unset or zero,
+  probes are not gated.
+- The per-namespace variants, `DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE`
+  and `DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE`, are still ignored by
+  native.
+
+There is no shared lock directory: each native process enforces its own
+caps, so `DW_POLLING_CACHE_PATH` is not needed.
+
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
 server and worker processes. `/api/health` is a liveness check; `/api/ready`
@@ -2050,8 +2086,8 @@ every operator-facing variable the server honors.
 | `DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS` | `100` | Wake-signal check interval during an open poll. |
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Writable local coordination and wait-lock directory, also required with Redis or database polling caches. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
-| `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. |
-| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. |
+| `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. Native honors it as a node-wide cap with the same `429 long_poll_capacity_exhausted` refusal; unset, native waits are unbounded (see [Native long-poll capacity](#native-long-poll-capacity)). |
+| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its database connections that long-poll probes leave free. Unset, native reserves none. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
 | `DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS` | `5` | Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure. |
@@ -2074,7 +2110,7 @@ every operator-facing variable the server honors.
 | `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Configured lease timeout for ephemeral query tasks, with a minimum of 1 second. Each claim expires at the earlier of claim time plus this timeout and the original query deadline. A short lease can expire before the caller deadline. |
 | `DW_QUERY_TASK_TTL_SECONDS` | `180` | Retention floor for query-task result rows. Effective retention is `max(60, DW_QUERY_TASK_TTL_SECONDS, DW_QUERY_TASK_TIMEOUT + max(1, DW_QUERY_TASK_LEASE_TIMEOUT) + 60)` seconds. Retention does not extend query execution authority. |
 | `DW_QUERY_TASK_MAX_PENDING_PER_QUEUE` | `1024` | Max pending cache-backed query tasks per namespace/task queue before new queries are rejected. |
-| `DW_QUERY_TASK_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held idle query-task worker long-poll waits. Pending query tasks are still claimed immediately before an idle poll waits; the default standalone image derives one query-task wait slot. |
+| `DW_QUERY_TASK_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held idle query-task worker long-poll waits. Pending query tasks are still claimed immediately before an idle poll waits; the default standalone image derives one query-task wait slot. Native honors it, also for update-validation polls as PHP does; unset, native waits are unbounded. |
 | `DW_WORKFLOW_TASK_TIMEOUT` | `60` | Default workflow-task lease timeout (seconds). |
 | `DW_ACTIVITY_TASK_TIMEOUT` | `300` | Default activity-task lease timeout (seconds). |
 | `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_HEARTBEAT_INTERVAL_SECONDS * 3, 30)` | Seconds before a worker heartbeat is considered stale. |
