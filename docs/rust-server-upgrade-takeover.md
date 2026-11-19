@@ -743,7 +743,7 @@ named. These are the ones a client moving from 2.x can observe:
   as final. A workflow that needs a loser's effect must await it before
   returning. The parity harness records this as the named divergence
   `run-close-settles-open-work`.
-- **Open children at continue-as-new (native source, unreleased; Server
+- **Open children at continue-as-new (native Server 3.14.0; Server
   #1184).** PHP 2.x leaves a child that is still open when its parent
   continues as new to itself: no run of the chain applies its parent-close
   policy, and a later failure is never retried. Native follows Core
