@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 4.0.0
+version: 4.1.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.14.0"
+appVersion: "3.15.0"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,16 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.14.0"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.15.0"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: "Default image advances to native Server 3.14.0. Every backend needs an explicit additive schema upgrade from 3.13.x with all replicas stopped; startup never upgrades and rollback after the schema step requires restoring the pre-upgrade backup. Values keys are unchanged. See docs/UPGRADING.md."
+      description: "Default image advances to native Server 3.15.0. No schema change and no schema-upgrade step from 3.14.x; rolling back to Chart 4.0.0 is an ordinary Helm rollback. Values keys are unchanged. See docs/UPGRADING.md."
     - kind: changed
-      description: "A standalone activity start for a running id returns a typed 409 activity_already_started instead of 422; duplicate_policy use-existing returns the running activity."
+      description: "HTTP signal and signal-with-start request_ids starting workflow-signal: are refused with 422 request_id_reserved; that prefix is reserved for signals sent by workflow code."
     - kind: added
-      description: "Continue-as-new hands open children to the continued run; closed-run queries; guarded worker build and task queue retirement; GET /metrics for autoscalers. https://github.com/durable-workflow/server/releases/tag/3.14.0"
-    - kind: fixed
-      description: "MariaDB completions up to the 32 MiB cap record under the default 16 MiB max_allowed_packet."
+      description: "Atomic signal-with-start; durable workflow-to-workflow signals from workflow code; failed-run redrive decided by Workflow 2.33.0's rules. https://github.com/durable-workflow/server/releases/tag/3.15.0"

@@ -69,6 +69,33 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 4.1.0 / Server 3.15.0 (native)
+
+A drop-in upgrade from Chart 4.0.0. The chart selects native Server 3.15.0 and
+keeps every value; Chart 4.0.x values files work unchanged. Server 3.15.0 has no
+schema change, so there is no `schema-upgrade` step from 3.14.x and the default
+`RollingUpdate` replaces pods in place. Rolling back to Chart 4.0.0 is an
+ordinary Helm rollback. From Chart 3.x (Server 3.13.x or earlier), first follow
+the Chart 4.0.0 notes below: the 3.14.0 schema step is still required.
+
+Behavior changes to review (details in
+[Server 3.15.0](../../../../docs/releases/3.15.0.md)):
+
+- An HTTP signal or signal-with-start whose `request_id` starts with
+  `workflow-signal:` is refused with `422 request_id_reserved`. The prefix is
+  reserved for signals sent by workflow code.
+- A worker holding a workflow task can signal any workflow in its namespace
+  through the new `signal_external_workflow` command, without the operator or
+  admin role an HTTP signal needs. Keep a workflow other workflows' code must
+  not signal in a separate namespace.
+- `POST /api/workflows/{id}/signal-with-start/{name}` starts or reuses a run
+  and admits a signal atomically (`capabilities.signal_with_start`).
+- Failed-run redrive follows Workflow 2.33.0's rules: runs whose failed
+  activity exhausted its retries can now be redriven, and other refusals carry
+  Core's reasons.
+
+Worker protocol 1.20 and control plane version 2 are unchanged.
+
 ### Chart 4.0.0 / Server 3.14.0 (native)
 
 **Every backend needs an explicit native schema upgrade from 3.13.x.** Chart
