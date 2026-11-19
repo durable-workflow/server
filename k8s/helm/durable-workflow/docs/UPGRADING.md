@@ -69,6 +69,77 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.0.0 / Server 3.16.0 (native)
+
+**Every backend needs an explicit native schema upgrade from 3.15.x.** Chart
+5.0.0 selects native Server 3.16.0 and retains the existing values and resource
+contract; Chart 4.x values files work unchanged. The chart major advances
+because changing its default image requires operator action on every backend
+under this guide's existing semver rule, as for Chart 4.0.0. An explicit
+`image.tag` or `image.digest` override must select the intended qualified image
+too. The PHP Server remains 2.11.8.
+
+| Backend | Schema step |
+| --- | --- |
+| SQLite | 16 to 17 |
+| PostgreSQL | 17 to 18 |
+| MariaDB | 17 to 18 |
+| MySQL | 18 to 19 |
+
+1. Stop every Server replica sharing the database, including replicas outside
+   this Helm release. Keep the database running.
+2. Back up the database and every external payload root.
+3. Run the new image's `schema-upgrade` once through the opt-in upgrade hook or
+   manual Job in [Native schema upgrades](../README.md#native-schema-upgrades).
+   The hook requires live proof that all Server replicas are stopped.
+4. Restart every replica on the same new image and verify readiness, reported
+   version 3.16.0 and worker registration.
+
+The step adds three native-only indexes and rewrites no rows:
+`workflow_runs (status, cancellation_deadline_at)`,
+`activity_executions (status)` and
+`workflow_run_summaries (namespace, closed_at, id)`. Native's scheduler,
+repair and retention passes seek them instead of reading every retained run;
+idle CPU at 100,000 retained runs on a 1 vCPU Dev cell drops from 38.8% to
+3.3%. Do not create these indexes by hand beforehand: a same-named index the
+step did not create is refused.
+
+**Build time.** It grows with retained runs, roughly 30 seconds per million.
+Measured at 1,000,000 retained runs on 2 CPUs: MySQL 8.0 about 25 s and
+MariaDB 10.11 about 20 s, both built online without blocking writes; PostgreSQL
+17 about 5 s in one transaction, during which writes to the indexed tables wait
+until it commits and reads are unaffected. Very small cells are slower per row
+(11.8 s at 100,000 runs on the 1 vCPU Dev cell). For a large MySQL database,
+raise `helm upgrade --timeout` above the 10 minutes in the
+[universal procedure](#universal-upgrade-procedure); the hook Job allows
+`native.schemaUpgrade.activeDeadlineSeconds: 1800`. Takeover of a PHP-schema
+database now builds these indexes too.
+
+**Interruption.** If `schema-upgrade` is interrupted, run it again to resume.
+On MySQL, if the upgrade client died while an index was building, the database
+keeps running that `CREATE INDEX` and its session keeps holding the upgrade
+lock: wait for it to finish, or `KILL` the query (see `SHOW PROCESSLIST`),
+before re-running. Otherwise the re-run waits 60 seconds and refuses with
+`native_initialization_busy`.
+
+Startup does not upgrade an older schema automatically. If the step is skipped,
+a 3.16.0 pod on the older schema refuses with `native_schema_upgrade_required`
+and stays unready; with the default `RollingUpdate` (`maxUnavailable: 0`) the
+existing pods keep serving and `--atomic` rolls the release back. Until
+`schema-upgrade` has run, rolling back to Chart 4.1.0 is an ordinary Helm
+rollback. From Chart 3.x (Server 3.13.x or earlier), the same command also
+applies the 3.14.0 step described under Chart 4.0.0 below.
+
+**Rollback** after `schema-upgrade` requires restoring the pre-upgrade database
+and payload storage backup: a 3.15.x binary does not ignore the new indexes, it
+refuses the upgraded database with `native_schema_newer_than_binary`. Work
+recorded after the upgrade is not in that backup and is lost. Do not run 3.15.x
+and 3.16.0 replicas against one database.
+
+Details are in [Server 3.16.0](../../../../docs/releases/3.16.0.md). Worker
+protocol 1.20 and control plane version 2 are unchanged; there are no API or
+behavior changes beyond the schema step.
+
 ### Chart 4.1.0 / Server 3.15.0 (native)
 
 A drop-in upgrade from Chart 4.0.0. The chart selects native Server 3.15.0 and
