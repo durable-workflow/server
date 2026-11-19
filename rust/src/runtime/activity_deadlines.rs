@@ -186,6 +186,12 @@ pub(super) fn pass_report(outcomes: Vec<(String, Result<Enforcement>)>) -> (Valu
     (report, failed > 0)
 }
 
+/// The scheduler tick's open activities past a deadline. Either open-status
+/// filter can seek its index, `dw_activity_executions_status` or
+/// `dw_workflow_runs_status_deadline` (server#1256), so a tick reads open
+/// work only, however many closed runs are retained.
+pub(super) const ACTIVITY_DEADLINES_DUE: &str = "SELECT a.id FROM activity_executions a JOIN workflow_runs r ON r.id=a.workflow_run_id WHERE r.status IN ('pending','running','waiting') AND a.status IN ('pending','running') AND (a.schedule_to_close_deadline_at<=$1 OR (a.status='pending' AND a.schedule_deadline_at<=$2) OR (a.status='running' AND (a.close_deadline_at<=$3 OR a.heartbeat_deadline_at<=$4))) ORDER BY a.id LIMIT 50";
+
 pub(super) fn fence<DB: Backend>(activity: &DB::Row) -> Result<()> {
     if let Some(kind) = expired_kind::<DB>(activity, now())? {
         return Err(refuse(StatusCode::CONFLICT, timeout_reason(kind)));
@@ -215,9 +221,8 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) async fn expire_activity_deadlines(&self) -> Result<()> {
-        const DUE: &str = "SELECT a.id FROM activity_executions a JOIN workflow_runs r ON r.id=a.workflow_run_id WHERE r.status IN ('pending','running','waiting') AND a.status IN ('pending','running') AND (a.schedule_to_close_deadline_at<=$1 OR (a.status='pending' AND a.schedule_deadline_at<=$2) OR (a.status='running' AND (a.close_deadline_at<=$3 OR a.heartbeat_deadline_at<=$4))) ORDER BY a.id LIMIT 50";
         let boundary = now();
-        let candidates = Self::query(DUE)
+        let candidates = Self::query(ACTIVITY_DEADLINES_DUE)
             .bind(DB::bind_time(boundary))
             .bind(DB::bind_time(boundary))
             .bind(DB::bind_time(boundary))

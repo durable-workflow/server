@@ -165,6 +165,8 @@ mod ready_age_tests;
 #[cfg(test)]
 mod poll_sweeps_tests;
 #[cfg(test)]
+mod maintenance_scan_tests;
+#[cfg(test)]
 mod mysql_candidate_tests;
 #[cfg(test)]
 mod postgres_candidate_tests;

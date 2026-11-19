@@ -392,22 +392,30 @@ store_methods! {
     /// deadline without an open workflow task, and runs past their
     /// cancellation cleanup deadline.
     async fn deadline_expired_run_ids(&self, request: &PassRequest, at: DateTime<Utc>) -> Result<Vec<String>> {
-        let mut sql = Sql::new("SELECT id FROM workflow_runs WHERE status IN ('pending','running','waiting') AND ((execution_deadline_at IS NOT NULL AND execution_deadline_at<=", DB::NAME == "MySQL");
-        sql.time(at).push(") OR (run_deadline_at IS NOT NULL AND run_deadline_at<=").time(at);
-        sql.push(") OR (cancellation_request_command_id IS NOT NULL AND cancellation_deadline_at IS NOT NULL AND cancellation_deadline_at<=").time(at);
-        sql.push(")) AND (NOT EXISTS (SELECT 1 FROM workflow_tasks t WHERE t.workflow_run_id=workflow_runs.id AND t.task_type='workflow' AND t.status IN ('ready','leased'))");
-        sql.push(" OR (cancellation_request_command_id IS NOT NULL AND cancellation_deadline_at IS NOT NULL AND cancellation_deadline_at<=").time(at).push("))");
-        if !request.run_ids.is_empty() {
-            sql.push(" AND id IN ").list(&request.run_ids);
-        }
-        if let Some(instance) = &request.instance_id {
-            sql.push(" AND workflow_instance_id=").text(instance);
-        }
-        sql.requested("connection", request.connection.as_deref()).requested("queue", request.queue.as_deref());
-        sql.push(&format!(" ORDER BY id LIMIT {SCAN_LIMIT}"));
-        self.ids(sql).await
+        self.ids(deadline_expired_runs_sql(request, at, DB::NAME == "MySQL")).await
     }
+}
 
+/// The deadline-expired run scan. Its open-status filter seeks
+/// `dw_workflow_runs_status_deadline` (server#1256).
+pub(super) fn deadline_expired_runs_sql(request: &PassRequest, at: DateTime<Utc>, mysql: bool) -> Sql {
+    let mut sql = Sql::new("SELECT id FROM workflow_runs WHERE status IN ('pending','running','waiting') AND ((execution_deadline_at IS NOT NULL AND execution_deadline_at<=", mysql);
+    sql.time(at).push(") OR (run_deadline_at IS NOT NULL AND run_deadline_at<=").time(at);
+    sql.push(") OR (cancellation_request_command_id IS NOT NULL AND cancellation_deadline_at IS NOT NULL AND cancellation_deadline_at<=").time(at);
+    sql.push(")) AND (NOT EXISTS (SELECT 1 FROM workflow_tasks t WHERE t.workflow_run_id=workflow_runs.id AND t.task_type='workflow' AND t.status IN ('ready','leased'))");
+    sql.push(" OR (cancellation_request_command_id IS NOT NULL AND cancellation_deadline_at IS NOT NULL AND cancellation_deadline_at<=").time(at).push("))");
+    if !request.run_ids.is_empty() {
+        sql.push(" AND id IN ").list(&request.run_ids);
+    }
+    if let Some(instance) = &request.instance_id {
+        sql.push(" AND workflow_instance_id=").text(instance);
+    }
+    sql.requested("connection", request.connection.as_deref()).requested("queue", request.queue.as_deref());
+    sql.push(&format!(" ORDER BY id LIMIT {SCAN_LIMIT}"));
+    sql
+}
+
+store_methods! {
     /// `ServiceCallDeadline::expiredCallIds`: admitted open calls past their
     /// deadline, earliest first, within the pass's runs and instance. A
     /// requested connection or queue matches the caller's or linked run
@@ -445,15 +453,35 @@ store_methods! {
     /// `ActivityTimeoutEnforcer::expiredExecutionIds` within the requested
     /// connections and queues.
     async fn scoped_expired_activity_ids(&self, request: &PassRequest, at: DateTime<Utc>) -> Result<Vec<String>> {
-        let mut sql = Sql::new("SELECT id FROM activity_executions WHERE status IN ('pending','running') AND ((status='pending' AND schedule_deadline_at IS NOT NULL AND schedule_deadline_at<=", DB::NAME == "MySQL");
-        sql.time(at).push(") OR (status='running' AND close_deadline_at IS NOT NULL AND close_deadline_at<=").time(at);
-        sql.push(") OR (schedule_to_close_deadline_at IS NOT NULL AND schedule_to_close_deadline_at<=").time(at);
-        sql.push(") OR (status='running' AND heartbeat_deadline_at IS NOT NULL AND heartbeat_deadline_at<=").time(at).push("))");
-        sql.requested("connection", request.connection.as_deref()).requested("queue", request.queue.as_deref());
-        sql.push(&format!(" ORDER BY id LIMIT {SCAN_LIMIT}"));
-        self.ids(sql).await
+        self.ids(expired_activities_sql(request, at, DB::NAME == "MySQL")).await
     }
 
+    /// The pass's scans with `prefix` (an EXPLAIN form) before each statement.
+    #[cfg(test)]
+    pub(super) async fn maintenance_scan_rows(&self, prefix: &str, at: DateTime<Utc>) -> Vec<Vec<DB::Row>> {
+        let request = PassRequest::default();
+        let mut plans = Vec::new();
+        for mut sql in [deadline_expired_runs_sql(&request, at, DB::NAME == "MySQL"), expired_activities_sql(&request, at, DB::NAME == "MySQL")] {
+            sql.text.insert_str(0, prefix);
+            plans.push(self.rows(sql).await.unwrap());
+        }
+        plans
+    }
+}
+
+/// `ActivityTimeoutEnforcer::expiredExecutionIds`. Its open-status filter
+/// seeks `dw_activity_executions_status` (server#1256).
+pub(super) fn expired_activities_sql(request: &PassRequest, at: DateTime<Utc>, mysql: bool) -> Sql {
+    let mut sql = Sql::new("SELECT id FROM activity_executions WHERE status IN ('pending','running') AND ((status='pending' AND schedule_deadline_at IS NOT NULL AND schedule_deadline_at<=", mysql);
+    sql.time(at).push(") OR (status='running' AND close_deadline_at IS NOT NULL AND close_deadline_at<=").time(at);
+    sql.push(") OR (schedule_to_close_deadline_at IS NOT NULL AND schedule_to_close_deadline_at<=").time(at);
+    sql.push(") OR (status='running' AND heartbeat_deadline_at IS NOT NULL AND heartbeat_deadline_at<=").time(at).push("))");
+    sql.requested("connection", request.connection.as_deref()).requested("queue", request.queue.as_deref());
+    sql.push(&format!(" ORDER BY id LIMIT {SCAN_LIMIT}"));
+    sql
+}
+
+store_methods! {
     /// `TaskWatchdog::runPass`, with its loop throttle shared by this
     /// server's namespaces.
     pub(crate) async fn repair_pass(&self, request: &PassRequest) -> Result<Value> {

@@ -15,6 +15,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Semaphore;
 
 pub(super) const CLAIM_KEY: &str = "_server_workflow_claim";
+/// Open runs whose cooperative cleanup deadline passed, earliest first. The
+/// planner can seek `dw_workflow_runs_status_deadline` by status and
+/// deadline (server#1256), so runs cancelled long ago are not read.
+pub(super) const COOPERATIVE_DEADLINES_EXPIRED: &str = "SELECT * FROM workflow_runs WHERE status IN ('pending','running','waiting') AND cancellation_request_command_id IS NOT NULL AND cancellation_deadline_at<=$1 ORDER BY cancellation_deadline_at,id LIMIT 50";
 
 pub(super) fn validate_request(body: &Value) -> Result<(Option<String>, i64)> {
     // Fields outside the controller's rules are ignored, as Laravel does.
@@ -1348,8 +1352,7 @@ where
     }
 
     pub(super) async fn expire_cooperative_deadlines(&self) -> Result<()> {
-        const EXPIRED: &str = "SELECT * FROM workflow_runs WHERE status IN ('pending','running','waiting') AND cancellation_request_command_id IS NOT NULL AND cancellation_deadline_at<=$1 ORDER BY cancellation_deadline_at,id LIMIT 50";
-        if Self::query(EXPIRED)
+        if Self::query(COOPERATIVE_DEADLINES_EXPIRED)
             .bind(DB::bind_time(now()))
             .fetch_optional(&self.pool)
             .await?
@@ -1358,7 +1361,7 @@ where
             return Ok(());
         }
         let mut tx = self.begin().await?;
-        for run in Self::query(EXPIRED)
+        for run in Self::query(COOPERATIVE_DEADLINES_EXPIRED)
             .bind(DB::bind_time(now()))
             .fetch_all(&mut *tx)
             .await?
