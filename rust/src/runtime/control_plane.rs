@@ -20,6 +20,8 @@ pub(super) enum Operation<'a> {
     Debug,
     Update(&'a str),
     Signal(&'a str),
+    /// Server #1133: native's atomic signal-with-start intake.
+    SignalWithStart(&'a str),
     Query(&'a str),
     ImportEmbeddedV2,
     ImportWaterlineV1,
@@ -63,7 +65,7 @@ impl Operation<'_> {
             }
             // PHP names the workflow on every command validation failure.
             super::RuntimeError::Protocol { status, mut response }
-                if matches!(self, Self::Signal(_) | Self::Query(_) | Self::Update(_))
+                if matches!(self, Self::Signal(_) | Self::SignalWithStart(_) | Self::Query(_) | Self::Update(_))
                     && response["reason"] == "validation_failed" =>
             {
                 if response.get("workflow_id").is_none() {
@@ -72,7 +74,7 @@ impl Operation<'_> {
                 (status, response)
             }
             super::RuntimeError::Protocol { status, response }
-                if matches!(self, Self::Signal(_) | Self::Query(_)) =>
+                if matches!(self, Self::Signal(_) | Self::SignalWithStart(_) | Self::Query(_)) =>
             {
                 (status, response)
             }
@@ -140,6 +142,11 @@ impl Operation<'_> {
                 &["workflow_id", "operation_name", "operation_name_field"],
                 &["outcome"],
             ),
+            Self::SignalWithStart(_) => (
+                "signal_with_start",
+                &["workflow_id", "operation_name", "operation_name_field"],
+                &["run_id", "outcome", "start_outcome"],
+            ),
             // PHP defines no contract for the import, so its defaults apply.
             Self::ImportEmbeddedV2 => ("import_embedded_v2", &[], &[]),
             Self::ImportWaterlineV1 => ("import_waterline_v1", &[], &["status", "identity"]),
@@ -190,6 +197,24 @@ impl Operation<'_> {
                     "command_contract_source",
                     "command_contract_backfill_needed",
                     "command_contract_backfill_available",
+                    "declared_signals",
+                    "signal_admission",
+                ] {
+                    if let Some(value) = body.get(field) {
+                        metadata[field] = value.clone();
+                    }
+                }
+            }
+            Self::SignalWithStart(name) => {
+                metadata["operation_name"] = json!(name);
+                metadata["operation_name_field"] = json!("signal_name");
+                for field in [
+                    "command_id",
+                    "target_scope",
+                    "start_command_id",
+                    "start_outcome",
+                    "intake_group_id",
+                    "command_contract_source",
                     "declared_signals",
                     "signal_admission",
                 ] {
@@ -323,6 +348,16 @@ impl Operation<'_> {
                  selected_run_not_current configured_workflow_type_invalid v1_projection_read_only \
                  backend_lock_pressure control_plane_internal_error",
             ),
+            Self::SignalWithStart(_) => (
+                "workflow_id run_id signal_name command_status command_source target_scope outcome \
+                 reason rejection_reason message run_status start_outcome command_contract_source \
+                 declared_signals signal_admission validation_errors request_id retained intent_verified \
+                 retained_command_id conflict",
+                "workflow_id_reserved_in_namespace workflow_type_conflict task_queue_conflict \
+                 instance_already_started run_not_active task_queue_draining compatibility_blocked \
+                 unknown_signal invalid_signal_arguments structural_limit_exceeded runtime_reserved_signal \
+                 request_id_conflict request_id_ambiguous v1_projection_read_only",
+            ),
             Self::List | Self::VersionUsage | Self::ListRuns | Self::Describe | Self::Observe | Self::Debug | Self::ImportEmbeddedV2 => return None,
         })
     }
@@ -342,6 +377,7 @@ pub(super) async fn admission_response(request: Request, mut body: Value) -> Val
         ("POST", ["api", "workflows"]) => Operation::Start,
         ("POST", ["api", "workflows", _, "signal", name])
         | ("POST", ["api", "workflows", _, "runs", _, "signal", name]) => Operation::Signal(name),
+        ("POST", ["api", "workflows", _, "signal-with-start", name]) => Operation::SignalWithStart(name),
         ("POST", ["api", "workflows", _, "update", name])
         | ("POST", ["api", "workflows", _, "runs", _, "update", name]) => Operation::Update(name),
         ("POST", ["api", "workflows", _, "query", name])

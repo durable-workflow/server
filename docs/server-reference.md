@@ -721,6 +721,7 @@ typed failure outcomes.
 - `GET /api/workflows/{id}/debug` — Bounded support diagnostic for the current run
 - `GET /api/workflows/{id}/runs/{runId}/debug` — Bounded support diagnostic for a specific run
 - `POST /api/workflows/{id}/signal/{name}` — Send a signal
+- `POST /api/workflows/{id}/signal-with-start/{name}` — Start or reuse the run and send a signal atomically (native only)
 - `POST /api/workflows/{id}/query/{name}` — Execute a query
 - `POST /api/workflows/{id}/update/{name}` — Execute an update
 - `POST /api/workflows/{id}/cancel` — Request cancellation
@@ -734,6 +735,64 @@ variants under `/api/workflows/{id}/runs/{runId}/...` are available for
 signal, query, update, cancel, terminate, repair, and archive; they only forward
 when `{runId}` is the current run and reject historical-run commands with `409`
 and `reason: "historical_run_command_rejected"`.
+
+#### Signal-with-start
+
+`POST /api/workflows/{id}/signal-with-start/{name}` starts the workflow or
+reuses its open run and admits one signal on that run in one transaction
+(native Server, advertised as `capabilities.signal_with_start`; published PHP
+Server 2.x has no such route). It is the service form of embedded
+`WorkflowStub::signalWithStart`. Use it for an entity workflow that must
+receive every event even if its run closes between a separate start and
+signal.
+
+The body is a start request (`workflow_type`, `task_queue`, `input`,
+timeouts, `memo`, `search_attributes`, `business_key`, priority and fairness)
+plus three intake fields:
+
+| Field | Meaning |
+| --- | --- |
+| `signal_input` | The signal's arguments, in the same forms as a signal's `input`. |
+| `request_id` | Optional. The signal's durable command key (see below). |
+| `closed_run_policy` | `reject` (default) or `start_new_run`. What a closed current run means. |
+
+`workflow_id` comes from the path; a different body `workflow_id` is a 422.
+`duplicate_policy` defaults to `use-existing`.
+
+| Current state of the instance | Result |
+| --- | --- |
+| No instance | A new run starts under the request's options and the signal joins it. `201`, `start_outcome: "started_new"`. |
+| Open run (pending, running or waiting; after continue-as-new, the newest run) | An accepted start command with `start_outcome: "returned_existing_active"` and the signal on that run. `202`. The run's input, history, deadlines and earlier receipts are unchanged. With `duplicate_policy: "fail"` it is refused with `409 instance_already_started`. |
+| Closed run, `closed_run_policy: "reject"` | `409 run_not_active` with `run_id` and `run_status`. The closed run is never reopened. |
+| Closed run, `closed_run_policy: "start_new_run"` | A fresh run numbered after the closed one starts under this request's input and timeouts, and the signal joins it. `201`, with `closed_run_id`. The closed run keeps its status, history and outcome. |
+
+The response is the signal's receipt (`run_id`, `command_id`,
+`command_sequence`, `outcome: "signal_received"`) plus the start's
+(`start_command_id`, `start_command_sequence`, `start_outcome`,
+`start_command_status`) and `intake_group_id`, which both commands also record
+in their command context with `intake.mode: "signal_with_start"`.
+
+The instance's namespace and durable workflow type must match the request,
+and so must an explicit `task_queue` when an open run is reused. Every
+refusal writes nothing: no run starts, no signal is recorded and no key is
+reserved. That covers `workflow_id_reserved_in_namespace`,
+`workflow_type_conflict`, `task_queue_conflict`, `instance_already_started`,
+`run_not_active`, `task_queue_draining`, and the signal's own `unknown_signal`
+(404), `invalid_signal_arguments` (422) and `structural_limit_exceeded`
+refusals, which on this route do not leave a rejected signal record.
+
+`request_id` is the signal's command key on the instance, under the same
+rules as a signal's key. Its intent covers the operation, the signal name and
+the typed signal arguments, and the retained start command binds the
+workflow type. A retry with the same intent returns the original start and
+signal receipts, with `retained: true` and the original status code, before
+any run gate: after the run closed or continued as new, and even with
+`start_new_run`, it starts nothing. Concurrent retries resolve to one
+admission. A different name, arguments or workflow type, or a key a plain
+signal already used, is `409 request_id_conflict` with `conflict` naming the
+part. Without a key, each request is its own intake. One admitted intake is
+one admitted start and signal; it is not a once-only external effect, so
+activities the signal triggers still need their own idempotency.
 
 #### Workflow queries
 

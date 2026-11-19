@@ -587,15 +587,10 @@ where
         // PHP names an instance the request leaves unnamed.
         let workflow_id = request.workflow_id.clone().or_else(|| instance_id.map(str::to_owned)).unwrap_or_else(id);
         let workflow_id = workflow_id.as_str();
-        let workflow_type = request.workflow_type.as_str();
-        let queue = request.task_queue.as_str();
         let arguments = match external_arguments {
             Some(arguments) => arguments.to_owned(),
             None => envelope(&body, "input")?,
         };
-        let execution_timeout = request.execution_timeout;
-        let run_timeout = request.run_timeout;
-        let timeout_cleanup = request.timeout_cleanup;
         if memo.is_none() && body.get("memo").is_some_and(|value| !value.is_null()) {
             return Err(refuse(
                 StatusCode::CONFLICT,
@@ -612,6 +607,35 @@ where
             }
             return Self::start_existing(tx, &existing, &request, workflow_id, namespace, &arguments, context).await;
         }
+        Self::seed_run_in(tx, body, &request, workflow_id, namespace, memo, search_attributes, &arguments, context, stale_after, None).await
+    }
+
+    /// A new run of `request`: its first run on a new instance, or, with
+    /// `successor`, a fresh run numbered `successor` on an existing instance
+    /// whose current run is closed (signal-with-start's explicit
+    /// `closed_run_policy: "start_new_run"`). The closed run keeps its own
+    /// status, history, commands and deadlines; only the instance's current
+    /// run, run count, start time, execution timeout, memo and business key
+    /// move to the new run, as embedded `signalWithStart` moves them.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn seed_run_in(
+        tx: &mut Transaction<'_, DB>,
+        body: &Value,
+        request: &super::start_request::StartRequest,
+        workflow_id: &str,
+        namespace: &str,
+        memo: Option<&super::memos::PreparedMemo>,
+        search_attributes: Option<&super::search_attribute_upserts::StartSearchAttributes>,
+        arguments: &str,
+        context: Option<&Value>,
+        stale_after: i64,
+        successor: Option<i64>,
+    ) -> Result<Value> {
+        let workflow_type = request.workflow_type.as_str();
+        let queue = request.task_queue.as_str();
+        let execution_timeout = request.execution_timeout;
+        let run_timeout = request.run_timeout;
+        let timeout_cleanup = request.timeout_cleanup;
         // Core normalizes the values while seeding the new run, after the
         // reservation, routing and duplicate checks; its refusals name
         // `workflow_type`, as the controller reports Core's LogicException.
@@ -641,14 +665,22 @@ where
             .filter(|memo| memo.as_object().is_some_and(|entries| !entries.is_empty()))
             .cloned()
             .unwrap_or(Value::Null);
-        Self::query("INSERT INTO workflow_instances(id,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at,namespace,memo,business_key) VALUES ($1,$2,$3,$4,1,NULLIF($5,0),$6,$7,$8,$9,$10,$11)")
-            // Timeouts are at least one second; zero binds "no timeout".
-            .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout.unwrap_or(0))
-            .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
-            .bind(DB::optional_document(&authored_memo)).bind(request.business_key.as_deref()).execute(&mut **tx).await?;
+        let run_number = successor.unwrap_or(1);
+        if successor.is_none() {
+            Self::query("INSERT INTO workflow_instances(id,workflow_type,workflow_class,current_run_id,run_count,execution_timeout_seconds,created_at,updated_at,started_at,namespace,memo,business_key) VALUES ($1,$2,$3,$4,1,NULLIF($5,0),$6,$7,$8,$9,$10,$11)")
+                // Timeouts are at least one second; zero binds "no timeout".
+                .bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&run_id).bind(execution_timeout.unwrap_or(0))
+                .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
+                .bind(DB::optional_document(&authored_memo)).bind(request.business_key.as_deref()).execute(&mut **tx).await?;
+        } else {
+            Self::query("UPDATE workflow_instances SET current_run_id=$1,run_count=$2,execution_timeout_seconds=NULLIF($3,0),updated_at=$4,started_at=$5,memo=$6,business_key=$7 WHERE id=$8")
+                .bind(&run_id).bind(run_number).bind(execution_timeout.unwrap_or(0)).bind(DB::bind_time(started_at))
+                .bind(DB::bind_time(started_at)).bind(DB::optional_document(&authored_memo)).bind(request.business_key.as_deref())
+                .bind(workflow_id).execute(&mut **tx).await?;
+        }
         // PHP records the start as the run's first progress.
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,$4,1,'pending','avro',$5,$6,NULLIF($7,0),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
-            .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(&arguments)
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at,business_key,priority,fairness_key,fairness_weight,compatibility) VALUES ($1,$2,$3,$4,$5,'pending','avro',$6,$7,NULLIF($8,0),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)")
+            .bind(&run_id).bind(workflow_id).bind(workflow_type).bind(workflow_type).bind(run_number).bind(arguments)
             .bind(queue).bind(run_timeout.unwrap_or(0)).bind(DB::optional_time(execution_deadline)).bind(DB::optional_time(run_deadline))
             .bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(namespace)
             .bind(DB::bind_time(started_at)).bind(request.business_key.as_deref()).bind(request.priority)
@@ -770,7 +802,7 @@ where
     /// a run: an active run is returned under `use-existing`, otherwise the
     /// start is refused. Either way the command and its history event are
     /// committed on that run; the HTTP layer answers a refusal with 409.
-    async fn start_existing(
+    pub(super) async fn start_existing(
         tx: &mut Transaction<'_, DB>,
         existing: &DB::Row,
         request: &super::start_request::StartRequest,
@@ -1124,9 +1156,50 @@ where
                     "reason":"runtime_reserved_signal","message":message,"accepted":false}),
             });
         }
+        let last_message_sequence = DB::number(&instance, "last_message_sequence")?;
+        let token = key.map(|key| super::command_intent::key_token("signal", key));
+        let request_id = bridge.map(|key| key.identity.as_str()).or(token.as_deref());
+        let admitted = self
+            .admit_signal_in(&mut tx, workflow_id, &current_run, last_message_sequence, name, &mut prepared,
+                transition_codec, &context, limits, request_id, digest.as_deref(), true)
+            .await?;
+        // A refusal commits its durable rejection record.
+        tx.commit().await?;
+        let mut response = admitted?;
+        self.wake.notify_waiters();
+        if let Some(key) = key {
+            response["request_id"] = json!(key);
+            response["retained"] = json!(false);
+            response["intent_verified"] = json!(true);
+        }
+        Ok(response)
+    }
+
+    /// One signal's admission on the instance's current run, inside the
+    /// caller's transaction: the run's contract, argument and structural
+    /// gates, then the accepted command, signal record and history. A refusal
+    /// is returned as `Ok(Err(..))`; it records PHP's durable rejection only
+    /// when `record_rejection` is set, and otherwise writes nothing, so a
+    /// signal-with-start can roll its whole intake back. The caller commits.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn admit_signal_in(
+        &self,
+        tx: &mut Transaction<'static, DB>,
+        workflow_id: &str,
+        current_run: &str,
+        last_message_sequence: i64,
+        name: &str,
+        prepared: &mut PreparedControlArguments,
+        transition_codec: Arc<Semaphore>,
+        context: &Value,
+        limits: super::memo_limits::StructuralLimits,
+        request_id: Option<&str>,
+        digest: Option<&str>,
+        record_rejection: bool,
+    ) -> Result<std::result::Result<Value, super::RuntimeError>> {
         let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
-            .bind(&current_run)
-            .fetch_one(&mut *tx)
+            .bind(current_run)
+            .fetch_one(&mut **tx)
             .await?;
         let active = matches!(
             DB::string(&run, "status")?.as_str(),
@@ -1135,10 +1208,10 @@ where
         // Retain the existing deadline fences for live runs. Terminal signals
         // instead commit PHP's durable rejection without reopening execution.
         if active {
-            Self::active_run(&mut tx, &current_run).await?;
+            Self::active_run(tx, current_run).await?;
         }
         let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
-            .bind(&current_run).fetch_one(&mut *tx).await?;
+            .bind(current_run).fetch_one(&mut **tx).await?;
         let contract = DB::document_row(&started, "payload")?;
         let declared = contract["declared_signals"]
             .as_array()
@@ -1191,7 +1264,7 @@ where
         if rejection.is_none() {
             if limits.pending_signals.is_some() {
                 let pending = Self::scalar("SELECT COUNT(*) FROM workflow_signal_records WHERE workflow_run_id=$1 AND status='received'")
-                    .bind(&current_run).fetch_one(&mut *tx).await?;
+                    .bind(current_run).fetch_one(&mut **tx).await?;
                 exceeded = super::memo_limits::Exceeded::pending_signals(limits.pending_signals, pending);
             }
             if exceeded.is_none() {
@@ -1206,7 +1279,7 @@ where
         let command_sequence = DB::number(&run, "last_command_sequence")?
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "command_sequence_exhausted"))?;
-        let message_sequence = DB::number(&instance, "last_message_sequence")?
+        let message_sequence = last_message_sequence
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "message_sequence_exhausted"))?;
         if let Some((status, reason, outcome)) = rejection {
@@ -1227,33 +1300,34 @@ where
                     "declared_signals":names,"signal_admission":"handler_not_declared","reason":reason,
                     "message":format!("Workflow signal [{name}] is unknown for workflow type [{workflow_type}]: the durable command contract does not declare that handler. Command contract source [durable_history], declared signals [{labels}].")});
             }
-            // An oversized signal keeps no arguments: its command carries the
-            // limit instead, and its signal row the limit's message.
-            let (mut row_arguments, mut row_errors) = (prepared.arguments.clone(), validation_errors.clone());
-            let mut command_values = prepared.values.clone();
-            let mut command_errors = validation_errors.clone();
-            let mut command_diagnostics = diagnostics.clone();
-            if let Some(exceeded) = exceeded.as_ref().filter(|exceeded| exceeded.kind == "payload_size") {
-                command_values = vec![];
-                command_errors = json!({"arguments":[exceeded.message]});
-                command_diagnostics = exceeded.fields();
-                row_arguments = super::queries::empty_arguments(transition_codec.clone()).await?;
-                row_errors = command_errors.clone();
+            if record_rejection {
+                // An oversized signal keeps no arguments: its command carries the
+                // limit instead, and its signal row the limit's message.
+                let (mut row_arguments, mut row_errors) = (prepared.arguments.clone(), validation_errors.clone());
+                let mut command_values = prepared.values.clone();
+                let mut command_errors = validation_errors.clone();
+                let mut command_diagnostics = diagnostics.clone();
+                if let Some(exceeded) = exceeded.as_ref().filter(|exceeded| exceeded.kind == "payload_size") {
+                    command_values = vec![];
+                    command_errors = json!({"arguments":[exceeded.message]});
+                    command_diagnostics = exceeded.fields();
+                    row_arguments = super::queries::empty_arguments(transition_codec.clone()).await?;
+                    row_errors = command_errors.clone();
+                }
+                prepared.command = prepare_rejected_command(
+                    transition_codec,
+                    name.to_owned(),
+                    command_values,
+                    command_errors,
+                    command_diagnostics,
+                    "signal_codec_unavailable",
+                )
+                .await?;
+                let write = SignalWrite { workflow_id, run_id: current_run, workflow_type: &workflow_type, name,
+                    command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context,
+                    request_id: None };
+                Self::record_rejected_signal(tx, &write, outcome, reason, &prepared.command, &row_arguments, &row_errors).await?;
             }
-            prepared.command = prepare_rejected_command(
-                transition_codec,
-                name.to_owned(),
-                command_values,
-                command_errors,
-                command_diagnostics,
-                "signal_codec_unavailable",
-            )
-            .await?;
-            let write = SignalWrite { workflow_id, run_id: &current_run, workflow_type: &workflow_type, name,
-                command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context,
-                request_id: None };
-            Self::record_rejected_signal(&mut tx, &write, outcome, reason, &prepared.command, &row_arguments, &row_errors).await?;
-            tx.commit().await?;
             let mut response = json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,
                 "requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,
                 "workflow_type":workflow_type,"command_status":"rejected","command_source":"control_plane",
@@ -1265,26 +1339,17 @@ where
                 .extend(diagnostics.as_object().expect("diagnostics object").clone());
             // A refusal records admission, not execution: no history, task,
             // signal wait reservation or notification is added here.
-            return Err(super::RuntimeError::Protocol { status, response });
+            return Ok(Err(super::RuntimeError::Protocol { status, response }));
         }
         let workflow_type = DB::string(&run, "workflow_type")?;
-        let token = key.map(|key| super::command_intent::key_token("signal", key));
-        let write = SignalWrite { workflow_id, run_id: &current_run, workflow_type: &workflow_type, name,
-            command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context: &context,
-            request_id: bridge.map(|key| key.identity.as_str()).or(token.as_deref()) };
-        Self::record_accepted_signal(&mut tx, &write, &prepared.command, &prepared.arguments, &DB::string(&run, "queue")?).await?;
-        if let Some(digest) = digest.as_deref() {
-            Self::record_command_intent(&mut tx, &command_id, self.namespace.as_ref(), digest).await?;
+        let write = SignalWrite { workflow_id, run_id: current_run, workflow_type: &workflow_type, name,
+            command_id: &command_id, signal_id: &signal_id, command_sequence, message_sequence, context,
+            request_id };
+        Self::record_accepted_signal(tx, &write, &prepared.command, &prepared.arguments, &DB::string(&run, "queue")?).await?;
+        if let Some(digest) = digest {
+            Self::record_command_intent(tx, &command_id, self.namespace.as_ref(), digest).await?;
         }
-        tx.commit().await?;
-        self.wake.notify_waiters();
-        let mut response = json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,"requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,"workflow_type":DB::string(&run, "workflow_type")?,"command_status":"accepted","command_source":"control_plane","target_scope":"instance","outcome":"signal_received","reason":null,"rejection_reason":null,"validation_errors":[]});
-        if let Some(key) = key {
-            response["request_id"] = json!(key);
-            response["retained"] = json!(false);
-            response["intent_verified"] = json!(true);
-        }
-        Ok(response)
+        Ok(Ok(json!({"workflow_id":workflow_id,"run_id":current_run,"resolved_run_id":current_run,"requested_run_id":null,"signal_name":name,"command_id":command_id,"command_sequence":command_sequence,"workflow_type":workflow_type,"command_status":"accepted","command_source":"control_plane","target_scope":"instance","outcome":"signal_received","reason":null,"rejection_reason":null,"validation_errors":[]})))
     }
 
     /// A refused signal's durable admission record: its rejected command,

@@ -492,6 +492,19 @@ contract fixture before its correction.
   the original. Neither writes anything. A closed id still starts a new run.
   Divergence `standalone-activity-duplicate-policy`
   ([#590](https://github.com/durable-workflow/server/issues/590)).
+- **Signal-with-start intake.** Published PHP has no signal-with-start
+  route. Native serves `POST /api/workflows/{workflow_id}/signal-with-start/{signal_name}`
+  (`capabilities.signal_with_start`), the service form of embedded
+  `WorkflowStub::signalWithStart`: one transaction starts the workflow or
+  reuses its open run under `use-existing` and admits one signal on it. A
+  closed run is refused unless `closed_run_policy` is `start_new_run`, which
+  starts a fresh run after it and leaves the closed run unchanged. The
+  namespace, workflow type and an explicit task queue must match; a body
+  `request_id` is the signal's #934 key, so retries return the original
+  receipts. Every refusal writes nothing, and no schema change is needed.
+  Divergence `signal-with-start-intake`
+  ([#1133](https://github.com/durable-workflow/server/issues/1133),
+  [.github#222](https://github.com/durable-workflow/.github/issues/222)).
 - **Queries on closed runs.** Published PHP refuses queries on failed,
   cancelled and terminated runs with `409 run_not_active`, and describe offers
   no query on them. Native queries a retained run of any status read-only on

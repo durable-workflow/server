@@ -72,6 +72,7 @@ mod external_registry;
 mod external_storage_binding;
 mod external_resolution;
 mod signal_payloads;
+mod signal_with_start;
 mod external_transport;
 mod external_wait_summary;
 mod failure_commands;
