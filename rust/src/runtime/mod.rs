@@ -99,6 +99,7 @@ mod deployments;
 mod priority_fairness;
 mod route_fallback;
 mod redrive;
+mod redrive_plan;
 mod replay_clock;
 mod memos;
 pub mod mysql;
