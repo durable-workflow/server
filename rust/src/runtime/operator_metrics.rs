@@ -194,6 +194,11 @@ fn without_history_audits(metrics: &mut Value) {
     }
 }
 
+/// One namespace's closed runs past the retention cutoff, oldest first. It
+/// seeks `dw_workflow_run_summaries_retention` (server#1256), so a pass with
+/// nothing to prune reads no retained summary.
+pub(super) const RETENTION_CANDIDATES: &str = "SELECT id FROM workflow_run_summaries WHERE namespace=$1 AND status_bucket IN ('completed','failed') AND closed_at IS NOT NULL AND archived_at IS NULL AND closed_at<$2 ORDER BY closed_at,id LIMIT $3 OFFSET $4";
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -1309,7 +1314,7 @@ where
         let namespace = self.namespace.clone();
         let mut offset = retention::maintenance_offset(&namespace, None);
         for _ in 0..retention::MAINTENANCE_BATCHES {
-            let ids = Self::query("SELECT id FROM workflow_run_summaries WHERE namespace=$1 AND status_bucket IN ('completed','failed') AND closed_at IS NOT NULL AND archived_at IS NULL AND closed_at<$2 ORDER BY closed_at,id LIMIT $3 OFFSET $4")
+            let ids = Self::query(RETENTION_CANDIDATES)
                 .bind(namespace.as_ref())
                 .bind(DB::bind_time(cutoff))
                 .bind(retention::MAX_LIMIT)

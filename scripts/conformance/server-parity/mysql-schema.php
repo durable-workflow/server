@@ -112,10 +112,12 @@ $pdo->exec('ROLLBACK');
 $pdo = connection($argv[3]);
 $native = array_values(array_filter(projectMysqlStorageBindings(projectMysqlDispatchSummary(projectMysqlJsonText(projectMysqlScopedDispatch(projectMysqlReadyOrigin(catalog($pdo))), $php))), static fn (array $row): bool => ! in_array($row[0], ['dw_server_schema', '_sqlx_migrations', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_session_holders', 'dw_stream_reclaims', 'dw_service_call_deadlines', 'dw_service_admission_counters', 'dw_external_payload_deletions', 'dw_run_command_contracts', 'dw_task_queue_pauses', 'dw_command_intents', 'dw_child_supervisions'], true)));
 $pdo->exec('ROLLBACK');
-// Native polling uses an additional index on an existing table. Retain all
-// original column, index and constraint definitions in the comparison.
+// Native polling and the maintenance scans (server#1256) use additional
+// indexes on existing tables. Retain all original column, index and
+// constraint definitions in the comparison.
 $native = array_map(static function (array $row): array {
     $row[1] = preg_replace('/,\n  KEY `dw_workflow_tasks_poll`[^\n]+/', '', $row[1]);
+    $row[1] = preg_replace('/,\n  KEY `(dw_workflow_runs_status_deadline|dw_activity_executions_status|dw_workflow_run_summaries_retention)`[^\n]+/', '', $row[1]);
 
     return $row;
 }, $native);

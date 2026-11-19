@@ -198,6 +198,9 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_child_supervisions_link"
                 | "dw_child_supervisions_child"
                 | "dw_child_supervisions_namespace"
+                | "dw_workflow_runs_status_deadline"
+                | "dw_activity_executions_status"
+                | "dw_workflow_run_summaries_retention"
         )
 }
 
