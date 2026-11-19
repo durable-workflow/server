@@ -160,7 +160,10 @@ any other unknown path or method answers PHP's own 404 or 405
   run archive, instance and run-targeted
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-cli-sweep-and-archive.md));
   run redrive of a failed run at its failed activity
-  ([checkpoint](rust-server-port-checkpoints/2026-10-23-redrive.md));
+  ([checkpoint](rust-server-port-checkpoints/2026-10-23-redrive.md)), now
+  decided by Workflow 2.33.0's redrive rules, with retried activities and
+  Core's reasons for signal, update and child steps
+  ([checkpoint](rust-server-port-checkpoints/2026-11-19-redrive-core-2.33.md));
   build pins at start and in polls, where unpinned activities follow
   [Workflow #908](https://github.com/durable-workflow/workflow/issues/908)
   ([checkpoint](rust-server-port-checkpoints/2026-10-23-build-pins.md));

@@ -463,3 +463,197 @@ async fn redrive_reuses_side_effects_and_version_markers_at_their_recorded_time(
     runtime.close().await;
     database.remove().await;
 }
+
+/// A worker that records the definition fingerprint, so its runs are
+/// service (worker-sourced) runs, and that declares a signal and an update.
+async fn fingerprinted_message_worker(app: &Router) {
+    let registered = request(app, "POST", "/api/worker/register", json!({"worker_id":"worker","task_queue":"test",
+        "runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":["a","b"],"capabilities":["workflow_updates"],
+        "workflow_definition_fingerprints":{"echo":FINGERPRINT},"workflow_command_contracts":{"echo":{
+            "signals":["finish"],"signal_contracts":[{"name":"finish","parameters":[]}],
+            "updates":["set"],"update_validators":[],"update_contracts":[{"name":"set","parameters":[]}]}}})).await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+}
+
+async fn start_echo(app: &Router, workflow: &str, extra: Value) -> Value {
+    let mut body = json!({"workflow_id":workflow,"workflow_type":"echo","task_queue":"test","input":envelope(Payload::Array(vec![]))});
+    for (key, value) in extra.as_object().unwrap() {
+        body[key] = value.clone();
+    }
+    let (status, started) = request(app, "POST", "/api/workflows", body).await;
+    assert!(status.is_success(), "{started}");
+    started
+}
+
+async fn fail_activity(app: &Router, activity: &Value) {
+    let failed = request(app, "POST", &format!("/api/worker/activity-tasks/{}/fail", activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner":activity["lease_owner"],"activity_attempt_id":activity["activity_attempt_id"],
+            "failure":{"class":"App\\Boom","message":"boom"}})).await;
+    assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
+}
+
+/// The next attempt of a retried activity, made available now.
+async fn retried_attempt(app: &Router, database: &TestDatabase) -> Value {
+    database.execute(sqlx::AssertSqlSafe("UPDATE workflow_tasks SET available_at=created_at,ready_origin_at=created_at WHERE task_type='activity' AND status='ready'".to_owned())).await;
+    let activity = poll(app, "worker", "activity").await;
+    assert!(activity["task_id"].is_string(), "the retry is ready: {activity}");
+    activity
+}
+
+/// Fails the run at `step` after its activity there failed.
+async fn fail_workflow_at(app: &Router, step: i64, activity: &Value) {
+    let task = poll(app, "worker", "workflow").await;
+    let done = finish_task(app, &task, json!([{"type":"fail_workflow","message":"gave up","failed_step_sequence":step,
+        "failed_activity_execution_id":activity["activity_execution_id"]}])).await;
+    assert_eq!(done.1["run_status"], "failed", "{}", done.1);
+}
+
+// Server #980 (Core workflow#1131, fixtures redrive-retried-completed-activity
+// and redrive-retried-failed-activity): an activity whose attempts were
+// retried is reused when it completed, and resumed when its last attempt
+// failed, because native's retry history forms Core's valid attempt lineage.
+#[tokio::test]
+async fn redrive_reuses_retried_activities_like_core() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    fingerprinted_message_worker(&app).await;
+    let started = start_echo(&app, "rd-retried", json!({})).await;
+    let retry = json!({"max_attempts":2,"backoff_seconds":[]});
+    let task = poll(&app, "worker", "workflow").await;
+    let scheduled = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"a",
+        "arguments":envelope(Payload::Array(vec![])),"retry_policy":retry}])).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    fail_activity(&app, &poll(&app, "worker", "activity").await).await;
+    let first = retried_attempt(&app, &database).await;
+    complete_activity(&app, &first).await;
+    let task = poll(&app, "worker", "workflow").await;
+    let scheduled = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b",
+        "arguments":envelope(Payload::Array(vec![])),"retry_policy":retry}])).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    fail_activity(&app, &poll(&app, "worker", "activity").await).await;
+    let last = retried_attempt(&app, &database).await;
+    fail_activity(&app, &last).await;
+    fail_workflow_at(&app, 2, &last).await;
+    let source_run = started["run_id"].as_str().unwrap().to_owned();
+    let source_history = run_history(&app, &json!("rd-retried"), &json!(source_run)).await;
+    assert_eq!(kinds(&source_history).iter().filter(|kind| *kind == "ActivityRetryScheduled").count(), 2, "{source_history}");
+
+    let path = format!("/api/workflows/rd-retried/runs/{source_run}");
+    assert_eq!(redrive_report(&request(&app, "GET", &path, Value::Null).await.1), (json!(true), Value::Null));
+    let (status, redriven) = request(&app, "POST", &format!("{path}/redrive"), json!({})).await;
+    assert_eq!((status, redriven["resume_step_sequence"].clone()), (StatusCode::ACCEPTED, json!(2)), "{redriven}");
+    let run = redriven["run_id"].clone();
+    let history = run_history(&app, &json!("rd-retried"), &run).await;
+    assert_eq!(kinds(&history), ["StartAccepted", "WorkflowStarted", "ActivityCompleted"]);
+    assert_eq!((history[2]["payload"]["sequence"].clone(), history[2]["payload"]["reused_activity_execution_id"].clone()),
+        (json!(1), first["activity_execution_id"].clone()), "{history}");
+    let task = poll(&app, "worker", "workflow").await;
+    assert_eq!(task["run_id"], run, "{task}");
+    let resumed = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b","arguments":envelope(Payload::Array(vec![]))}])).await;
+    assert_eq!(resumed.0, StatusCode::OK, "{}", resumed.1);
+    complete_activity(&app, &poll(&app, "worker", "activity").await).await;
+    let task = poll(&app, "worker", "workflow").await;
+    let done = finish_task(&app, &task, json!([{"type":"complete_workflow","result":envelope(Payload::Null)}])).await;
+    assert_eq!(done.1["run_status"], "completed", "{}", done.1);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Server #980 (Core `FailedRunRedriveEligibility`, fixture
+// redrive-service-unqualified-history): an applied signal wait or an applied
+// update before the failed step is a valid reused step in Core's plan, and a
+// service worker cannot replay it yet, so describe and redrive both report
+// `service_redrive_history_not_qualified` and nothing is written.
+#[tokio::test]
+async fn redrive_reports_reused_signals_and_updates_as_not_service_qualified() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    fingerprinted_message_worker(&app).await;
+
+    // A signal wait applied at step 1.
+    let started = start_echo(&app, "rd-signal", json!({})).await;
+    let task = poll(&app, "worker", "workflow").await;
+    let opened = finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await;
+    assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
+    let (status, body) = request(&app, "POST", "/api/workflows/rd-signal/signal/finish", json!({"input":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let task = poll(&app, "worker", "workflow").await;
+    let scheduled = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b","arguments":envelope(Payload::Array(vec![]))}])).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let activity = poll(&app, "worker", "activity").await;
+    fail_activity(&app, &activity).await;
+    fail_workflow_at(&app, 2, &activity).await;
+
+    // An update applied before the failed activity.
+    let updated = start_echo(&app, "rd-update", json!({})).await;
+    let task = poll(&app, "worker", "workflow").await;
+    let scheduled = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"a","arguments":envelope(Payload::Array(vec![]))}])).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let (status, update) = request(&app, "POST", "/api/workflows/rd-update/update/set",
+        json!({"input":envelope(Payload::Array(vec![])),"wait_for":"accepted"})).await;
+    assert!(status.is_success(), "{update}");
+    let task = poll(&app, "worker", "workflow").await;
+    assert_eq!(task["workflow_update_id"], update["update_id"], "{task}");
+    let applied = finish_task(&app, &task, json!([{"type":"complete_update","update_id":update["update_id"],
+        "result":envelope(Payload::String("noted".into()))}])).await;
+    assert_eq!(applied.0, StatusCode::OK, "{}", applied.1);
+    complete_activity(&app, &poll(&app, "worker", "activity").await).await;
+    let task = poll(&app, "worker", "workflow").await;
+    let scheduled = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b","arguments":envelope(Payload::Array(vec![]))}])).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let activity = poll(&app, "worker", "activity").await;
+    fail_activity(&app, &activity).await;
+    fail_workflow_at(&app, 2, &activity).await;
+
+    for (workflow, source, step) in [("rd-signal", &started, "SignalApplied"), ("rd-update", &updated, "UpdateApplied")] {
+        let source_run = source["run_id"].as_str().unwrap();
+        let history = run_history(&app, &json!(workflow), &json!(source_run)).await;
+        assert!(kinds(&history).iter().any(|kind| kind == step), "{workflow}: {history}");
+        let path = format!("/api/workflows/{workflow}/runs/{source_run}");
+        let described = request(&app, "GET", &path, Value::Null).await.1;
+        assert_eq!(redrive_report(&described), (json!(false), json!("service_redrive_history_not_qualified")), "{workflow}: {history}");
+        let (status, refused) = request(&app, "POST", &format!("{path}/redrive"), json!({})).await;
+        assert_eq!((status, refused["reason"].clone()), (StatusCode::CONFLICT, json!("service_redrive_history_not_qualified")), "{refused}");
+        let (_, current) = request(&app, "GET", &format!("/api/workflows/{workflow}"), Value::Null).await;
+        assert_eq!(current["run_id"], json!(source_run), "{current}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Server #980 (Core `isActiveStartAdoption`, fixture
+// redrive-native-active-start-adoption): a start under `use-existing`
+// records an accepted receipt on the active run. It is not a second start,
+// so the run stays redrivable.
+#[tokio::test]
+async fn redrive_accepts_a_run_that_adopted_a_duplicate_start() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    fingerprinted_message_worker(&app).await;
+    let started = start_echo(&app, "rd-adopted", json!({})).await;
+    let task = poll(&app, "worker", "workflow").await;
+    let scheduled = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"a","arguments":envelope(Payload::Array(vec![]))}])).await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let adopted = start_echo(&app, "rd-adopted", json!({"duplicate_policy":"use-existing"})).await;
+    assert_eq!((adopted["outcome"].clone(), adopted["run_id"].clone()), (json!("returned_existing_active"), started["run_id"].clone()), "{adopted}");
+    complete_activity(&app, &poll(&app, "worker", "activity").await).await;
+    let task = poll(&app, "worker", "workflow").await;
+    finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"b","arguments":envelope(Payload::Array(vec![]))}])).await;
+    let activity = poll(&app, "worker", "activity").await;
+    fail_activity(&app, &activity).await;
+    fail_workflow_at(&app, 2, &activity).await;
+    let source_run = started["run_id"].as_str().unwrap();
+    let history = run_history(&app, &json!("rd-adopted"), &json!(source_run)).await;
+    assert_eq!(kinds(&history).iter().filter(|kind| *kind == "StartAccepted").count(), 2, "{history}");
+    let path = format!("/api/workflows/rd-adopted/runs/{source_run}");
+    assert_eq!(redrive_report(&request(&app, "GET", &path, Value::Null).await.1), (json!(true), Value::Null));
+    let (status, redriven) = request(&app, "POST", &format!("{path}/redrive"), json!({})).await;
+    assert_eq!((status, redriven["resume_step_sequence"].clone()), (StatusCode::ACCEPTED, json!(2)), "{redriven}");
+    let (status, body) = request(&app, "POST", "/api/workflows/rd-adopted/terminate", json!({"reason":"checked"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    runtime.close().await;
+    database.remove().await;
+}
