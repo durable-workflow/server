@@ -26,6 +26,20 @@ enum StorageAdmission<'a> {
     LegacyTest,
 }
 
+/// What an upload rechecks before it registers and before it writes bytes,
+/// as PHP's registry `beforeWrite` callbacks do (Server #951): pressure can
+/// change while an admitted request's body is being read.
+#[derive(Clone, Copy)]
+pub(super) enum UploadGate<'a> {
+    /// A payload a producer already admitted externalizes itself.
+    Unchecked,
+    /// An ordinary transport upload is new work: normal admission only.
+    NewWork,
+    /// A completion upload: its current lease, under normal or draining
+    /// admission (the operator's reserve).
+    Completion(&'a super::activity_completion_uploads::Context),
+}
+
 fn hash(value: &str) -> String {
     Sha256::digest(value.as_bytes())
         .iter()
@@ -207,8 +221,43 @@ where
         expires: DateTime<Utc>,
         quota: Quota,
     ) -> Result<Reference> {
-        self.upload_external_local_guarded(local, expected, snapshot, expires, quota, None)
+        self.upload_external_local_guarded(local, expected, snapshot, expires, quota, UploadGate::Unchecked)
             .await
+    }
+
+    /// An ordinary transport upload, refused if storage pressure began while
+    /// its body was read.
+    pub(super) async fn upload_external_transport(
+        &self,
+        local: crate::external_payload::LocalStorage,
+        expected: Reference,
+        snapshot: crate::external_payload::Snapshot,
+        expires: DateTime<Utc>,
+        quota: Quota,
+    ) -> Result<Reference> {
+        self.upload_external_local_guarded(local, expected, snapshot, expires, quota, UploadGate::NewWork)
+            .await
+    }
+
+    /// The storage admission half of an upload gate.
+    pub(super) fn require_upload_admission(&self, gate: UploadGate<'_>) -> Result<()> {
+        if matches!(gate, UploadGate::Unchecked) {
+            return Ok(());
+        }
+        let snapshot = self.storage_admission.snapshot();
+        let admitted = match gate {
+            UploadGate::NewWork => snapshot.accepts_new_work(),
+            _ => snapshot.accepts_leased_work(),
+        };
+        if admitted { Ok(()) } else { Err(super::storage_admission::paused(&snapshot, false)) }
+    }
+
+    async fn recheck_upload(&self, tx: &mut Transaction<'_, DB>, gate: UploadGate<'_>) -> Result<()> {
+        self.require_upload_admission(gate)?;
+        if let UploadGate::Completion(context) = gate {
+            self.completion_upload_lease(tx, context).await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn upload_external_local_guarded(
@@ -218,15 +267,16 @@ where
         snapshot: crate::external_payload::Snapshot,
         expires: DateTime<Utc>,
         quota: Quota,
-        completion: Option<&super::activity_completion_uploads::Context>,
+        gate: UploadGate<'_>,
     ) -> Result<Reference> {
         let uri = local
             .uri_for(&expected)
             .map_err(super::external_transport::snapshot_error)?;
+        self.require_upload_admission(gate)?;
         let reference = self
             .prepare_external_upload_admitted(&expected, &uri, expires, quota, StorageAdmission::Current(&local))
             .await?;
-        self.finish_external_local_upload(reference, &uri, snapshot, completion).await
+        self.finish_external_local_upload(reference, &uri, snapshot, gate).await
     }
 
     /// The committed registration is the authority for a previously admitted
@@ -236,7 +286,7 @@ where
         reference: Reference,
         uri: &str,
         snapshot: crate::external_payload::Snapshot,
-        completion: Option<&super::activity_completion_uploads::Context>,
+        gate: UploadGate<'_>,
     ) -> Result<Reference> {
         let mut tx = self.begin().await?;
         Self::payload_object_lock(&mut tx, uri).await?;
@@ -249,16 +299,12 @@ where
         let binding = crate::external_payload::StorageBinding::decode_stored(&binding, self.namespace.as_ref(), &reference, uri)
             .ok_or_else(super::external_storage_binding::unavailable)?;
         let local = binding.storage().await.map_err(super::external_storage_binding::storage_failure)?;
-        if let Some(context) = completion {
-            self.completion_upload_lease(&mut tx, context).await?;
-        }
+        self.recheck_upload(&mut tx, gate).await?;
         local
             .put(reference.clone(), snapshot)
             .await
             .map_err(super::external_transport::snapshot_error)?;
-        if let Some(context) = completion {
-            self.completion_upload_lease(&mut tx, context).await?;
-        }
+        self.recheck_upload(&mut tx, gate).await?;
         self.promote_external_upload(&mut tx, &reference, uri)
             .await?;
         tx.commit().await?;
@@ -554,7 +600,7 @@ mod tests {
             let replacement = temp.path().join("replacement");
             store.set_external_policy("default", if disabled { serde_json::json!({"driver":"local","enabled":false}) } else { serde_json::json!({"driver":"local","enabled":true,"config":{"uri":format!("file://{}",replacement.display())}}) }).await.unwrap();
             let snapshot = capture(Cursor::new(bytes.to_vec()), reference.clone(), 100, temp.path().into(), Arc::new(Semaphore::new(1))).await.unwrap();
-            assert_eq!(store.finish_external_local_upload(reference.clone(), &uri, snapshot, None).await.unwrap(), reference);
+            assert_eq!(store.finish_external_local_upload(reference.clone(), &uri, snapshot, UploadGate::Unchecked).await.unwrap(), reference);
             let row: (String, String) = sqlx::query_as("SELECT upload_status,storage_binding FROM runtime_external_payloads").fetch_one(&store.pool).await.unwrap();
             assert_eq!(row, ("ready".into(), original));
             assert!(root.join("avro").exists());
@@ -577,7 +623,7 @@ mod tests {
         let reference = store.prepare_external_upload_admitted(&metadata, &uri, now()+chrono::Duration::seconds(60), Quota::default(), StorageAdmission::Current(&local)).await.unwrap();
         std::fs::remove_dir(&root).unwrap();
         let snapshot = capture(Cursor::new(bytes.to_vec()), reference.clone(), 100, temp.path().into(), Arc::new(Semaphore::new(1))).await.unwrap();
-        assert_eq!(reason(store.finish_external_local_upload(reference, &uri, snapshot, None).await.unwrap_err()), "external_payload_storage_binding_unavailable");
+        assert_eq!(reason(store.finish_external_local_upload(reference, &uri, snapshot, UploadGate::Unchecked).await.unwrap_err()), "external_payload_storage_binding_unavailable");
         assert!(!root.exists());
         let status: String = sqlx::query_scalar("SELECT upload_status FROM runtime_external_payloads").fetch_one(&store.pool).await.unwrap();
         assert_eq!(status, "writing");

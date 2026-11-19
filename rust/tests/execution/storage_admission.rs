@@ -8,26 +8,26 @@ use std::os::unix::fs::PermissionsExt;
 
 /// The test's freshness bound: long enough that a slow CI database never ages
 /// fresh evidence mid-test, and the stale case publishes just past it.
-const MAX_AGE_SECONDS: i64 = 300;
+pub(crate) const MAX_AGE_SECONDS: i64 = 300;
 
-struct Observation {
+pub(crate) struct Observation {
     _directory: tempfile::TempDir,
     path: std::path::PathBuf,
 }
 
 impl Observation {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("pressure.json");
         Self { _directory: directory, path }
     }
 
-    fn settings(&self) -> Settings {
+    pub(crate) fn settings(&self) -> Settings {
         Settings { file: Some(self.path.to_str().unwrap().to_owned()), source: Some("cell-a".into()), max_age_seconds: MAX_AGE_SECONDS }
     }
 
     /// The producer's atomic replacement.
-    fn publish(&self, state: &str, age: i64) {
+    pub(crate) fn publish(&self, state: &str, age: i64) {
         let observed_at = chrono::Utc::now().timestamp() - age;
         let staged = self.path.with_extension("tmp");
         std::fs::write(&staged, format!(

@@ -565,6 +565,15 @@ impl Runtime {
         ) -> Result<crate::external_payload::Reference>
     );
     delegate!(
+        upload_external_transport(
+            local: crate::external_payload::LocalStorage,
+            expected: crate::external_payload::Reference,
+            snapshot: crate::external_payload::Snapshot,
+            expires: chrono::DateTime<chrono::Utc>,
+            quota: super::external_config::Quota,
+        ) -> Result<crate::external_payload::Reference>
+    );
+    delegate!(
         external_payload_for_fetch(
             expected: &crate::external_payload::Reference,
         ) -> Result<super::external_registry::RegisteredPayload>

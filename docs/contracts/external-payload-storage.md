@@ -346,6 +346,11 @@ completion schema and header advertised in namespace discovery. Every slot of
 the same claim shares one byte allowance and a maximum of 128 slots. New client
 work remains subject to ordinary storage admission.
 
+Native Server admits this retry for the current activity lease's
+`complete`/`["result"]` slot only; it advertises no prepared or scope schema and
+refuses other completion contexts in every storage state. See
+[native storage admission](../storage-admission.md#native-server).
+
 The prepared local activity candidate on explicit protocol 1.20 additionally
 advertises `completion_context.prepared_schema` as
 `durable-workflow.v2.payload-completion-context.v2`. Its exact header object
