@@ -69,6 +69,70 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 4.0.0 / Server 3.14.0 (native)
+
+**Every backend needs an explicit native schema upgrade from 3.13.x.** Chart
+4.0.0 selects native Server 3.14.0 and retains the existing values and resource
+contract; Chart 3.x values files work unchanged. The chart major advances
+because changing its default image requires operator action on every backend
+under this guide's existing semver rule, as for Chart 2.0.0 and 3.0.0. An
+explicit `image.tag` or `image.digest` override must select the intended
+qualified image too. The PHP Server remains 2.11.8.
+
+| Backend | Schema step |
+| --- | --- |
+| SQLite | 15 to 16 |
+| PostgreSQL | 16 to 17 |
+| MariaDB | 16 to 17 |
+| MySQL | 17 to 18 |
+
+1. Stop every Server replica sharing the database, including replicas outside
+   this Helm release. Keep the database running.
+2. Back up the database and every external payload root.
+3. Run the new image's `schema-upgrade` once through the opt-in upgrade hook or
+   manual Job in [Native schema upgrades](../README.md#native-schema-upgrades).
+   The hook requires live proof that all Server replicas are stopped.
+4. Restart every replica on the same new image and verify readiness, reported
+   version 3.14.0 and worker registration.
+
+Startup does not upgrade an older schema automatically. If the step is skipped,
+a 3.14.0 pod on the older schema refuses with `native_schema_upgrade_required`
+and stays unready; with the default `RollingUpdate` (`maxUnavailable: 0`) the
+existing pods keep serving and `--atomic` rolls the release back. Until
+`schema-upgrade` has run, rolling back to Chart 3.1.0 is an ordinary Helm
+rollback. From 3.11.x or earlier, the same command also applies the intervening
+steps below. MySQL and MariaDB can resume an interrupted upgrade; SQLite and
+PostgreSQL apply their step transactionally. After `schema-upgrade`, rolling
+back requires restoring the pre-upgrade database and payload storage backup: a
+3.13.x binary does not ignore the new table, it refuses the upgraded database
+with `native_schema_newer_than_binary`. Work recorded after the upgrade is not in
+that backup. Do not run 3.13.x and 3.14.0 replicas against one database.
+
+The step creates the empty `dw_child_supervisions` table, which lets a run that
+continues as new hand its open children to the continued run; the chain's final
+run applies their parent-close policies. Chains continued before the upgrade
+keep the earlier behavior.
+
+Behavior changes to review (details in
+[Server 3.14.0](../../../../docs/releases/3.14.0.md)):
+
+- A standalone activity start for an id that is still running returns a typed
+  `409 activity_already_started` instead of `422`; send
+  `duplicate_policy: "use-existing"` to get the running activity back.
+- Queries on failed, cancelled and terminated runs are answered; pruned or
+  missing history returns `409 query_history_unavailable`.
+- On MariaDB, completions up to the 32 MiB cap now record under the default
+  16 MiB `max_allowed_packet`; Chart 3.1.0's 64 MiB advice is no longer needed.
+- `GET /metrics` serves a Prometheus scrape for autoscalers behind a new
+  `metrics` role. The chart has no first-class value for it yet; set
+  `DW_METRICS_TOKEN` through `auth.extra` or `auth.existingSecret`, and see
+  `k8s/helm/examples/autoscaling/`.
+- Worker build and task queue retirement are guarded by a live inventory, and
+  `DW_WORKER_LONG_POLL_MAX_CONCURRENT`, `DW_QUERY_TASK_POLL_MAX_CONCURRENT` and
+  `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` are honored when set.
+
+Worker protocol 1.20 and control plane version 2 are unchanged.
+
 ### Chart 3.1.0 / Server 3.13.0 (native)
 
 A drop-in upgrade from Chart 3.0.0. The chart selects native Server 3.13.0 and
