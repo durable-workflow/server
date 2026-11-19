@@ -20,6 +20,8 @@ const FIELDS: &[(&str, &[&str])] = &[
     ("record_local_activity", &["arguments", "result"]),
     ("start_service_operation", &["request_payload"]),
     ("upsert_memo", &["entries"]),
+    // Native's signal-external command (Server #1134).
+    (super::external_signals::COMMAND, &["arguments"]),
 ];
 
 /// Fields the normalizer accepts only as a string or an envelope.

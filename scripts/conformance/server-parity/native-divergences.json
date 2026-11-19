@@ -141,6 +141,15 @@
       "published_php": "A child still open when its parent continues as new stays with the closed predecessor: no run of the chain applies its parent-close policy, and a later failure of the child is never retried.",
       "native": "As Core workflow#868 and workflow#1107 (Workflow 2.26.0), the continued run supervises each open child in the continue-as-new transaction. The chain's final run applies its request_cancel, terminate or request_cancellation policy to the child's current run when it closes and records ParentClosePolicyApplied or ParentClosePolicyFailed (and ParentCloseCancellationRequested) in its own history. A child that fails while a run of the chain supervises it is retried under its recorded retry policy, and nothing is appended to the closed predecessor. A chain continued before this change keeps the published behavior.",
       "harness": "No shared fixture closes a chain that continued over an open non-abandon child or fails such a child afterward, so no fixture section names this divergence and every PHP and embedded recording is unchanged. The all-backend native execution suite (child_supervision) covers the behavior against Core's V2ContinueAsNewOpenChildSupervisionTest and V2WorkflowTaskBridgeTest cases."
+    },
+    {
+      "id": "signal-external-workflow-command",
+      "issue": "https://github.com/durable-workflow/server/issues/1134",
+      "since": "native source (unreleased)",
+      "applies_to": [],
+      "published_php": "A workflow task completion with a signal_external_workflow command is refused as an unsupported workflow command; workflow code can signal another workflow only through an activity that calls the client.",
+      "native": "Native admits signal_external_workflow (.github#223). The completion records ExternalSignalRequested and, at the same sequence, ExternalSignalDelivered or ExternalSignalFailed (target_not_found, target_closed or rejected) in the sender's history, and gives the sender one turn. A delivered signal is admitted on the target exactly as an HTTP signal is, under the command key workflow-signal:<sender run>:<sequence>, with source workflow and Core's CommandContext::workflow context. Embedded Workflow 2.33.0 has no durable equivalent (a child handle signals directly, outside the parent's history).",
+      "harness": "No shared fixture sends the command, so no fixture section names this divergence and every PHP and embedded recording is unchanged. The cluster-info contract lists the capability under native_additions. The all-backend native execution suite (signal_external) covers the behavior, and the target's SignalReceived history was compared key-for-key with an embedded child-handle signal."
     }
   ]
 }

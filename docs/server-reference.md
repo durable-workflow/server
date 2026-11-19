@@ -608,6 +608,7 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 | `record_side_effect` | No | Record a non-deterministic value |
 | `record_version_marker` | No | Record a version marker |
 | `upsert_search_attributes` | No | Update search attributes |
+| `signal_external_workflow` | No | Signal another workflow in the namespace (native) |
 
 Retry and timeout fields are scoped to the command layer they control.
 `schedule_activity` accepts activity `retry_policy`,
@@ -620,6 +621,17 @@ workflow `retry_policy`, `execution_timeout_seconds`, and
 `non_retryable` is only a failure outcome flag on `fail_workflow` and
 `fail_update`. HTTP transport retry policy is configured by clients outside the
 workflow-task command payload.
+
+`signal_external_workflow` (native, advertised as
+`capabilities.signal_external_workflow`) signals another workflow in the
+namespace by `workflow_id`, with an optional `run_id`, a `signal_name` and an
+Avro `arguments` envelope. The completion delivers the signal on the target as
+an HTTP signal is admitted, records `ExternalSignalRequested` and then
+`ExternalSignalDelivered` or `ExternalSignalFailed` (`target_not_found`,
+`target_closed` or `rejected`) at the command's sequence, and gives the sender
+one workflow task to read the outcome. Replay reads the recorded outcome and
+never sends the signal again. See the
+[signal-external contract](contracts/signal-external-workflow.md).
 
 ## API Overview
 

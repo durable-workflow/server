@@ -431,7 +431,8 @@ workflow start/describe/paginated history, worker registration/heartbeat/removal
 workflow/activity polling, workflow lease renewal and both completion paths.
 Admitted commands include `schedule_activity`, `start_timer`, `start_child_workflow`,
 `open_condition_wait`, `open_signal_wait`, `record_version_marker`,
-`complete_workflow`, `fail_workflow`, `continue_as_new`, `complete_update` and `fail_update`;
+`complete_workflow`, `fail_workflow`, `continue_as_new`, `complete_update`, `fail_update`
+and `signal_external_workflow` ([contract](../docs/contracts/signal-external-workflow.md));
 unsupported effects/options are refused before batch mutation. Published PHP
 workers replay the persisted activity result and complete the workflow normally.
 Discovery marks the runtime as development, advertises the admitted commands

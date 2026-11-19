@@ -71,6 +71,7 @@ mod external_config;
 mod external_registry;
 mod external_storage_binding;
 mod external_resolution;
+mod external_signals;
 mod signal_payloads;
 mod external_transport;
 mod external_wait_summary;
