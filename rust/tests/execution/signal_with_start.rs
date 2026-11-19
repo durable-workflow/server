@@ -159,6 +159,16 @@ async fn keyed_intake_retries_return_the_original_pair_across_closure_and_races(
     let run = original.1["run_id"].clone();
     assert_eq!(events(&app, "keyed-entity", &run).await, ["StartAccepted", "WorkflowStarted", "SignalReceived"]);
 
+    // The key binds the signal and workflow type only: a retry whose start
+    // half differs still returns the original receipts and writes nothing.
+    let before = table_counts(&database).await;
+    let restarted = with(with(with(intake(1, Some("lost-response")), "input", json!([7])), "task_queue", json!("elsewhere")),
+        "duplicate_policy", json!("fail"));
+    let restarted = signal_with_start(&app, "keyed-entity", "finish", with(restarted, "closed_run_policy", json!("start_new_run"))).await;
+    assert_eq!((restarted.0, restarted.1["command_id"].clone(), restarted.1["retained"].clone()),
+        (StatusCode::CREATED, original.1["command_id"].clone(), json!(true)), "{}", restarted.1);
+    assert_eq!(table_counts(&database).await, before);
+
     // A retry with a different intent conflicts and writes nothing; so does
     // a plain signal's key reused for an intake, and an intake's key reused
     // under another workflow type.
@@ -241,6 +251,162 @@ async fn intake_joins_the_continued_run_and_keeps_namespaces_apart() {
     assert_eq!(table_counts(&database).await, before);
     let capabilities = request(&app, "GET", "/api/cluster/info", Value::Null).await.1;
     assert_eq!(capabilities["capabilities"]["signal_with_start"], json!(true));
+    runtime.close().await;
+    database.remove().await;
+}
+
+fn received(history: &[String]) -> usize {
+    history.iter().filter(|kind| *kind == "SignalReceived").count()
+}
+
+async fn runs(app: &Router, workflow: &str) -> Vec<Value> {
+    request(app, "GET", &format!("/api/workflows/{workflow}/runs"), Value::Null).await.1["runs"].as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn concurrent_intakes_share_one_run_and_keep_every_signal() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+
+    // Unkeyed calls on a new instance: one start, twelve signals.
+    let racing: Vec<_> = (0..12).map(|value| signal_with_start(&app, "racing-entity", "finish", intake(value, None))).collect();
+    let answers = futures_util::future::join_all(racing).await;
+    let run = answers[0].1["run_id"].clone();
+    assert_eq!(answers.iter().filter(|answer| answer.0 == StatusCode::CREATED).count(), 1);
+    for answer in &answers {
+        assert!(matches!(answer.0, StatusCode::CREATED | StatusCode::ACCEPTED), "{}", answer.1);
+        assert_eq!(answer.1["run_id"], run, "{}", answer.1);
+    }
+    assert_eq!(runs(&app, "racing-entity").await.len(), 1);
+    assert_eq!(received(&events(&app, "racing-entity", &run).await), 12);
+
+    // start_new_run calls racing on a terminated run: one new run, eight signals.
+    let (status, body) = request(&app, "POST", "/api/workflows/racing-entity/terminate", json!({"reason":"close"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let fresh: Vec<_> = (0..8)
+        .map(|value| signal_with_start(&app, "racing-entity", "finish", with(intake(value, None), "closed_run_policy", json!("start_new_run"))))
+        .collect();
+    let answers = futures_util::future::join_all(fresh).await;
+    let second = answers.iter().find(|answer| answer.0 == StatusCode::CREATED).expect("one new run").1["run_id"].clone();
+    assert_eq!(answers.iter().filter(|answer| answer.0 == StatusCode::CREATED).count(), 1);
+    for answer in &answers {
+        assert_eq!(answer.1["run_id"], second, "{}", answer.1);
+    }
+    assert_ne!(second, run);
+    assert_eq!(runs(&app, "racing-entity").await.len(), 2);
+    assert_eq!(received(&events(&app, "racing-entity", &second).await), 8);
+    assert_eq!(received(&events(&app, "racing-entity", &run).await), 12, "the terminated run is unchanged");
+
+    // A call racing termination either joins the open run before it closes
+    // or is refused; it never starts a run or loses an accepted signal.
+    let (intake_answer, terminated) = tokio::join!(
+        signal_with_start(&app, "racing-entity", "finish", intake(99, None)),
+        request(&app, "POST", "/api/workflows/racing-entity/terminate", json!({"reason":"race"})),
+    );
+    assert_eq!(terminated.0, StatusCode::OK, "{}", terminated.1);
+    match intake_answer.0 {
+        StatusCode::ACCEPTED => {
+            assert_eq!(intake_answer.1["run_id"], second, "{}", intake_answer.1);
+            assert_eq!(received(&events(&app, "racing-entity", &second).await), 9);
+        }
+        StatusCode::CONFLICT => {
+            assert_eq!(intake_answer.1["reason"], "run_not_active", "{}", intake_answer.1);
+            assert_eq!(received(&events(&app, "racing-entity", &second).await), 8);
+        }
+        other => panic!("{other}: {}", intake_answer.1),
+    }
+    assert_eq!(runs(&app, "racing-entity").await.len(), 2);
+
+    // A key is scoped to its instance: the same key elsewhere is independent.
+    let first = signal_with_start(&app, "keyed-a", "finish", intake(1, Some("shared-key"))).await;
+    let other = signal_with_start(&app, "keyed-b", "finish", intake(1, Some("shared-key"))).await;
+    assert_eq!((first.0, other.0), (StatusCode::CREATED, StatusCode::CREATED), "{} {}", first.1, other.1);
+    assert_eq!((first.1["retained"].clone(), other.1["retained"].clone()), (json!(false), json!(false)));
+    assert_ne!(first.1["command_id"], other.1["command_id"]);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn two_nodes_racing_one_new_instance_admit_every_intake_once() {
+    let database = TestDatabase::new().await;
+    let node_a = database.open().await.unwrap();
+    let node_b = database.open().await.unwrap();
+    let (app_a, app_b) = (router(node_a.clone()), router(node_b.clone()));
+    let racing: Vec<_> = (0..6)
+        .map(|value| {
+            let app = if value % 2 == 0 { app_a.clone() } else { app_b.clone() };
+            async move { signal_with_start(&app, "two-node-entity", "finish", intake(value, None)).await }
+        })
+        .collect();
+    let answers = futures_util::future::join_all(racing).await;
+    let run = answers[0].1["run_id"].clone();
+    assert_eq!(answers.iter().filter(|answer| answer.0 == StatusCode::CREATED).count(), 1, "{answers:?}");
+    for answer in &answers {
+        assert!(matches!(answer.0, StatusCode::CREATED | StatusCode::ACCEPTED), "{}", answer.1);
+        assert_eq!(answer.1["run_id"], run, "{}", answer.1);
+    }
+    assert_eq!(runs(&app_a, "two-node-entity").await.len(), 1);
+    assert_eq!(received(&events(&app_a, "two-node-entity", &run).await), 6);
+    node_a.close().await;
+    node_b.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn every_closed_status_and_the_payload_ceiling_refuse_without_a_write() {
+    use durable_workflow_server::runtime::StructuralLimits;
+    let database = TestDatabase::new().await;
+    let limits = StructuralLimits { payload_bytes: Some(300), ..StructuralLimits::default() };
+    let runtime = database.open().await.unwrap().with_structural_limits(limits);
+    let app = router(runtime.clone());
+    update_worker(&app, "closed-worker").await;
+
+    // Failed, cancelled and terminated runs are refused like a completed one,
+    // and start_new_run starts after each.
+    for (workflow, status) in [("closed-failed", "failed"), ("closed-cancelled", "cancelled"), ("closed-terminated", "terminated")] {
+        let started = signal_with_start(&app, workflow, "finish", intake(1, None)).await;
+        assert_eq!(started.0, StatusCode::CREATED, "{}", started.1);
+        match status {
+            "failed" => {
+                let task = poll(&app, "closed-worker", "workflow").await;
+                let (code, body) = finish_task(&app, &task, json!([{"type":"fail_workflow","message":"closed for the intake"}])).await;
+                assert_eq!(code, StatusCode::OK, "{body}");
+            }
+            "cancelled" => assert_eq!(request(&app, "POST", &format!("/api/workflows/{workflow}/cancel"), json!({})).await.0, StatusCode::OK),
+            _ => assert_eq!(request(&app, "POST", &format!("/api/workflows/{workflow}/terminate"), json!({})).await.0, StatusCode::OK),
+        }
+        let before = table_counts(&database).await;
+        let refused = signal_with_start(&app, workflow, "finish", intake(2, None)).await;
+        assert_refused(&refused, StatusCode::CONFLICT, "run_not_active");
+        assert_eq!(refused.1["run_status"], status, "{}", refused.1);
+        assert_eq!(table_counts(&database).await, before, "{status}");
+        let fresh = signal_with_start(&app, workflow, "finish", with(intake(3, None), "closed_run_policy", json!("start_new_run"))).await;
+        assert_eq!((fresh.0, fresh.1["closed_run_id"].clone()), (StatusCode::CREATED, started.1["run_id"].clone()), "{}", fresh.1);
+    }
+
+    // A signal over the payload ceiling is refused on a new instance and on
+    // an open run alike, with no start, signal or rejection record.
+    // A queue without a declared contract, so only the ceiling applies.
+    let untyped = |value: Value| with(with(intake(1, None), "task_queue", json!("untyped")), "signal_input", value);
+    let oversized = envelope(Payload::Array(vec![Payload::String("x".repeat(400))]));
+    let open = signal_with_start(&app, "oversized-open", "finish", untyped(envelope(Payload::Array(vec![Payload::String("ok".into())])))).await;
+    assert_eq!(open.0, StatusCode::CREATED, "{}", open.1);
+    let before = table_counts(&database).await;
+    let new = signal_with_start(&app, "oversized-entity", "finish", untyped(oversized.clone())).await;
+    assert_refused(&new, StatusCode::CONFLICT, "structural_limit_exceeded");
+    assert_eq!(request(&app, "GET", "/api/workflows/oversized-entity", Value::Null).await.0, StatusCode::NOT_FOUND);
+    let open = signal_with_start(&app, "oversized-open", "finish", untyped(oversized)).await;
+    assert_refused(&open, StatusCode::CONFLICT, "structural_limit_exceeded");
+    assert_eq!(table_counts(&database).await, before);
+
+    // A blank signal name is refused as the signal route refuses it.
+    let blank = signal_with_start(&app, "blank-entity", "%20%20", intake(1, None)).await;
+    assert_eq!((blank.0, blank.1["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_signal_name")), "{}", blank.1);
+    let plain = request(&app, "POST", "/api/workflows/closed-failed/signal/%20%20", json!({})).await;
+    assert_eq!(plain.1["reason"], blank.1["reason"], "{}", plain.1);
+    assert_eq!(table_counts(&database).await, before);
     runtime.close().await;
     database.remove().await;
 }

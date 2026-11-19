@@ -1141,9 +1141,8 @@ impl Runtime {
     /// (Server #1133, shared .github#222): starts or reuses the instance's
     /// run and admits one signal on it in one transaction. The start half is
     /// validated and prepared as a start, the signal half as a signal, both
-    /// before storage. One lost unique-key race (another node admitted the
-    /// same instance or key first) is answered by evaluating the intake once
-    /// more against the committed winner.
+    /// before storage. Intakes on several nodes serialize in storage like
+    /// any other transition (`two_nodes_racing_one_new_instance_...`).
     pub(crate) async fn signal_with_start(
         &self,
         workflow_id: &str,
@@ -1166,19 +1165,11 @@ impl Runtime {
             closed_run_policy: intake.closed_run_policy,
             context: &context,
         };
-        let mut retried = false;
-        loop {
-            let codec = self.transition_codec.clone();
-            let limits = self.structural;
-            let answer = match &*self.storage {
-                Storage::Sqlite(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
-                Storage::Postgres(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
-                Storage::MySql(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
-            };
-            match answer {
-                Err(error) if !retried && super::signal_with_start::lost_race(&error) => retried = true,
-                answer => return answer,
-            }
+        let (codec, limits) = (self.transition_codec.clone(), self.structural);
+        match &*self.storage {
+            Storage::Sqlite(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
+            Storage::Postgres(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
+            Storage::MySql(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
         }
     }
 

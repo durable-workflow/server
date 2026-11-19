@@ -741,10 +741,10 @@ and `reason: "historical_run_command_rejected"`.
 `POST /api/workflows/{id}/signal-with-start/{name}` starts the workflow or
 reuses its open run and admits one signal on that run in one transaction
 (native Server, advertised as `capabilities.signal_with_start`; published PHP
-Server 2.x has no such route). It is the service form of embedded
-`WorkflowStub::signalWithStart`. Use it for an entity workflow that must
+Server 2.x has no such route). Use it for an entity workflow that must
 receive every event even if its run closes between a separate start and
-signal.
+signal. It is modeled on embedded `WorkflowStub::signalWithStart` but
+deliberately differs from Workflow 2.33.0 in three ways (see below).
 
 The body is a start request (`workflow_type`, `task_queue`, `input`,
 timeouts, `memo`, `search_attributes`, `business_key`, priority and fairness)
@@ -779,20 +779,44 @@ reserved. That covers `workflow_id_reserved_in_namespace`,
 `workflow_type_conflict`, `task_queue_conflict`, `instance_already_started`,
 `run_not_active`, `task_queue_draining`, and the signal's own `unknown_signal`
 (404), `invalid_signal_arguments` (422) and `structural_limit_exceeded`
-refusals, which on this route do not leave a rejected signal record.
+refusals, which on this route do not leave a rejected signal record. A blank
+or whitespace-only signal name is refused with `422 invalid_signal_name`, as on
+the signal route.
 
-`request_id` is the signal's command key on the instance, under the same
-rules as a signal's key. Its intent covers the operation, the signal name and
-the typed signal arguments, and the retained start command binds the
-workflow type. A retry with the same intent returns the original start and
-signal receipts, with `retained: true` and the original status code, before
-any run gate: after the run closed or continued as new, and even with
-`start_new_run`, it starts nothing. Concurrent retries resolve to one
-admission. A different name, arguments or workflow type, or a key a plain
+`request_id` is the signal's command key on the instance. A key binds only
+three things: the signal name, the typed signal arguments and the workflow
+type (from the retained start command); the intent digest also names the
+operation, so a plain signal's key is never a signal-with-start's. A retry
+that matches all three returns the original start and signal receipts, with
+`retained: true` and the original status code, before any run gate: after
+the run closed or continued as new, and even with `start_new_run`, it starts
+nothing. The start half is not part of the key: a retry with a different
+start `input`, `task_queue`, timeouts, `duplicate_policy` or
+`closed_run_policy` also returns the original receipts, unchanged. A
+different signal name, signal arguments or workflow type, or a key a plain
 signal already used, is `409 request_id_conflict` with `conflict` naming the
-part. Without a key, each request is its own intake. One admitted intake is
-one admitted start and signal; it is not a once-only external effect, so
-activities the signal triggers still need their own idempotency.
+part (`name`, `arguments`, `workflow_type` or `operation`). Concurrent
+retries resolve to one admission, and a key is scoped to its instance: the
+same key on another workflow id is an independent intake. Without a key,
+each request is its own intake. One admitted intake is one admitted start and
+signal; it is not a once-only external effect, so activities the signal
+triggers still need their own idempotency.
+
+Deliberate differences from embedded `WorkflowStub::signalWithStart`
+(Workflow 2.33.0), registered as native divergence `signal-with-start-intake`:
+
+- **Closed runs.** Embedded always starts a new run when the current run is
+  closed. Native refuses with `409 run_not_active` unless the request sets
+  `closed_run_policy: "start_new_run"`, so a closed execution is never
+  reopened silently.
+- **Duplicate policy.** Embedded throws unless the start uses
+  return-existing-active. Native also accepts `duplicate_policy: "fail"`,
+  which refuses an open run with `409 instance_already_started` and starts
+  only a new one.
+- **Legacy keys.** Embedded returns the stored receipt of a key that has no
+  recorded intent as unverified. Native refuses a key without a recorded
+  signal-with-start intent, including a legacy key, with
+  `409 request_id_conflict`.
 
 #### Workflow queries
 

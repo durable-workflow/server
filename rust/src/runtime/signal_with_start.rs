@@ -1,5 +1,10 @@
-//! Atomic signal-with-start intake (Server #1133, shared .github#222), the
-//! service form of embedded `WorkflowStub::signalWithStart` (Workflow 2.33).
+//! Atomic signal-with-start intake (Server #1133, shared .github#222),
+//! modeled on embedded `WorkflowStub::signalWithStart` (Workflow 2.33.0) with
+//! three deliberate differences: a closed run is refused unless
+//! `closed_run_policy` is `start_new_run` (embedded always starts a new run),
+//! `duplicate_policy: "fail"` is accepted (embedded requires
+//! return-existing-active), and a key without a recorded intake intent is a
+//! conflict (embedded returns a legacy receipt unverified).
 //!
 //! One request starts or reuses the instance's run and admits one signal on
 //! it in a single transaction. Published PHP Server has no such route; the
@@ -9,7 +14,7 @@
 //!   options, then the signal is admitted on that run.
 //! - An open current run (pending, running or waiting, including a run that
 //!   continued as new): under `duplicate_policy: "use-existing"` (the
-//!   default here, as embedded requires it) an accepted start command with
+//!   default here) an accepted start command with
 //!   outcome `returned_existing_active` is recorded and the signal joins that
 //!   run. Its input, history, deadlines and earlier receipts are unchanged.
 //!   Under `fail` the intake is refused as a duplicate.
@@ -21,9 +26,10 @@
 //!
 //! The instance's namespace and durable workflow type, and an explicit task
 //! queue on reuse, must match. A body `request_id` is the #934 command key on
-//! the signal: a retry with the same intent returns the original pair of
-//! receipts with nothing written, before any run gate, and a different
-//! intent is a typed conflict. Every refusal, including the signal's own
+//! the signal. It binds the signal name, typed arguments and workflow type
+//! only: a retry matching them returns the original pair of receipts with
+//! nothing written, before any run gate, whatever its start input, queue or
+//! policies; a different name, arguments or type is a typed conflict. Every refusal, including the signal's own
 //! contract and argument refusals, rolls the whole intake back: nothing is
 //! started, signalled or reserved.
 use super::backend::Backend;
@@ -112,12 +118,6 @@ pub(super) struct Request<'a> {
     pub(super) context: &'a Value,
 }
 
-/// Another node committed the same instance or key between this intake's
-/// reads and its writes.
-pub(super) fn lost_race(error: &RuntimeError) -> bool {
-    matches!(error, RuntimeError::Database(sqlx::Error::Database(error)) if error.is_unique_violation())
-}
-
 /// The command intent a key binds: the operation, signal name and typed
 /// arguments. The start half is bound separately by the retained start
 /// command's workflow type.
@@ -161,6 +161,11 @@ where
         limits: super::memo_limits::StructuralLimits,
     ) -> Result<(StatusCode, Value)> {
         let (workflow_id, name) = (request.workflow_id, request.name);
+        // As the signal route: a blank name, or one the 255-byte signal_name
+        // column cannot hold, is refused before anything is read or written.
+        if name.trim().is_empty() || name.len() > 255 {
+            return Err(super::refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_signal_name"));
+        }
         let namespace = self.namespace.clone();
         let mut tx = self.begin().await?;
         // Referenced objects belong to this intake; a refusal rolls the

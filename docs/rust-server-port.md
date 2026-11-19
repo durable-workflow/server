@@ -497,14 +497,19 @@ contract fixture before its correction.
   ([#590](https://github.com/durable-workflow/server/issues/590)).
 - **Signal-with-start intake.** Published PHP has no signal-with-start
   route. Native serves `POST /api/workflows/{workflow_id}/signal-with-start/{signal_name}`
-  (`capabilities.signal_with_start`), the service form of embedded
-  `WorkflowStub::signalWithStart`: one transaction starts the workflow or
+  (`capabilities.signal_with_start`): one transaction starts the workflow or
   reuses its open run under `use-existing` and admits one signal on it. A
   closed run is refused unless `closed_run_policy` is `start_new_run`, which
   starts a fresh run after it and leaves the closed run unchanged. The
   namespace, workflow type and an explicit task queue must match; a body
-  `request_id` is the signal's #934 key, so retries return the original
-  receipts. Every refusal writes nothing, and no schema change is needed.
+  `request_id` is the signal's #934 key over the signal name, arguments and
+  workflow type, so retries return the original receipts. Every refusal
+  writes nothing, and no schema change is needed. It deliberately differs
+  from embedded `WorkflowStub::signalWithStart` (Workflow 2.33.0): embedded
+  always starts a new run after closure, accepts only return-existing-active,
+  and returns a legacy key's receipt unverified; native refuses a closed run
+  by default, also accepts `fail`, and refuses keys without a recorded
+  intake intent.
   Divergence `signal-with-start-intake`
   ([#1133](https://github.com/durable-workflow/server/issues/1133),
   [.github#222](https://github.com/durable-workflow/.github/issues/222)).
