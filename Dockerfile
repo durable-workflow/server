@@ -15,14 +15,14 @@ RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpred
 # Configure options match docker-library/php at f6048b5f6e3c2202ee082665a4ccc0d90de291a3.
 FROM php@sha256:c59c808172ee3672cd334f8f2a5d7b1480a9d7273a368f412b8ee9b4ef418184 AS patched-php
 
-LABEL dev.durable-workflow.php.source.version="8.3.36" \
-      dev.durable-workflow.php.source.sha256="dd54693aa334c5c4d72e9aee96b082c2473750a18a6c1d105789c93a3b1692fd"
+LABEL dev.durable-workflow.php.source.version="8.3.37" \
+      dev.durable-workflow.php.source.sha256="0237af84478b7a7649d3964153f1b8653d622550b846f56d63062de683fb86bb"
 
 ARG PHP_BUILD_JOBS=2
-ENV PHP_VERSION="8.3.36" \
-    PHP_URL="https://www.php.net/distributions/php-8.3.36.tar.xz" \
-    PHP_ASC_URL="https://www.php.net/distributions/php-8.3.36.tar.xz.asc" \
-    PHP_SHA256="dd54693aa334c5c4d72e9aee96b082c2473750a18a6c1d105789c93a3b1692fd"
+ENV PHP_VERSION="8.3.37" \
+    PHP_URL="https://www.php.net/distributions/php-8.3.37.tar.xz" \
+    PHP_ASC_URL="https://www.php.net/distributions/php-8.3.37.tar.xz.asc" \
+    PHP_SHA256="0237af84478b7a7649d3964153f1b8653d622550b846f56d63062de683fb86bb"
 
 COPY docker/php-keyring.gpg /tmp/php-keyring.gpg
 
@@ -103,17 +103,17 @@ COPY --from=patched-php /usr/src/php.tar.xz /usr/src/php.tar.xz
 COPY --from=patched-php /usr/local/etc/php/php.ini-development /usr/local/etc/php/php.ini-development
 COPY --from=patched-php /usr/local/etc/php/php.ini-production /usr/local/etc/php/php.ini-production
 
-ENV PHP_VERSION="8.3.36" \
-    PHP_URL="https://www.php.net/distributions/php-8.3.36.tar.xz" \
-    PHP_ASC_URL="https://www.php.net/distributions/php-8.3.36.tar.xz.asc" \
-    PHP_SHA256="dd54693aa334c5c4d72e9aee96b082c2473750a18a6c1d105789c93a3b1692fd"
+ENV PHP_VERSION="8.3.37" \
+    PHP_URL="https://www.php.net/distributions/php-8.3.37.tar.xz" \
+    PHP_ASC_URL="https://www.php.net/distributions/php-8.3.37.tar.xz.asc" \
+    PHP_SHA256="0237af84478b7a7649d3964153f1b8653d622550b846f56d63062de683fb86bb"
 
-LABEL dev.durable-workflow.php.source.version="8.3.36" \
-      dev.durable-workflow.php.source.sha256="dd54693aa334c5c4d72e9aee96b082c2473750a18a6c1d105789c93a3b1692fd"
+LABEL dev.durable-workflow.php.source.version="8.3.37" \
+      dev.durable-workflow.php.source.sha256="0237af84478b7a7649d3964153f1b8653d622550b846f56d63062de683fb86bb"
 
 # Both web and CLI roles require the fixed PHP runtime, including cached builds.
-RUN php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3 || PHP_VERSION_ID < 80336) { \
-    fwrite(STDERR, "Patched PHP 8.3.36 or later on the 8.3 line is required; found ".PHP_VERSION.PHP_EOL); \
+RUN php -r 'if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 3 || PHP_VERSION_ID < 80337) { \
+    fwrite(STDERR, "Patched PHP 8.3.37 or later on the 8.3 line is required; found ".PHP_VERSION.PHP_EOL); \
     exit(1); }'
 
 COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
