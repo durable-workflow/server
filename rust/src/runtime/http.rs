@@ -202,6 +202,10 @@ pub fn router(runtime: Runtime) -> Router {
             post(signal_run),
         )
         .route(
+            "/api/workflows/{workflow_id}/signal-with-start/{signal_name}",
+            post(signal_with_start),
+        )
+        .route(
             "/api/workflows/{workflow_id}/runs/{run_id}",
             get(describe_run),
         )
@@ -1026,7 +1030,7 @@ fn workflow_route(rest: &str) -> Option<Allowed> {
         // A run's durable streams are rows in the request's namespace.
         [_, "runs", _, "streams", _, "items"] => Some(READ_WRITE),
         [_, "runs", _, "streams", _, "close"] => Some(WRITE),
-        [_, "signal" | "query" | "update", _]
+        [_, "signal" | "signal-with-start" | "query" | "update", _]
         | [_, "runs", _, "signal" | "query" | "update", _]
         | [_, "repair" | "request-cancellation"]
         | [_, "runs", _, "repair" | "request-cancellation" | "redrive"] => Some(WRITE),
@@ -1821,6 +1825,32 @@ async fn signal_current(
         StatusCode::ACCEPTED,
         Json(super::control_plane::Operation::Signal(&name).response(response)),
     ))
+}
+
+/// `POST /api/workflows/{workflow_id}/signal-with-start/{signal_name}`
+/// (Server #1133): starts or reuses the instance's run and admits one signal
+/// on it atomically. Native only; published PHP has no such route.
+async fn signal_with_start(
+    Extension(runtime): Extension<Runtime>,
+    request: CommandRequest,
+    Path((workflow_id, name)): Path<(String, String)>,
+    Json(super::memo_json::StartBody(body)): Json<super::memo_json::StartBody>,
+) -> Result<(StatusCode, Json<Value>)> {
+    let queue = body.get("task_queue").filter(|queue| !queue.is_null()).cloned().unwrap_or(json!("default"));
+    let context = request.context(&body, &workflow_id, "signal_with_start", metadata(&[
+        ("workflow_type", body.get("workflow_type").cloned()),
+        ("task_queue", Some(queue)),
+        ("duplicate_policy", Some(present(&body, "duplicate_policy").unwrap_or(json!("use-existing")))),
+        ("closed_run_policy", Some(present(&body, "closed_run_policy").unwrap_or(json!("reject")))),
+        ("request_id", present(&body, "request_id")),
+        ("signal_name", Some(json!(name))),
+    ]));
+    let operation = || super::control_plane::Operation::SignalWithStart(&name);
+    let (status, response) = runtime
+        .signal_with_start(&workflow_id, &name, without_trace_carrier(body), context)
+        .await
+        .map_err(|error| operation().refusal(error, &workflow_id, None))?;
+    Ok((status, Json(operation().response(response))))
 }
 
 async fn update_current(

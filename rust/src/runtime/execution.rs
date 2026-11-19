@@ -714,6 +714,23 @@ impl Runtime {
         self.start_command(body, Some(context), true).await
     }
     async fn start_command(&self, body: Value, context: Option<Value>, bridge: bool) -> Result<Value> {
+        let (body, memo, external) = self.prepare_start(body, bridge).await?;
+        match (&*self.storage, bridge) {
+            (Storage::Sqlite(store), false) => store.start(body, memo, external, context).await,
+            (Storage::Postgres(store), false) => store.start(body, memo, external, context).await,
+            (Storage::MySql(store), false) => store.start(body, memo, external, context).await,
+            (Storage::Sqlite(store), true) => store.bridge_start(body, memo, external, context).await,
+            (Storage::Postgres(store), true) => store.bridge_start(body, memo, external, context).await,
+            (Storage::MySql(store), true) => store.bridge_start(body, memo, external, context).await,
+        }
+    }
+    /// A start request validated and its input, memo and external reference
+    /// prepared, as the start route prepares them before storage.
+    async fn prepare_start(
+        &self,
+        body: Value,
+        bridge: bool,
+    ) -> Result<(Value, super::memos::PreparedMemo, Option<super::external_resolution::PreparedExternal>)> {
         // PHP validates the request before it reads the memo or the input.
         let mut body = super::start_request::normalized(body);
         super::input_envelope::transport(&body)?;
@@ -741,14 +758,7 @@ impl Runtime {
         let memo =
             super::memos::prepare_initial(self.signal_codec.clone(), body["memo"].clone()).await?;
         let external = self.prepare_external(&body["input"]).await?;
-        match (&*self.storage, bridge) {
-            (Storage::Sqlite(store), false) => store.start(body, memo, external, context).await,
-            (Storage::Postgres(store), false) => store.start(body, memo, external, context).await,
-            (Storage::MySql(store), false) => store.start(body, memo, external, context).await,
-            (Storage::Sqlite(store), true) => store.bridge_start(body, memo, external, context).await,
-            (Storage::Postgres(store), true) => store.bridge_start(body, memo, external, context).await,
-            (Storage::MySql(store), true) => store.bridge_start(body, memo, external, context).await,
-        }
+        Ok((body, memo, external))
     }
     /// `ActivityController::start`: validates like PHP, then starts the
     /// activity in its own host run.
@@ -1043,28 +1053,7 @@ impl Runtime {
         context: Option<Value>,
         bridge: Option<&super::bridge_adapters::BridgeKey<'_>>,
     ) -> Result<Value> {
-        let body = super::start_request::normalized(body);
-        super::input_envelope::transport(&body)?;
-        super::laravel_validation::operation_name(name, "signal")?;
-        super::command_requests::signal(&body)?;
-        // `AvroPayloadEnvelopeResolver::resolve` with the namespace's storage:
-        // a runtime external reference is checked, then kept by reference.
-        let mut external = self.prepare_external(&body["input"]).await?;
-        let arguments = match external.as_mut() {
-            Some(prepared) => prepared.blob()?,
-            None => self.command_arguments(&body).await?,
-        };
-        let mut prepared = super::store::prepare_control_arguments(
-            self.signal_codec.clone(),
-            name.to_owned(),
-            arguments,
-            "invalid_signal_arguments",
-            true,
-        )
-        .await?;
-        if let Some(external) = &external {
-            prepared.arguments = external.stored();
-        }
+        let (body, prepared, external) = self.prepare_signal(name, body).await?;
         match &*self.storage {
             Storage::Sqlite(store) => {
                 store
@@ -1116,6 +1105,74 @@ impl Runtime {
             }
         }
     }
+    /// A signal request validated and its arguments prepared, as the signal
+    /// route prepares them before storage.
+    async fn prepare_signal(
+        &self,
+        name: &str,
+        body: Value,
+    ) -> Result<(Value, super::store::PreparedControlArguments, Option<super::external_resolution::PreparedExternal>)> {
+        let body = super::start_request::normalized(body);
+        super::input_envelope::transport(&body)?;
+        super::laravel_validation::operation_name(name, "signal")?;
+        super::command_requests::signal(&body)?;
+        // `AvroPayloadEnvelopeResolver::resolve` with the namespace's storage:
+        // a runtime external reference is checked, then kept by reference.
+        let mut external = self.prepare_external(&body["input"]).await?;
+        let arguments = match external.as_mut() {
+            Some(prepared) => prepared.blob()?,
+            None => self.command_arguments(&body).await?,
+        };
+        let mut prepared = super::store::prepare_control_arguments(
+            self.signal_codec.clone(),
+            name.to_owned(),
+            arguments,
+            "invalid_signal_arguments",
+            true,
+        )
+        .await?;
+        if let Some(external) = &external {
+            prepared.arguments = external.stored();
+        }
+        Ok((body, prepared, external))
+    }
+
+    /// `POST /api/workflows/{workflow_id}/signal-with-start/{signal_name}`
+    /// (Server #1133, shared .github#222): starts or reuses the instance's
+    /// run and admits one signal on it in one transaction. The start half is
+    /// validated and prepared as a start, the signal half as a signal, both
+    /// before storage. Intakes on several nodes serialize in storage like
+    /// any other transition (`two_nodes_racing_one_new_instance_...`).
+    pub(crate) async fn signal_with_start(
+        &self,
+        workflow_id: &str,
+        name: &str,
+        body: Value,
+        context: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let body = super::start_request::normalized(body);
+        let intake = super::signal_with_start::Intake::split(workflow_id, &body)?;
+        let (start, memo, start_external) = self.prepare_start(intake.start, false).await?;
+        let (signal, mut prepared, signal_external) = self.prepare_signal(name, intake.signal).await?;
+        let request = super::signal_with_start::Request {
+            workflow_id,
+            name,
+            start: &start,
+            memo: &memo,
+            start_external: start_external.as_ref(),
+            signal: &signal,
+            signal_external: signal_external.as_ref(),
+            closed_run_policy: intake.closed_run_policy,
+            context: &context,
+        };
+        let (codec, limits) = (self.transition_codec.clone(), self.structural);
+        match &*self.storage {
+            Storage::Sqlite(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
+            Storage::Postgres(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
+            Storage::MySql(store) => store.signal_with_start(&request, &mut prepared, codec, limits).await,
+        }
+    }
+
     pub(crate) async fn repair_workflow(
         &self,
         workflow_id: &str,

@@ -765,6 +765,8 @@ pub(super) async fn read_only_guard(request: axum::extract::Request, next: axum:
     let (workflow, run, operation, name) = match segments.as_slice() {
         ["api", "workflows", workflow, operation @ ("cancel" | "terminate" | "repair" | "archive")] => (*workflow, None, *operation, None),
         ["api", "workflows", workflow, operation @ ("signal" | "query" | "update"), name] => (*workflow, None, *operation, Some(*name)),
+        // A signal-with-start on a projection would signal its open run.
+        ["api", "workflows", workflow, "signal-with-start", name] => (*workflow, None, "signal_with_start", Some(*name)),
         ["api", "workflows", workflow, "runs", run, operation @ ("cancel" | "terminate" | "repair" | "archive" | "redrive")] => {
             (*workflow, Some(*run), *operation, None)
         }
@@ -814,6 +816,7 @@ pub(super) async fn read_only_guard(request: axum::extract::Request, next: axum:
     let body = read_only_body(&workflow, &run_id, operation);
     let body = match operation {
         "signal" => Operation::Signal(&name).response(body),
+        "signal_with_start" => Operation::SignalWithStart(&name).response(body),
         "query" => Operation::Query(&name).response(body),
         "update" => Operation::Update(&name).response(body),
         "cancel" => Operation::Cancel.response(body),

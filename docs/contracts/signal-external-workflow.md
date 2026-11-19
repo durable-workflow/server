@@ -9,6 +9,16 @@ This is a native capability: published PHP Server 2.x and embedded Workflow
 2.33.0 have no such command (embedded child handles signal directly, outside
 the parent's history).
 
+## Authority
+
+This gives workers a new power: a worker that holds a workflow task can
+signal any workflow in that task's namespace, by instance id, without the
+operator or admin role an HTTP signal needs. The power is scoped to the
+namespace (a target in another namespace is `target_not_found`) and matches
+Temporal's signal-external semantics. Operators who must keep a workflow
+from being signalled by other workflows' code should place it in a separate
+namespace.
+
 ## Command
 
 ```json
@@ -25,8 +35,9 @@ the parent's history).
   namespace. A string of 1 to 191 characters.
 - `run_id` (optional, string or null): signal only this run of the target.
   Without it the signal goes to the instance's current run.
-- `signal_name` (required): not blank, at most 191 characters (the command
-  field rule) and 255 bytes (the signal record's column).
+- `signal_name` (required): the same rules as an HTTP signal's name (not
+  empty, at most 255 bytes, no control characters), not blank, and at most
+  191 characters (the command field rule).
 - `arguments` (required): the payload envelope with the Avro codec, as for
   `start_child_workflow`. An SDK sends an encoded empty array for no
   arguments.
@@ -96,6 +107,10 @@ task receipt, so a duplicate completion, redelivery or retry of the same task
 writes nothing and sends nothing. If the key was already delivered with the
 same intent, the outcome is `delivered` with `retained: true` and the
 original command; a different intent is `rejected` / `request_id_conflict`.
+The `workflow-signal:` prefix is reserved: an HTTP signal or
+signal-with-start whose `request_id` starts with it is refused with 422,
+`reason: "request_id_reserved"`, before anything is read or written, so no
+caller can occupy or answer for a delivery's key.
 
 ## Turn
 
@@ -106,7 +121,8 @@ per completion however many commands ask for one, none when the same
 completion closes the sender, and none when the sender already has a ready
 replaying workflow task. Its payload names `workflow_wait_kind:
 "external_signal"`, `resume_source_kind: "external_signal"`,
-`workflow_sequence` and `workflow_event_type` of the first such command.
+`workflow_sequence` and `workflow_event_type` of the first such command. A
+query admitted before the turn waits for it, as for a child start turn.
 
 ## Replay
 
@@ -132,10 +148,12 @@ events and turn, the target's ordinary `SignalReceived` with the workflow
 source and context, the keyed target command, a duplicate completion that
 sends nothing, and a fresh runtime reading the same history); missing,
 closed, continued, unknown-run, unknown-signal and self targets in one batch
-with one turn; a key already admitted with the same intent (`retained`) and
-with another (`request_id_conflict`); and refused command shapes, a closing
-completion without a turn, and the advertisement. They run on SQLite,
-PostgreSQL, MySQL and MariaDB.
+with one turn; the reserved key prefix refused on HTTP signals and
+signal-with-start; two workflows signalling each other; a later refused
+command rolling back an earlier delivery; control-character names; refused
+command shapes, a closing completion without a turn, and the advertisement;
+and authored sequences across completions. They run on SQLite, PostgreSQL,
+MySQL and MariaDB.
 
 ## Storage
 

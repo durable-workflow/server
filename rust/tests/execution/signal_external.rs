@@ -209,35 +209,108 @@ async fn missing_closed_and_refused_targets_are_recorded_outcomes() {
     database.remove().await;
 }
 
+// A delivery's command key is reserved: no HTTP signal or signal-with-start
+// can take it, so none can occupy or answer for a workflow's delivery.
 #[tokio::test]
-async fn the_delivery_key_answers_a_retained_signal_and_refuses_another_intent() {
+async fn http_callers_cannot_take_the_delivery_key_space() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     update_worker(&app, "worker").await;
     let target = waiting_target(&app, "keyed-target").await;
-    let other = waiting_target(&app, "other-target").await;
-    let sender = start(&app, "keyed-sender").await;
-    let run = sender["run_id"].as_str().unwrap();
-    // The keys the sender's sequences 1 and 2 will use, already admitted.
-    for (workflow, sequence, value) in [("keyed-target", 1, 7), ("other-target", 2, 8)] {
-        let (status, body) = request(&app, "POST", &format!("/api/workflows/{workflow}/signal/finish"),
-            json!({"input":envelope(Payload::Array(vec![Payload::Long(value)])),"request_id":format!("workflow-signal:{run}:{sequence}")})).await;
-        assert!(status.is_success(), "{body}");
+    let input = envelope(Payload::Array(vec![Payload::Long(7)]));
+    let (status, body) = request(&app, "POST", "/api/workflows/keyed-target/signal/finish",
+        json!({"input":input,"request_id":"workflow-signal:01RUN:1"})).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("request_id_reserved")), "{body}");
+    let (status, body) = request(&app, "POST", "/api/workflows/keyed-intake/signal-with-start/finish",
+        json!({"workflow_type":"echo","task_queue":"test","input":input,"signal_input":input,"request_id":"workflow-signal:01RUN:1"})).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("request_id_reserved")), "{body}");
+    assert_eq!(signal_records(&database, &target["run_id"]).await, 0, "nothing was written");
+    assert_eq!(count(&database, "SELECT COUNT(*) FROM workflow_instances WHERE id='keyed-intake'".into()).await, 0);
+    // Other keys, including ones merely containing the prefix, still work.
+    let (status, body) = request(&app, "POST", "/api/workflows/keyed-target/signal/finish",
+        json!({"input":input,"request_id":"my-workflow-signal:1"})).await;
+    assert!(status.is_success(), "{body}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Two workflows signal each other in their own completions: each delivery
+// is one ordinary signal on the other, and both senders read delivered.
+#[tokio::test]
+async fn two_workflows_signal_each_other() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    update_worker(&app, "worker").await;
+    let alpha = start(&app, "alpha").await;
+    let beta = start(&app, "beta").await;
+    let mut first = vec![poll(&app, "worker", "workflow").await, poll(&app, "worker", "workflow").await];
+    first.sort_by_key(|task| task["workflow_id"].as_str().unwrap_or_default().to_owned());
+    for (task, other) in first.iter().zip(["beta", "alpha"]) {
+        let (status, body) = finish_task(&app, task,
+            json!([signal_external(other, "finish", 1), {"type":"open_signal_wait","signal_name":"finish"}])).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
-    let task = turn_for(&app, "keyed-sender").await;
-    let (status, body) = finish_task(&app, &task,
-        json!([signal_external("keyed-target", "finish", 7), signal_external("other-target", "finish", 9)])).await;
+    for (workflow, started) in [("alpha", &alpha), ("beta", &beta)] {
+        let history = run_history(&app, &json!(workflow), &started["run_id"]).await;
+        let delivered = events(&history, "ExternalSignalDelivered");
+        assert_eq!(delivered.len(), 1, "{workflow}: {history}");
+        assert_eq!(events(&history, "SignalReceived").len(), 1, "{workflow}: {history}");
+        assert_eq!(events(&history, "SignalReceived")[0]["payload"]["command"]["source"], "workflow");
+        assert_eq!(signal_records(&database, &started["run_id"]).await, 1);
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+// A later command the completion refuses rolls the whole completion back,
+// including an earlier command's delivery on its target.
+#[tokio::test]
+async fn a_refused_later_command_rolls_back_an_earlier_delivery() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    update_worker(&app, "worker").await;
+    let target = waiting_target(&app, "rollback-target").await;
+    let sender = start(&app, "rollback-sender").await;
+    let task = poll(&app, "worker", "workflow").await;
+    // Arguments that decode as one Avro value but not as a list are refused
+    // only when the second command applies.
+    let mut scalar = signal_external("rollback-target", "finish", 2);
+    scalar["arguments"] = envelope(Payload::Long(2));
+    let (status, body) = finish_task(&app, &task, json!([signal_external("rollback-target", "finish", 1), scalar])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(signal_records(&database, &target["run_id"]).await, 0, "the first delivery rolled back");
+    let history = run_history(&app, &sender["workflow_id"], &sender["run_id"]).await;
+    assert!(events(&history, "ExternalSignalRequested").is_empty(), "{history}");
+    assert!(events(&run_history(&app, &json!("rollback-target"), &target["run_id"]).await, "SignalReceived").is_empty());
+    // The same task then completes and delivers once.
+    let (status, body) = finish_task(&app, &task, json!([signal_external("rollback-target", "finish", 1)])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let turn = turn_for(&app, "keyed-sender").await;
-    let delivered = events(&turn["history_events"], "ExternalSignalDelivered");
-    assert_eq!(delivered.len(), 1, "{turn}");
-    assert_eq!((delivered[0]["payload"]["sequence"].clone(), delivered[0]["payload"]["retained"].clone()), (json!(1), json!(true)));
-    let failed = events(&turn["history_events"], "ExternalSignalFailed");
-    assert_eq!((failed[0]["payload"]["sequence"].clone(), failed[0]["payload"]["outcome"].clone(), failed[0]["payload"]["reason"].clone()),
-        (json!(2), json!("rejected"), json!("request_id_conflict")), "{turn}");
-    assert_eq!(signal_records(&database, &target["run_id"]).await, 1, "the retained signal only");
-    assert_eq!(signal_records(&database, &other["run_id"]).await, 1, "the retained signal only");
+    assert_eq!(signal_records(&database, &target["run_id"]).await, 1);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// A signal name follows an HTTP signal's name rules: a control character is
+// refused before anything is written.
+#[tokio::test]
+async fn a_control_character_name_is_refused_before_anything_is_written() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    update_worker(&app, "worker").await;
+    let target = waiting_target(&app, "named-target").await;
+    let sender = start(&app, "named-sender").await;
+    let task = poll(&app, "worker", "workflow").await;
+    for name in ["fin\u{7}ish", "fin\nish", "fin\u{7f}ish"] {
+        let (status, body) = finish_task(&app, &task, json!([signal_external("named-target", name, 1)])).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{name:?}: {body}");
+    }
+    assert_eq!(signal_records(&database, &target["run_id"]).await, 0);
+    let history = run_history(&app, &sender["workflow_id"], &sender["run_id"]).await;
+    assert!(events(&history, "ExternalSignalRequested").is_empty(), "{history}");
     runtime.close().await;
     database.remove().await;
 }

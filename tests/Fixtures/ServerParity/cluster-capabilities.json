@@ -473,6 +473,10 @@
         "value": true,
         "reason": "Native serves GET /metrics, a Prometheus text exposition of the requested namespace's per-queue workflow and activity backlog (ready, due, delayed, leased, oldest due age, active pollers by build id), queue admission state, activity retry pressure, schedule gauges and the run and activity series, readable with the scrape-only metrics role (DW_METRICS_TOKEN or a metrics runtime credential) that reaches no other route (Server #534). Published PHP has no such route."
       },
+      "capabilities.signal_with_start": {
+        "value": true,
+        "reason": "Native serves POST /api/workflows/{workflow_id}/signal-with-start/{signal_name}, one transaction that starts the workflow when it has no open run, or reuses its open run under duplicate_policy use-existing, and admits one signal on that run (Server #1133, .github#222). A closed run is refused unless closed_run_policy is start_new_run; a body request_id is the signal's #934 command key; any refusal writes nothing. Published PHP has no such route."
+      },
       "capabilities.worker_build_retirement": {
         "value": true,
         "reason": "Native serves guarded worker build and task queue retirement (Server #519): GET /api/deployments/{name}/retirement and /api/task-queues/{queue}/retirement inventory live dependencies, and POST .../retire records the terminal drained intent only when the same inventory, taken inside the serialized transition, is complete and empty. Published PHP has no such routes; its drain keeps the same emergency-stop contract on both servers."

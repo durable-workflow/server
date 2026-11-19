@@ -86,6 +86,8 @@ pub(super) fn capabilities() -> Value {
         super::task_queue_pauses::CAPABILITY,
         // Server #934: a signal or update request_id is a durable command key.
         "command_request_keys",
+        // Server #1133: POST /api/workflows/{id}/signal-with-start/{name}.
+        "signal_with_start",
         // Server #534: GET /metrics, the Prometheus text scrape for autoscalers.
         "prometheus_text_metrics",
         // Server #1134: workflow code signals another workflow durably.
@@ -228,14 +230,16 @@ mod tests {
         // PHP's names plus native's child turn, occurrence-id reopen,
         // occurrence deadline, update outcome reads, task queue pauses and
         // command request keys, open-run version usage, guarded build
-        // retirement, the Prometheus text scrape and signal-external.
-        assert_eq!(caps.as_object().unwrap().len(), 66);
+        // retirement, the Prometheus text scrape, signal-with-start and
+        // signal-external.
+        assert_eq!(caps.as_object().unwrap().len(), 67);
         assert_eq!(caps[super::super::external_signals::CAPABILITY], json!(true));
         assert_eq!(caps[super::super::version_usage::CAPABILITY], json!(true));
         assert_eq!(caps[super::super::retirement::CAPABILITY], json!(true));
         assert_eq!(caps["task_queue_activity_dispatch_pause"], json!(true));
         assert_eq!(caps["prometheus_text_metrics"], json!(true));
         assert_eq!(caps["command_request_keys"], json!(true));
+        assert_eq!(caps["signal_with_start"], json!(true));
         assert_eq!(caps["update_outcome_reads"], json!(true));
         assert_eq!(caps["child_workflow_start_turn"], json!(true));
         assert_eq!(caps["condition_wait_idempotent_reopen"], json!(true));
