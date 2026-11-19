@@ -1478,7 +1478,7 @@ work open, so a workflow that needs a loser's effect must await it before
 returning.
 
 When a run continues as new while children it started are still open (native
-source, unreleased; Server #1184, Core workflow#868 in Workflow 2.26.0), the
+Server 3.14.0; Server #1184, Core workflow#868 in Workflow 2.26.0), the
 continued run takes over their supervision in the same transaction. The child
 link, child call, child identity, deadlines and `parent_close_policy` stay as
 recorded, and the child's `WorkflowStarted` still names the run that started
