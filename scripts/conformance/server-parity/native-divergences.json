@@ -143,6 +143,15 @@
       "harness": "No shared fixture closes a chain that continued over an open non-abandon child or fails such a child afterward, so no fixture section names this divergence and every PHP and embedded recording is unchanged. The all-backend native execution suite (child_supervision) covers the behavior against Core's V2ContinueAsNewOpenChildSupervisionTest and V2WorkflowTaskBridgeTest cases."
     },
     {
+      "id": "redrive-core-2.33-rules",
+      "issue": "https://github.com/durable-workflow/server/issues/980",
+      "since": "native source (unreleased)",
+      "applies_to": [],
+      "published_php": "Published PHP Server 2.11.x decides redrive by its bundled Core's earlier rules: a failed run whose history has an ActivityRetryScheduled, a signal, update or child event, a MessageCursorAdvanced or an adopted StartAccepted refuses as unsupported_history or unexpected_start, and a failure recorded at workflow_code or structural_limit refuses as unrecorded_failure_boundary.",
+      "native": "Native follows embedded Workflow 2.33.0 (FailedRunRedrivePlan, ActivityRetryHistory, FailedRunRedriveEligibility): a retried activity with a valid attempt lineage is reused or resumed, an adopted duplicate start and cursor bookkeeping are not steps, signal, update and child steps are validated with Core's reasons and then refused for a service run as service_redrive_history_not_qualified, and workflow_code and structural_limit boundaries are read as Core reads them. Intentional differences from Workflow 2.33.0: native takes no allow_definition_change option and answers workflow_definition_unavailable_or_changed (Core's answer without it; with it Core refuses a service run as definition_change_requires_replay_check); a run without a worker-sourced fingerprint is replayed by a service worker on native too, so reused signal, update, child and upsert steps refuse as service_redrive_history_not_qualified instead of being copied; only Avro payloads are decoded to check reused results; and native's instance-scoped message streams have no per-run workflow_messages rows to move to the successor.",
+      "harness": "No shared server-parity fixture redrives these histories, so no fixture section names this divergence and every PHP and embedded recording is unchanged. The plan's unit tests replay Workflow 2.33.0's own redrive_plan corpus scenarios and recorded successor histories (rust/tests/fixtures/redrive-core-2.33.0.json, copied verbatim with each source file's SHA-256) and require Core's decision and reason for every case. The all-backend native execution suite (redrive) covers histories native records itself: retried activities, an applied signal wait and update, and an adopted duplicate start."
+    },
+    {
       "id": "signal-external-workflow-command",
       "issue": "https://github.com/durable-workflow/server/issues/1134",
       "since": "native source (unreleased)",
