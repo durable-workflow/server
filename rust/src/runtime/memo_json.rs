@@ -55,7 +55,7 @@ impl<'de> Deserialize<'de> for StartBody {
                 while let Some(key) = map.next_key::<String>()? {
                     let value = if key == "memo" {
                         map.next_value::<MemoJson>()?.0
-                    } else if key == "input" {
+                    } else if key == "input" || key == "signal_input" {
                         map.next_value::<InputJson>()?.0
                     } else {
                         map.next_value::<Value>()?
