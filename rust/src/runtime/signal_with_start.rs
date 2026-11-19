@@ -73,6 +73,9 @@ impl Intake {
         {
             return Err(invalid("workflow_id", "The workflow_id field must match the workflow id in the path."));
         }
+        // Server #1134: the signal half's key cannot take a workflow
+        // delivery's reserved key space.
+        super::command_intent::refuse_reserved_key(body)?;
         let closed_run_policy = match fields.get("closed_run_policy") {
             None | Some(Value::Null) => ClosedRunPolicy::Reject,
             Some(value) if value == "reject" => ClosedRunPolicy::Reject,

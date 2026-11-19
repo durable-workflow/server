@@ -90,6 +90,8 @@ pub(super) fn capabilities() -> Value {
         "signal_with_start",
         // Server #534: GET /metrics, the Prometheus text scrape for autoscalers.
         "prometheus_text_metrics",
+        // Server #1134: workflow code signals another workflow durably.
+        super::external_signals::CAPABILITY,
     ];
     // Manifests PHP publishes beside these flags; native publishes none of them.
     let unpublished = [
@@ -228,8 +230,10 @@ mod tests {
         // PHP's names plus native's child turn, occurrence-id reopen,
         // occurrence deadline, update outcome reads, task queue pauses and
         // command request keys, open-run version usage, guarded build
-        // retirement and the Prometheus text scrape.
-        assert_eq!(caps.as_object().unwrap().len(), 66);
+        // retirement, the Prometheus text scrape, signal-with-start and
+        // signal-external.
+        assert_eq!(caps.as_object().unwrap().len(), 67);
+        assert_eq!(caps[super::super::external_signals::CAPABILITY], json!(true));
         assert_eq!(caps[super::super::version_usage::CAPABILITY], json!(true));
         assert_eq!(caps[super::super::retirement::CAPABILITY], json!(true));
         assert_eq!(caps["task_queue_activity_dispatch_pause"], json!(true));

@@ -667,10 +667,10 @@ where
                 errors.clone(), diagnostics, "signal_codec_unavailable").await?;
             let arguments = if oversized { super::queries::empty_arguments(codec).await? } else { prepared.arguments.clone() };
             let row_errors = if oversized { errors } else { json!([]) };
-            Self::record_rejected_signal(tx, &write, None, "structural_limit_exceeded", &command, &arguments, &row_errors).await?;
+            Self::record_rejected_signal(tx, &write, "control_plane", None, "structural_limit_exceeded", &command, &arguments, &row_errors).await?;
             return Ok(Err("structural_limit_exceeded"));
         }
-        Self::record_accepted_signal(tx, &write, &prepared.command, &prepared.arguments, &DB::string(&run, "queue")?).await?;
+        Self::record_accepted_signal(tx, &write, "control_plane", &prepared.command, &prepared.arguments, &DB::string(&run, "queue")?).await?;
         tx.summary_changed(&run_id);
         Ok(Ok(command_id))
     }

@@ -51,6 +51,7 @@ fn checked(body: &Value, rules: &[(&str, &[Rule])]) -> Result<()> {
 
 pub(super) fn signal(body: &Value) -> Result<()> {
     checked(body, SIGNAL_RULES)?;
+    super::command_intent::refuse_reserved_key(body)?;
     // PHP previews a dry run without recording the signal. Native has no
     // preview, so it refuses rather than send the signal.
     if matches!(&body["dry_run"], Value::Bool(true)) || body["dry_run"] == 1 || body["dry_run"] == "1" {

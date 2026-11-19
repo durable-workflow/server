@@ -48,6 +48,8 @@ const STEP_EVENTS: &[&str] = &[
     "ServiceCallFailed", "ServiceCallCancelled", "WorkflowContinuedAsNew", "ConditionWaitOpened", "ConditionWaitSatisfied",
     "ConditionWaitTimedOut", "SignalWaitOpened", "SignalApplied", "MemoUpserted", "SearchAttributesUpserted", "SideEffectRecorded",
     "VersionMarkerRecorded", "TimerScheduled", "TimerFired", "TimerCancelled",
+    // Native's signal-external command owns its sequence (Server #1134).
+    "ExternalSignalRequested",
 ];
 /// `CooperativeCancellationDelivery::RESOLUTION_TYPES`.
 const RESOLUTION_EVENTS: &[&str] = &[

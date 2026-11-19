@@ -76,6 +76,9 @@ fn resume_kind(payload: &Value) -> Option<&'static str> {
         Some("workflow_update") => Some("workflow_update"),
         Some("activity_execution") => Some("activity_execution"),
         Some("child_workflow_run") => Some("child_workflow_run"),
+        // Server #1134: a signal-external outcome turn, like a child start
+        // turn, replays the workflow.
+        Some("external_signal") => Some("external_signal"),
         Some("timer") => Some("timer"),
         Some(_) => None,
         None if payload["activity_execution_id"].is_string() => Some("activity_execution"),
@@ -1692,4 +1695,19 @@ fn query_principal(command: &Value) -> Option<Value> {
         })
         .collect();
     (!fields.is_empty()).then_some(Value::Object(fields))
+}
+
+#[cfg(test)]
+mod resume_kind_tests {
+    use super::resume_kind;
+    use serde_json::json;
+
+    /// Server #1134: a query waits for a signal-external outcome turn as it
+    /// does for a child start turn; an unknown kind still does not count.
+    #[test]
+    fn a_signal_external_turn_is_a_workflow_resume() {
+        assert_eq!(resume_kind(&json!({"resume_source_kind": "external_signal"})), Some("external_signal"));
+        assert_eq!(resume_kind(&json!({"resume_source_kind": "child_workflow_run"})), Some("child_workflow_run"));
+        assert_eq!(resume_kind(&json!({"resume_source_kind": "something_else"})), None);
+    }
 }

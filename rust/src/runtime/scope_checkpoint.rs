@@ -283,8 +283,15 @@ store_methods! {
             tx.rollback().await?;
             return refusal("child_start_turn_not_at_checkpoint");
         }
+        // Likewise a signal-external command's outcome turn (Server #1134).
+        if commands.iter().any(|command| command["type"] == super::external_signals::COMMAND) {
+            tx.rollback().await?;
+            return refusal("signal_external_not_at_checkpoint");
+        }
         let start_turn = std::sync::Mutex::new(None);
+        let codec = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
         let apply = super::store::Apply {
+            codec: &codec,
             run: &run,
             task: &task,
             task_id: &task_id,

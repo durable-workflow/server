@@ -92,6 +92,25 @@ pub(super) fn caller_key(body: &serde_json::Value) -> Option<&str> {
     body.get("request_id").and_then(serde_json::Value::as_str).filter(|key| !key.is_empty())
 }
 
+/// The key prefix a workflow's `signal_external_workflow` delivery uses on its
+/// target (Server #1134). A caller cannot take it, so no HTTP signal can
+/// occupy, or answer for, a delivery's key.
+pub(super) const WORKFLOW_SIGNAL_KEY_PREFIX: &str = "workflow-signal:";
+
+/// Refuses a caller `request_id` in the runtime's reserved key space with a
+/// typed 422, before anything is read or written.
+pub(super) fn refuse_reserved_key(body: &serde_json::Value) -> super::Result<()> {
+    if caller_key(body).is_some_and(|key| key.starts_with(WORKFLOW_SIGNAL_KEY_PREFIX)) {
+        return Err(super::RuntimeError::Protocol {
+            status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            response: serde_json::json!({"reason":"request_id_reserved","outcome":"rejected_request_id_reserved",
+                "accepted":false,"message":format!(
+                    "The request_id prefix [{WORKFLOW_SIGNAL_KEY_PREFIX}] is reserved for signals sent by workflow code.")}),
+        });
+    }
+    Ok(())
+}
+
 /// How a retry's intent compares with the receipt its key retains.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Intent {
