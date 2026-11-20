@@ -1471,7 +1471,11 @@ replaced by the digest string. Otherwise each copy is sent in full with an added
 `digest` member. Every opted-in answer also carries the current digest in the
 same response header. A digest string always names the digest that request
 sent, so a worker resolves it against the capabilities it captured when sending
-that request. Requests without the header are unchanged. The full contract is in
+that request. A worker that cannot resolve a digest never repeats a request that
+may have changed state (a completion's answer can carry the next leased task):
+it keeps that answer and reads the capabilities from `GET /api/cluster/info`;
+only a task poll may be sent again without the header. Requests without the
+header are unchanged. The full contract is in
 `docs/contracts/server-capabilities-digest.md`.
 
 Workflow task polling returns a leased task plus `workflow_task_attempt`. Clients
