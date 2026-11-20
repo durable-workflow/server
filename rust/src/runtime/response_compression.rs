@@ -23,8 +23,8 @@ use std::sync::OnceLock;
 const MIN_COMPRESS_BYTES: u64 = 1024;
 /// The largest in-memory answer that is encoded; bigger ones pass through.
 const MAX_COMPRESS_BYTES: u64 = 64 * 1024 * 1024;
-/// The largest body encoded on an async worker (about 8 ms at ~30 MB/s, level
-/// 6); bigger bodies move to a blocking thread.
+/// The largest body encoded on an async worker (measured about 10 ms at level
+/// 6, 22-36 MB/s; see `encode_cost`); bigger bodies move to a blocking thread.
 const INLINE_MAX_BYTES: usize = 256 * 1024;
 /// zlib's default level, which PHP's `gzencode` and `gzdeflate` use.
 const LEVEL: u8 = 6;
