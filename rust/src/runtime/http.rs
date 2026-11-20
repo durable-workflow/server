@@ -425,7 +425,12 @@ pub fn router(runtime: Runtime) -> Router {
         .layer(middleware::from_fn_with_state(runtime.clone(), storage_admission_guard))
         .layer(middleware::from_fn_with_state(runtime.clone(), guard))
         .layer(middleware::from_fn(super::payload_limits::enforce))
-        // PHP's CompressResponse wraps every answer, refusals included.
+        // After the worker envelope is complete (server#1001), and inside
+        // compression: the digest layer reads the plain JSON body, and
+        // compression must encode what it returns.
+        .layer(middleware::from_fn(super::capabilities_digest::elide))
+        // PHP's CompressResponse wraps every answer, refusals included. It
+        // must stay outermost.
         .layer(middleware::from_fn(super::response_compression::compress))
         .with_state(runtime)
 }
@@ -841,7 +846,7 @@ fn complete_worker_envelope(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// A JSON object's members in order, each value kept as its raw text.
-struct ObjectMembers<'a>(Vec<(String, &'a serde_json::value::RawValue)>);
+pub(super) struct ObjectMembers<'a>(pub(super) Vec<(String, &'a serde_json::value::RawValue)>);
 
 impl<'de: 'a, 'a> serde::Deserialize<'de> for ObjectMembers<'a> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {

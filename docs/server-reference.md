@@ -1462,6 +1462,18 @@ worker capability fields. Adding new workflow-task commands or optional
 capability booleans is additive; removing or renaming a command or capability
 requires a protocol version bump.
 
+Native Server: a worker can send
+`X-Durable-Workflow-Server-Capabilities-Digest: <digest>|none` on
+worker-plane requests to stop receiving the same `server_capabilities` object
+in every answer. When the header names the current digest, each copy of the
+current capabilities (top level, or inside a carried poll's `answer`) is
+replaced by the digest string. Otherwise each copy is sent in full with an added
+`digest` member. Every opted-in answer also carries the current digest in the
+same response header. A digest string always names the digest that request
+sent, so a worker resolves it against the capabilities it captured when sending
+that request. Requests without the header are unchanged. The full contract is in
+`docs/contracts/server-capabilities-digest.md`.
+
 Workflow task polling returns a leased task plus `workflow_task_attempt`. Clients
 must echo both `workflow_task_attempt` and `lease_owner` on workflow-task
 `heartbeat`, `complete`, and `fail` calls. Workflow-task completion supports
