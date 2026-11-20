@@ -342,7 +342,12 @@ contract fixture before its correction.
   Like PHP's `CompressResponse`, native gzip- or deflate-encodes JSON answers
   of 1024 bytes or more when `Accept-Encoding` allows it, and advertises
   `response_compression: ["gzip", "deflate"]`, unless
-  `DW_COMPRESSION_ENABLED` is false. `native_unqualified` names each member it still
+  `DW_COMPRESSION_ENABLED` is false. A worker can opt out of receiving
+  `server_capabilities` again in every answer: it sends
+  `X-Durable-Workflow-Server-Capabilities-Digest` and gets the digest string in
+  place of copies it already holds
+  ([contract](contracts/server-capabilities-digest.md)). That layer runs inside
+  compression, so the smaller body is still encoded. `native_unqualified` names each member it still
   leaves out: `topology`, the diagnostics view, the external payload
   transaction limit and the conformance manifests. Since server#1005 (3.1.0)
   native serves `supported_sdk_versions` and `client_compatibility` from one
