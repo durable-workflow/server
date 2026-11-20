@@ -425,6 +425,8 @@ pub fn router(runtime: Runtime) -> Router {
         .layer(middleware::from_fn_with_state(runtime.clone(), storage_admission_guard))
         .layer(middleware::from_fn_with_state(runtime.clone(), guard))
         .layer(middleware::from_fn(super::payload_limits::enforce))
+        // PHP's CompressResponse wraps every answer, refusals included.
+        .layer(middleware::from_fn(super::response_compression::compress))
         .with_state(runtime)
 }
 

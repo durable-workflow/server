@@ -338,8 +338,11 @@ contract fixture before its correction.
   Capabilities are true only where native serves the feature.
   `workflow_activity_result_inspection` is now advertised: the
   `cluster-capabilities` fixture qualifies the activity result read against
-  published 2.11.7. Native advertises no manifest it does not publish and no
-  response compression. `native_unqualified` names each member it still
+  published 2.11.7. Native advertises no manifest it does not publish.
+  Like PHP's `CompressResponse`, native gzip- or deflate-encodes JSON answers
+  of 1024 bytes or more when `Accept-Encoding` allows it, and advertises
+  `response_compression: ["gzip", "deflate"]`, unless
+  `DW_COMPRESSION_ENABLED` is false. `native_unqualified` names each member it still
   leaves out: `topology`, the diagnostics view, the external payload
   transaction limit and the conformance manifests. Since server#1005 (3.1.0)
   native serves `supported_sdk_versions` and `client_compatibility` from one

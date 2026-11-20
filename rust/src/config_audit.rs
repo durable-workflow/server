@@ -581,7 +581,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_BOOTSTRAP_RETRIES", legacy: Some("WORKFLOW_SERVER_BOOTSTRAP_RETRIES"), disposition: Ignored },
     Setting { name: "DW_CALLER_LABEL_HEADER", legacy: Some("WORKFLOW_SERVER_CALLER_LABEL_HEADER"), disposition: Ignored },
     Setting { name: "DW_CALLER_TYPE_HEADER", legacy: Some("WORKFLOW_SERVER_CALLER_TYPE_HEADER"), disposition: Ignored },
-    Setting { name: "DW_COMPRESSION_ENABLED", legacy: Some("WORKFLOW_SERVER_COMPRESSION_ENABLED"), disposition: Ignored },
+    Setting { name: "DW_COMPRESSION_ENABLED", legacy: Some("WORKFLOW_SERVER_COMPRESSION_ENABLED"), disposition: Honored },
     Setting { name: "DW_DEFAULT_NAMESPACE", legacy: Some("WORKFLOW_SERVER_DEFAULT_NAMESPACE"), disposition: Refused(AnyCase("default"), DEFAULT_NAMESPACE) },
     Setting { name: "DW_DUE_TIMER_RECOVERY_SCAN_LIMIT", legacy: Some("WORKFLOW_SERVER_DUE_TIMER_RECOVERY_SCAN_LIMIT"), disposition: Ignored },
     Setting { name: "DW_ENV_AUDIT_STRICT", legacy: None, disposition: Honored },
@@ -995,7 +995,7 @@ mod tests {
             &[("DW_V2_PIN_TO_RECORDED_FINGERPRINT", "no")],
             &[("DW_SERIALIZER", "")],
             &[("DW_STORAGE_CONNECTION", "pgsql"), ("DB_CONNECTION", "pgsql")],
-            // Ignored and reported settings take any value.
+            // Ignored and reported settings, and honored booleans, take any value.
             &[("DW_MAX_PENDING_ACTIVITIES", "10"), ("DW_COMPRESSION_ENABLED", "false")],
         ];
         for values in accepted {

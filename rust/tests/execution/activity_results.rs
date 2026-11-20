@@ -125,7 +125,7 @@ async fn activity_result_read_preserves_encoded_values_and_closed_parent_history
     // capability Waterline waits on is advertised.
     let info = request(&router(reopened.clone()), "GET", "/api/cluster/info", Value::Null).await.1;
     assert_eq!(info["capabilities"]["workflow_activity_result_inspection"], json!(true), "{info}");
-    assert_eq!(info["capabilities"]["response_compression"], json!([]), "{info}");
+    assert_eq!(info["capabilities"]["response_compression"], json!(["gzip", "deflate"]), "{info}");
     assert_eq!(info["structural_limits"]["pending_signal_count"], json!(5000), "{info}");
     assert_eq!(info["discovery"]["task_repair_path"], json!("/api/system/repair"), "{info}");
     assert!(info["native_unqualified"]["topology"].is_string(), "{info}");

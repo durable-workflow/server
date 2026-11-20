@@ -54,7 +54,7 @@ for (const [name, mutate] of [
   ['native without build retirement', state => { delete state.capabilities.worker_build_retirement; }],
   ['native declaring build retirement unavailable', state => { state.capabilities.worker_build_retirement = false; }],
   ['native copying a manifest flag it does not publish', state => { state.capabilities.timer_runtime_contract = true; }],
-  ['native advertising response compression', state => { state.capabilities.response_compression = ['gzip']; }],
+  ['native advertising no response compression', state => { state.capabilities.response_compression = []; }],
   ['native without its unqualified list', state => { state.native_unqualified = []; }],
   ['an activity result read that differs', state => { state.activity_result.available.response.available = false; }],
 ]) test(`the contract rejects ${name}`, () => {
