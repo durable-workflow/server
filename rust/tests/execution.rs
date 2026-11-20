@@ -5450,12 +5450,12 @@ async fn the_capabilities_digest_is_applied_inside_gzip_compression() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
     register(&app, "worker", json!(["echo"]), json!(["echo"])).await;
-    let poll = |digest: String| {
+    let poll = |kind: &'static str, digest: String| {
         let app = app.clone();
         async move {
             let request = Request::builder()
                 .method("POST")
-                .uri("/api/worker/activity-tasks/poll")
+                .uri(format!("/api/worker/{kind}-tasks/poll"))
                 .header("authorization", "Bearer test-token")
                 .header("content-type", "application/json")
                 .header("x-namespace", "default")
@@ -5476,17 +5476,22 @@ async fn the_capabilities_digest_is_applied_inside_gzip_compression() {
         serde_json::from_slice(&miniz_oxide::inflate::decompress_to_vec(&encoded[10..encoded.len() - 8]).unwrap()).unwrap()
     };
 
-    let (headers, first) = poll("none".into()).await;
+    let (headers, first) = poll("activity", "none".into()).await;
     assert_eq!(headers["content-encoding"], "gzip");
     let digest = headers["x-durable-workflow-server-capabilities-digest"].to_str().unwrap().to_owned();
     let tagged = gunzip(&first);
     assert_eq!(tagged["server_capabilities"]["digest"], json!(digest), "{tagged}");
     assert_eq!(tagged["server_capabilities"]["activity_lease_renewal"], json!(true));
 
-    let (headers, second) = poll(digest.clone()).await;
+    // A leased workflow task stays over the 1024-byte compression threshold
+    // once its capabilities are elided, so both layers apply to one answer.
+    start(&app, "digest-and-gzip").await;
+    let (headers, second) = poll("workflow", digest.clone()).await;
     assert_eq!(headers["content-encoding"], "gzip");
     let elided = gunzip(&second);
     assert_eq!(elided["server_capabilities"], json!(digest), "{elided}");
-    assert_eq!(elided["poll_status"], json!("empty"));
-    assert!(second.len() * 4 < first.len(), "{} vs {}", second.len(), first.len());
+    assert_eq!(elided["poll_status"], json!("leased"), "{elided}");
+    assert_eq!(elided["task"]["workflow_id"], json!("digest-and-gzip"));
+    assert!(!String::from_utf8_lossy(&miniz_oxide::inflate::decompress_to_vec(&second[10..second.len() - 8]).unwrap())
+        .contains("supported_workflow_task_commands"));
 }
