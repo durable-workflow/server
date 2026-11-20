@@ -99,6 +99,7 @@ mod command_payloads;
 mod completion_rules;
 mod deployments;
 mod priority_fairness;
+mod response_compression;
 mod route_fallback;
 mod redrive;
 mod redrive_plan;

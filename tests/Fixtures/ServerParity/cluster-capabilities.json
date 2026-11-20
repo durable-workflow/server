@@ -295,10 +295,6 @@
         "value": false,
         "reason": "Native does not publish this manifest document, so it does not advertise the contract."
       },
-      "capabilities.response_compression": {
-        "value": [],
-        "reason": "Native sends uncompressed responses."
-      },
       "structural_limits.external_payload_transaction_bytes": {
         "value": "{absent}",
         "reason": "Native reads no DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES."

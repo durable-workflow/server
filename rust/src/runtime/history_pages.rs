@@ -113,7 +113,7 @@ pub(super) fn compress(payload: &mut Value, encoding: Option<&'static str>) -> R
     }
     let json = serde_json::to_vec(events)?;
     let compressed = match encoding {
-        "gzip" => gzip(&json),
+        "gzip" => super::response_compression::gzip(&json),
         _ => miniz_oxide::deflate::compress_to_vec(&json, LEVEL),
     };
     payload["history_events"] = json!([]);
@@ -122,16 +122,6 @@ pub(super) fn compress(payload: &mut Value, encoding: Option<&'static str>) -> R
     Ok(())
 }
 
-/// `gzencode`: an RFC 1952 member around one raw DEFLATE stream.
-fn gzip(data: &[u8]) -> Vec<u8> {
-    const CRC32: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
-    // Magic, deflate method, no flags or time, default level, Unix.
-    let mut member = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
-    member.extend(miniz_oxide::deflate::compress_to_vec(data, LEVEL));
-    member.extend(CRC32.checksum(data).to_le_bytes());
-    member.extend((data.len() as u32).to_le_bytes());
-    member
-}
 
 #[cfg(test)]
 mod tests {

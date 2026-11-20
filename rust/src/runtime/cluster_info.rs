@@ -134,8 +134,8 @@ pub(super) fn capabilities() -> Value {
         json!({"schema": "durable_workflow.protocol.Value", "fingerprint": super::history_export::VALUE_FINGERPRINT,
             "framing": "single_object", "magic_hex": "c301"}),
     );
-    // Native sends uncompressed responses.
-    map.insert("response_compression".into(), json!([]));
+    // PHP's CompressResponse encodings, unless DW_COMPRESSION_ENABLED is false.
+    map.insert("response_compression".into(), json!(super::response_compression::advertised()));
     Value::Object(map)
 }
 
@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(caps["child_workflow_start_turn"], json!(true));
         assert_eq!(caps["condition_wait_idempotent_reopen"], json!(true));
         assert_eq!(caps["condition_wait_occurrence_deadline"], json!(true));
-        assert_eq!(caps["response_compression"], json!([]));
+        assert_eq!(caps["response_compression"], json!(["gzip", "deflate"]));
         assert_eq!(caps["timer_runtime_contract"], json!(false));
         assert_eq!(caps["principal_attribution_contract"], json!(true));
     }
