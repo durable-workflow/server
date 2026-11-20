@@ -77,7 +77,7 @@ helm install durable-workflow ./k8s/helm/durable-workflow \
 
 ```yaml
 image:
-  tag: "3.16.0"
+  tag: "3.17.0"
   # Pin a digest in production:
   # digest: "sha256:abc123..."
 
