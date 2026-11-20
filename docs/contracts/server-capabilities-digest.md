@@ -57,7 +57,36 @@ that arrives after it switched to `D2`. If that answer came after the server
 had already committed the request, the worker would lose a committed outcome.
 
 A digest string that matches neither the digest captured for that request nor a
-tagged copy in the same answer is a protocol failure.
+tagged copy in the same answer means the worker cannot resolve it. That should
+not happen, but a worker must recover from it without losing work.
+
+## Recovering from a digest the worker cannot resolve
+
+Never repeat a request that may have changed state just to get the
+capabilities again. That covers completions, failure reports, heartbeats that
+record progress, starts and signals. A repeated request is not the same as the
+original: a workflow-task completion's answer can carry the next leased task
+(`activity_poll.answer` or `workflow_poll.answer`), and the server answers the
+repeat as a duplicate, without that task. The task then stays leased to nobody
+until its lease expires.
+
+Instead, a worker that receives a success answer naming a digest it cannot
+resolve:
+
+1. **Keeps and processes that answer as received.** Everything in it except the
+   capabilities object is valid: the outcome, receipts, and any carried task.
+2. **Reads the capabilities separately** with a read-only call,
+   `GET /api/cluster/info`, whose `worker_protocol.server_capabilities` is the
+   same object. It uses that object in place of the digest string in this
+   answer.
+3. **Forgets its held digest**, so its next request sends `none` and learns a
+   tagged copy again.
+
+Only a task poll, which is safe to repeat, may instead be sent again without
+the header to get the full object.
+
+In an error answer, a digest the worker cannot resolve is dropped; the HTTP
+error is the answer and is never replaced or repeated.
 
 ## Compatibility and layering
 
