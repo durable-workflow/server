@@ -40,6 +40,7 @@ mod bridge_adapters;
 mod bundle_verifier;
 mod cancellation;
 mod cancellation_cascade;
+mod capabilities_digest;
 mod cancellation_scopes;
 mod json_order;
 mod scope_checkpoint;
