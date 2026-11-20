@@ -5,8 +5,11 @@
 //! As in PHP, gzip wins over deflate at equal weight, `*` stands for both,
 //! `q=0` refuses an encoding, an answer that already has a
 //! `Content-Encoding` is left alone, and `Vary: Accept-Encoding` is added.
-//! Only answers whose whole body is already in memory (an exact size hint)
-//! are encoded; streamed bodies pass through unchanged.
+//! `deflate` is the zlib format (RFC 1950) that HTTP's `deflate` coding names,
+//! not raw DEFLATE. Only answers whose whole body is already in memory (an
+//! exact size hint) are encoded; streamed bodies pass through unchanged.
+//! Bodies above [`INLINE_MAX_BYTES`] are encoded on a blocking thread, so a
+//! large answer never stalls the runtime's async workers.
 use axum::{
     body::{Body, HttpBody as _},
     extract::Request,
@@ -20,6 +23,9 @@ use std::sync::OnceLock;
 const MIN_COMPRESS_BYTES: u64 = 1024;
 /// The largest in-memory answer that is encoded; bigger ones pass through.
 const MAX_COMPRESS_BYTES: u64 = 64 * 1024 * 1024;
+/// The largest body encoded on an async worker (about 8 ms at ~30 MB/s, level
+/// 6); bigger bodies move to a blocking thread.
+const INLINE_MAX_BYTES: usize = 256 * 1024;
 /// zlib's default level, which PHP's `gzencode` and `gzdeflate` use.
 const LEVEL: u8 = 6;
 
@@ -112,9 +118,15 @@ async fn encode(response: Response, encoding: &'static str) -> Response {
         // An exact-sized in-memory body cannot fail to collect.
         return Response::from_parts(parts, Body::empty());
     };
-    let encoded = match encoding {
-        "gzip" => gzip(&bytes),
-        _ => miniz_oxide::deflate::compress_to_vec(&bytes, LEVEL),
+    let encoded = if bytes.len() <= INLINE_MAX_BYTES {
+        encode_bytes(&bytes, encoding)
+    } else {
+        let source = bytes.clone();
+        match tokio::task::spawn_blocking(move || encode_bytes(&source, encoding)).await {
+            Ok(encoded) => encoded,
+            // A failed encoder thread leaves the answer as it was.
+            Err(_) => return Response::from_parts(parts, Body::from(bytes)),
+        }
     };
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(encoding));
@@ -128,6 +140,13 @@ async fn encode(response: Response, encoding: &'static str) -> Response {
         parts.headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
     }
     Response::from_parts(parts, Body::from(encoded))
+}
+
+fn encode_bytes(bytes: &[u8], encoding: &str) -> Vec<u8> {
+    match encoding {
+        "gzip" => gzip(bytes),
+        _ => miniz_oxide::deflate::compress_to_vec_zlib(bytes, LEVEL),
+    }
 }
 
 /// `gzencode`: an RFC 1952 member around one raw DEFLATE stream.
@@ -190,6 +209,11 @@ mod tests {
         Router::new()
             .route("/big", get(|| async { axum::Json(serde_json::json!({"blob": "x".repeat(4096)})) }))
             .route("/small", get(|| async { axum::Json(serde_json::json!({"ok": true})) }))
+            .route("/large", get(|| async {
+                // Above INLINE_MAX_BYTES: encoded on a blocking thread.
+                let events: Vec<String> = (0..40_000).map(|n| format!("event-{n:08}-{}", "y".repeat(16))).collect();
+                axum::Json(serde_json::json!({"events": events}))
+            }))
             .route("/text", get(|| async { "y".repeat(4096) }))
             .route(
                 "/encoded",
@@ -237,7 +261,38 @@ mod tests {
 
         let (_, headers, deflated) = get_with("/big", Some("deflate")).await;
         assert_eq!(headers[header::CONTENT_ENCODING], "deflate");
-        assert_eq!(miniz_oxide::inflate::decompress_to_vec(&deflated).unwrap(), plain);
+        // HTTP `deflate` is the zlib format: a CMF/FLG header, then DEFLATE.
+        assert_eq!(deflated[0] & 0x0f, 8);
+        assert_eq!((u16::from(deflated[0]) << 8 | u16::from(deflated[1])) % 31, 0);
+        assert_eq!(miniz_oxide::inflate::decompress_to_vec_zlib(&deflated).unwrap(), plain);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_large_answer_is_encoded_off_the_async_workers_and_decodes_to_the_same_bytes() {
+        let (_, _, plain) = get_with("/large", None).await;
+        assert!(plain.len() > INLINE_MAX_BYTES, "{}", plain.len());
+        let (_, headers, gzipped) = get_with("/large", Some("gzip")).await;
+        assert_eq!(headers[header::CONTENT_ENCODING], "gzip");
+        let inflated = miniz_oxide::inflate::decompress_to_vec(&gzipped[10..gzipped.len() - 8]).unwrap();
+        assert_eq!(inflated, plain);
+        let (_, headers, deflated) = get_with("/large", Some("deflate")).await;
+        assert_eq!(headers[header::CONTENT_ENCODING], "deflate");
+        assert_eq!(miniz_oxide::inflate::decompress_to_vec_zlib(&deflated).unwrap(), plain);
+    }
+
+    /// Level-6 cost by answer size, which sizes INLINE_MAX_BYTES:
+    /// `cargo test --release --lib response_compression::tests::encode_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "benchmark"]
+    fn encode_cost() {
+        for size in [17 * 1024, 256 * 1024, 8 * 1024 * 1024] {
+            let body = serde_json::to_vec(&(0..size / 24).map(|n| format!("event-{n:08}-{}", n % 97)).collect::<Vec<_>>()).unwrap();
+            let started = std::time::Instant::now();
+            let encoded = gzip(&body);
+            let elapsed = started.elapsed();
+            println!("{} -> {} bytes in {:?} ({:.0} MB/s)", body.len(), encoded.len(), elapsed,
+                body.len() as f64 / elapsed.as_secs_f64() / 1e6);
+        }
     }
 
     #[tokio::test]
