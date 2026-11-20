@@ -69,6 +69,31 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.1.0 / Server 3.17.0 (native)
+
+A drop-in upgrade from Chart 5.0.0. The chart selects native Server 3.17.0 and
+keeps every value; Chart 5.0.x values files work unchanged. Server 3.17.0 has no
+schema change, so there is no `schema-upgrade` step from 3.16.x and the default
+`RollingUpdate` replaces pods in place. Rolling back to Chart 5.0.0 is an
+ordinary Helm rollback. From Chart 4.x (Server 3.15.x or earlier), first follow
+the Chart 5.0.0 notes below: the 3.16.0 schema step is still required.
+
+Behavior changes to review (details in
+[Server 3.17.0](../../../../docs/releases/3.17.0.md)):
+
+- Response compression is on by default. JSON answers of 1024 bytes or more
+  are gzip- or deflate-encoded when the client's `Accept-Encoding` allows it,
+  with `Vary: Accept-Encoding` set, and cluster info advertises
+  `response_compression: ["gzip", "deflate"]`.
+- `DW_COMPRESSION_ENABLED` is now honoured instead of ignored. Set
+  `config.extraEnv.DW_COMPRESSION_ENABLED: "false"` to turn compression off,
+  for example when an ingress or proxy already compresses.
+- Workers can send the opt-in `X-Durable-Workflow-Server-Capabilities-Digest`
+  header to stop receiving the ~17 KB `server_capabilities` object in every
+  answer. Workers that don't send it get the same bytes as before.
+
+Worker protocol 1.20 and control plane version 2 are unchanged.
+
 ### Chart 5.0.0 / Server 3.16.0 (native)
 
 **Every backend needs an explicit native schema upgrade from 3.15.x.** Chart

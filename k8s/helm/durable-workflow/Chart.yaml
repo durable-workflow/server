@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 5.0.0
+version: 5.1.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.16.0"
+appVersion: "3.17.0"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,12 +30,14 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.16.0"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.17.0"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: changed
-      description: "Default image advances to native Server 3.16.0. Every backend needs an explicit additive schema upgrade from 3.15.x with all replicas stopped; startup never upgrades and rollback after the schema step requires restoring the pre-upgrade backup. Values keys are unchanged. See docs/UPGRADING.md."
-    - kind: fixed
-      description: "Native maintenance scans seek three new indexes instead of reading every retained run; idle CPU at 100k retained runs on a 1 vCPU cell drops from 38.8% to 3.3%. Index build takes roughly 30 s per million retained runs; raise helm upgrade --timeout for large MySQL databases. https://github.com/durable-workflow/server/releases/tag/3.16.0"
+      description: "Default image advances to native Server 3.17.0. No schema change and no schema-upgrade step from 3.16.x; rolling back to Chart 5.0.0 is an ordinary Helm rollback. Values keys are unchanged. See docs/UPGRADING.md."
+    - kind: changed
+      description: "JSON responses of 1024 bytes or more are gzip- or deflate-encoded by default when the client's Accept-Encoding allows it; set DW_COMPRESSION_ENABLED=false (now honoured) to turn it off, for example when a proxy already compresses."
+    - kind: added
+      description: "Opt-in X-Durable-Workflow-Server-Capabilities-Digest header lets workers skip the repeated ~17 KB server_capabilities object; clients that don't send it are unchanged. https://github.com/durable-workflow/server/releases/tag/3.17.0"
