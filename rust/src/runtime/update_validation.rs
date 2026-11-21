@@ -499,6 +499,9 @@ where
         worker_id: &str,
         task_queue: &str,
     ) -> Result<Option<ValidationClaim>> {
+        if tx.claim_only.as_ref().is_some_and(|target| target.kind != "update_validation") {
+            return Ok(None);
+        }
         let Some(worker) = Self::query("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
             .bind(worker_id)
             .bind(self.namespace.as_ref())
@@ -512,12 +515,15 @@ where
             return Ok(None);
         }
         let at = now();
-        let tasks = Self::query("SELECT * FROM workflow_update_validation_tasks WHERE namespace=$1 AND task_queue=$2 AND (status='pending' OR (status='leased' AND lease_expires_at<=$3)) ORDER BY created_at,id LIMIT 25")
-            .bind(self.namespace.as_ref())
-            .bind(task_queue)
-            .bind(DB::bind_time(at))
-            .fetch_all(&mut **tx)
-            .await?;
+        let target = tx.claim_only.clone();
+        let tasks = match &target {
+            Some(target) => Self::query("SELECT * FROM workflow_update_validation_tasks WHERE namespace=$1 AND task_queue=$2 AND (status='pending' OR (status='leased' AND lease_expires_at<=$3)) AND id=$4")
+                .bind(self.namespace.as_ref()).bind(task_queue).bind(DB::bind_time(at))
+                .bind(&target.task_id).fetch_all(&mut **tx).await?,
+            None => Self::query("SELECT * FROM workflow_update_validation_tasks WHERE namespace=$1 AND task_queue=$2 AND (status='pending' OR (status='leased' AND lease_expires_at<=$3)) ORDER BY created_at,id LIMIT 25")
+                .bind(self.namespace.as_ref()).bind(task_queue).bind(DB::bind_time(at))
+                .fetch_all(&mut **tx).await?,
+        };
         for task in tasks {
             let compatibility = DB::optional_string(&task, "compatibility")?;
             let fingerprint = DB::optional_string(&task, "workflow_definition_fingerprint")?;
@@ -526,8 +532,14 @@ where
             {
                 continue;
             }
+            let attempt = DB::number(&task, "attempt_count")?;
+            if let Some(observed) = target.as_ref().and_then(|target| target.observed_attempt)
+                && observed != attempt
+            {
+                return Ok(None);
+            }
             let task_id = DB::string(&task, "id")?;
-            let attempt = DB::number(&task, "attempt_count")?.saturating_add(1);
+            let attempt = attempt.saturating_add(1);
             let expires = at + chrono::Duration::seconds(timeouts().1);
             Self::query("UPDATE workflow_update_validation_tasks SET status='leased',attempt_count=$1,lease_owner=$2,lease_expires_at=$3,updated_at=$4 WHERE id=$5")
                 .bind(attempt).bind(&worker.worker_id)
@@ -538,6 +550,48 @@ where
             return Ok(Some(ValidationClaim { task_id, attempt, expires }));
         }
         Ok(None)
+    }
+
+    #[cfg(test)]
+    pub(super) async fn qualify_exact_update_validation_claim(&self) {
+        use super::transaction::ClaimTarget;
+        let queue = "scoped-validator";
+        let workflow = "scoped-validation-workflow";
+        let arguments = crate::codec::ValueCodec::new().unwrap()
+            .encode(&crate::codec::Value::Array(vec![])).unwrap();
+        self.register(json!({"worker_id":queue,"task_queue":queue,"runtime":"php",
+            "supported_workflow_types":[workflow],"supported_activity_types":[],
+            "capabilities":[CAPABILITY],
+            "workflow_command_contracts":{(workflow):{"update_validators":["validate"]}}}),
+            &Default::default(), Some("1.20")).await.unwrap();
+        let started = self.start(json!({"workflow_id":workflow,"workflow_type":workflow,"task_queue":queue,
+            "input":{"codec":"avro","blob":arguments}}), Default::default(), None, None).await.unwrap();
+        let run = started["run_id"].as_str().unwrap();
+        let at = now();
+        let (first, selected) = (id(), id());
+        for (task, created) in [(&first, at - chrono::Duration::seconds(1)), (&selected, at)] {
+            Self::query("INSERT INTO workflow_update_validation_tasks(id,idempotency_key,namespace,workflow_instance_id,workflow_run_id,workflow_type,task_queue,update_name,request_id,input_hash,payload_codec,arguments,status,attempt_count,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'validate',$8,$9,'avro',$10,'pending',0,$11,$12)")
+                .bind(task).bind(task).bind(self.namespace.as_ref()).bind(workflow).bind(run).bind(workflow).bind(queue)
+                .bind(task).bind("a".repeat(64)).bind(&arguments).bind(DB::bind_time(created)).bind(DB::bind_time(created))
+                .execute(&self.pool).await.unwrap();
+        }
+        for (kind, observed) in [("workflow", 0), ("update_validation", 1), ("update_validation", 0)] {
+            let mut tx = self.begin().await.unwrap();
+            tx.claim_only = Some(ClaimTarget { task_id: selected.clone(), kind, observed_attempt: Some(observed) });
+            let claim = self.claim_update_validation_in(&mut tx, queue, queue).await.unwrap();
+            if kind == "update_validation" && observed == 0 {
+                let claim = claim.unwrap();
+                assert_eq!((claim.task_id, claim.attempt), (selected.clone(), 1));
+            } else {
+                assert!(claim.is_none());
+            }
+            tx.commit().await.unwrap();
+        }
+        let untouched = Self::query("SELECT status,attempt_count,lease_owner FROM workflow_update_validation_tasks WHERE id=$1")
+            .bind(&first).fetch_one(&self.pool).await.unwrap();
+        assert_eq!(DB::string(&untouched, "status").unwrap(), "pending");
+        assert_eq!(DB::number(&untouched, "attempt_count").unwrap(), 0);
+        assert!(DB::optional_string(&untouched, "lease_owner").unwrap().is_none());
     }
 
     /// `taskPayload` without its history export, which the runtime adds.

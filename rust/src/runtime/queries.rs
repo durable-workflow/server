@@ -1213,6 +1213,9 @@ where
     ) -> Result<QueryClaim> {
         let owner = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
+        if tx.claim_only.as_ref().is_some_and(|target| target.kind != "query") {
+            return Ok(QueryClaim::Empty);
+        }
         let request_id = body
             .get("poll_request_id")
             .filter(|value| !value.is_null())
@@ -1256,8 +1259,22 @@ where
         {
             return Ok(QueryClaim::Empty);
         }
+        let observed_attempt = tx.claim_only.as_ref().and_then(|target| target.observed_attempt);
+        let entries = if let Some(task_id) = tx.claim_only.as_ref().map(|target| target.task_id.clone()) {
+            let key = key(&task_id)?;
+            let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&mut **tx).await? else {
+                return Ok(QueryClaim::Empty);
+            };
+            let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+            if DB::number(&row, "expiration")? <= now() || task["query_task_id"] != task_id {
+                return Ok(QueryClaim::Empty);
+            }
+            vec![(key, task)]
+        } else {
+            self.query_entries(tx).await?
+        };
         let mut held = None;
-        for (key, mut task) in self.query_entries(tx).await? {
+        for (key, mut task) in entries {
             if !matches!(task["status"].as_str(), Some("pending" | "leased"))
                 || task["namespace"] != self.namespace.as_ref()
                 || authority::deadline(&task).is_none_or(|deadline| deadline <= authority::now())
@@ -1295,11 +1312,21 @@ where
                     if existing_owner == owner
                         && request_id.is_some_and(|id| task["poll_request_id"] == id)
                     {
+                        if let Some(attempt) = observed_attempt
+                            && !attempt.checked_add(1).is_some_and(|next| task["query_task_attempt"].as_i64() == Some(next))
+                        {
+                            return Err(refuse(StatusCode::CONFLICT, "task_offer_receipt_conflict"));
+                        }
                         let delivered = Self::query_delivery(&task);
                         return Ok(QueryClaim::Task(delivered));
                     }
                     continue;
                 }
+            }
+            if let Some(attempt) = observed_attempt
+                && task["query_task_attempt"].as_i64() != Some(attempt)
+            {
+                return Ok(QueryClaim::Empty);
             }
             if let Some(hold) = Self::query_hold(tx, &task).await? {
                 if held != Some("workflow_task_leased") {

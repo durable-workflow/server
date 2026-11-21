@@ -2,9 +2,9 @@
 //! read snapshot, without the transition lock, only while every fact of that
 //! answer holds at once. Each other state takes the maintained locked path.
 // `now` is the query cache's clock: epoch seconds, as the bookkeeping rows use.
-use super::{CUTOVER_MARK, EXPIRY_MARK, now, read_arguments};
+use super::{CUTOVER_MARK, EXPIRY_MARK, QueryClaim, key, now, read_arguments};
 use crate::codec::{Value as Payload, ValueCodec};
-use crate::runtime::{QueryTaskConfig, RuntimeError, store::Store, worker_poll_fence::PollAdmission};
+use crate::runtime::{QueryTaskConfig, RuntimeError, store::Store, transaction::ClaimTarget, worker_poll_fence::PollAdmission};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::{Arc, atomic::Ordering}, time::{Duration, Instant}};
 use tokio::sync::{Semaphore, oneshot};
@@ -281,10 +281,63 @@ store_methods! {
         self.qualify_waiting_request_is_superseded().await;
         self.qualify_registration_mismatch_keeps_its_refusal().await;
         self.qualify_query_arrival_race().await;
+        self.qualify_exact_query_claim().await;
         // A due poll-row sweep is left to the locked path, which takes it.
         self.poll_sweeps = Arc::default();
         self.assert_forced_lock("sweep-due", "poll-row sweep due").await;
         self.assert_lock_free_empty("after-sweep", "sweep reserved again").await;
+    }
+
+    async fn qualify_exact_query_claim(&self) {
+        let original = self.submit_query();
+        let second = async {
+            self.wait_for_pending_query().await;
+            self.submit_query().await
+        };
+        let worker = async {
+            let ids = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Some(set) = self.raw(&Self::open_set_key(self.namespace.as_ref())).await {
+                        let ids = super::listed_ids(&set, self.namespace.as_ref());
+                        if ids.len() == 2 {
+                            break ids;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }).await.unwrap();
+            let (first, selected) = (&ids[0], &ids[1]);
+            let other_before = self.raw(&key(first).unwrap()).await.unwrap();
+            let (proof, fence, _) = self.proof_inputs("exact-query").await;
+            let (poll, config) = (body("exact-query"), config());
+            for (kind, attempt, should_claim) in [
+                ("workflow", 0, false),
+                ("query", 1, false),
+                ("query", 0, true),
+                ("query", 0, true),
+            ] {
+                let mut tx = self.begin().await.unwrap();
+                tx.claim_only = Some(ClaimTarget { task_id: selected.clone(), kind, observed_attempt: Some(attempt) });
+                let claim = self.claim_query_in(&mut tx, &poll, &config, &proof, fence.as_ref(), None, None).await.unwrap();
+                match claim {
+                    QueryClaim::Task(task) if should_claim => {
+                        assert_eq!(task["query_task_id"], selected.as_str());
+                        assert_eq!(task["query_task_attempt"], 1);
+                    }
+                    QueryClaim::Empty if !should_claim => {}
+                    _ => panic!("the query claim must match only the selected kind and attempt"),
+                }
+                tx.commit().await.unwrap();
+            }
+            assert_eq!(self.raw(&key(first).unwrap()).await.unwrap(), other_before);
+            self.finish_query(selected, json!({"lease_owner":WORKER,"query_task_attempt":1,"result":7}), false, &config).await.unwrap();
+            let other = self.poll_query(body("exact-query-other"), &config).await.unwrap();
+            assert_eq!(other["task"]["query_task_id"], first.as_str());
+            self.answer(&other).await;
+        };
+        let (first, second, ()) = tokio::join!(original, second, worker);
+        assert_eq!(first.unwrap().1["result"], 7);
+        assert_eq!(second.unwrap().1["result"], 7);
     }
 
     /// The race the issue requires, in both commit orders, ordered by
