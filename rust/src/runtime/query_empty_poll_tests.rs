@@ -291,6 +291,7 @@ store_methods! {
     async fn qualify_exact_query_claim(&self) {
         use crate::runtime::task_delivery_receipts::{Acceptance, OfferClaim, OfferScope, OpenedOffer};
 
+        self.reserve_fixture_offer_key().await;
         let original = self.submit_query();
         let second = async {
             self.wait_for_pending_query().await;

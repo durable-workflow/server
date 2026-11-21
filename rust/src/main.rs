@@ -244,7 +244,17 @@ fn token_shape(primary: &str, legacy: &str, token: &str) -> Result<(), String> {
 /// are compared lossily; the settings native reads itself refuse them.
 fn environment_snapshot() -> BTreeMap<String, String> {
     env::vars_os()
-        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.to_string_lossy().into_owned())))
+        .filter_map(|(name, value)| {
+            let name = name.into_string().ok()?;
+            let snapshot_value = if name == "DW_TASK_DELIVERY_SEAL_KEYS" {
+                // The native key loader validates this separately. The name is
+                // enough for the environment audit.
+                String::new()
+            } else {
+                value.to_string_lossy().into_owned()
+            };
+            Some((name, snapshot_value))
+        })
         .collect()
 }
 

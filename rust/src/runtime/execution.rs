@@ -52,6 +52,7 @@ pub struct Runtime {
     pub(super) transition_codec: Arc<Semaphore>,
     pub(super) external: Arc<super::ExternalPayloadConfig>,
     pub(super) queries: Arc<super::QueryTaskConfig>,
+    pub(super) offer_keys: Option<Arc<super::task_offer_seal::KeyRing>>,
     /// The package's signal, update and payload ceilings (DW_V2_LIMIT_*).
     pub(super) structural: super::StructuralLimits,
 }
@@ -311,8 +312,15 @@ impl Runtime {
         }
     }
 
+    fn configured_offer_keys() -> Result<Option<Arc<super::task_offer_seal::KeyRing>>> {
+        super::task_offer_seal::KeyRing::from_env()
+            .map(|keys| keys.map(Arc::new))
+            .map_err(|error| refuse(StatusCode::SERVICE_UNAVAILABLE, error.reason()))
+    }
+
     pub async fn open(database: &str, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let offer_keys = Self::configured_offer_keys()?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let poll_sweeps = super::poll_sweeps::Config::from_env()?;
@@ -336,11 +344,12 @@ impl Runtime {
             super::poll_capacity::Settings::from_env(),
             store.pool.options().get_max_connections(),
         ));
-        Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
+        Self::from_storage(Storage::Sqlite(store), token, external, queries, structural, offer_keys).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let offer_keys = Self::configured_offer_keys()?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let poll_sweeps = super::poll_sweeps::Config::from_env()?;
@@ -364,11 +373,12 @@ impl Runtime {
             super::poll_capacity::Settings::from_env(),
             store.pool.options().get_max_connections(),
         ));
-        Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
+        Self::from_storage(Storage::Postgres(store), token, external, queries, structural, offer_keys).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let offer_keys = Self::configured_offer_keys()?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let poll_sweeps = super::poll_sweeps::Config::from_env()?;
@@ -392,7 +402,7 @@ impl Runtime {
             super::poll_capacity::Settings::from_env(),
             store.pool.options().get_max_connections(),
         ));
-        Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
+        Self::from_storage(Storage::MySql(store), token, external, queries, structural, offer_keys).await
     }
 
     async fn from_storage(
@@ -401,6 +411,7 @@ impl Runtime {
         external: super::ExternalPayloadConfig,
         queries: super::QueryTaskConfig,
         structural: super::StructuralLimits,
+        offer_keys: Option<Arc<super::task_offer_seal::KeyRing>>,
     ) -> Result<Self> {
         let runtime = Self {
             storage: Arc::new(storage),
@@ -413,9 +424,20 @@ impl Runtime {
             transition_codec: Arc::new(Semaphore::new(1)),
             external: Arc::new(external),
             queries: Arc::new(queries),
+            offer_keys,
             structural,
         };
         runtime.verify_ready().await?;
+        let ring = runtime.offer_keys.as_deref();
+        let keys = match &*runtime.storage {
+            Storage::Sqlite(store) => store.preflight_task_offer_keys(ring).await,
+            Storage::Postgres(store) => store.preflight_task_offer_keys(ring).await,
+            Storage::MySql(store) => store.preflight_task_offer_keys(ring).await,
+        };
+        if let Err(error) = keys {
+            runtime.close().await;
+            return Err(error);
+        }
         if let Err(error) = runtime.initialize_namespace_registry().await {
             runtime.close().await;
             return Err(error);
@@ -493,6 +515,7 @@ impl Runtime {
             transition_codec: self.transition_codec.clone(),
             external: self.external.clone(),
             queries: self.queries.clone(),
+            offer_keys: self.offer_keys.clone(),
             structural: self.structural,
         }
     }
@@ -2158,4 +2181,43 @@ impl Runtime {
             Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob, None).await,
         }
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn task_offer_read_key_preflight_fences_an_incomplete_restart() {
+    use super::task_offer_key_usage::fixture_ring;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("runtime.sqlite");
+    let path = path.to_str().unwrap();
+    let open_with = |keys| async move {
+        let pool = sqlite::open(path).await.unwrap();
+        Runtime::from_storage(
+            Storage::Sqlite(Store::new(pool)),
+            "test-only-runtime-token".into(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            keys,
+        )
+        .await
+    };
+
+    let store = Store::new(sqlite::open(path).await.unwrap());
+    store.reserve_fixture_offer_key().await;
+    store.close().await;
+    assert!(matches!(
+        open_with(None).await,
+        Err(super::RuntimeError::Refused { reason: "task_offer_required_read_key_missing", .. })
+    ));
+
+    let changed = Arc::new(fixture_ring(&[("fixture-key", 8)]));
+    assert!(matches!(
+        open_with(Some(changed)).await,
+        Err(super::RuntimeError::Refused { reason: "task_offer_key_identity_changed", .. })
+    ));
+
+    let current = Arc::new(fixture_ring(&[("next", 2), ("fixture-key", 7)]));
+    open_with(Some(current)).await.unwrap().close().await;
 }

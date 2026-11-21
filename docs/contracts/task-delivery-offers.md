@@ -209,6 +209,39 @@ a separate product/operational policy; no automatic removal path is admitted.
 The seal provides authentication/confidentiality, while the existing claim,
 attempt, registration and receipt transaction supplies task authority.
 
+### Native key-use records
+
+The native implementation keeps versioned key-use records in the SQL
+`dw_query_cache` table under `dw-native-offer-key:`. The exact key ID indexes
+the maximum committed read horizon, a count of retained receipts, and a
+domain-separated SHA-256 fingerprint of the installed key material. Retired
+key records preserve the ID-to-material association across future boots.
+Fingerprints stay internal.
+
+An issuer first commits a 30-second issuance window against the database
+clock. Its local monotonic deadline also limits that window. Its latest
+possible expiry is the end of the window plus the ten-second maximum offer
+lifetime. The database retains the key for at least another 1,000 milliseconds.
+A replica admits a database-clock sample only when the sample takes at most
+500 milliseconds and the database time is within 500 milliseconds of both
+local wall-clock observations. Installed qualification must verify at most
+1,000 milliseconds of disagreement among the application replicas and
+database primaries, including failover.
+
+Server startup checks all required read keys before starting the scheduler.
+Starting or renewing an issuance window also checks them in its transaction.
+An accepted receipt increments its key's reference count in the same
+transaction as the lease. Receipt review uses the database clock with the
+clock-skew allowance and decrements the count only when it removes the
+receipt. A retained receipt continues to require its key after the window
+and unaccepted-offer lifetime have elapsed.
+
+To rotate, load the new key as a read key on the serving replicas before
+starting issuers with the new key first. Stop the old issuers, allow their
+last committed windows to age out, and keep the old read key configured
+until receipt review releases its final reference. Startup rejects missing
+required read keys and reuse of an existing key ID for different material.
+
 The shared draft scenarios are in
 [`offer-accept.v1.json`](../../tests/Fixtures/contracts/task-delivery-offers/offer-accept.v1.json).
 They describe required observations, not successful executions. Source tests

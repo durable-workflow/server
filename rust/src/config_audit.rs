@@ -553,6 +553,7 @@ const UNLISTED: &[Setting] = &[
 /// Native-only settings and settings implemented ahead of PHP's contract.
 /// These are known names; legacy aliases warn as the contract's do.
 pub const NATIVE_HONORED: &[Setting] = &[
+    Setting { name: "DW_TASK_DELIVERY_SEAL_KEYS", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_POLL_SWEEP_INTERVAL_MS", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_POLL_SWEEP_BATCH_SIZE", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY", legacy: None, disposition: Honored },

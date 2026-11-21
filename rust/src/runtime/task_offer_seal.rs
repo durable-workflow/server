@@ -19,16 +19,23 @@ const MAX_PLAINTEXT_BYTES: usize = 6000;
 const NONCE_BYTES: usize = 24;
 const TAG_BYTES: usize = 16;
 
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum SealConfigError {
-    #[error("DW_TASK_DELIVERY_SEAL_KEYS: invalid_config_text")]
     Text,
-    #[error("DW_TASK_DELIVERY_SEAL_KEYS: invalid_key_container")]
     Container,
-    #[error("DW_TASK_DELIVERY_SEAL_KEYS: invalid_key_id")]
     KeyId,
-    #[error("DW_TASK_DELIVERY_SEAL_KEYS: invalid_key_text")]
     KeyText,
+}
+
+impl SealConfigError {
+    pub(super) fn reason(&self) -> &'static str {
+        match self {
+            Self::Text => "DW_TASK_DELIVERY_SEAL_KEYS: invalid_config_text",
+            Self::Container => "DW_TASK_DELIVERY_SEAL_KEYS: invalid_key_container",
+            Self::KeyId => "DW_TASK_DELIVERY_SEAL_KEYS: invalid_key_id",
+            Self::KeyText => "DW_TASK_DELIVERY_SEAL_KEYS: invalid_key_text",
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -81,6 +88,15 @@ fn valid_key_text(value: &str) -> bool {
 struct SealKey {
     id: String,
     material: Zeroizing<[u8; 32]>,
+}
+
+impl SealKey {
+    fn fingerprint(&self) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"durable-workflow.task-delivery-key-fingerprint.v1");
+        digest.update(self.material.as_ref());
+        digest.finalize().into()
+    }
 }
 
 pub(super) struct KeyRing(Vec<SealKey>);
@@ -165,7 +181,7 @@ impl KeyRing {
         }
     }
 
-    fn parse(text: &str) -> Result<Self, SealConfigError> {
+    pub(super) fn parse(text: &str) -> Result<Self, SealConfigError> {
         if text.is_empty() || text.len() > MAX_CONFIG_BYTES {
             return Err(SealConfigError::Text);
         }
@@ -205,6 +221,22 @@ impl KeyRing {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self(keys))
+    }
+
+    pub(super) fn key_ids(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|key| key.id.as_str())
+    }
+
+    pub(super) fn key_fingerprint(&self, id: &str) -> Option<[u8; 32]> {
+        self.0
+            .iter()
+            .find(|key| key.id == id)
+            .map(|key| key.fingerprint())
+    }
+
+    pub(super) fn issuer_identity(&self) -> (&str, [u8; 32]) {
+        let issuer = &self.0[0];
+        (&issuer.id, issuer.fingerprint())
     }
 
     pub(super) fn seal(&self, context: &PacketContext) -> Result<String, SealError> {

@@ -1,7 +1,7 @@
 //! Durable offer acceptance under the ordinary database transition lock.
 use super::{
     QueryTaskConfig, Result, query_authority, refuse,
-    store::now,
+    task_offer_key_usage::MAX_OFFER_CLOCK_SKEW_MS,
     transaction::{ClaimTarget, Transaction},
     worker_poll_fence::WorkerPollFence,
     workflow_poll_requests::{normalized, request_id},
@@ -193,10 +193,12 @@ store_methods! {
         for row in rows {
             let key = DB::string(&row, "key")?;
             let receipt = Receipt::decode(&DB::string(&row, "value")?)?;
-            if Self::offer_receipt_lease(tx, &receipt, at).await?.is_some() {
+            let earliest_peer_time = at - chrono::Duration::milliseconds(MAX_OFFER_CLOCK_SKEW_MS);
+            if Self::offer_receipt_lease(tx, &receipt, earliest_peer_time).await?.is_some() {
                 Self::query(DB::OFFER_RECEIPT_DEFER).bind(at.timestamp() + REVIEW_AFTER_SECONDS)
                     .bind(key).execute(&mut **tx).await?;
             } else {
+                Self::release_offer_receipt_key(tx, &receipt.key_id).await?;
                 Self::query(DB::QUERY_CACHE_DELETE).bind(key).execute(&mut **tx).await?;
             }
         }
@@ -205,7 +207,8 @@ store_methods! {
 
     pub(super) async fn accept_task_offer(&self, offer: &OpenedOffer, claim: &OfferClaim<'_>) -> Result<Acceptance> {
         let mut tx = self.begin().await?;
-        let accepted = self.accept_task_offer_in(&mut tx, offer, claim, now()).await?;
+        let at = Self::checked_offer_clock(&mut *tx).await?;
+        let accepted = self.accept_task_offer_in(&mut tx, offer, claim, at).await?;
         if matches!(accepted, Acceptance::Claimed(_) | Acceptance::Replayed(_)) {
             tx.commit().await?;
         } else {
@@ -297,6 +300,7 @@ store_methods! {
             attempt, task: task.clone(),
         };
         Self::sweep_offer_receipts(tx, at).await?;
+        Self::retain_offer_receipt_key(tx, &receipt.key_id).await?;
         Self::query(DB::QUERY_CACHE_INSERT).bind(key).bind(serde_json::to_string(&receipt)?)
             .bind(at.timestamp() + REVIEW_AFTER_SECONDS).execute(&mut **tx).await?;
         Ok(Acceptance::Claimed(task))
@@ -306,11 +310,12 @@ store_methods! {
 #[cfg(test)]
 store_methods! {
     pub(super) async fn qualify_execution_offer_receipts(&self) {
-        use super::{store::Store, worker_poll_fence::PollAdmission};
+        use super::{store::{Store, now}, worker_poll_fence::PollAdmission};
         use crate::codec::{Value as Payload, ValueCodec};
         use std::sync::{Arc, atomic::Ordering};
         use tokio::sync::Semaphore;
 
+        self.reserve_fixture_offer_key().await;
         let input = json!({"codec":"avro", "blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()});
         for kind in ["workflow", "activity"] {
             let namespace = format!("receipt-proof-{kind}");

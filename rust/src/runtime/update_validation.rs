@@ -602,6 +602,7 @@ where
     pub(super) async fn qualify_exact_update_validation_claim(&self) {
         use super::task_delivery_receipts::{Acceptance, OfferClaim, OfferScope, OpenedOffer};
 
+        self.reserve_fixture_offer_key().await;
         let config = super::QueryTaskConfig::default();
         let queue = "scoped-validator";
         let workflow = "scoped-validation-workflow";
