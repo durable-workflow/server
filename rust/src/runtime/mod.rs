@@ -88,6 +88,7 @@ mod history_export;
 mod input_envelope;
 mod history_presentation;
 mod http;
+mod http_request_metrics;
 mod laravel_validation;
 mod local_activities;
 mod prepared_local;

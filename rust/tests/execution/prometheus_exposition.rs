@@ -66,7 +66,9 @@ fn well_formed(text: &str) {
                 .find_map(|suffix| name.strip_suffix(suffix).filter(|family| *family == current))
                 .unwrap_or(name);
             assert_eq!(family, current, "{line} follows its own family");
-            assert!(series.contains("{namespace=\""), "{line}");
+            if current != "dw_http_request_duration_seconds" {
+                assert!(series.contains("{namespace=\""), "{line}");
+            }
             for id in ["workflow_id", "run_id", "task_id"] {
                 assert!(!series.contains(&format!("{id}=")), "{line}");
             }
@@ -275,6 +277,42 @@ async fn delayed_retries_are_distinct_from_due_work_and_report_retry_pressure() 
 }
 
 #[tokio::test]
+async fn request_timing_uses_route_templates_and_separates_worker_polls() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone().with_metrics_token(Some(METRICS_TOKEN.into())));
+    for id in ["private-order-a", "private-order-b"] {
+        let path = format!("/api/workflows/{id}?probe=private-query");
+        assert_eq!(request(&app, "GET", &path, json!({})).await.0, StatusCode::NOT_FOUND);
+    }
+    let fallback = Request::builder().uri("/private-path")
+        .body(Body::empty()).unwrap();
+    assert_eq!(app.clone().oneshot(fallback).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    let unauthenticated_poll = Request::builder().method("POST").uri("/api/worker/workflow-tasks/poll")
+        .body(Body::empty()).unwrap();
+    assert_eq!(app.clone().oneshot(unauthenticated_poll).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    register(&app, "timing-worker", json!(["echo"]), json!([])).await;
+    start(&app, "private-order-c").await;
+    poll(&app, "timing-worker", "workflow").await;
+
+    let text = scraped(&app).await;
+    let expected = [
+        ("/api/workflows/{workflow_id}", "404", "request", 2),
+        ("__unmatched__", "401", "request", 1),
+        ("/api/worker/workflow-tasks/poll", "401", "worker_poll", 1),
+        ("/api/worker/workflow-tasks/poll", "200", "worker_poll", 1),
+    ];
+    for (route, status, kind, count) in expected {
+        let labels = format!("route=\"{route}\",status=\"{status}\",kind=\"{kind}\"");
+        assert!(text.contains(&format!("dw_http_request_duration_seconds_count{{{labels}}} {count}\n")), "{labels}");
+        assert!(text.contains(&format!("dw_http_request_duration_seconds_bucket{{{labels},le=\"+Inf\"}} {count}\n")));
+    }
+    assert!(!text.contains("private-"), "{text}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn the_metrics_credential_reads_only_the_scrape_of_its_own_namespace() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
@@ -282,6 +320,10 @@ async fn the_metrics_credential_reads_only_the_scrape_of_its_own_namespace() {
     namespaces::create(&app, "team-b").await;
     let (status, _, created) = admission_http(&app, "PUT", "/api/runtime-credentials/metrics-b", false, Some("test-token"), Some("2"), None,
         json!({"token":TENANT_METRICS_TOKEN,"subject":"svc:keda","roles":["metrics"],"tenant":"team-b"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let default_tenant_metrics = "dwr_metrics_default_0123456789abcdefgh";
+    let (status, _, created) = admission_http(&app, "PUT", "/api/runtime-credentials/metrics-default", false, Some("test-token"), Some("2"), None,
+        json!({"token":default_tenant_metrics,"subject":"svc:default-keda","roles":["metrics"],"tenant":"default"})).await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     start(&app, "default-backlog").await;
     namespaces::start_scoped(&app, "team-b", "team-b-backlog").await;
@@ -299,12 +341,14 @@ async fn the_metrics_credential_reads_only_the_scrape_of_its_own_namespace() {
     let default_text = scraped(&app).await;
     assert_eq!(backlog(&default_text, "dw_task_queue_due_tasks", "workflow"), Some(1.0));
     assert!(!default_text.contains("namespace=\"team-b\""), "{default_text}");
+    assert!(default_text.contains("# TYPE dw_http_request_duration_seconds histogram"));
     let (status, _, team_text) = scrape(&app, Some(METRICS_TOKEN), Some("team-b")).await;
     assert_eq!(status, StatusCode::OK, "{team_text}");
     well_formed(&team_text);
     assert_eq!(sample(&team_text, "dw_task_queue_due_tasks", "team-b",
         &[("task_queue", "test"), ("task_kind", "workflow"), ("build_id", "")]), Some(1.0), "{team_text}");
     assert!(!team_text.contains("namespace=\"default\""), "{team_text}");
+    assert!(!team_text.contains("dw_http_request_duration_seconds"));
 
     // The tenant's metrics credential reads its own namespace only.
     let (status, _, tenant_text) = scrape(&app, Some(TENANT_METRICS_TOKEN), Some("team-b")).await;
@@ -313,6 +357,9 @@ async fn the_metrics_credential_reads_only_the_scrape_of_its_own_namespace() {
         team_text.lines().filter(|line| !line.starts_with('#')).count());
     assert_eq!(scrape(&app, Some(TENANT_METRICS_TOKEN), None).await.0, StatusCode::FORBIDDEN);
     assert_eq!(scrape(&app, Some(TENANT_METRICS_TOKEN), Some("default")).await.0, StatusCode::FORBIDDEN);
+    let (status, _, default_tenant_text) = scrape(&app, Some(default_tenant_metrics), None).await;
+    assert_eq!(status, StatusCode::OK, "{default_tenant_text}");
+    assert!(!default_tenant_text.contains("dw_http_request_duration_seconds"));
 
     // Neither metrics credential reaches any other route, read or write.
     for (token, namespace) in [(METRICS_TOKEN, "default"), (TENANT_METRICS_TOKEN, "team-b")] {

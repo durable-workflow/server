@@ -1827,7 +1827,7 @@ An admin token can also scrape. The control-plane version header is optional
 on this route; a version other than `2` is still refused.
 
 **Namespace.** Each scrape reads one namespace: the `X-Namespace` header, else
-the `namespace` query parameter, else `default`. Every sample carries a
+the `namespace` query parameter, else `default`. Storage-backed samples carry a
 `namespace` label, so one Prometheus job per namespace merges cleanly. In a
 Prometheus scrape config, pass `params: {namespace: [orders]}`.
 
@@ -1845,6 +1845,47 @@ activity families report at most 100 label sets each. `dw_metrics_series_limit`,
 `dw_metrics_series_observed` and `dw_metrics_series_truncated` (by `family`:
 `task_queues`, `activity_retries`, `workflows`, `activities`) disclose
 truncation.
+
+#### Request timing
+
+Scrape each Server replica's default namespace with the instance-wide
+`DW_METRICS_TOKEN` or an instance-wide admin token. The process-local
+`dw_http_request_duration_seconds` histogram counts completed HTTP responses
+by route template, numeric response status, and kind. It starts at the router
+and ends when the response is ready. That includes admission, handler work and
+response preparation. Network transit and response streaming occur outside that
+interval. Tenant-bound credentials receive their namespace metrics only.
+
+`kind="worker_poll"` covers the POST endpoints for workflow, activity, query,
+and update-validation polls, including time spent waiting for a task.
+`kind="request"` covers other requests. A histogram with
+`route="__overflow__",status="other"` identifies observations merged after the
+512-combination budget is reached. Counts reset when the Server restarts.
+
+Compare equivalent route and response-status groups over the same interval.
+For example, this query shows the Server-side p95 for successful workflow detail
+requests.
+
+```promql
+histogram_quantile(0.95,
+  sum by (le) (rate(dw_http_request_duration_seconds_bucket{
+    route="/api/workflows/{workflow_id}",status="200",kind="request"
+  }[5m])))
+```
+
+In a Prometheus export of the Python SDK histogram, compare this with
+`durable_workflow_client_request_duration_seconds_bucket` for
+`route="/workflows/{workflow_id}",status_code="200"`. The client includes
+the HTTP transport and intermediary time. Plot the two distributions
+side by side. Percentiles summarize different samples and cannot be
+subtracted to calculate network latency. For worker polling, compare the
+corresponding poll route with `kind="worker_poll"`. [Python SDK metrics reference](https://github.com/durable-workflow/sdk-python/blob/main/docs/reference/metrics.md)
+
+Set `DW_HTTP_ACCESS_LOG=true` to emit one JSON record per completed response
+to stderr. It contains `event="http_access"`, the route template, method,
+status, kind and `duration_seconds`. Unmatched routes share
+`__unmatched__`. The log records route templates and response metadata only.
+Use the deployment's log retention settings when enabling access logs.
 
 #### Task queue series
 
@@ -2536,6 +2577,7 @@ every operator-facing variable the server honors.
 | `DW_OPERATOR_TOKEN` | (unset) | Bearer token for the operator control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_ADMIN_TOKEN` | (unset) | Bearer token for the admin control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_METRICS_TOKEN` | (unset) | Native only. Scrape-only bearer token for `GET /metrics` in any namespace; reaches no other route and must differ from every other token. |
+| `DW_HTTP_ACCESS_LOG` | `false` | Native only. Set to `true` or `1` to write request timing JSON to stderr. |
 | `DW_PRINCIPAL_TOKENS` | (unset) | JSON token map for named bearer-token principals used by audit attribution. |
 | `DW_RUNTIME_CREDENTIALS_ENABLED` | `false` | Enable durable, namespace-bound operator and worker credentials managed through the admin API. |
 | `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for worker registration, deregistration, polling, heartbeat, and completion. |
