@@ -69,6 +69,15 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.1.1 / Server 3.17.1 (native)
+
+Chart 5.1.1 selects [native Server 3.17.1](../../../../docs/releases/3.17.1.md).
+Run history can wait for a committed event when the caller sends
+`wait_new_event=1`. The chart's values, database schema, and wire protocols
+are unchanged. Upgrade or roll back between Chart 5.1.0 and 5.1.1 with
+ordinary Helm commands. Follow the Chart 5.0.0 notes below when crossing
+the Server 3.16.0 schema boundary.
+
 ### Chart 5.1.0 / Server 3.17.0 (native)
 
 A drop-in upgrade from Chart 5.0.0. The chart selects native Server 3.17.0 and
