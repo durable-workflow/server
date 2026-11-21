@@ -189,9 +189,10 @@ mod tests {
 
         let mut text = String::new();
         metrics.append_exposition(&mut text);
+        let count_name = format!("{FAMILY}_count");
         assert_eq!(
             text.lines()
-                .filter(|line| line.starts_with("dw_http_request_duration_seconds_count"))
+                .filter(|line| line.starts_with(&count_name))
                 .count(),
             MAX_SERIES + 2
         );
