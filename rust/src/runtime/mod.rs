@@ -81,6 +81,7 @@ mod failure_commands;
 mod failure_describe;
 mod history_budget;
 mod history_pages;
+mod history_waits;
 mod export_timeline;
 mod export_waits;
 mod history_export;

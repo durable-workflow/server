@@ -143,6 +143,8 @@ const ENTRY_VALIDATION: &str = "workflow_entry_arguments_validation";
 mod parent_close_policies;
 #[path = "execution/history_pages.rs"]
 mod history_pages;
+#[path = "execution/history_waits.rs"]
+mod history_waits;
 #[path = "execution/declared_signals.rs"]
 mod declared_signals;
 #[path = "execution/worker_history_presentation.rs"]

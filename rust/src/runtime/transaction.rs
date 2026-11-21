@@ -4,6 +4,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::{Deref, DerefMut},
+    sync::Arc,
 };
 use tokio::sync::OwnedMutexGuard;
 
@@ -57,6 +58,7 @@ pub(super) struct Transaction<'a, DB: Backend> {
     /// A continuation's resumed task (Server #1078): the only task a carried
     /// workflow claim in this transaction may lease.
     pub(super) claim_only: Option<String>,
+    history_wakes: Option<Arc<super::history_waits::HistoryWakes>>,
     // An implicit failure drops the database transaction before this guard.
     _queue_guard: Option<OwnedMutexGuard<()>>,
     #[cfg(test)]
@@ -68,6 +70,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
         inner: sqlx::Transaction<'a, DB>,
         history_budget: super::history_budget::Config,
         queue_guard: Option<OwnedMutexGuard<()>>,
+        history_wakes: Option<Arc<super::history_waits::HistoryWakes>>,
     ) -> Self {
         Self {
             inner,
@@ -79,6 +82,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             scope_history: None,
             local_writes: Default::default(),
             claim_only: None,
+            history_wakes,
             _queue_guard: queue_guard,
             #[cfg(test)]
             commit_gate: None,
@@ -213,9 +217,10 @@ where
             return Err(refusal);
         }
         Store::<DB>::write_local_activities(&mut self).await?;
-        for run_id in std::mem::take(&mut self.summaries) {
-            Store::<DB>::order_waits(&mut self, &run_id).await?;
-            Store::<DB>::project_run_summary(&mut self, &run_id).await?;
+        let changed_runs = std::mem::take(&mut self.summaries);
+        for run_id in &changed_runs {
+            Store::<DB>::order_waits(&mut self, run_id).await?;
+            Store::<DB>::project_run_summary(&mut self, run_id).await?;
         }
         // The next writer can now wait on the database lock while this commit
         // finishes. SQLite keeps its process queue through the commit because
@@ -227,6 +232,9 @@ where
             gate.resume.notified().await;
         }
         self.inner.commit().await?;
+        if !changed_runs.is_empty() && let Some(wakes) = self.history_wakes {
+            wakes.committed(&changed_runs);
+        }
         Ok(())
     }
 }

@@ -167,6 +167,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     transitions: Arc<Mutex<()>>,
     pub(super) wake: Arc<Notify>,
+    history_wakes: Arc<super::history_waits::HistoryWakes>,
     pub(super) namespace: Arc<str>,
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
@@ -347,6 +348,7 @@ where
             pool,
             transitions: Arc::default(),
             wake: Arc::new(Notify::new()),
+            history_wakes: Arc::default(),
             namespace: "default".into(),
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
@@ -377,6 +379,7 @@ where
             pool: self.pool.clone(),
             transitions: self.transitions.clone(),
             wake: self.wake.clone(),
+            history_wakes: self.history_wakes.clone(),
             namespace: namespace.into(),
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
@@ -454,7 +457,9 @@ where
         self.test_transitions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         DB::begin(&self.pool)
             .await
-            .map(|inner| Transaction::new(inner, self.history_budget, Some(queued)))
+            .map(|inner| {
+                Transaction::new(inner, self.history_budget, Some(queued), Some(self.history_wakes.clone()))
+            })
     }
     // Reads that change nothing use one consistent read-only snapshot instead
     // of the transition lock, so they neither wait for nor delay transitions.
@@ -462,6 +467,7 @@ where
         Ok(Transaction::new(
             self.pool.begin_with(DB::READ_SNAPSHOT_BEGIN).await?,
             self.history_budget,
+            None,
             None,
         ))
     }
@@ -472,6 +478,7 @@ where
         Ok(Transaction::new(
             self.pool.begin_with(DB::REPEATABLE_READ_SNAPSHOT_BEGIN).await?,
             self.history_budget,
+            None,
             None,
         ))
     }
@@ -890,6 +897,7 @@ where
         Ok(if memo.as_object().is_some_and(Map::is_empty) { json!([]) } else { memo })
     }
 
+    #[cfg(test)]
     pub(crate) async fn describe(&self, workflow_id: &str, run_id: Option<&str>) -> Result<Value> {
         self.describe_with(workflow_id, run_id, None).await
     }
@@ -1053,15 +1061,31 @@ where
         run_id: &str,
         after_sequence: i64,
         page_size: i64,
+        wait_seconds: u64,
     ) -> Result<Value> {
-        self.describe(workflow_id, Some(run_id)).await?;
-        let run = Self::query("SELECT compatibility,queue,import_source,imported_at,import_dedupe_key FROM workflow_runs WHERE id=$1")
-            .bind(run_id)
-            .fetch_one(&self.pool)
-            .await?;
+        if wait_seconds > 0 {
+            self.wait_for_history(workflow_id, run_id, after_sequence, wait_seconds).await?;
+        }
+        // Read the scope, page and sequence watermark from the same committed
+        // snapshot. A concurrent append must not turn an empty page into
+        // a spurious page-budget refusal.
+        let (run, events, next) = {
+            let mut snapshot = self.begin_repeatable_read().await?;
+            let run = Self::query("SELECT compatibility,queue,import_source,imported_at,import_dedupe_key,last_history_sequence FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace=$3")
+                .bind(run_id)
+                .bind(workflow_id)
+                .bind(self.namespace.as_ref())
+                .fetch_optional(&mut *snapshot)
+                .await?
+                .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "run_not_found"))?;
+            let last = DB::number(&run, "last_history_sequence")?;
+            let (events, next) = Self::history_page_connection_with_total(
+                &mut *snapshot, run_id, after_sequence, page_size, Some(last),
+            ).await?;
+            snapshot.commit().await?;
+            (run, events, next)
+        };
         let compatibility = self.compatibility_fields(&run).await?;
-        let (events, next) =
-            Self::history_page(&self.pool, run_id, after_sequence, page_size).await?;
         let public_events: Vec<Value> = events
             .into_iter()
             .map(|e| {
@@ -1080,6 +1104,36 @@ where
                 DB::optional_string(&run, "import_dedupe_key")?).await?;
         }
         Ok(body)
+    }
+
+    async fn wait_for_history(
+        &self, workflow_id: &str, run_id: &str, after_sequence: i64, wait_seconds: u64,
+    ) -> Result<()> {
+        use tokio::time::{Instant, sleep_until};
+        let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+        let wait = self.history_wakes.subscribe(run_id);
+        loop {
+            // Capture the notification before the probe to cover a commit
+            // that lands between the read and entering the wait.
+            let changed = wait.notify.notified();
+            let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace=$3")
+                .bind(run_id)
+                .bind(workflow_id)
+                .bind(self.namespace.as_ref())
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "run_not_found"))?;
+            let now = Instant::now();
+            if DB::number(&row, "last_history_sequence")? > after_sequence || now >= deadline {
+                return Ok(());
+            }
+            // The indexed probe releases its connection before sleeping.
+            // Timed probes also observe commits made on another node.
+            tokio::select! {
+                _ = changed => {},
+                _ = sleep_until((now + Duration::from_secs(1)).min(deadline)) => {},
+            }
+        }
     }
 
     pub(crate) async fn signal(
@@ -5716,21 +5770,6 @@ where
         "recorded_at": DB::optional_instant(&row,"recorded_at")?.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)),
         "workflow_task_id": DB::optional_string(&row,"workflow_task_id")?, "workflow_command_id": DB::optional_string(&row,"workflow_command_id")?}),
         )
-    }
-
-    async fn history_page(
-        pool: &Pool<DB>,
-        run_id: &str,
-        after_sequence: i64,
-        page_size: i64,
-    ) -> Result<(Vec<Value>, Option<String>)> {
-        Self::history_page_connection(
-            &mut *pool.acquire().await?,
-            run_id,
-            after_sequence,
-            page_size,
-        )
-        .await
     }
 
     /// A poll's whole history, read in bounded pages: published PHP sends

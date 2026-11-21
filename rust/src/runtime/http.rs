@@ -1942,6 +1942,9 @@ async fn describe_run(
 struct HistoryQuery {
     page_size: Option<i64>,
     next_page_token: Option<String>,
+    wait_new_event: Option<String>,
+    #[serde(flatten)]
+    other: std::collections::HashMap<String, String>,
 }
 
 async fn activities(
@@ -1975,8 +1978,24 @@ async fn history(
     }
     // Match the current public history cursor's sequence/base64 contract.
     let after = decode_cursor(query.next_page_token.as_deref());
+    use super::laravel_validation::{self as validation, Rule};
+    // A bracketed value is an array in PHP, which the nullable boolean rule refuses.
+    let wait = if query.other.keys().any(|key| key.starts_with("wait_new_event[")) {
+        json!([])
+    } else {
+        validation::normalized(Some(&json!(query.wait_new_event))).unwrap_or_default()
+    };
+    let errors = validation::rule_errors(
+        &json!({"wait_new_event": wait}),
+        &[("wait_new_event", &[Rule::Nullable, Rule::Boolean])],
+        |_, _| None,
+    );
+    if let Some(error) = validation::failure_messages(errors) {
+        return Err(error);
+    }
+    let wait_seconds = if wait.as_str() == Some("1") { runtime.worker_poll_wait() } else { 0 };
     let body = runtime
-        .history(&workflow_id, &run_id, after, page_size)
+        .history(&workflow_id, &run_id, after, page_size, wait_seconds)
         .await
         .map_err(|error| {
             super::control_plane::Operation::History.refusal(error, &workflow_id, Some(&run_id))
