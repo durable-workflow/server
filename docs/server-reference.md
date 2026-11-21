@@ -1177,6 +1177,12 @@ with:
 Clients can validate that nested contract separately from the outer
 `control_plane` envelope.
 
+On both the PHP and native servers, `wait_new_event=1` on the run history
+endpoint waits for a committed event after `next_page_token`. If the page
+already has events, the server returns it immediately. If the configured
+`DW_WORKER_POLL_TIMEOUT` expires first, the server returns an empty page.
+Use `wait_new_event=0` or omit the flag for an immediate read.
+
 History export responses are the exception inside the workflow route group:
 `GET /api/workflows/{id}/runs/{runId}/history/export` returns the replay bundle
 as-is so its integrity checksum and optional signature cover the exact artifact

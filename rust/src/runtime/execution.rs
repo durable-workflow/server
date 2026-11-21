@@ -1635,6 +1635,7 @@ impl Runtime {
             run_id: &str,
             after_sequence: i64,
             page_size: i64,
+            wait_seconds: u64,
         ) -> Result<Value>
     );
     #[cfg(test)]
