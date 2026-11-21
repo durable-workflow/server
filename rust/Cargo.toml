@@ -10,6 +10,8 @@ description = "Development of the compatible Rust Durable Workflow Server"
 [dependencies]
 apache-avro = { version = "=0.22.0", default-features = false }
 base64 = "0.22"
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 # History compression for workers that accept it (already in the lock through
 # apache-avro and sqlx).
 crc = "3.4"
