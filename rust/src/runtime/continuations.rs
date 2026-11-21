@@ -63,9 +63,11 @@ where
         }
         let current = DB::string(rows.last().expect("one run"), "id")?;
         let fleet = self.fleet_snapshots(super::store::now()).await?;
+        let run_ids = rows.iter().map(|row| DB::string(row, "id")).collect::<Result<Vec<_>>>()?;
+        let mut attention = self.task_attention_for_runs(&mut *self.pool.acquire().await?, &run_ids).await?;
         let mut runs = Vec::with_capacity(rows.len());
-        for row in rows {
-            let run = DB::string(&row, "id")?;
+        for (row, run) in rows.into_iter().zip(run_ids) {
+            let task_attention = attention.remove(&run).unwrap_or(Value::Null);
             let status = DB::string(&row, "status")?;
             let queue = DB::optional_string(&row, "queue")?;
             let compatibility = DB::optional_string(&row, "compatibility")?;
@@ -80,7 +82,8 @@ where
                 "compatibility_status":if supported { "compatible" } else { "no_compatible_worker" },
                 "compatibility_supported_in_fleet":supported,"compatibility_fleet_reason":reason,
                 "started_at":super::task_queues::json_time(DB::optional_instant(&row,"started_at")?),
-                "closed_at":super::task_queues::json_time(DB::optional_instant(&row,"closed_at")?),"memo":memo});
+                "closed_at":super::task_queues::json_time(DB::optional_instant(&row,"closed_at")?),"memo":memo,
+                "task_attention": task_attention});
             // `formatRunListEntry` leaves a Waterline v1 projection's memo out.
             if DB::optional_string(&row, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
                 entry.as_object_mut().expect("run entry").remove("memo");

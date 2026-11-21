@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {nativeDivergence} from './native-divergences.mjs';
 import {withoutNativeRedriveActions} from './redrive-actions.mjs';
+import {withoutEmptyTaskAttention} from './task-attention.mjs';
 
 // Native queries closed runs and refuses a run without retained history with
 // query_history_unavailable (#587), which its query contract lists right
@@ -35,8 +36,9 @@ export function checkWaterlineImport(fixture, observation, workflowId, target) {
     return projection;
   }
   const definition = fixture.waterline_import;
+  const normalized = withoutEmptyTaskAttention(JSON.parse(JSON.stringify(state).replaceAll(workflowId, '{id}')));
   const actual = withoutNativeQueryHistoryReason(
-    withoutNativeRedriveActions(JSON.parse(JSON.stringify(state).replaceAll(workflowId, '{id}')), target, 'waterline import'), target);
+    withoutNativeRedriveActions(normalized, target, 'waterline import'), target);
   for (const [step, expected] of Object.entries(definition.expected)) {
     assert.deepStrictEqual(actual[step], expected, `waterline import ${step}`);
   }

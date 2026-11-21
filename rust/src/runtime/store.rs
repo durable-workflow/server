@@ -174,6 +174,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) history_budget: super::history_budget::Config,
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
+    pub(super) workflow_task_lost_lease_attention_threshold: i64,
     /// How long a claimed activity task stays leased (DW_ACTIVITY_TASK_TIMEOUT).
     pub(super) activity_task_lease_seconds: i64,
     /// How long a completion wait for an update lasts by default.
@@ -354,6 +355,11 @@ where
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
             workflow_task_lease_seconds: 60,
+            workflow_task_lost_lease_attention_threshold: std::env::var("DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .filter(|threshold| *threshold > 0)
+                .unwrap_or(super::task_attention::DEFAULT_THRESHOLD),
             activity_task_lease_seconds: 300,
             update_wait_seconds: 10,
             search_attribute_limit: 100,
@@ -385,6 +391,7 @@ where
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
+            workflow_task_lost_lease_attention_threshold: self.workflow_task_lost_lease_attention_threshold,
             activity_task_lease_seconds: self.activity_task_lease_seconds,
             update_wait_seconds: self.update_wait_seconds,
             search_attribute_limit: self.search_attribute_limit,
@@ -3036,6 +3043,9 @@ where
             } else {
                 (None, None, None)
             };
+            if kind == "workflow" && DB::string(&task, "status")? == "leased" {
+                Self::record_workflow_lease_loss(tx, &task_id, leased_at).await?;
+            }
             Self::query("UPDATE workflow_tasks SET ready_origin_at=CASE WHEN status='leased' AND task_type='workflow' THEN $1 ELSE ready_origin_at END,status='leased',lease_owner=$2,lease_expires_at=$3,attempt_count=$4,leased_at=$5,payload=$6,sticky_worker_id=$7,sticky_until=$8,sticky_replay_mode=$9,sticky_claimed_at=$10 WHERE id=$11")
                 .bind(DB::optional_time(ready_origin)).bind(worker_id).bind(DB::bind_time(expires)).bind(attempt).bind(DB::bind_time(leased_at))
                 .bind(DB::document(&task_payload)).bind(sticky_worker.as_deref()).bind(DB::optional_time(sticky_until)).bind(sticky_mode)

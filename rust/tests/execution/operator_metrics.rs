@@ -264,3 +264,75 @@ async fn a_replay_blocked_run_is_counted_and_warns() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn repeated_workflow_lease_loss_is_visible_until_the_task_completes() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let workflow = "repeated-lease-loss";
+    register(&app, "lease-worker", json!(["echo"]), json!([])).await;
+    let started = start(&app, workflow).await;
+    let run_id = started["run_id"].as_str().unwrap();
+
+    let mut task = poll(&app, "lease-worker", "workflow").await;
+    let task_id = task["task_id"].as_str().unwrap().to_owned();
+    for loss in 1..=3 {
+        database.execute("UPDATE workflow_tasks SET lease_expires_at='2020-01-02 03:04:05.000000' WHERE task_type='workflow' AND status='leased'").await;
+        if loss == 2 {
+            task = poll(&app, "lease-worker", "workflow").await;
+            assert_eq!(task["task_id"], task_id);
+        } else {
+            let (status, body) = request(&app, "POST", "/api/system/repair/pass", json!({"respect_throttle": false, "queue": "test"})).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["repaired_existing_tasks"], 1, "{body}");
+            if loss < 3 {
+                task = poll(&app, "lease-worker", "workflow").await;
+                assert_eq!(task["task_id"], task_id);
+            }
+        }
+    }
+
+    let path = format!("/api/workflows/{workflow}/runs/{run_id}");
+    let (status, described) = request(&app, "GET", &path, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    let attention = &described["task_attention"];
+    assert_eq!(attention["reason"], "workflow_task_lease_lost", "{attention}");
+    assert_eq!(attention["consecutive"], 3);
+    assert_eq!(attention["threshold"], 3);
+    assert_eq!(attention["workflow_task_id"], task_id);
+    assert!(chrono::DateTime::parse_from_rfc3339(attention["last_lease_lost_at"].as_str().unwrap()).is_ok());
+
+    let (status, listed) = request(&app, "GET", "/api/workflows?status=running", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["workflows"][0]["task_attention"], *attention);
+    let (status, runs) = request(&app, "GET", &format!("/api/workflows/{workflow}/runs"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{runs}");
+    assert_eq!(runs["runs"][0]["task_attention"], *attention);
+    let (status, observed) = request(&app, "GET", &format!("{path}/observation"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{observed}");
+    assert_eq!(observed["task_attention"], *attention);
+
+    let active = metrics(&app).await;
+    assert_eq!(active["runs"]["task_attention"], 1);
+    assert_eq!(active["tasks"]["lease_lost_repeatedly"], 1);
+    assert_eq!(active["tasks"]["max_lost_lease_count"], 3);
+
+    let recovered = poll(&app, "lease-worker", "workflow").await;
+    assert_eq!(recovered["task_id"], task_id);
+    let (status, completed) = finish_task(&app, &recovered, json!([{
+        "type": "complete_workflow",
+        "result": envelope(Payload::Long(1)),
+    }])).await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    let (status, closed) = request(&app, "GET", &path, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert!(closed["task_attention"].is_null());
+    let inactive = metrics(&app).await;
+    assert_eq!(inactive["runs"]["task_attention"], 0);
+    assert_eq!(inactive["tasks"]["lease_lost_repeatedly"], 0);
+    assert_eq!(inactive["tasks"]["max_lost_lease_count"], 0);
+
+    runtime.close().await;
+    database.remove().await;
+}

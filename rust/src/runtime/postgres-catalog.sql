@@ -14,7 +14,7 @@ SELECT kind, name, definition FROM (
     -- Historical PHP takeovers can leave dropped tail-column slots. The new
     -- Native additions have stable name keys; all old ordinal keys stay exact.
     SELECT 'column', c.relname || '.' || CASE
-        WHEN c.relname='workflow_tasks' AND a.attname='ready_origin_at' THEN a.attname
+        WHEN c.relname='workflow_tasks' AND a.attname IN ('ready_origin_at','lost_lease_count','last_lease_lost_at') THEN a.attname
         WHEN c.relname='runtime_external_payloads' AND a.attname='storage_binding' THEN a.attname
         WHEN c.relname='workflow_namespaces' AND a.attname='external_payload_storage_generation' THEN a.attname
         ELSE a.attnum::text END,

@@ -322,6 +322,12 @@ where
         fields.insert("last_progress_at".into(), iso8601(DB::optional_instant(run, "last_progress_at")?));
         fields.insert("wait_kind".into(), json!(wait_kind));
         fields.insert("wait_reason".into(), json!(wait_reason));
+        let task_attention = if terminal {
+            Value::Null
+        } else {
+            self.task_attention_for_run(&mut **tx, &run_id).await?
+        };
+        fields.insert("task_attention".into(), task_attention);
         fields.insert("search_attributes".into(), Self::typed_search_attributes(&mut **tx, &run_id).await?);
         let mut actions = actions(current, terminal, archived, query_servable);
         // Core workflow#990: the redrive decision redrive itself applies.

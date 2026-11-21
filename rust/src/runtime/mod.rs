@@ -203,6 +203,7 @@ mod store;
 mod system_metrics;
 mod system_health;
 mod task_failures;
+mod task_attention;
 mod task_repair;
 mod task_repair_http;
 mod terminal_summary;

@@ -507,13 +507,16 @@ where
         let more = rows.len() > filter.limit as usize;
         let mut workflows = Vec::new();
         let mut connection = self.pool.acquire().await?;
-        for row in rows.iter().take(filter.limit as usize) {
+        let page = &rows[..rows.len().min(filter.limit as usize)];
+        let run_ids = page.iter().map(|row| DB::string(row, "id")).collect::<Result<Vec<_>>>()?;
+        let mut attention = self.task_attention_for_runs(&mut connection, &run_ids).await?;
+        for (row, run_id) in page.iter().zip(run_ids) {
             if DB::optional_string(row, "compatibility")?.is_some() {
                 return Err(refuse(StatusCode::CONFLICT, "unqualified_build_visibility"));
             }
             let status = DB::string(row, "status")?;
             let bucket = status_bucket(&status)?;
-            let run_id = DB::string(row, "id")?;
+            let task_attention = attention.remove(&run_id).unwrap_or(Value::Null);
             // `getTypedSearchAttributes`; PHP renders an empty set as `[]`.
             let typed = Self::typed_rows(&mut connection, &run_id).await?;
             let search_attributes = if typed.is_empty() {
@@ -527,7 +530,7 @@ where
                 "is_terminal":bucket!="running", "compatibility":null, "compatibility_status":"compatible",
                 "compatibility_supported_in_fleet":true, "compatibility_fleet_reason":null,
                 "started_at":super::task_queues::json_time(DB::optional_instant(row,"started_at")?), "closed_at":super::task_queues::json_time(DB::optional_instant(row,"closed_at")?),
-                "search_attributes":search_attributes}));
+                "search_attributes":search_attributes,"task_attention":task_attention}));
         }
         let next =
             more.then(|| STANDARD.encode((filter.offset.saturating_add(filter.limit)).to_string()));

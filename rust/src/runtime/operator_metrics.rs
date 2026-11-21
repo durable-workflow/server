@@ -262,10 +262,16 @@ where
     /// `OperatorMetrics::snapshot` for this namespace.
     pub(super) async fn operator_metrics_snapshot(&self, config: &MetricsConfig) -> Result<Value> {
         let now = now();
+        let attention = self.task_attention_metrics().await?;
+        let mut runs = self.run_metrics(now).await?;
+        let mut tasks = self.task_metrics(now).await?;
+        runs["task_attention"] = json!(attention.runs);
+        tasks["lease_lost_repeatedly"] = json!(attention.tasks);
+        tasks["max_lost_lease_count"] = json!(attention.max_losses);
         Ok(json!({
             "generated_at": time(Some(now)),
-            "runs": self.run_metrics(now).await?,
-            "tasks": self.task_metrics(now).await?,
+            "runs": runs,
+            "tasks": tasks,
             "activities": self.activity_metrics(now).await?,
             "backlog": self.backlog_metrics(now).await?,
             "repair": empty_repair_snapshot(),
@@ -425,8 +431,17 @@ where
         if let Some(types) = types {
             query = query.bind(types);
         }
-        let row = query.fetch_optional(&self.pool).await?;
-        row.map(|row| Self::summary_array(&row)).transpose().map(|row| row.unwrap_or(Value::Null))
+        let Some(row) = query.fetch_optional(&self.pool).await? else {
+            return Ok(Value::Null);
+        };
+        let mut summary = Self::summary_array(&row)?;
+        summary["task_attention"] = if summary["is_terminal"] == true {
+            Value::Null
+        } else {
+            let run_id = DB::string(&row, "id")?;
+            self.task_attention_for_run(&mut *self.pool.acquire().await?, &run_id).await?
+        };
+        Ok(summary)
     }
 
     /// The summary's columns with the model's casts, then its appends.
