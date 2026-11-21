@@ -1976,13 +1976,21 @@ counter reset, use them for ratios and quantiles over a window rather than
 
 #### Scale workers from zero
 
-Scale a worker Deployment on work it could take now plus work it holds:
+Scale a worker Deployment on work it could take now plus work it holds.
+This example uses one scrape target for the `orders` namespace.
 
 ```promql
-sum(dw_task_queue_dispatchable_tasks{namespace="orders",task_queue="orders"})
+(
+  sum(dw_task_queue_dispatchable_tasks{namespace="orders",task_queue="orders"})
   + sum(dw_task_queue_leased_tasks{namespace="orders",task_queue="orders"})
-  or vector(0)
+)
+or (vector(0) and on() up{job="durable-workflow-server"} == 1)
 ```
+
+Use the scrape job for that namespace in the `up` selector. If a job scrapes
+several namespaces, add a target label to identify the matching scrape. When
+the queue has no series, a healthy scrape yields zero and an unavailable
+scrape leaves the result empty.
 
 With a target of the worker's concurrent slots per replica, the first started
 workflow makes this `1` and wakes one worker; when every task is completed it
