@@ -47,3 +47,13 @@ limits as `native-server`. PHP's comparison run already includes its scheduler
 container. Set `artifacts.native_image` in the profile copy to that reference.
 The driver refuses a profile without it and any other image, and
 `identity.json` records it.
+
+For current native comparisons, use the [PHP SDK 3.23.2 lock](../../../scripts/perf/sdk-php-native/composer.lock).
+Install it before running either image arm and record its SHA-256 in
+`artifacts.sdk_php_lock_sha256` in both profile copies.
+
+```sh
+export DW_PORT_SDK_ROOT="$DW_PORT_SOURCE_ROOT/scripts/perf/sdk-php-native"
+composer --working-dir="$DW_PORT_SDK_ROOT" install --no-dev --no-interaction
+sha256sum "$DW_PORT_SDK_ROOT/composer.lock"
+```

@@ -43,3 +43,6 @@ number of standard workflows or billable semantic actions.
 
 See the [capacity suite](v1/README.md) for the full workload matrix, operating
 point rules, schemas, validation commands, and result contract.
+
+For current native releases, use the [matched native image comparison](../server-port/v3/README.md#against-the-published-native-image)
+with its locked PHP SDK.

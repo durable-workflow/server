@@ -1,0 +1,17 @@
+{
+  "name": "durable-workflow/server-profile-native-php-sdk",
+  "description": "Locked PHP SDK for disposable native Server profiling",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.1",
+    "durable-workflow/sdk": "3.23.2"
+  },
+  "minimum-stability": "RC",
+  "prefer-stable": true,
+  "config": {
+    "platform": {
+      "php": "8.3.30"
+    }
+  }
+}
