@@ -4,7 +4,8 @@
 //!
 //! As in PHP, gzip wins over deflate at equal weight, `*` stands for both,
 //! `q=0` refuses an encoding, an answer that already has a
-//! `Content-Encoding` is left alone, and `Vary: Accept-Encoding` is added.
+//! `Content-Encoding` is left alone, and every eligible answer varies on
+//! `Accept-Encoding`, including an identity response.
 //! `deflate` is the zlib format (RFC 1950) that HTTP's `deflate` coding names,
 //! not raw DEFLATE. Only answers whose whole body is already in memory (an
 //! exact size hint) are encoded; streamed bodies pass through unchanged.
@@ -48,8 +49,27 @@ pub(super) fn advertised() -> &'static [&'static str] {
 }
 
 pub(super) async fn compress(request: Request, next: Next) -> Response {
-    let encoding = if enabled() { preferred(request.headers()) } else { None };
-    let response = next.run(request).await;
+    let active = enabled();
+    let encoding = if active { preferred(request.headers()) } else { None };
+    let mut response = next.run(request).await;
+    let size = response.body().size_hint().exact();
+    if !active
+        || response.headers().contains_key(header::CONTENT_ENCODING)
+        || !json(response.headers())
+        || !size.is_some_and(|size| (MIN_COMPRESS_BYTES..=MAX_COMPRESS_BYTES).contains(&size))
+    {
+        return response;
+    }
+    let headers = response.headers_mut();
+    let varies = headers
+        .get_all(header::VARY)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(',').map(str::trim))
+        .any(|field| field == "*" || field.eq_ignore_ascii_case("accept-encoding"));
+    if !varies {
+        headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    }
     match encoding {
         Some(encoding) => encode(response, encoding).await,
         None => response,
@@ -106,13 +126,6 @@ fn json(headers: &HeaderMap) -> bool {
 }
 
 async fn encode(response: Response, encoding: &'static str) -> Response {
-    let size = response.body().size_hint().exact();
-    if response.headers().contains_key(header::CONTENT_ENCODING)
-        || !json(response.headers())
-        || !size.is_some_and(|size| (MIN_COMPRESS_BYTES..=MAX_COMPRESS_BYTES).contains(&size))
-    {
-        return response;
-    }
     let (mut parts, body) = response.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, MAX_COMPRESS_BYTES as usize).await else {
         // An exact-sized in-memory body cannot fail to collect.
@@ -130,15 +143,6 @@ async fn encode(response: Response, encoding: &'static str) -> Response {
     };
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(encoding));
-    let vary = parts
-        .headers
-        .get_all(header::VARY)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .any(|value| value.split(',').any(|name| name.trim().eq_ignore_ascii_case("accept-encoding")));
-    if !vary {
-        parts.headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
-    }
     Response::from_parts(parts, Body::from(encoded))
 }
 
@@ -246,6 +250,11 @@ mod tests {
     async fn large_json_answers_are_encoded_and_decode_to_the_same_bytes() {
         let (_, plain_headers, plain) = get_with("/big", None).await;
         assert!(!plain_headers.contains_key(header::CONTENT_ENCODING));
+        assert_eq!(plain_headers[header::VARY], "Accept-Encoding");
+        let (_, identity_headers, identity) = get_with("/big", Some("gzip;q=0, identity")).await;
+        assert!(!identity_headers.contains_key(header::CONTENT_ENCODING));
+        assert_eq!(identity_headers[header::VARY], "Accept-Encoding");
+        assert_eq!(identity, plain);
         let (status, headers, gzipped) = get_with("/big", Some("br, gzip")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers[header::CONTENT_ENCODING], "gzip");
