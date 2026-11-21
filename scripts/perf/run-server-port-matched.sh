@@ -12,6 +12,7 @@
 # seconds and one repetition to check the setup; it is never a measurement.
 # --idle-only runs only the idle long-poll windows, without the SDK worker or
 # offered work, to compare idle cost on its own.
+# DW_PORT_PROJECT_PREFIX can namespace the disposable Compose resources.
 # The output keeps raw probe results, one-second cgroup samples, health
 # observations, window markers, machine facts and the final database audit.
 set -Eeuo pipefail
@@ -86,13 +87,21 @@ rates=($(j '.workload.offered_rates_per_second | map(tostring) | join(" ")'))
 idle_timeout=$(j .idle.requested_timeout_seconds)
 idle_kind=$(j .idle.kind)
 
-project="dw-port-$impl-$(date -u +%Y%m%dt%H%M%S)"
+project_prefix=${DW_PORT_PROJECT_PREFIX:-dw-port}
+if [[ ! $project_prefix =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "DW_PORT_PROJECT_PREFIX must be a lowercase Compose project prefix." >&2
+  exit 2
+fi
+project="$project_prefix-$impl-$(date -u +%Y%m%dt%H%M%S)"
 case "$impl" in
   php) profiles=(--profile php) services=(mysql redis php-bootstrap php-server php-worker php-scheduler)
+       runtime_service=php-server
        export DW_PORT_RUNTIME_URL=http://php-server:8080 ;;
   native) profiles=(--profile native) services=(mysql native-server)
+          runtime_service=native-server
           export DW_PORT_RUNTIME_URL=http://native-server:8080 ;;
   native-image) profiles=(--profile native-image) services=(mysql native-image-server)
+                runtime_service=native-image-server
                 export DW_PORT_RUNTIME_URL=http://native-image-server:8080 ;;
   *) echo "Choose php, native or native-image." >&2; exit 2 ;;
 esac
@@ -207,6 +216,27 @@ window() {
 log "starting $impl in $project"
 host_state start
 dc "${profiles[@]}" up -d --wait "${services[@]}" >> "$out/run.log" 2>&1
+runtime_container=$(dc "${profiles[@]}" ps --quiet "$runtime_service")
+if ! runtime_identity=$(docker inspect --type container "$runtime_container" | jq -cer '
+  def digest: type == "string" and test("^sha256:[0-9a-f]{64}$");
+  .[0] | {
+    server_image_id: .Image,
+    server_platform_manifest: .ImageManifestDescriptor.digest
+  } | select((.server_image_id | digest) and
+    (.server_platform_manifest == null or (.server_platform_manifest | digest)))'); then
+  log "Could not resolve the serving container's image ID."
+  exit 1
+fi
+if [[ $impl == native ]]; then
+  mounted_binary_sha=$(docker exec "$runtime_container" sha256sum /native/server | cut -d ' ' -f1)
+  if [[ $mounted_binary_sha != "$binary_sha" ]]; then
+    log "The mounted native binary differs from the selected artifact."
+    exit 1
+  fi
+fi
+jq --argjson runtime "$runtime_identity" '. + $runtime' \
+  "$out/identity.json" > "$out/identity.tmp"
+mv "$out/identity.tmp" "$out/identity.json"
 sample & samplers+=($!)
 network="${project}_default"
 image=$(dc --profile clients config --format json | jq -r '.services.probe.image')
