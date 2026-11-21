@@ -155,7 +155,6 @@ mod run_diagnostics;
 mod task_queue_build_ids;
 mod task_queue_pauses;
 mod task_queues;
-mod task_type_coverage;
 mod query_route;
 mod run_describe;
 mod waterline_import;
