@@ -11,6 +11,8 @@
 /benchmarks/capacity/v1/bindings/php/vendor/
 /benchmarks/capacity/v1/bindings/python/.deps/
 /benchmarks/capacity/v1/bindings/rust/target/
+/scripts/perf/sdk-php-native/vendor/
+/build/capacity-v1/
 /build/perf
 /build/namespace-isolation
 __pycache__/
