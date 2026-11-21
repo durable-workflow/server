@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 
 const SETTING: &str = "DW_TASK_DELIVERY_SEAL_KEYS";
 const KEY_SCHEMA: &str = "durable-workflow.task-delivery-seal-keys.v1";
-const PACKET_SCHEMA: &str = "durable-workflow.task-delivery-sealed-context.v1";
+pub(super) const PACKET_SCHEMA: &str = "durable-workflow.task-delivery-sealed-context.v1";
 const FRAME: &str = "dwo1";
 const PROTOCOL: &str = "offer-accept.v1";
 const MAX_CONFIG_BYTES: usize = 4096;
@@ -110,6 +110,30 @@ pub(super) enum TaskKind {
     Workflow,
 }
 
+impl TaskKind {
+    pub(super) fn from_wire(kind: &str) -> super::Result<Self> {
+        match kind {
+            "activity" => Ok(Self::Activity),
+            "query" => Ok(Self::Query),
+            "update_validation" => Ok(Self::UpdateValidation),
+            "workflow" => Ok(Self::Workflow),
+            _ => Err(super::refuse(
+                axum::http::StatusCode::CONFLICT,
+                "task_offer_scope_mismatch",
+            )),
+        }
+    }
+
+    pub(super) fn as_wire(&self) -> &'static str {
+        match self {
+            Self::Activity => "activity",
+            Self::Query => "query",
+            Self::UpdateValidation => "update_validation",
+            Self::Workflow => "workflow",
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PacketContext {
@@ -161,6 +185,13 @@ pub(super) struct OpenedToken {
     pub(super) context: PacketContext,
     pub(super) key_id: String,
     pub(super) packet_digest: [u8; 32],
+}
+
+pub(super) fn authority_digest(
+    domain: &str,
+    authority: &impl Serialize,
+) -> super::Result<[u8; 32]> {
+    Ok(Sha256::digest(serde_json::to_vec(&(domain, authority))?).into())
 }
 
 fn associated_data(id: &str) -> Vec<u8> {

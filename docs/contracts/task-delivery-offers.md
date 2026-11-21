@@ -102,6 +102,14 @@ The implementation must define bounded receipt storage and cleanup while
 retaining the accepted identity for the complete live claim, including renewal
 and process restart.
 
+The native producer seals the worker's routing fence, protocol, build and
+history options with the observed task authority. The candidate fingerprint
+covers the task and attempt state and the relevant run, activity, query or
+validation facts. Workflow offers also bind the pending timeout-cleanup
+decision before it can mutate the run. A multiplexed offer observes the kind
+cursor without moving it. Only a committed lease turns the cursor. The native
+acceptance checks the packet deadline again before committing a new claim.
+
 ## Uncertain outcomes
 
 An accepted live claim can replay after the short offer deadline. Replay must

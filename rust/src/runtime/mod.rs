@@ -206,6 +206,7 @@ mod system_health;
 mod task_failures;
 mod task_attention;
 mod task_delivery_receipts;
+mod task_offer_dispatch;
 mod task_offer_key_usage;
 mod task_offer_seal;
 mod task_repair;

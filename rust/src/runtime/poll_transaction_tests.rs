@@ -244,6 +244,7 @@ store_methods! {
             task_id: id.to_owned(),
             kind: "workflow",
             observed_attempt: Some(observed_attempt),
+            eligibility_digest: None,
         };
 
         let mut tx = self.begin().await.unwrap();

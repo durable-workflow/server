@@ -513,6 +513,16 @@ where
             compatibility.as_deref(), fingerprint.as_deref()))
     }
 
+    fn validation_offer_digest(task: &DB::Row) -> Result<[u8; 32]> {
+        super::task_offer_seal::authority_digest("validation_eligibility", &(
+            DB::string(task, "id")?, DB::string(task, "workflow_run_id")?, DB::string(task, "status")?,
+            DB::number(task, "attempt_count")?, DB::optional_string(task, "lease_owner")?,
+            DB::optional_instant(task, "lease_expires_at")?, DB::optional_string(task, "compatibility")?,
+            DB::optional_string(task, "workflow_definition_fingerprint")?, DB::string(task, "workflow_type")?,
+            DB::string(task, "update_name")?, DB::string(task, "input_hash")?,
+        ))
+    }
+
     pub(super) async fn peek_validation_offer(
         &self, worker_id: &str, queue: &str, fence: &super::worker_poll_fence::WorkerPollFence,
     ) -> Result<Option<ClaimTarget>> {
@@ -531,8 +541,9 @@ where
                 let observed = DB::number(&task, "attempt_count")?;
                 if observed.checked_add(1).is_some() {
                     let task_id = DB::string(&task, "id")?;
+                    let eligibility_digest = Some(Self::validation_offer_digest(&task)?);
                     read.commit().await?;
-                    return Ok(Some(ClaimTarget { task_id, kind: "update_validation", observed_attempt: Some(observed) }));
+                    return Ok(Some(ClaimTarget { task_id, kind: "update_validation", observed_attempt: Some(observed), eligibility_digest }));
                 }
             }
         }
@@ -575,6 +586,11 @@ where
             {
                 return Ok(None);
             }
+            if let Some(expected) = target.as_ref().and_then(|value| value.eligibility_digest)
+                && Self::validation_offer_digest(&task)? != expected
+            {
+                return Ok(None);
+            }
             let task_id = DB::string(&task, "id")?;
             let attempt = attempt.saturating_add(1);
             let expires = at + chrono::Duration::seconds(timeouts().1);
@@ -602,7 +618,8 @@ where
     pub(super) async fn qualify_exact_update_validation_claim(&self) {
         use super::task_delivery_receipts::{Acceptance, OfferClaim, OfferScope, OpenedOffer};
 
-        self.reserve_fixture_offer_key().await;
+        let keys = super::task_offer_key_usage::fixture_ring(&[("fixture-key", 7)]);
+        let window = self.reserve_task_offer_issuance(&keys).await.unwrap();
         let config = super::QueryTaskConfig::default();
         let queue = "scoped-validator";
         let workflow = "scoped-validation-workflow";
@@ -610,7 +627,7 @@ where
             .encode(&crate::codec::Value::Array(vec![])).unwrap();
         let registration = self.register(json!({"worker_id":queue,"task_queue":queue,"runtime":"php",
             "supported_workflow_types":[workflow],"supported_activity_types":[],
-            "capabilities":[CAPABILITY],
+            "capabilities":[CAPABILITY, "task_delivery_offers"],
             "workflow_command_contracts":{(workflow):{"update_validators":["validate"]}}}),
             &config, Some("1.20")).await.unwrap();
         let started = self.start(json!({"workflow_id":workflow,"workflow_type":workflow,"task_queue":queue,
@@ -634,7 +651,7 @@ where
         let claim = OfferClaim { scope: &scope, fence: &fence, body: &body, protocol: "1.20",
             history_page: None, query_config: &config };
         let mut offered = OpenedOffer {
-            target: ClaimTarget { task_id: selected.clone(), kind: "update_validation", observed_attempt: Some(1) },
+            target: ClaimTarget { task_id: selected.clone(), kind: "update_validation", observed_attempt: Some(1), eligibility_digest: None },
             registration_digest: super::worker_sessions::incarnation_digest(registration["registration_token"].as_str().unwrap()),
             key_id: "fixture-key".to_owned(), packet_digest: [1; 32], expires_at_ms: at.timestamp_millis() + 10_000,
         };
@@ -668,6 +685,23 @@ where
         assert_eq!(DB::string(&untouched, "status").unwrap(), "pending");
         assert_eq!(DB::number(&untouched, "attempt_count").unwrap(), 0);
         assert!(DB::optional_string(&untouched, "lease_owner").unwrap().is_none());
+
+        let scope = OfferScope { worker_id: queue, queue, endpoint: "update_validation", request_id: "validation-signed",
+            kinds: &["update_validation"] };
+        let body = json!({"worker_id":queue,"task_queue":queue,"poll_request_id":"validation-signed",
+            "registration_token":registration["registration_token"],"timeout_seconds":0});
+        let claim = OfferClaim { scope: &scope, body: &body, ..claim };
+        let stale = self.issue_task_offer(&claim, &keys, &window).await.unwrap().unwrap();
+        assert_eq!(stale.target.task_id, first);
+        Self::query("UPDATE workflow_update_validation_tasks SET input_hash=$1 WHERE id=$2")
+            .bind("b".repeat(64)).bind(&first).execute(&self.pool).await.unwrap();
+        assert!(matches!(self.accept_sealed_task_offer(&claim, &keys, &stale.token).await.unwrap(),
+            Acceptance::Unclaimable));
+        let fresh = self.issue_task_offer(&claim, &keys, &window).await.unwrap().unwrap();
+        let Acceptance::Claimed(task) = self.accept_sealed_task_offer(&claim, &keys, &fresh.token).await.unwrap()
+        else { panic!("the signed offer must lease the current validation task"); };
+        assert_eq!(task["update_validation_task_id"], first);
+        assert_eq!(task["update_validation_attempt"], 1);
     }
 
     /// `taskPayload` without its history export, which the runtime adds.
@@ -1064,6 +1098,17 @@ where
             .fetch_one(&mut **tx)
             .await?;
         DB::string(&cursor, "next_task_kind")
+    }
+
+    pub(super) async fn peek_task_kind_cursor(&self, task_queue: &str) -> Result<String> {
+        let cursor = Self::query("SELECT next_task_kind FROM workflow_task_poll_cursors WHERE namespace=$1 AND task_queue=$2")
+            .bind(self.namespace.as_ref()).bind(task_queue).fetch_optional(&self.pool).await?;
+        cursor.as_ref().map_or_else(|| Ok("update_validation".to_owned()), |row| DB::string(row, "next_task_kind"))
+    }
+
+    pub(super) async fn turn_accepted_task_kind(&self, tx: &mut Transaction<'_, DB>, queue: &str, kind: &str) -> Result<()> {
+        self.lock_task_kind_cursor(tx, queue).await?;
+        self.turn_task_kind(tx, queue, kind).await
     }
 
     /// After a lease, the queue tries the other kind first.

@@ -209,6 +209,12 @@ store_methods! {
         let mut tx = self.begin().await?;
         let at = Self::checked_offer_clock(&mut *tx).await?;
         let accepted = self.accept_task_offer_in(&mut tx, offer, claim, at).await?;
+        if matches!(accepted, Acceptance::Claimed(_))
+            && Self::checked_offer_clock(&mut *tx).await?.timestamp_millis() >= offer.expires_at_ms
+        {
+            tx.rollback().await?;
+            return Ok(Acceptance::Expired);
+        }
         if matches!(accepted, Acceptance::Claimed(_) | Acceptance::Replayed(_)) {
             tx.commit().await?;
         } else {
@@ -299,6 +305,9 @@ store_methods! {
             kind: kind.to_owned(), task_id: offer.target.task_id.clone(),
             attempt, task: task.clone(),
         };
+        if scope.endpoint == "workflow" && scope.kinds.len() == 2 {
+            self.turn_accepted_task_kind(tx, scope.queue, kind).await?;
+        }
         Self::sweep_offer_receipts(tx, at).await?;
         Self::retain_offer_receipt_key(tx, &receipt.key_id).await?;
         Self::query(DB::QUERY_CACHE_INSERT).bind(key).bind(serde_json::to_string(&receipt)?)
@@ -310,18 +319,20 @@ store_methods! {
 #[cfg(test)]
 store_methods! {
     pub(super) async fn qualify_execution_offer_receipts(&self) {
-        use super::{store::{Store, now}, worker_poll_fence::PollAdmission};
+        use super::{store::{Store, now}, task_offer_key_usage::fixture_ring, worker_poll_fence::PollAdmission};
         use crate::codec::{Value as Payload, ValueCodec};
         use std::sync::{Arc, atomic::Ordering};
         use tokio::sync::Semaphore;
 
-        self.reserve_fixture_offer_key().await;
+        let keys = fixture_ring(&[("fixture-key", 7)]);
+        let window = self.reserve_task_offer_issuance(&keys).await.unwrap();
         let input = json!({"codec":"avro", "blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()});
         for kind in ["workflow", "activity"] {
             let namespace = format!("receipt-proof-{kind}");
             let store = self.in_namespace(&namespace);
             let registration = store.register(json!({"worker_id":"worker","task_queue":"received","runtime":"php",
-                "supported_workflow_types":["receipt"],"supported_activity_types":["receipt"]}),
+                "supported_workflow_types":["receipt"],"supported_activity_types":["receipt"],
+                "capabilities":["task_delivery_offers"]}),
                 &QueryTaskConfig::default(), Some("1.20")).await.unwrap();
             for name in ["first", "second"] {
                 let workflow_id = format!("offer-receipt-{kind}-{name}");
@@ -342,16 +353,31 @@ store_methods! {
             else { panic!("the registered receipt worker must be fenced"); };
             let kinds = [kind];
             let scope = OfferScope { worker_id: "worker", queue: "received", endpoint: kind, request_id: "original", kinds: &kinds };
-            let body = json!({"worker_id":"worker","task_queue":"received","poll_request_id":"original","timeout_seconds":0});
+            let registration_token = registration["registration_token"].as_str().unwrap();
+            let body = json!({"worker_id":"worker","task_queue":"received","poll_request_id":"original",
+                "registration_token":registration_token,"timeout_seconds":0});
             let config = QueryTaskConfig::default();
             let claim = OfferClaim { scope: &scope, fence: &fence, body: &body, protocol: "1.20",
                 history_page: None, query_config: &config };
-            let target = store.peek_execution_offer("worker", "received", kind, "1.20", &fence).await.unwrap().unwrap();
-            let task_id = target.task_id.clone();
+            let before_issue = store.test_transitions.load(Ordering::Relaxed);
+            let stale = store.issue_task_offer(&claim, &keys, &window).await.unwrap().unwrap();
+            assert_eq!(store.test_transitions.load(Ordering::Relaxed), before_issue);
+            Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(now() - chrono::Duration::seconds(30))).bind(&stale.target.task_id)
+                .execute(&store.pool).await.unwrap();
+            assert!(matches!(store.accept_sealed_task_offer(&claim, &keys, &stale.token).await.unwrap(),
+                Acceptance::Unclaimable));
+
+            let issued = store.issue_task_offer(&claim, &keys, &window).await.unwrap().unwrap();
+            let changed_route = OfferClaim { history_page: Some(1), ..claim };
+            assert!(matches!(store.accept_sealed_task_offer(&changed_route, &keys, &issued.token).await,
+                Err(super::RuntimeError::Refused { reason: "task_offer_scope_mismatch", .. })));
+            let opened = keys.open(&issued.token).unwrap();
+            let task_id = issued.target.task_id.clone();
             let at = now();
             let offer = OpenedOffer {
-                target, registration_digest: super::worker_sessions::incarnation_digest(registration["registration_token"].as_str().unwrap()),
-                key_id: "fixture-key".to_owned(), packet_digest: [7; 32], expires_at_ms: at.timestamp_millis() + 10000,
+                target: issued.target, registration_digest: super::worker_sessions::incarnation_digest(registration_token),
+                key_id: opened.key_id, packet_digest: opened.packet_digest, expires_at_ms: issued.expires_at_ms,
             };
             let (key, _) = identity(&namespace, &scope, &offer.registration_digest);
             let mut tx = store.begin().await.unwrap();
@@ -371,8 +397,8 @@ store_methods! {
             // Independent Store queues still serialize on the backend lock.
             let replica = Store::<DB>::new(store.pool.clone()).in_namespace(&namespace);
             let (a,b) = tokio::join!(
-                store.accept_task_offer(&offer, &claim),
-                replica.accept_task_offer(&offer, &claim),
+                store.accept_sealed_task_offer(&claim, &keys, &issued.token),
+                replica.accept_sealed_task_offer(&claim, &keys, &issued.token),
             );
             let (claimed, replayed) = match (a.unwrap(), b.unwrap()) {
                 (Acceptance::Claimed(task), Acceptance::Replayed(replayed)) |

@@ -27,9 +27,9 @@ fn config() -> QueryTaskConfig {
 
 store_methods! {
     /// A query-capable worker and a closed run it can answer queries for.
-    async fn empty_fixture(&self) {
-        self.register(json!({"worker_id":WORKER,"task_queue":QUEUE,"runtime":"php",
-            "supported_workflow_types":["probe"],"supported_activity_types":[],"capabilities":["query_tasks"],
+    async fn empty_fixture(&self) -> String {
+        let registration = self.register(json!({"worker_id":WORKER,"task_queue":QUEUE,"runtime":"php",
+            "supported_workflow_types":["probe"],"supported_activity_types":[],"capabilities":["query_tasks","task_delivery_offers"],
             "workflow_command_contracts":{"probe":{"queries":["probe"],"query_contracts":[{"name":"probe","parameters":[]}]}}}),
             &QueryTaskConfig::default(), Some("1.20")).await.unwrap();
         self.start(json!({"workflow_id":WORKFLOW,"workflow_type":"probe","task_queue":QUEUE,"input":input()}),
@@ -46,6 +46,7 @@ store_methods! {
         let warm = self.poll_query(body("warm"), &config()).await.unwrap();
         assert!(warm["task"].is_null(), "{warm}");
         self.pin_expiry_mark().await;
+        registration["registration_token"].as_str().unwrap().to_owned()
     }
 
     /// Keep the receipt sweep idle across a minute boundary during a test.
@@ -274,24 +275,25 @@ store_methods! {
     pub(in crate::runtime) async fn qualify_empty_query_poll(&mut self) {
         // The poll-row sweep stays reserved for the test once warmed.
         self.poll_sweep_config.interval = Duration::from_secs(3600);
-        self.empty_fixture().await;
+        let registration_token = self.empty_fixture().await;
         self.qualify_lock_free_empty_answer().await;
         self.qualify_bookkeeping_forces_lock().await;
         self.qualify_request_rows_force_lock().await;
         self.qualify_waiting_request_is_superseded().await;
         self.qualify_registration_mismatch_keeps_its_refusal().await;
         self.qualify_query_arrival_race().await;
-        self.qualify_exact_query_claim().await;
+        self.qualify_exact_query_claim(&registration_token).await;
         // A due poll-row sweep is left to the locked path, which takes it.
         self.poll_sweeps = Arc::default();
         self.assert_forced_lock("sweep-due", "poll-row sweep due").await;
         self.assert_lock_free_empty("after-sweep", "sweep reserved again").await;
     }
 
-    async fn qualify_exact_query_claim(&self) {
+    async fn qualify_exact_query_claim(&self, registration_token: &str) {
         use crate::runtime::task_delivery_receipts::{Acceptance, OfferClaim, OfferScope, OpenedOffer};
 
-        self.reserve_fixture_offer_key().await;
+        let keys = crate::runtime::task_offer_key_usage::fixture_ring(&[("fixture-key", 7)]);
+        let window = self.reserve_task_offer_issuance(&keys).await.unwrap();
         let original = self.submit_query();
         let second = async {
             self.wait_for_pending_query().await;
@@ -322,7 +324,7 @@ store_methods! {
             let claim = OfferClaim { scope: &scope, fence: fence.as_ref().unwrap(), body: &poll,
                 protocol: "1.20", history_page: None, query_config: &config };
             let mut offered = OpenedOffer {
-                target: ClaimTarget { task_id: selected.clone(), kind: "query", observed_attempt: Some(1) },
+                target: ClaimTarget { task_id: selected.clone(), kind: "query", observed_attempt: Some(1), eligibility_digest: None },
                 registration_digest: proof, key_id: "fixture-key".to_owned(), packet_digest: [1; 32],
                 expires_at_ms: chrono::Utc::now().timestamp_millis() + 10_000,
             };
@@ -346,9 +348,23 @@ store_methods! {
             assert_eq!(self.raw(&key(first).unwrap()).await.unwrap(), other_before);
             self.finish_query(selected, json!({"lease_owner":WORKER,"query_task_attempt":1,"result":7}), false, &config).await.unwrap();
             assert!(matches!(self.accept_task_offer(&offered, &claim).await.unwrap(), Acceptance::LeaseEnded));
-            let other = self.poll_query(body("exact-query-other"), &config).await.unwrap();
-            assert_eq!(other["task"]["query_task_id"], first.as_str());
-            self.answer(&other).await;
+            let mut other_body = body("exact-query-other");
+            other_body["registration_token"] = json!(registration_token);
+            let other_scope = OfferScope { request_id: "exact-query-other", ..scope };
+            let other_claim = OfferClaim { body: &other_body, scope: &other_scope, ..claim };
+            let stale = self.issue_task_offer(&other_claim, &keys, &window).await.unwrap().unwrap();
+            assert_eq!(stale.target.task_id, *first);
+            let first_key = key(first).unwrap();
+            let mut changed = self.raw(&first_key).await.unwrap();
+            changed["query_admitted_at"] = json!("2020-01-01T00:00:00.000000Z");
+            self.put_raw(&first_key, &changed.to_string()).await;
+            assert!(matches!(self.accept_sealed_task_offer(&other_claim, &keys, &stale.token).await.unwrap(),
+                Acceptance::Unclaimable));
+            let fresh = self.issue_task_offer(&other_claim, &keys, &window).await.unwrap().unwrap();
+            let Acceptance::Claimed(other) = self.accept_sealed_task_offer(&other_claim, &keys, &fresh.token).await.unwrap()
+            else { panic!("the signed offer must lease the remaining query"); };
+            assert_eq!(other["query_task_id"], first.as_str());
+            self.answer(&json!({"task":other})).await;
         };
         let (first, second, ()) = tokio::join!(original, second, worker);
         assert_eq!(first.unwrap().1["result"], 7);

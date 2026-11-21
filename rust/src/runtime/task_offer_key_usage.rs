@@ -178,6 +178,14 @@ store_methods! {
         Ok(())
     }
 
+    pub(super) async fn task_offer_read_time(&self, ring: &KeyRing) -> Result<DateTime<Utc>> {
+        let mut read = self.begin_repeatable_read().await?;
+        let at = Self::checked_offer_clock(&mut *read).await?;
+        Self::check_offer_key_ring_in(&mut read, Some(ring), at).await?;
+        read.commit().await?;
+        Ok(at)
+    }
+
     pub(super) async fn reserve_task_offer_issuance(&self, ring: &KeyRing) -> Result<IssuanceWindow> {
         let mut tx = self.begin().await?;
         let started = Instant::now();

@@ -140,6 +140,19 @@ impl WorkerPollFence {
         })
     }
 
+    pub(super) fn owns_offer_registration(&self, supplied: &str) -> bool {
+        use subtle::ConstantTimeEq;
+        supplied.len() == 32
+            && supplied.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && self.incarnation.as_ref().is_some_and(|token| bool::from(token.as_bytes().ct_eq(supplied.as_bytes())))
+            && self.routing["capabilities"].as_array().is_some_and(|values| values.iter().any(|value| value == "task_delivery_offers"))
+    }
+
+    pub(super) fn offer_routing_digest(&self) -> Result<[u8; 32]> {
+        let fallback_times = self.process.is_empty().then_some((self.updated_at, self.last_heartbeat_at));
+        super::task_offer_seal::authority_digest("worker_routing_fence", &(&self.routing, &self.process, fallback_times))
+    }
+
     /// `isFresh`: active, and heartbeated within the stale window.
     pub(super) fn fresh<DB: Backend>(row: &DB::Row, stale_after_seconds: i64) -> Result<bool> {
         let cutoff = now() - chrono::Duration::seconds(stale_after_seconds);
