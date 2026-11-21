@@ -39,9 +39,16 @@ A failed Server read answers 503 with no samples: the target is down
 Deployment between 0 and 20 replicas on
 
 ```promql
-sum(dw_task_queue_dispatchable_tasks{namespace="default",task_queue="orders"})
+(
+  sum(dw_task_queue_dispatchable_tasks{namespace="default",task_queue="orders"})
   + sum(dw_task_queue_leased_tasks{namespace="default",task_queue="orders"})
+)
+or (vector(0) and on() up{job="durable-workflow-server"} == 1)
 ```
+
+The query uses one scrape target for `default`. Set the `up` selector to
+match that scrape. If your job scrapes several namespaces, add a target
+label to identify the matching scrape.
 
 - **0 -> 1.** Starting a workflow creates a due workflow task. With no worker,
   `dw_task_queue_due_tasks` and `dw_task_queue_dispatchable_tasks` are `1` and
