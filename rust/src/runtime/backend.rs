@@ -161,6 +161,8 @@ pub(super) trait Backend: Database {
     const QUERY_CACHE_PUT_PAIR: &str = "INSERT INTO dw_query_cache(\"key\",value,expiration) VALUES ($1,$2,$3),($4,$5,$6) ON CONFLICT (\"key\") DO UPDATE SET value=excluded.value,expiration=excluded.expiration";
     const QUERY_CACHE_DELETE: &str = "DELETE FROM dw_query_cache WHERE \"key\"=$1";
     const QUERY_CACHE_DELETE_EXPIRED: &str = "DELETE FROM dw_query_cache WHERE \"key\"=$1 AND expiration<=$2";
+    const OFFER_RECEIPT_DUE: &str = "SELECT 1 FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-offer-receipt:%' AND expiration<=$1 LIMIT 1";
+    const OFFER_RECEIPT_DEFER: &str = "UPDATE dw_query_cache SET expiration=$1 WHERE \"key\"=$2";
     const OFFER_RECEIPT_REVIEW: &str = "SELECT \"key\",value FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-offer-receipt:%' AND expiration<=$1 ORDER BY expiration,\"key\" LIMIT $2";
     // One primary-key page of the whole cache table, for the one-time
     // cutover of 3.0.1 query rows (Server #964).
@@ -697,6 +699,8 @@ impl Backend for MySql {
     const QUERY_CACHE_PUT_PAIR: &str = "INSERT INTO dw_query_cache(`key`,value,expiration) VALUES ($1,$2,$3),($4,$5,$6) ON DUPLICATE KEY UPDATE value=VALUES(value),expiration=VALUES(expiration)";
     const QUERY_CACHE_DELETE: &str = "DELETE FROM dw_query_cache WHERE `key`=$1";
     const QUERY_CACHE_DELETE_EXPIRED: &str = "DELETE FROM dw_query_cache WHERE `key`=$1 AND expiration<=$2";
+    const OFFER_RECEIPT_DUE: &str = "SELECT 1 FROM dw_query_cache WHERE `key` LIKE 'dw-native-offer-receipt:%' AND expiration<=$1 LIMIT 1";
+    const OFFER_RECEIPT_DEFER: &str = "UPDATE dw_query_cache SET expiration=$1 WHERE `key`=$2";
     const OFFER_RECEIPT_REVIEW: &str = "SELECT `key`,value FROM dw_query_cache WHERE `key` LIKE 'dw-native-offer-receipt:%' AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";
     const QUERY_CACHE_PAGE: &str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key`>$1 ORDER BY `key` LIMIT 64";
     const QUERY_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";

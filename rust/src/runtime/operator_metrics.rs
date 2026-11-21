@@ -1297,6 +1297,9 @@ where
     /// without heartbeating workers. A namespace's failure is reported and
     /// the others continue.
     pub(super) async fn retention_maintenance(&self) -> Result<()> {
+        if let Err(error) = self.review_due_offer_receipts(now()).await {
+            eprintln!("task_offer_receipt_review_failed: {error}");
+        }
         let namespaces = Self::query("SELECT name FROM workflow_namespaces ORDER BY name")
             .fetch_all(&self.pool)
             .await?

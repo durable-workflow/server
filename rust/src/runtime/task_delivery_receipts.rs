@@ -173,6 +173,18 @@ store_methods! {
         Ok(Some(lease))
     }
 
+    /// One global review turn even when no worker is accepting offers.
+    pub(super) async fn review_due_offer_receipts(&self, at: DateTime<Utc>) -> Result<()> {
+        let due = Self::query(DB::OFFER_RECEIPT_DUE).bind(at.timestamp())
+            .fetch_optional(&self.pool).await?.is_some();
+        if due {
+            let mut tx = self.begin().await?;
+            Self::sweep_offer_receipts(&mut tx, at).await?;
+            tx.commit().await?;
+        }
+        Ok(())
+    }
+
     /// Review a bounded page of old receipts while holding the transition.
     /// An expiration timestamp schedules a review; it cannot evict a live lease.
     async fn sweep_offer_receipts(tx: &mut Transaction<'_, DB>, at: DateTime<Utc>) -> Result<()> {
@@ -180,10 +192,9 @@ store_methods! {
             .bind(at.timestamp()).bind(SWEEP_BATCH).fetch_all(&mut **tx).await?;
         for row in rows {
             let key = DB::string(&row, "key")?;
-            let raw = DB::string(&row, "value")?;
-            let receipt = Receipt::decode(&raw)?;
+            let receipt = Receipt::decode(&DB::string(&row, "value")?)?;
             if Self::offer_receipt_lease(tx, &receipt, at).await?.is_some() {
-                Self::query(DB::QUERY_CACHE_UPDATE).bind(raw).bind(at.timestamp() + REVIEW_AFTER_SECONDS)
+                Self::query(DB::OFFER_RECEIPT_DEFER).bind(at.timestamp() + REVIEW_AFTER_SECONDS)
                     .bind(key).execute(&mut **tx).await?;
             } else {
                 Self::query(DB::QUERY_CACHE_DELETE).bind(key).execute(&mut **tx).await?;
@@ -297,7 +308,7 @@ store_methods! {
     pub(super) async fn qualify_execution_offer_receipts(&self) {
         use super::{store::Store, worker_poll_fence::PollAdmission};
         use crate::codec::{Value as Payload, ValueCodec};
-        use std::sync::Arc;
+        use std::sync::{Arc, atomic::Ordering};
         use tokio::sync::Semaphore;
 
         let input = json!({"codec":"avro", "blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()});
@@ -392,8 +403,15 @@ store_methods! {
                     .execute(&store.pool).await.unwrap();
             }
             let later = at + chrono::Duration::seconds(REVIEW_AFTER_SECONDS + 1);
+            // Idle review reaches every namespace and does not take the
+            // transition lock again when the queue for review is empty.
+            let maintenance = Store::<DB>::new(store.pool.clone());
+            maintenance.review_due_offer_receipts(later).await.unwrap();
+            assert_eq!(maintenance.test_transitions.load(Ordering::Relaxed), 1);
+            maintenance.review_due_offer_receipts(later).await.unwrap();
+            assert_eq!(maintenance.test_transitions.load(Ordering::Relaxed), 1);
+
             let mut tx = replica.begin().await.unwrap();
-            Self::sweep_offer_receipts(&mut tx, later).await.unwrap();
             let Acceptance::Replayed(replay) = replica.accept_task_offer_in(&mut tx, &offer, &claim, later).await.unwrap() else { panic!("a renewed lease keeps its receipt"); };
             assert_eq!(replay["task_id"], task_id.as_str());
             let expires = DateTime::parse_from_rfc3339(replay["lease_expires_at"].as_str().unwrap()).unwrap().timestamp();
@@ -409,8 +427,11 @@ store_methods! {
             let after_lease = renewed + chrono::Duration::seconds(2);
             assert!(matches!(store.accept_task_offer_in(&mut tx, &offer, &claim, after_lease)
                 .await.unwrap(), Acceptance::LeaseEnded));
-            Self::sweep_offer_receipts(&mut tx, after_lease).await.unwrap();
-            assert!(Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&mut *tx).await.unwrap().is_none());
+            tx.commit().await.unwrap();
+            maintenance.review_due_offer_receipts(after_lease).await.unwrap();
+            assert_eq!(maintenance.test_transitions.load(Ordering::Relaxed), 2);
+            assert!(Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&store.pool).await.unwrap().is_none());
+            let mut tx = store.begin().await.unwrap();
             assert!(matches!(store.accept_task_offer_in(&mut tx, &offer, &claim, after_lease)
                 .await.unwrap(), Acceptance::Unclaimable));
             tx.commit().await.unwrap();
