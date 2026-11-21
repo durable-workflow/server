@@ -959,31 +959,30 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
                 capacity_local_docker.verify_host(self.profile)
 
     def test_local_launcher_derives_the_complete_supported_host_identity(self) -> None:
+        server = {
+            "Version": "27.5.1",
+            "Os": "linux",
+            "Arch": "amd64",
+            "Components": [
+                {"Name": "containerd", "Version": "1.7.25"},
+                {"Name": "runc", "Version": "1.2.3"},
+                {"Name": "docker-init", "Version": "0.19.0"},
+            ],
+        }
+        info = {
+            "DefaultRuntime": "runc",
+            "CgroupVersion": "2",
+            "CgroupDriver": "systemd",
+            "Driver": "overlay2",
+            "KernelVersion": "6.8.0-101-generic",
+            "DockerRootDir": "/var/lib/docker",
+        }
+
         def fake_run(command: list[str], **kwargs: object) -> str:
             if command[:2] == ["docker", "version"]:
-                return json.dumps(
-                    {
-                        "Version": "27.5.1",
-                        "Os": "linux",
-                        "Arch": "amd64",
-                        "Components": [
-                            {"Name": "containerd", "Version": "1.7.25"},
-                            {"Name": "runc", "Version": "1.2.3"},
-                            {"Name": "docker-init", "Version": "0.19.0"},
-                        ],
-                    }
-                )
+                return json.dumps(server)
             if command[:2] == ["docker", "info"]:
-                return json.dumps(
-                    {
-                        "DefaultRuntime": "runc",
-                        "CgroupVersion": "2",
-                        "CgroupDriver": "systemd",
-                        "Driver": "overlay2",
-                        "KernelVersion": "6.8.0-101-generic",
-                        "DockerRootDir": "/var/lib/docker",
-                    }
-                )
+                return json.dumps(info)
             if command[:3] == ["docker", "compose", "version"]:
                 return "2.32.4\n"
             if command[0] == "findmnt":
@@ -1035,7 +1034,26 @@ class CapacityBenchmarkContractTest(unittest.TestCase):
             ),
             mock.patch.object(capacity_local_docker, "_run", side_effect=fake_run),
         ):
-            capacity_local_docker.verify_host(self.profile)
+            self.assertEqual(self.profile, capacity_local_docker.verify_host(self.profile))
+            server["Version"] = "29.1.3"
+            server["Components"][0]["Version"] = "2.2.2"
+            info.update(Driver="overlayfs", KernelVersion="7.0.0-42-generic")
+            observed = capacity_local_docker.verify_host(self.profile, portable=True)
+            self.assertEqual(
+                {
+                    **self.profile["runtime"],
+                    "container_engine": "docker-29.1.3",
+                    "kernel_profile": "linux-7.0-cgroup-v2",
+                    "containerd_version": "2.2.2",
+                    "storage_driver": "overlayfs",
+                },
+                observed["runtime"],
+            )
+            self.assertEqual("docker-27.5.1", self.profile["runtime"]["container_engine"])
+
+            server["Version"] = "27.5.0"
+            with self.assertRaisesRegex(capacity_local_docker.TopologyError, "27.5.1 or newer"):
+                capacity_local_docker.verify_host(self.profile, portable=True)
 
     def test_live_smoke_result_is_qualified_but_never_publishable(self) -> None:
         collector_path = (

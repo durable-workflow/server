@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -265,7 +266,7 @@ def validate_topology() -> dict[str, Any]:
         "cell_id": "simple-start-complete",
         "binding": "python",
         "load_step": 1,
-        "sample_interval_seconds": 1,
+        "sample_interval_seconds": 5,
         "execution": {
             "concurrent_open_workflows": 2,
             "client_concurrency": 1,
@@ -358,7 +359,9 @@ def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in match.group(1).split("."))
 
 
-def verify_host(profile: dict[str, Any]) -> None:
+def verify_host(
+    profile: dict[str, Any], *, portable: bool = False
+) -> dict[str, Any]:
     if shutil.which("docker") is None:
         raise TopologyError("Docker CLI is required")
     runtime = _object(profile.get("runtime"), "profile.runtime")
@@ -401,15 +404,28 @@ def verify_host(profile: dict[str, Any]) -> None:
         "cgroup_driver": str(runtime["cgroup_driver"]),
         "storage_driver": str(runtime["storage_driver"]),
     }
+    observed_versions = {
+        "version", "containerd_version", "runc_version", "docker_init_version"
+    }
     for name, value in expected.items():
+        if portable and name in observed_versions and facts[name]:
+            continue
+        if portable and name == "storage_driver" and facts[name] in {"overlay2", "overlayfs"}:
+            continue
         if facts[name] != value:
             raise TopologyError(f"Docker {name} {facts[name]!r} differs from {value!r}")
     kernel_match = re.fullmatch(
         r"linux-(\d+\.\d+)-cgroup-v2", str(runtime["kernel_profile"])
     )
-    if kernel_match is None or not facts["kernel"].startswith(
-        kernel_match.group(1) + "."
-    ):
+    if kernel_match is None:
+        raise TopologyError(f"invalid kernel profile {runtime['kernel_profile']!r}")
+    expected_kernel = kernel_match.group(1)
+    if portable:
+        if _version_tuple(facts["version"]) < _version_tuple(expected_engine):
+            raise TopologyError(f"Docker Engine {expected_engine} or newer is required")
+        if _version_tuple(facts["kernel"])[:2] < _version_tuple(expected_kernel):
+            raise TopologyError(f"Linux {expected_kernel} or newer is required")
+    elif not facts["kernel"].startswith(expected_kernel + "."):
         raise TopologyError(
             f"kernel {facts['kernel']!r} differs from {runtime['kernel_profile']!r}"
         )
@@ -476,6 +492,21 @@ def verify_host(profile: dict[str, Any]) -> None:
     capacity = int(profile["durable_storage"]["capacity_bytes"])
     if shutil.disk_usage(docker_root).total < capacity:
         raise TopologyError(f"Docker durable storage is smaller than {capacity} bytes")
+    if not portable:
+        return profile
+    kernel = ".".join(str(part) for part in _version_tuple(facts["kernel"])[:2])
+    return {
+        **profile,
+        "runtime": {
+            **runtime,
+            "kernel_profile": f"linux-{kernel}-cgroup-v2",
+            "container_engine": f"docker-{facts['version']}",
+            "containerd_version": facts["containerd_version"],
+            "runc_version": facts["runc_version"],
+            "docker_init_version": facts["docker_init_version"],
+            "storage_driver": facts["storage_driver"],
+        },
+    }
 
 
 def _compose(
@@ -490,8 +521,8 @@ def _compose(
     )
 
 
-def _up(context: dict[str, Any]) -> None:
-    verify_host(context["profile"])
+def _up(context: dict[str, Any], *, portable: bool = False) -> dict[str, Any]:
+    verified_profile = verify_host(context["profile"], portable=portable)
     topology = context["topology"]
     _compose(topology, "pull", "--quiet", timeout=1800)
     try:
@@ -508,6 +539,7 @@ def _up(context: dict[str, Any]) -> None:
         except TopologyError:
             pass
         raise
+    return verified_profile
 
 
 def _wait_for_topology(context: dict[str, Any]) -> None:
@@ -626,7 +658,8 @@ def _execution_environment(context: dict[str, Any]) -> dict[str, str]:
 
 
 def _execute_matrix(
-    context: dict[str, Any], command: str, arguments: list[str]
+    context: dict[str, Any], command: str, arguments: list[str],
+    observed_profile: dict[str, Any] | None = None,
 ) -> None:
     topology = context["topology"]
     load_generator = _container_id(
@@ -643,6 +676,17 @@ def _execute_matrix(
     matrix_arguments = [command, *arguments]
     if "--source-revision" not in matrix_arguments:
         matrix_arguments.extend(["--source-revision", source_revision])
+    docker_environment = _docker_environment()
+    if observed_profile is not None:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=docker_environment["CAPACITY_OUTPUT_ROOT"], delete=False,
+            prefix="local-docker-smoke-host-", suffix=".json", encoding="utf-8",
+        ) as profile_file:
+            json.dump(observed_profile, profile_file, indent=2)
+            profile_file.write("\n")
+        matrix_arguments.extend([
+            "--profile", f"build/capacity-v1/{Path(profile_file.name).name}",
+        ])
     docker_exec = ["docker", "exec", "--interactive", "--workdir", "/workspace"]
     for name, value in sorted(environment.items()):
         docker_exec.extend(["--env", f"{name}={value}"])
@@ -654,7 +698,7 @@ def _execute_matrix(
             *matrix_arguments,
         ]
     )
-    output = _run(docker_exec, environment=_docker_environment(), timeout=7200)
+    output = _run(docker_exec, environment=docker_environment, timeout=7200)
     print(output, end="")
 
 
@@ -667,7 +711,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers.add_parser(
         "run", help="provision, run capacity selections, and tear down"
     )
-    subparsers.add_parser("smoke", help="run the bounded non-publishable live smoke")
+    smoke = subparsers.add_parser("smoke", help="run the bounded non-publishable live smoke")
+    smoke.add_argument(
+        "--portable-host", action="store_true",
+        help="accept newer Linux and Docker versions and record the observed runtime profile",
+    )
     args, remaining = parser.parse_known_args(argv)
     if args.command != "run" and remaining:
         parser.error(f"unrecognized arguments: {' '.join(remaining)}")
@@ -693,12 +741,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         started = False
         try:
-            _up(context)
+            portable = args.command == "smoke" and args.portable_host
+            verified_profile = _up(context, portable=portable)
             started = True
             _execute_matrix(
                 context,
                 "smoke" if args.command == "smoke" else "run",
                 [] if args.command == "smoke" else args.matrix_arguments,
+                observed_profile=verified_profile if portable else None,
             )
         finally:
             if started:

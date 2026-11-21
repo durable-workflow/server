@@ -35,8 +35,17 @@ passes all resolved container identities to the controller and collector,
 executes the five-second simple Python cell, writes
 build/capacity-v1/local-docker-smoke.result.json with qualified=true and
 publishable=false, and always removes its containers, network, and volumes.
+It samples infrastructure at the end of the five-second admission window and
+again after drain so collector calls cannot consume a scheduled start.
 Host, engine, kernel, cgroup, storage, image, resource, network, Server,
 MySQL, or Redis drift stops the run before workload admission.
+
+For a non-publishable smoke on a newer Linux host, pass
+`smoke --portable-host`. It accepts Docker Engine 27.5.1 or newer, Linux 6.8
+or newer, and either the overlay2 or overlayfs Docker storage driver. The
+launcher saves the observed runtime profile alongside the smoke artifacts,
+and the collector verifies it before offering work. Use the reference
+host profile for reportable capacity runs.
 
 Run a declared capacity selection with the same provision-and-cleanup
 lifecycle (omit the selectors for the complete matrix):
