@@ -53,7 +53,7 @@ where
     usize: ColumnIndex<DB::Row>,
 {
     pub(super) async fn definition_context(
-        tx: &mut Transaction<'_, DB>,
+        connection: &mut DB::Connection,
         run: &DB::Row,
         task_queue: Option<&str>,
         required_build_id: Option<String>,
@@ -65,7 +65,7 @@ where
         let started = match started {
             Some(started) => started,
             None => {
-                read = Self::started_payload(&mut **tx, &DB::string(run, "id")?).await?;
+                read = Self::started_payload(&mut *connection, &DB::string(run, "id")?).await?;
                 &read
             }
         };
@@ -86,7 +86,7 @@ where
     /// PHP's status for the decision.
     pub(super) async fn definition_allows(
         &self,
-        tx: &mut Transaction<'_, DB>,
+        connection: &mut DB::Connection,
         run: &DB::Row,
         worker: &DB::Row,
         context: &DefinitionContext,
@@ -105,7 +105,7 @@ where
         if &advertised == recorded {
             return Ok((true, "matching_definition"));
         }
-        for (_, fingerprint, _) in self.definition_peers(tx, run, context).await? {
+        for (_, fingerprint, _) in self.definition_peers(connection, run, context).await? {
             if fingerprint.as_deref() == Some(recorded.as_str()) {
                 return Ok((false, "matching_definition_preferred"));
             }
@@ -125,14 +125,14 @@ where
     /// is its id, advertised fingerprint and capabilities.
     pub(super) async fn definition_peers(
         &self,
-        tx: &mut Transaction<'_, DB>,
+        connection: &mut DB::Connection,
         run: &DB::Row,
         context: &DefinitionContext,
     ) -> Result<Vec<(String, Option<String>, Value)>> {
         let rows = Self::query("SELECT worker_id,build_id,status,last_heartbeat_at,workflow_definition_fingerprints,supported_workflow_types,max_concurrent_workflow_tasks,capabilities,process_metrics FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND status='active' ORDER BY worker_id")
             .bind(&context.namespace)
             .bind(&context.task_queue)
-            .fetch_all(&mut **tx)
+            .fetch_all(&mut *connection)
             .await?;
         let mut peers = Vec::new();
         for row in rows {
@@ -149,7 +149,7 @@ where
             {
                 continue;
             }
-            if !self.replay_eligible(tx, run, &row).await? {
+            if !self.replay_eligible(connection, run, &row).await? {
                 continue;
             }
             let fingerprint = DB::optional_document_row(&row, "workflow_definition_fingerprints")?
@@ -162,7 +162,7 @@ where
 
     /// `WorkflowReplayEligibility::allows` for a registered worker, with the
     /// protocol version it last registered or heartbeated with.
-    async fn replay_eligible(&self, tx: &mut Transaction<'_, DB>, run: &DB::Row, worker: &DB::Row) -> Result<bool> {
+    async fn replay_eligible(&self, connection: &mut DB::Connection, run: &DB::Row, worker: &DB::Row) -> Result<bool> {
         // `WorkerPollFence::isFresh`: active, with a heartbeat inside the
         // stale window.
         let fresh = DB::string(worker, "status")? == "active"
@@ -186,7 +186,7 @@ where
         if !has_capability(&capabilities, "memo_upserts")
             && Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='MemoUpserted'")
                 .bind(&run_id)
-                .fetch_one(&mut **tx)
+                .fetch_one(&mut *connection)
                 .await?
                 > 0
         {
@@ -195,7 +195,7 @@ where
         if !has_capability(&capabilities, super::search_attribute_upserts::CAPABILITY) {
             let typed = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SearchAttributesUpserted' ORDER BY sequence LIMIT 1001")
                 .bind(&run_id)
-                .fetch_all(&mut **tx)
+                .fetch_all(&mut *connection)
                 .await?;
             for event in &typed {
                 if DB::document_row(event, "payload")?.get("attribute_types").is_some() {

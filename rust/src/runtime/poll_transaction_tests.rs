@@ -158,8 +158,34 @@ store_methods! {
         assert_eq!(full.len(),12);
         let ids = |rows: &[DB::Row]| rows.iter().map(|row| DB::string(row,"id").unwrap()).collect::<Vec<_>>();
         assert_eq!(ids(&first),ids(&full[..first.len()]));
+
+        let candidate = &first[0];
+        let run_id = DB::string(candidate, "workflow_run_id").unwrap();
+        let task_id = DB::string(candidate, "id").unwrap();
+        let mut connection = self.pool.acquire().await.unwrap();
+        let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
+            .bind(&run_id).fetch_one(&mut *connection).await.unwrap();
+        let worker = Self::query("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
+            .bind("count-worker").bind(self.namespace.as_ref()).fetch_one(&mut *connection).await.unwrap();
+        let payload = DB::document_row(candidate, "payload").unwrap();
+        let types = DB::document_row(&worker, "supported_workflow_types").unwrap();
+        self.count_reset();
+        assert!(self.task_eligibility(
+            &mut connection, candidate, &payload, &run, &worker, &types, "workflow", "counted", "1.20",
+        ).await.unwrap().is_some());
+        assert_eq!(self.count_get(), 0, "looking at task eligibility must not acquire a transition");
+        let after = Self::query("SELECT status,attempt_count,lease_owner FROM workflow_tasks WHERE id=$1")
+            .bind(&task_id).fetch_one(&mut *connection).await.unwrap();
+        assert_eq!(DB::string(&after, "status").unwrap(), "ready");
+        assert_eq!(DB::number(&after, "attempt_count").unwrap(), 0);
+        assert!(DB::optional_string(&after, "lease_owner").unwrap().is_none());
+        let sequence = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
+            .bind(&run_id).fetch_one(&mut *connection).await.unwrap();
+        assert_eq!(DB::number(&sequence, "last_history_sequence").unwrap(), DB::number(&run, "last_history_sequence").unwrap());
+        drop(connection);
+
         let (answer, statements) = super::sql_counts::measure(self.count_poll("first-batch-poll",false)).await;
-        assert_eq!(answer["task"]["task_id"],DB::string(&first[0],"id").unwrap());
+        assert_eq!(answer["task"]["task_id"], task_id);
         assert_eq!(statements.count(DB::FIRST_TASK_CANDIDATES_SQL),1);
         assert_eq!(statements.count(DB::TASK_CANDIDATES_SQL),0,"a claimable first batch must avoid the full page");
         for run in runs {
