@@ -67,6 +67,18 @@ async fn ready_type_coverage_agrees_between_queues_and_operator_metrics() {
         .find(|queue| queue["name"] == "coverage").unwrap();
     assert_eq!(&listed["stats"]["type_coverage"], coverage);
 
+    let (status, page) = request(&app, "GET", "/api/workflows?page_size=20", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let by_workflow = |id: &str| page["workflows"].as_array().unwrap().iter()
+        .find(|run| run["workflow_id"] == id).unwrap();
+    assert_eq!(by_workflow("coverage-unserved")["unsupported_ready_task"],
+        json!({"task_queue":"coverage","task_kind":"workflow","type":"echo"}));
+    assert_eq!(by_workflow("coverage-activity-unserved")["unsupported_ready_task"],
+        json!({"task_queue":"coverage","task_kind":"activity","type":"greet"}));
+    for id in ["coverage-served", "coverage-delayed", "coverage-unpolled", "coverage-activity-served"] {
+        assert_eq!(by_workflow(id)["unsupported_ready_task"], Value::Null, "{id}");
+    }
+
     let all = metrics(&app).await["backlog"]["type_coverage"].clone();
     assert_eq!(all["unsupported_type_count"], 2);
     assert_eq!(all["no_active_poller_count"], 1);

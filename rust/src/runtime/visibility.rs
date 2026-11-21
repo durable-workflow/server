@@ -523,9 +523,16 @@ where
         };
         let more = rows.len() > filter.limit as usize;
         let mut workflows = Vec::new();
-        let mut connection = self.pool.acquire().await?;
         let page = &rows[..rows.len().min(filter.limit as usize)];
         let run_ids = page.iter().map(|row| DB::string(row, "id")).collect::<Result<Vec<_>>>()?;
+        let mut open_run_ids = Vec::new();
+        for (row, run_id) in page.iter().zip(&run_ids) {
+            if status_bucket(&DB::string(row, "status")?)? == "running" {
+                open_run_ids.push(run_id.clone());
+            }
+        }
+        let mut unsupported_ready = self.unsupported_ready_tasks_for_runs(&open_run_ids, super::store::now()).await?;
+        let mut connection = self.pool.acquire().await?;
         let mut attention = self.task_attention_for_runs(&mut connection, &run_ids).await?;
         for (row, run_id) in page.iter().zip(run_ids) {
             if DB::optional_string(row, "compatibility")?.is_some() {
@@ -534,6 +541,7 @@ where
             let status = DB::string(row, "status")?;
             let bucket = status_bucket(&status)?;
             let task_attention = attention.remove(&run_id).unwrap_or(Value::Null);
+            let unsupported_ready_task = unsupported_ready.remove(&run_id);
             // `getTypedSearchAttributes`; PHP renders an empty set as `[]`.
             let typed = Self::typed_rows(&mut connection, &run_id).await?;
             let search_attributes = if typed.is_empty() {
@@ -547,7 +555,8 @@ where
                 "is_terminal":bucket!="running", "compatibility":null, "compatibility_status":"compatible",
                 "compatibility_supported_in_fleet":true, "compatibility_fleet_reason":null,
                 "started_at":super::task_queues::json_time(DB::optional_instant(row,"started_at")?), "closed_at":super::task_queues::json_time(DB::optional_instant(row,"closed_at")?),
-                "search_attributes":search_attributes,"task_attention":task_attention}));
+                "search_attributes":search_attributes,"task_attention":task_attention,
+                "unsupported_ready_task":unsupported_ready_task}));
         }
         let next =
             more.then(|| STANDARD.encode((filter.offset.saturating_add(filter.limit)).to_string()));
