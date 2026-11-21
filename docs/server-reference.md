@@ -1736,6 +1736,18 @@ restart the traversal without a token in that case.
 ### Task Queues
 - `GET /api/task-queues` — List task queues
 - `GET /api/task-queues/{name}` — Task queue details, pollers, and recent add/dispatch flow
+
+Native Server reports `stats.type_coverage` on both task queue responses and
+`operator_metrics.backlog.type_coverage` on `GET /api/system/operator-metrics`.
+It counts due workflow and activity tasks for open runs. The report separates
+tasks on queues without active pollers (`no_active_poller_count`) from tasks
+whose exact, case-sensitive type is absent from the active registrations
+(`unsupported_type_count`). Tasks without enough stored identity to classify
+are counted in `unclassified_count`. The `by_type` list gives counts by
+queue, task kind, type, and reason. It contains up to `type_limit` entries.
+`types_truncated` indicates additional groups, which are included in the
+totals. Type coverage only describes advertised types. Worker capacity, build
+compatibility, and dispatch pauses have their own diagnostics.
 - `GET /api/task-queues/{name}/activity-dispatch` — Whether activity dispatch on the queue is paused (native only)
 - `POST /api/task-queues/{name}/activity-dispatch/pause` — Pause activity dispatch, with an optional `reason` (native only)
 - `POST /api/task-queues/{name}/activity-dispatch/resume` — Resume activity dispatch (native only)

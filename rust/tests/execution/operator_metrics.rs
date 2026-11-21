@@ -10,6 +10,73 @@ async fn metrics(app: &Router) -> Value {
     body["operator_metrics"].clone()
 }
 
+#[tokio::test]
+async fn ready_type_coverage_agrees_between_queues_and_operator_metrics() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    for (worker, queue, workflows, activities) in [
+        ("coverage-active", "coverage", json!(["Echo"]), json!(["Greet"])),
+        ("coverage-stale", "coverage", json!(["echo"]), json!([])),
+        ("coverage-draining", "coverage", json!([]), json!(["greet"])),
+        ("coverage-other", "another-queue", json!(["echo"]), json!(["greet"])),
+    ] {
+        let (status, body) = request(&app, "POST", "/api/worker/register", json!({
+            "worker_id": worker, "task_queue": queue, "runtime": "rust",
+            "supported_workflow_types": workflows, "supported_activity_types": activities,
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    database.execute("UPDATE workflow_worker_registrations SET last_heartbeat_at='2000-01-01 00:00:00' WHERE worker_id='coverage-stale'").await;
+    database.execute("UPDATE workflow_worker_registrations SET status='draining' WHERE worker_id='coverage-draining'").await;
+    for (id, kind, queue) in [
+        ("coverage-served", "Echo", "coverage"),
+        ("coverage-unserved", "echo", "coverage"),
+        ("coverage-delayed", "echo", "coverage"),
+        ("coverage-unpolled", "Echo", "without-pollers"),
+    ] {
+        let (status, body) = request(&app, "POST", "/api/workflows", json!({
+            "workflow_id": id, "workflow_type": kind, "task_queue": queue,
+            "input": envelope(Payload::Array(vec![])),
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    database.execute("UPDATE workflow_tasks SET available_at='2030-01-01 00:00:00' WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE workflow_instance_id='coverage-delayed')").await;
+    for (id, kind) in [("coverage-activity-served", "Greet"), ("coverage-activity-unserved", "greet")] {
+        let (status, body) = request(&app, "POST", "/api/activities", json!({
+            "activity_id": id, "activity_type": kind, "task_queue": "coverage",
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    let (status, described) = request(&app, "GET", "/api/task-queues/coverage", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    let coverage = &described["stats"]["type_coverage"];
+    let expected = json!([
+        {"task_queue":"coverage","task_kind":"activity","type":"greet","ready_count":1,"reason":"unsupported_type"},
+        {"task_queue":"coverage","task_kind":"workflow","type":"echo","ready_count":1,"reason":"unsupported_type"},
+    ]);
+    assert_eq!(coverage["by_type"], expected);
+    assert_eq!(coverage["unsupported_type_count"], 2);
+    assert_eq!(coverage["no_active_poller_count"], 0);
+    assert_eq!(coverage["unclassified_count"], 0);
+    assert_eq!(coverage["types_truncated"], false);
+
+    let (status, listed) = request(&app, "GET", "/api/task-queues", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let listed = listed["task_queues"].as_array().unwrap().iter()
+        .find(|queue| queue["name"] == "coverage").unwrap();
+    assert_eq!(&listed["stats"]["type_coverage"], coverage);
+
+    let all = metrics(&app).await["backlog"]["type_coverage"].clone();
+    assert_eq!(all["unsupported_type_count"], 2);
+    assert_eq!(all["no_active_poller_count"], 1);
+    assert_eq!(&all["by_type"].as_array().unwrap()[..2], expected.as_array().unwrap());
+    assert_eq!(all["by_type"][2], json!({
+        "task_queue":"without-pollers","task_kind":"workflow","type":"Echo",
+        "ready_count":1,"reason":"no_active_pollers",
+    }));
+}
+
 fn warnings(health: &Value) -> Vec<String> {
     health["health"]["checks"]
         .as_array()

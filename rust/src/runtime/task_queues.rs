@@ -16,9 +16,10 @@ use super::{
     store::{Store, now},
 };
 use chrono::{DateTime, Duration, Utc};
+use futures_util::TryStreamExt;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const CURRENT_LEASE_LIMIT: usize = 50;
 /// `TaskRepairPolicy::REDISPATCH_AFTER_SECONDS`.
@@ -26,6 +27,64 @@ const REDISPATCH_AFTER_SECONDS: i64 = 3;
 /// The pending query-task bound native enforces (`queries::MAX_PENDING`).
 const QUERY_PENDING_LIMIT: i64 = 16;
 const TASK_TYPES: [&str; 2] = ["workflow", "activity"];
+
+const TYPE_LIMIT: usize = 100;
+
+macro_rules! ready_types {
+    ($activity_id:literal, $availability:literal, $group:literal, $order:literal, $queue:literal) => {
+        concat!(
+            "SELECT task_queue, task_kind, type_name, COUNT(*) AS task_count FROM (",
+            "SELECT t.queue AS task_queue, t.task_type AS task_kind, ",
+            "CASE WHEN t.task_type='workflow' THEN r.workflow_type ELSE a.activity_type END AS type_name ",
+            "FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id ",
+            "LEFT JOIN activity_executions a ON t.task_type='activity' ",
+            "AND a.id=", $activity_id, " AND a.workflow_run_id=r.id AND a.status IN ('pending','running') ",
+            "WHERE t.namespace=$1 AND t.status='ready' AND t.task_type IN ('workflow','activity') ",
+            "AND r.status IN ('pending','running','waiting') ",
+            "AND (t.available_at IS NULL OR ", $availability, "<=$2)", $queue, ") AS ready_types ",
+            "GROUP BY task_queue, task_kind, type_name", $group, $order,
+        )
+    };
+}
+
+macro_rules! ready_types_sqlite {
+    ($queue:literal) => {
+        ready_types!(
+            "CASE WHEN json_valid(t.payload) THEN json_extract(t.payload,'$.activity_execution_id') END",
+            "replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','')",
+            "", " ORDER BY task_queue, task_kind, type_name", $queue
+        )
+    };
+}
+
+macro_rules! ready_types_postgres {
+    ($queue:literal) => {
+        ready_types!(
+            "(t.payload->>'activity_execution_id')",
+            "t.available_at",
+            "",
+            " ORDER BY task_queue, task_kind, type_name",
+            $queue
+        )
+    };
+}
+
+macro_rules! ready_types_mysql {
+    ($queue:literal) => {
+        ready_types!(
+            "CASE WHEN JSON_VALID(t.payload) THEN JSON_UNQUOTE(JSON_EXTRACT(t.payload,'$.activity_execution_id')) END",
+            "t.available_at",
+            ", BINARY task_queue, BINARY type_name",
+            " ORDER BY BINARY task_queue, task_kind, BINARY type_name", $queue
+        )
+    };
+}
+
+#[derive(Default)]
+struct AdvertisedTypes {
+    workflows: BTreeSet<String>,
+    activities: BTreeSet<String>,
+}
 
 /// Carbon's `toJSON()`.
 pub(super) fn json_time(time: Option<DateTime<Utc>>) -> Value {
@@ -46,7 +105,7 @@ fn age_ms(time: Option<DateTime<Utc>>, at: DateTime<Utc>) -> i64 {
 }
 
 /// `StandaloneWorkerVisibility::stringList`: trimmed, unique and sorted.
-fn string_list(value: Option<Value>) -> Value {
+fn registration_types(value: Option<Value>) -> BTreeSet<String> {
     let values = match value {
         Some(Value::Array(values)) => values,
         Some(Value::String(text)) => serde_json::from_str::<Value>(&text)
@@ -55,14 +114,13 @@ fn string_list(value: Option<Value>) -> Value {
             .unwrap_or_else(|| text.split(',').map(|part| json!(part)).collect()),
         _ => vec![],
     };
-    let unique: BTreeSet<String> = values
+    values
         .iter()
         .filter_map(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_owned)
-        .collect();
-    json!(unique)
+        .collect()
 }
 
 /// `TaskQueueController::taskAdmission` under PHP's default unlimited
@@ -135,8 +193,8 @@ where
         Ok(json!({"worker_id":text("worker_id")?,"runtime":text("runtime")?,"sdk_version":text("sdk_version")?,
             "build_id":text("build_id")?,"last_heartbeat_at":json_time(heartbeat),"heartbeat_expires_at":json_time(deadline),
             "status":if stale { "stale".to_owned() } else { stored },"is_stale":stale,
-            "supported_workflow_types":string_list(DB::optional_document_row(row, "supported_workflow_types")?),
-            "supported_activity_types":string_list(DB::optional_document_row(row, "supported_activity_types")?),
+            "supported_workflow_types":registration_types(DB::optional_document_row(row, "supported_workflow_types")?),
+            "supported_activity_types":registration_types(DB::optional_document_row(row, "supported_activity_types")?),
             "max_concurrent_workflow_tasks":DB::optional_number(row, "max_concurrent_workflow_tasks")?.unwrap_or(0).max(0),
             "max_concurrent_activity_tasks":DB::optional_number(row, "max_concurrent_activity_tasks")?.unwrap_or(0).max(0)}))
     }
@@ -158,6 +216,140 @@ where
                 .then_with(|| left["worker_id"].as_str().unwrap_or("").cmp(right["worker_id"].as_str().unwrap_or("")))
         });
         Ok(pollers)
+    }
+
+    /// Queue and namespace views use the same single-snapshot classification.
+    /// Totals cover every matching group. The detailed series is bounded.
+    pub(super) async fn ready_task_type_coverage(
+        &self,
+        queue: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> Result<Value> {
+        const WORKERS: &str = concat!(
+            "SELECT namespace,task_queue,status,last_heartbeat_at,supported_workflow_types,supported_activity_types ",
+            "FROM workflow_worker_registrations WHERE namespace=$1 AND last_heartbeat_at>$2 AND status='active'",
+        );
+        const QUEUE_WORKERS: &str = concat!(
+            "SELECT namespace,task_queue,status,last_heartbeat_at,supported_workflow_types,supported_activity_types ",
+            "FROM workflow_worker_registrations WHERE namespace=$1 AND last_heartbeat_at>$2 AND status='active' AND task_queue=$3",
+        );
+        let cutoff = at - Duration::seconds(self.worker_stale_after_seconds.max(1));
+        let mut tx = self.begin_repeatable_read().await?;
+        let workers = Self::query(if queue.is_some() {
+            QUEUE_WORKERS
+        } else {
+            WORKERS
+        })
+        .bind(self.namespace.as_ref())
+        .bind(DB::bind_time(cutoff));
+        let workers = match queue {
+            Some(queue) => workers.bind(queue),
+            None => workers,
+        };
+        let mut advertised = BTreeMap::<String, AdvertisedTypes>::new();
+        {
+            let mut rows = workers.fetch(&mut *tx);
+            while let Some(row) = rows.try_next().await? {
+                let Some(task_queue) = DB::optional_string(&row, "task_queue")? else {
+                    continue;
+                };
+                // The database can use a case-insensitive collation, and
+                // older SQLite timestamps can use an RFC3339 separator.
+                if DB::string(&row, "namespace")? != self.namespace.as_ref()
+                    || queue.is_some_and(|selected| selected != task_queue)
+                    || DB::string(&row, "status")? != "active"
+                    || DB::optional_instant(&row, "last_heartbeat_at")?
+                        .is_none_or(|seen| seen <= cutoff)
+                {
+                    continue;
+                }
+                let types = advertised.entry(task_queue).or_default();
+                for (field, names) in [
+                    ("supported_workflow_types", &mut types.workflows),
+                    ("supported_activity_types", &mut types.activities),
+                ] {
+                    names.extend(registration_types(DB::optional_document_row(&row, field)?));
+                }
+            }
+        }
+
+        let query_sql = match (DB::PHP_CONNECTION, queue.is_some()) {
+            ("sqlite", false) => ready_types_sqlite!(""),
+            ("sqlite", true) => ready_types_sqlite!(" AND t.queue=$3"),
+            ("mysql", false) => ready_types_mysql!(" AND BINARY t.namespace=BINARY $3"),
+            ("mysql", true) => {
+                ready_types_mysql!(" AND BINARY t.namespace=BINARY $3 AND t.queue=$4")
+            }
+            (_, false) => ready_types_postgres!(""),
+            (_, true) => ready_types_postgres!(" AND t.queue=$3"),
+        };
+        let tasks = Self::query(query_sql)
+            .bind(self.namespace.as_ref())
+            .bind(DB::bind_time(at));
+        let tasks = if DB::PHP_CONNECTION == "mysql" {
+            tasks.bind(self.namespace.as_ref())
+        } else {
+            tasks
+        };
+        let tasks = match queue {
+            Some(queue) => tasks.bind(queue),
+            None => tasks,
+        };
+        let mut by_type = Vec::new();
+        let mut types_truncated = false;
+        let mut without_pollers = 0;
+        let mut unsupported = 0;
+        let mut unclassified = 0;
+        {
+            let mut rows = tasks.fetch(&mut *tx);
+            while let Some(row) = rows.try_next().await? {
+                let selected = DB::optional_string(&row, "task_queue")?;
+                if queue.is_some() && queue != selected.as_deref() {
+                    continue;
+                }
+                let count = DB::number(&row, "task_count")?;
+                let (Some(task_queue), Some(type_name)) =
+                    (selected, DB::optional_string(&row, "type_name")?)
+                else {
+                    unclassified += count;
+                    continue;
+                };
+                let kind = DB::string(&row, "task_kind")?;
+                let reason = match advertised.get(&task_queue) {
+                    None => {
+                        without_pollers += count;
+                        "no_active_pollers"
+                    }
+                    Some(types) => {
+                        let supported = if kind == "workflow" {
+                            &types.workflows
+                        } else {
+                            &types.activities
+                        };
+                        if supported.contains(&type_name) {
+                            continue;
+                        }
+                        unsupported += count;
+                        "unsupported_type"
+                    }
+                };
+                if by_type.len() < TYPE_LIMIT {
+                    by_type.push(json!({"task_queue": task_queue, "task_kind": kind,
+                        "type": type_name, "ready_count": count, "reason": reason}));
+                } else {
+                    types_truncated = true;
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(json!({
+            "no_active_poller_count": without_pollers,
+            "unsupported_type_count": unsupported,
+            "unclassified_count": unclassified,
+            "by_type": by_type,
+            "type_limit": TYPE_LIMIT,
+            "types_truncated": types_truncated,
+        }))
     }
 
     /// Workflow and activity task counts for one condition.
@@ -385,6 +577,7 @@ where
         let base = self.queue_detail(queue, config).await?;
         let pollers: Vec<Value> = base["pollers"].as_array().cloned().unwrap_or_default();
         let mut stats = base["stats"].clone();
+        stats["type_coverage"] = self.ready_task_type_coverage(Some(queue), at).await?;
         stats["activity_attempts"] = self.activity_attempt_counts(queue).await?;
         let repair = base["repair"].clone();
         let active = self.grouped_counts("active_leases", queue, at).await?;
@@ -465,8 +658,8 @@ mod tests {
         assert_eq!(age_label(Some(125)), json!("2m05s"));
         assert_eq!(age_label(Some(3725)), json!("1h02m05s"));
         assert_eq!(age_label(None), Value::Null);
-        assert_eq!(string_list(Some(json!([" b", "a", "b", 7]))), json!(["a", "b"]));
-        assert_eq!(string_list(Some(json!("[\"x\",\"y\"]"))), json!(["x", "y"]));
+        assert_eq!(json!(registration_types(Some(json!([" b", "a", "b", 7])))), json!(["a", "b"]));
+        assert_eq!(json!(registration_types(Some(json!("[\"x\",\"y\"]")))), json!(["x", "y"]));
     }
 
     #[test]
