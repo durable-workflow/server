@@ -20,6 +20,14 @@ pub(super) struct PreparedControlArguments {
     pub(super) value: String,
     pub(super) command: String,
 }
+pub(super) struct TaskEligibility<Row> {
+    activity: Option<Row>,
+    activity_queue: String,
+    cancellation: Option<Value>,
+    session: Option<super::worker_sessions::CommandSession>,
+    type_name: String,
+}
+
 /// The events PHP's Workflow package records with the task model in hand,
 /// which therefore carry the task's snapshot.
 const TASK_SNAPSHOT_EVENTS: &[&str] = &[
@@ -2708,6 +2716,121 @@ where
         self.claim_with_registration(tx,body,kind,protocol_version,page,poll_request,None).await
     }
 
+    /// Read the worker and execution conditions for a candidate. Timeout
+    /// cleanup, session admission and lease effects belong to the caller.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn task_eligibility(
+        &self,
+        connection: &mut DB::Connection,
+        task: &DB::Row,
+        task_payload: &Value,
+        run: &DB::Row,
+        worker: &DB::Row,
+        types: &Value,
+        kind: &str,
+        queue: &str,
+        protocol_version: &str,
+    ) -> Result<Option<TaskEligibility<DB::Row>>> {
+        let run_id = DB::string(task, "workflow_run_id")?;
+        let cancellation = Self::cancellation_request(run)?;
+        if cancellation.is_some()
+            && (DB::optional_instant(run, "cancellation_deadline_at")?
+                .is_none_or(|deadline| deadline <= now())
+                || kind == "workflow"
+                    && (!super::cooperative::supports(
+                        &DB::optional_document_row(worker, "capabilities")?
+                            .unwrap_or(Value::Null),
+                        protocol_version,
+                    ) || DB::string(worker, "status")? != "active"
+                        || DB::instant(worker, "last_heartbeat_at")?
+                            <= now() - chrono::Duration::seconds(60)))
+        {
+            return Ok(None);
+        }
+        // `matchesRecordedWorkflowDefinition`: a run pinned to its recorded
+        // definition goes to a worker that has it, while one is live.
+        if kind == "workflow" {
+            let required = DB::optional_string(task, "compatibility")?
+                .map(|build| build.trim().to_owned())
+                .filter(|build| !build.is_empty());
+            let context = Self::definition_context(connection, run, Some(queue), required, None).await?;
+            if !self.definition_allows(connection, run, worker, &context).await?.0 {
+                return Ok(None);
+            }
+        }
+        if kind == "workflow"
+            && let Some(update_id) = task_payload["workflow_update_id"].as_str()
+        {
+            let update = Self::query("SELECT update_name FROM workflow_updates WHERE id=$1 AND workflow_run_id=$2 AND status='accepted'")
+                .bind(update_id).bind(&run_id).fetch_optional(&mut *connection).await?;
+            let Some(update) = update else {
+                return Ok(None);
+            };
+            if !Self::update_worker_supported(
+                worker,
+                &DB::string(task, "workflow_type")?,
+                &DB::string(&update, "update_name")?,
+            )? {
+                return Ok(None);
+            }
+        }
+        let activity = if kind == "activity" {
+            Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
+                .bind(text(task_payload, "activity_execution_id")?)
+                .bind(&run_id)
+                .fetch_optional(&mut *connection)
+                .await?
+        } else {
+            None
+        };
+        if let Some(activity) = activity.as_ref() {
+            if !matches!(
+                DB::string(activity, "status")?.as_str(),
+                "pending" | "running"
+            ) || super::activity_deadlines::expired_kind::<DB>(activity, now())?.is_some()
+            {
+                // The timeout sweep owns this original deadline. A claim
+                // cannot erase it by starting another attempt.
+                return Ok(None);
+            }
+        }
+        let type_name = activity.as_ref().map_or_else(
+            || DB::string(task, "workflow_type"),
+            |a| DB::string(a, "activity_type"),
+        )?;
+        if !types
+            .as_array()
+            .is_some_and(|list| list.iter().any(|v| v.as_str() == Some(&type_name)))
+        {
+            return Ok(None);
+        }
+        // `workerCanSatisfySession`: a session-bound activity goes only to
+        // a worker on protocol 1.8 or newer, on the session's queue, with
+        // every requirement among its capabilities.
+        let session = match activity.as_ref() {
+            Some(activity) => DB::optional_document_row(activity, "activity_options")?
+                .and_then(|options| super::worker_sessions::CommandSession::from_snapshot(&options["worker_session"])),
+            None => None,
+        };
+        let activity_queue = match activity.as_ref() {
+            Some(activity) => DB::optional_string(activity, "queue")?.unwrap_or_else(|| queue.to_owned()),
+            None => queue.to_owned(),
+        };
+        if let Some(session) = &session {
+            let capabilities: Vec<String> = DB::optional_document_row(worker, "capabilities")?
+                .as_ref()
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect();
+            if !session.claimable_by(protocol_version, &DB::string(worker, "task_queue")?, &activity_queue, &capabilities) {
+                return Ok(None);
+            }
+        }
+        Ok(Some(TaskEligibility { activity, activity_queue, cancellation, session, type_name }))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn claim_with_registration(
         &self,
@@ -2883,103 +3006,14 @@ where
                 run = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut **tx).await?;
             }
             tx.remember_run_tags(&run_id,&run);
-            let cancellation = Self::cancellation_request(&run)?;
-            if cancellation.is_some()
-                && (DB::optional_instant(&run, "cancellation_deadline_at")?
-                    .is_none_or(|deadline| deadline <= now())
-                    || kind == "workflow"
-                        && (!super::cooperative::supports(
-                            &DB::optional_document_row(&worker, "capabilities")?
-                                .unwrap_or(Value::Null),
-                            protocol_version,
-                        ) || DB::string(&worker, "status")? != "active"
-                            || DB::instant(&worker, "last_heartbeat_at")?
-                                <= now() - chrono::Duration::seconds(60)))
-            {
+            let Some(TaskEligibility { activity, activity_queue, cancellation, session, type_name }) = self
+                .task_eligibility(
+                    &mut **tx, &task, &task_payload, &run, &worker, &types, kind, queue, protocol_version,
+                )
+                .await?
+            else {
                 continue;
-            }
-            // `matchesRecordedWorkflowDefinition`: a run pinned to its recorded
-            // definition goes to a worker that has it, while one is live.
-            if kind == "workflow" {
-                let required = DB::optional_string(&task, "compatibility")?
-                    .map(|build| build.trim().to_owned())
-                    .filter(|build| !build.is_empty());
-                let context = Self::definition_context(tx, &run, Some(queue), required, None).await?;
-                if !self.definition_allows(tx, &run, &worker, &context).await?.0 {
-                    continue;
-                }
-            }
-            if kind == "workflow"
-                && let Some(update_id) = task_payload["workflow_update_id"].as_str()
-            {
-                let update = Self::query("SELECT update_name FROM workflow_updates WHERE id=$1 AND workflow_run_id=$2 AND status='accepted'")
-                    .bind(update_id).bind(&run_id).fetch_optional(&mut **tx).await?;
-                let Some(update) = update else {
-                    continue;
-                };
-                if !Self::update_worker_supported(
-                    &worker,
-                    &DB::string(&task, "workflow_type")?,
-                    &DB::string(&update, "update_name")?,
-                )? {
-                    continue;
-                }
-            }
-            let activity = if kind == "activity" {
-                let payload: Value = DB::document_row(&task, "payload")?;
-                Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
-                    .bind(text(&payload, "activity_execution_id")?)
-                    .bind(&run_id)
-                    .fetch_optional(&mut **tx)
-                    .await?
-            } else {
-                None
             };
-            if let Some(activity) = activity.as_ref() {
-                if !matches!(
-                    DB::string(activity, "status")?.as_str(),
-                    "pending" | "running"
-                ) || super::activity_deadlines::expired_kind::<DB>(activity, now())?.is_some()
-                {
-                    // The timeout sweep owns this original deadline. A claim
-                    // cannot erase it by starting another attempt.
-                    continue;
-                }
-            }
-            let type_name = activity.as_ref().map_or_else(
-                || DB::string(&task, "workflow_type"),
-                |a| DB::string(a, "activity_type"),
-            )?;
-            if !types
-                .as_array()
-                .is_some_and(|list| list.iter().any(|v| v.as_str() == Some(&type_name)))
-            {
-                continue;
-            }
-            // `workerCanSatisfySession`: a session-bound activity goes only to
-            // a worker on protocol 1.8 or newer, on the session's queue, with
-            // every requirement among its capabilities.
-            let session = match activity.as_ref() {
-                Some(activity) => DB::optional_document_row(activity, "activity_options")?
-                    .and_then(|options| super::worker_sessions::CommandSession::from_snapshot(&options["worker_session"])),
-                None => None,
-            };
-            let activity_queue = match activity.as_ref() {
-                Some(activity) => DB::optional_string(activity, "queue")?.unwrap_or_else(|| queue.to_owned()),
-                None => queue.to_owned(),
-            };
-            if let Some(session) = &session {
-                let capabilities: Vec<String> = DB::optional_document_row(&worker, "capabilities")?
-                    .as_ref()
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|value| value.as_str().map(str::to_owned))
-                    .collect();
-                if !session.claimable_by(protocol_version, &DB::string(&worker, "task_queue")?, &activity_queue, &capabilities) {
-                    continue;
-                }
-            }
             let task_id = DB::string(&task, "id")?;
             // `admitActivity`: the session admits the claim or the claim is
             // rolled back, so a held or full session leaves the task ready.
@@ -2999,7 +3033,7 @@ where
             let attempt = DB::number(&task, "attempt_count")?
                 .checked_add(1)
                 .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_attempt_exhausted"))?;
-            let expires = if kind == "activity" && Self::cancellation_request(&run)?.is_none() {
+            let expires = if kind == "activity" && cancellation.is_none() {
                 now() + chrono::Duration::seconds(self.activity_task_lease_seconds)
             } else {
                 self.cancellation_lease_expiry(&run)?
