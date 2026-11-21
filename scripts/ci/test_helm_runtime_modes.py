@@ -134,6 +134,14 @@ class NativeModeTest(unittest.TestCase):
         volume = next(item for item in server["spec"]["template"]["spec"]["volumes"] if item["name"] == "server-storage")
         self.assertEqual(volume, {"name": "server-storage", "persistentVolumeClaim": {"claimName": "durable-workflow-payloads"}})
 
+    def test_read_only_native_uses_the_existing_payload_mount(self):
+        resources = render("--set", "server.containerSecurityContext.readOnlyRootFilesystem=true")
+        pod = named(resources, "Deployment", "-server")["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+        self.assertIs(container["securityContext"]["readOnlyRootFilesystem"], True)
+        self.assertEqual(container["volumeMounts"], [{"name": "server-storage", "mountPath": "/app/storage"}])
+        self.assertNotIn("APP_CONFIG_CACHE", {entry["name"] for entry in container["env"]})
+
     def test_schema_upgrade_hook_is_never_rendered_unchecked(self):
         """The hook needs live proof that every Server is stopped.
 
@@ -241,6 +249,52 @@ class PhpModeTest(unittest.TestCase):
         self.assertEqual(server["spec"]["template"]["spec"]["containers"][0]["livenessProbe"]["httpGet"]["path"], "/api/health")
         self.assertNotIn("terminationGracePeriodSeconds", server["spec"]["template"]["spec"])
         self.assertIn("PodDisruptionBudget", {item["kind"] for item in resources})
+
+    def test_read_only_php_roles_mount_only_their_runtime_paths(self):
+        roles = (("Deployment", "server"), ("Deployment", "worker"), ("CronJob", "scheduler"), ("Job", "migrate"))
+        options = [
+            argument
+            for role in ("server", "worker", "scheduler", "bootstrap")
+            for argument in ("--set", f"{role}.containerSecurityContext.readOnlyRootFilesystem=true")
+        ]
+        for read_only in (False, True):
+            resources = render_unique(*(options if read_only else []), values=PHP)
+            for kind, role in roles:
+                with self.subTest(role=role, read_only=read_only):
+                    spec = named(resources, kind, f"-{role}")["spec"]
+                    if kind == "CronJob":
+                        spec = spec["jobTemplate"]["spec"]
+                    pod = spec["template"]["spec"]
+                    container = pod["containers"][0]
+                    env = [entry for entry in container["env"] if entry["name"] == "APP_CONFIG_CACHE"]
+                    mounts = {mount["mountPath"]: mount["name"] for mount in container.get("volumeMounts", [])}
+                    expected = set()
+                    if read_only:
+                        self.assertIs(container["securityContext"]["readOnlyRootFilesystem"], True)
+                        self.assertEqual(env, [{"name": "APP_CONFIG_CACHE", "value": "/tmp/durable-workflow-config.php"}])
+                        expected = {"/tmp", "/var/run/apache2"} if role == "server" else {"/tmp"}
+                    else:
+                        self.assertEqual(env, [])
+                    self.assertEqual(set(mounts), expected)
+                    self.assertEqual(pod.get("volumes", []), [
+                        {"name": name, "emptyDir": {}} for name in mounts.values()
+                    ])
+
+    def test_read_only_php_preserves_explicit_mounts_and_cache_path(self):
+        resources = render_unique(
+            "--set", "server.containerSecurityContext.readOnlyRootFilesystem=true",
+            "--set-json", 'server.extraVolumes=[{"name":"own-temp","emptyDir":{"sizeLimit":"64Mi"}}]',
+            "--set-json", 'server.extraVolumeMounts=[{"name":"own-temp","mountPath":"/tmp"}]',
+            "--set-json", 'server.extraEnv=[{"name":"APP_CONFIG_CACHE","value":"/tmp/custom.php"}]',
+            values=PHP,
+        )
+        pod = named(resources, "Deployment", "-server")["spec"]["template"]["spec"]
+        container = pod["containers"][0]
+        self.assertEqual([m for m in container["volumeMounts"] if m["mountPath"] == "/tmp"],
+                         [{"name": "own-temp", "mountPath": "/tmp"}])
+        self.assertEqual([e for e in container["env"] if e["name"] == "APP_CONFIG_CACHE"],
+                         [{"name": "APP_CONFIG_CACHE", "value": "/tmp/custom.php"}])
+        self.assertNotIn("dw-php-tmp", [v["name"] for v in pod["volumes"]])
 
     def test_php_mode_refuses_sqlite(self):
         result = helm("--set-string", "externalDatabase.connection=sqlite", values=PHP)

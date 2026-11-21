@@ -5,7 +5,7 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 5.2.0
+version: 5.3.0
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
@@ -36,4 +36,4 @@ annotations:
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
     - kind: added
-      description: "The native schema-upgrade Job accepts its own database Secret while the Server uses the runtime account."
+      description: "PHP workloads mount their runtime files when a read-only root filesystem is enabled. Native read-only deployments and schema upgrades are covered by the chart smoke test."

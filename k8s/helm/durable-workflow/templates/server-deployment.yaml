@@ -1,5 +1,7 @@
 {{- include "durable-workflow.validateMemoPayloadTransition" . }}
 {{- if and (include "durable-workflow.isPhp" .) .Values.server.enabled }}
+{{- $readOnly := get (default (dict) .Values.server.containerSecurityContext) "readOnlyRootFilesystem" }}
+{{- $writable := include "durable-workflow.phpReadOnlyMounts" (dict "readOnly" $readOnly "extraMounts" .Values.server.extraVolumeMounts "apache" true) | fromYamlArray }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,6 +62,7 @@ spec:
             {{- include "durable-workflow.standardEnvFrom" . | nindent 12 }}
           env:
             {{- include "durable-workflow.standardEnv" . | nindent 12 }}
+            {{- include "durable-workflow.phpReadOnlyCacheEnv" (dict "readOnly" $readOnly "config" (default (dict) .Values.config.extraEnv) "extraEnv" .Values.server.extraEnv) | nindent 12 }}
             {{- with .Values.server.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -81,9 +84,12 @@ spec:
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if or .Values.externalDatabase.tls.existingSecret .Values.server.extraVolumeMounts }}
+          {{- if or $writable .Values.externalDatabase.tls.existingSecret .Values.server.extraVolumeMounts }}
           volumeMounts:
             {{- include "durable-workflow.databaseTlsVolumeMount" . | nindent 12 }}
+            {{- if $writable }}
+            {{- toYaml $writable | nindent 12 }}
+            {{- end }}
             {{- with .Values.server.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -91,9 +97,10 @@ spec:
         {{- with .Values.sidecars }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if or .Values.externalDatabase.tls.existingSecret .Values.server.extraVolumes }}
+      {{- if or $writable .Values.externalDatabase.tls.existingSecret .Values.server.extraVolumes }}
       volumes:
         {{- include "durable-workflow.databaseTlsVolume" . | nindent 8 }}
+        {{- include "durable-workflow.phpReadOnlyVolumes" $writable | nindent 8 }}
         {{- with .Values.server.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

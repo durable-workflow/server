@@ -69,6 +69,13 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.3.0 / Server 3.17.1 (native)
+
+The PHP workloads now mount their runtime files when their read-only root
+filesystem setting is enabled. See [Read-only root filesystems](../README.md#read-only-root-filesystems)
+for the supported settings in both runtimes. This chart still uses Server 3.17.1
+and can be upgraded or rolled back with ordinary Helm commands.
+
 ### Chart 5.2.0 / Server 3.17.1 (native)
 
 The native schema-upgrade hook can use an existing Secret through

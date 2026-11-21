@@ -12,6 +12,8 @@ Operators who need duplicate scheduler runners as a steady-state topology
 must contact support; that path is outside this chart's contract.
 */ -}}
 {{- if and (include "durable-workflow.isPhp" .) .Values.scheduler.enabled }}
+{{- $readOnly := get (default (dict) .Values.scheduler.containerSecurityContext) "readOnlyRootFilesystem" }}
+{{- $writable := include "durable-workflow.phpReadOnlyMounts" (dict "readOnly" $readOnly) | fromYamlArray }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -73,19 +75,24 @@ spec:
                 {{- include "durable-workflow.standardEnvFrom" . | nindent 16 }}
               env:
                 {{- include "durable-workflow.standardEnv" . | nindent 16 }}
+                {{- include "durable-workflow.phpReadOnlyCacheEnv" (dict "readOnly" $readOnly "config" (default (dict) .Values.config.extraEnv)) | nindent 16 }}
               resources:
                 {{- toYaml .Values.scheduler.resources | nindent 16 }}
-              {{- if .Values.externalDatabase.tls.existingSecret }}
+              {{- if or $writable .Values.externalDatabase.tls.existingSecret }}
               volumeMounts:
                 {{- include "durable-workflow.databaseTlsVolumeMount" . | nindent 16 }}
+                {{- if $writable }}
+                {{- toYaml $writable | nindent 16 }}
+                {{- end }}
               {{- end }}
               {{- with .Values.scheduler.containerSecurityContext }}
               securityContext:
                 {{- toYaml . | nindent 16 }}
               {{- end }}
-          {{- if .Values.externalDatabase.tls.existingSecret }}
+          {{- if or $writable .Values.externalDatabase.tls.existingSecret }}
           volumes:
             {{- include "durable-workflow.databaseTlsVolume" . | nindent 12 }}
+            {{- include "durable-workflow.phpReadOnlyVolumes" $writable | nindent 12 }}
           {{- end }}
           {{- with .Values.scheduler.nodeSelector }}
           nodeSelector:

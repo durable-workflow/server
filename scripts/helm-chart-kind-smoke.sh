@@ -264,10 +264,24 @@ auth:
 
 server:
   replicaCount: 1
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
   pdb:
     enabled: false
 worker:
   replicaCount: 1
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
+scheduler:
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
+bootstrap:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
 EOF
 
 # 5. helm install. --wait covers the bootstrap Job hook + workload rollouts.
@@ -287,6 +301,20 @@ wait_for_http "http://127.0.0.1:${port}/api/ready"
 wait_for_http "http://127.0.0.1:${port}/api/cluster/info" \
   -H "Authorization: Bearer kind-admin-token" \
   -H "X-Namespace: default"
+
+worker_deployment="$(resolve_chart_resource_name deploy worker)"
+"${kubectl_bin}" -n "${namespace}" exec "deploy/${worker_deployment}" -- php artisan queue:monitor default
+
+# A normally scheduled Job must finish with the chart's read-only settings.
+scheduler_labels="app.kubernetes.io/instance=${release},app.kubernetes.io/component=scheduler"
+scheduler_job=
+for _ in $(seq 1 45); do
+  scheduler_job="$("${kubectl_bin}" -n "${namespace}" get jobs -l "${scheduler_labels}" \
+    -o 'jsonpath={.items[?(@.status.succeeded==1)].metadata.name}')"
+  [[ -z "${scheduler_job}" ]] || break
+  sleep 2
+done
+test -n "${scheduler_job}"
 
 curl -fsS -X POST "http://127.0.0.1:${port}/api/worker/register" \
   -H "Authorization: Bearer kind-worker-token" \

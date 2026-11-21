@@ -83,9 +83,25 @@ does not repair an existing operator-owned file's permissions.
 Images affected by [#706](https://github.com/durable-workflow/server/issues/706)
 can instead create a fresh custom file as root and fail on the first HTTP write.
 Use an image containing that fix or align all roles to the actual HTTP identity.
-This database contract is separate from
-[read-only root filesystem support](https://github.com/durable-workflow/server/issues/694),
-which also requires writable Laravel and Apache runtime paths.
+
+#### Read-only root filesystem
+
+For a native Server with a read-only container root, keep the local payload
+volume writable at `/app/storage`. For SQLite also keep the database's parent
+directory writable as described above. The native schema-upgrade command only
+needs writable access to the database it upgrades.
+
+The PHP 2.x image with MySQL or PostgreSQL, Redis-backed cache and queue, and
+stderr logging needs writable `/tmp` for each role. Set
+`APP_CONFIG_CACHE=/tmp/durable-workflow-config.php` to put the generated Laravel
+config cache there. The HTTP role also needs writable `/var/run/apache2` for
+the PID file. Grant those mounts write access to the container identity.
+If you select file logging, file cache or local payload storage, mount the
+corresponding paths under `/app/storage` too. Use durable shared storage for
+payloads that outlive the pod or need to be read by other instances.
+
+The [Helm chart](../k8s/helm/durable-workflow/README.md#read-only-root-filesystems)
+configures the tested mounts for its standard deployments.
 
 ### Official Image + Compose
 
