@@ -4,7 +4,10 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Executor;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
+};
 
 const PREFIX: &str = "dw-native-offer-key:";
 const VERSION: u8 = 1;
@@ -86,14 +89,35 @@ pub(super) struct IssuanceWindow {
     monotonic_deadline: Instant,
 }
 
+#[derive(Default)]
+pub(super) struct OfferWindow(RwLock<Option<Arc<IssuanceWindow>>>);
+
+impl OfferWindow {
+    pub(super) fn current(&self) -> Option<Arc<IssuanceWindow>> {
+        self.0
+            .read()
+            .unwrap()
+            .as_ref()
+            .filter(|window| window.is_open(now()))
+            .cloned()
+    }
+
+    pub(super) fn replace(&self, window: Option<IssuanceWindow>) {
+        *self.0.write().unwrap() = window.map(Arc::new);
+    }
+}
+
 impl IssuanceWindow {
+    fn is_open(&self, at: DateTime<Utc>) -> bool {
+        Instant::now() < self.monotonic_deadline && at.timestamp_millis() < self.stop_at_ms
+    }
+
     pub(super) fn permits(&self, ring: &KeyRing, at: DateTime<Utc>, expires_at_ms: i64) -> bool {
         let (id, fingerprint) = ring.issuer_identity();
         let time = at.timestamp_millis();
         id == self.key_id
             && fingerprint == self.fingerprint
-            && Instant::now() < self.monotonic_deadline
-            && time < self.stop_at_ms
+            && self.is_open(at)
             && expires_at_ms > time
             && expires_at_ms.saturating_sub(time) <= MAX_OFFER_LIFETIME_MS
     }

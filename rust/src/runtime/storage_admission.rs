@@ -248,7 +248,7 @@ pub(super) fn classify(method: &Method, path: &str) -> Admission {
         ["", "api", "worker", "workflow-tasks", _, "history"]
         | ["", "api", "worker", "activity-tasks", _, "status" | "continuation"]
         | ["", "api", "worker", "activity-tasks", _, "continuation", "history"] => Admission::Always,
-        ["", "api", "worker", "workflow-tasks" | "activity-tasks" | "query-tasks" | "update-validation-tasks", "poll"] => {
+        ["", "api", "worker", "workflow-tasks" | "activity-tasks" | "query-tasks" | "update-validation-tasks", "poll" | "offers"] => {
             Admission::Poll
         }
         ["", "api", "worker", "heartbeat"]

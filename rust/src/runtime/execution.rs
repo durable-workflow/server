@@ -53,6 +53,7 @@ pub struct Runtime {
     pub(super) external: Arc<super::ExternalPayloadConfig>,
     pub(super) queries: Arc<super::QueryTaskConfig>,
     pub(super) offer_keys: Option<Arc<super::task_offer_seal::KeyRing>>,
+    offer_window: Arc<super::task_offer_key_usage::OfferWindow>,
     /// The package's signal, update and payload ceilings (DW_V2_LIMIT_*).
     pub(super) structural: super::StructuralLimits,
 }
@@ -63,6 +64,7 @@ struct TimerScheduler {
     /// The maintenance loop's retention, apart from the ticker so a long
     /// prune never delays timers (Server #633).
     retention: Mutex<Option<JoinHandle<()>>>,
+    offers: Mutex<Option<JoinHandle<()>>>,
     healthy: Arc<AtomicBool>,
     /// Whether the ticker also runs the repair pass (`maintenance_repair_enabled`).
     repair: Arc<AtomicBool>,
@@ -86,6 +88,7 @@ impl TimerScheduler {
             stop,
             task: Mutex::new(None),
             retention: Mutex::new(None),
+            offers: Mutex::new(None),
             healthy: Arc::new(AtomicBool::new(true)),
             repair: Arc::new(AtomicBool::new(maintenance_repair_enabled())),
         }
@@ -161,6 +164,24 @@ impl TimerScheduler {
         });
         *self.task.lock().unwrap() = Some(task);
     }
+    fn start_offers(&self, storage: Arc<Storage>, keys: Arc<super::task_offer_seal::KeyRing>,
+        window: Arc<super::task_offer_key_usage::OfferWindow>,
+    ) {
+        let mut stop = self.stop.subscribe();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = stop.changed() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                        let next = refresh_offer_window(&storage, &keys).await.ok().flatten();
+                        window.replace(next);
+                    }
+                }
+            }
+        });
+        *self.offers.lock().unwrap() = Some(task);
+    }
+
     async fn close(&self) {
         self.stop.send_replace(true);
         let task = self.task.lock().unwrap().take();
@@ -171,6 +192,11 @@ impl TimerScheduler {
         if let Some(retention) = retention {
             let _ = retention.await;
         }
+        let offers = self.offers.lock().unwrap().take();
+        if let Some(offers) = offers {
+            let _ = offers.await;
+        }
+
     }
     fn running(&self) -> bool {
         self.task
@@ -186,6 +212,23 @@ impl Drop for TimerScheduler {
         if let Some(task) = self.task.get_mut().unwrap().take() {
             task.abort();
         }
+        if let Some(task) = self.offers.get_mut().unwrap().take() {
+            task.abort();
+        }
+    }
+}
+
+async fn refresh_offer_window(storage: &Storage, keys: &super::task_offer_seal::KeyRing)
+    -> Result<Option<super::task_offer_key_usage::IssuanceWindow>>
+{
+    match storage {
+        Storage::Sqlite(store) if store.storage_admission.snapshot().accepts_new_work() =>
+            store.reserve_task_offer_issuance(keys).await.map(Some),
+        Storage::Postgres(store) if store.storage_admission.snapshot().accepts_new_work() =>
+            store.reserve_task_offer_issuance(keys).await.map(Some),
+        Storage::MySql(store) if store.storage_admission.snapshot().accepts_new_work() =>
+            store.reserve_task_offer_issuance(keys).await.map(Some),
+        _ => Ok(None),
     }
 }
 
@@ -425,6 +468,7 @@ impl Runtime {
             external: Arc::new(external),
             queries: Arc::new(queries),
             offer_keys,
+            offer_window: Default::default(),
             structural,
         };
         runtime.verify_ready().await?;
@@ -443,6 +487,11 @@ impl Runtime {
             return Err(error);
         }
         runtime.scheduler.start(runtime.storage.clone());
+        if let Some(keys) = runtime.offer_keys.as_ref() {
+            runtime.offer_window.replace(refresh_offer_window(&runtime.storage, keys).await.ok().flatten());
+            runtime.scheduler.start_offers(runtime.storage.clone(), keys.clone(), runtime.offer_window.clone());
+        }
+
         Ok(runtime)
     }
 
@@ -516,6 +565,7 @@ impl Runtime {
             external: self.external.clone(),
             queries: self.queries.clone(),
             offer_keys: self.offer_keys.clone(),
+            offer_window: self.offer_window.clone(),
             structural: self.structural,
         }
     }
@@ -1456,11 +1506,15 @@ impl Runtime {
     /// A leased validation task as a worker receives it, with the run's
     /// replay bundle.
     async fn update_validation_task(&self, task_id: &str) -> Result<Value> {
-        let mut task = match &*self.storage {
+        let task = match &*self.storage {
             Storage::Sqlite(store) => store.update_validation_payload(task_id).await?,
             Storage::Postgres(store) => store.update_validation_payload(task_id).await?,
             Storage::MySql(store) => store.update_validation_payload(task_id).await?,
         };
+        self.with_validation_history(task).await
+    }
+
+    async fn with_validation_history(&self, mut task: Value) -> Result<Value> {
         if task.get("history_events").is_some()
             && let (Some(workflow_id), Some(run_id)) = (task["workflow_id"].as_str(), task["run_id"].as_str())
         {
@@ -1501,6 +1555,96 @@ impl Runtime {
             }
         }
     }
+    pub(super) fn task_delivery_descriptor(&self) -> Option<Value> {
+        (!self.auth.anonymous && self.offer_window.current().is_some() && self.storage_admission().snapshot().accepts_new_work())
+            .then(super::task_offer_dispatch::descriptor)
+    }
+
+    pub(super) async fn handle_task_offer(&self, endpoint: &'static str, body: &Value, protocol: &str) -> Result<(StatusCode, Value)> {
+        use super::{
+            task_delivery_receipts::{Acceptance, OfferScope},
+            task_offer_dispatch::{self as delivery, Delivery, IncomingOffer},
+        };
+        let keys = self.offer_keys.as_ref().ok_or_else(delivery::unavailable)?;
+        let request_id = super::workflow_poll_requests::request_id(body)
+            .filter(|id| id.chars().count() <= 255)
+            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_poll_request_id"))?;
+        let worker_id = super::text(body, "worker_id")?;
+        let queue = super::text(body, "task_queue")?;
+        let registration = super::text(body, "registration_token")?;
+        if registration.len() != 32 || !registration.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_registration_token"));
+        }
+        let kinds = if endpoint == "workflow" {
+            super::update_validation::task_kinds(body)?
+        } else {
+            if body.get("task_kinds").is_some_and(|kinds| !kinds.is_null() && *kinds != json!([endpoint])) {
+                return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_kinds"));
+            }
+            vec![endpoint]
+        };
+        let packet = body.get("task_offer_token").map(|packet| packet.as_str().ok_or_else(|| {
+            refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_token")
+        })).transpose()?;
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) if packet.is_none() => self.worker_poll_wait(),
+            Some(value) => super::laravel_validation::integer(value)
+                .filter(|seconds| (0..=60).contains(seconds))
+                .map(|seconds| seconds as u64)
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
+            _ => return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout")),
+        };
+        if packet.is_some() && timeout != 0 {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"));
+        }
+        let encoding = if endpoint == "workflow" { super::history_pages::requested(body)? } else { None };
+        let page = if endpoint == "workflow" {
+            self.history_pages().poll(super::history_pages::requested_size(body)?, encoding)
+        } else { None };
+        let request = IncomingOffer {
+            scope: OfferScope { worker_id, queue, endpoint, request_id: &request_id, kinds: &kinds },
+            body, protocol, page, timeout, packet,
+        };
+        let outcome = match &*self.storage {
+            Storage::Sqlite(store) => store.dispatch_task_offer(&request, keys, &self.offer_window, &self.queries).await,
+            Storage::Postgres(store) => store.dispatch_task_offer(&request, keys, &self.offer_window, &self.queries).await,
+            Storage::MySql(store) => store.dispatch_task_offer(&request, keys, &self.offer_window, &self.queries).await,
+        };
+        let refusal = |status, reason| Ok((StatusCode::CONFLICT, json!({"task":null,"poll_status":status,"reason":reason})));
+        let outcome = match outcome {
+            Err(super::RuntimeError::Refused { reason: "worker_registration_lost_authority", .. }) =>
+                return refusal("stale_worker_registration", "worker_registration_lost_authority"),
+            other => other?,
+        };
+        let body = match outcome {
+            Delivery::Offer(None) => json!({"task":null,"poll_status":"empty"}),
+            Delivery::Offer(Some(offer)) => json!({"task":null,"poll_status":"offered","task_offer":{
+                "schema":delivery::DELIVERY_SCHEMA,"task_id":offer.target.task_id,"task_kind":offer.target.kind,
+                "token":offer.token,"expires_at_ms":offer.expires_at_ms,
+            }}),
+            Delivery::Acceptance(Acceptance::Expired) => return refusal("task_offer_expired", "task_offer_expired"),
+            Delivery::Acceptance(Acceptance::ConflictingOffer) => return refusal("task_offer_conflict", "task_offer_conflict"),
+            Delivery::Acceptance(Acceptance::LeaseEnded) => return refusal("task_offer_lease_ended", "task_offer_lease_ended"),
+            Delivery::Acceptance(Acceptance::Unclaimable) => return refusal("task_offer_unclaimable", "task_offer_unclaimable"),
+            Delivery::Acceptance(Acceptance::Claimed(mut task) | Acceptance::Replayed(mut task)) => {
+                if task["task_kind"] == "update_validation" {
+                    task = self.with_validation_history(task).await?;
+                    if endpoint == "workflow" {
+                        task["next_history_page_token"] = Value::Null;
+                    }
+                    json!({"task":task,"poll_status":"leased"})
+                } else if endpoint == "workflow" {
+                    super::history_pages::compress(&mut task, encoding)?;
+                    super::carried_polls::workflow_answer(json!({"task":task,"poll_status":"leased"}))
+                } else {
+                    task["task_kind"] = json!(endpoint);
+                    super::store::activity_server_time(endpoint, json!({"task":task,"poll_status":"leased"}))
+                }
+            }
+        };
+        Ok((StatusCode::OK, body))
+    }
+
     pub(crate) async fn poll_query(&self, body: Value) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.poll_query(body, &self.queries).await,
@@ -2220,4 +2364,113 @@ async fn task_offer_read_key_preflight_fences_an_incomplete_restart() {
 
     let current = Arc::new(fixture_ring(&[("next", 2), ("fixture-key", 7)]));
     open_with(Some(current)).await.unwrap().close().await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn task_offer_worker_routes_preserve_signed_scope_and_definitive_refusals() {
+    use super::task_offer_key_usage::fixture_ring;
+    use axum::{Router, body::{Body, to_bytes}, http::Request};
+    use tower::ServiceExt;
+
+    async fn request(app: &Router, path: &str, body: &Value, bearer: bool, mode: bool) -> (StatusCode, Value) {
+        let mut request = Request::builder().method("POST").uri(path)
+            .header("x-namespace", "offer-test")
+            .header("x-durable-workflow-protocol-version", "1.20")
+            .header("content-type", "application/json");
+        if bearer {
+            request = request.header("authorization", "Bearer fixture-worker-plane");
+        }
+        if mode {
+            request = request.header("x-durable-workflow-task-delivery", "offer-accept.v1");
+        }
+        let response = app.clone().oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("runtime.sqlite");
+    let storage = Storage::Sqlite(Store::new(sqlite::open(path.to_str().unwrap()).await.unwrap()));
+    let keys = Arc::new(fixture_ring(&[("route-test", 1)]));
+    let runtime = Runtime::from_storage(storage, "fixture-worker-plane".into(),
+        Default::default(), Default::default(), Default::default(), Some(keys)).await.unwrap();
+    runtime.create_namespace(json!({"name":"offer-test"})).await.unwrap();
+    async fn read_horizon(runtime: &Runtime) -> i64 {
+        let value: String = sqlx::query_scalar("SELECT value FROM dw_query_cache WHERE key=?")
+            .bind("dw-native-offer-key:route-test").fetch_one(&runtime.sqlite_store().pool).await.unwrap();
+        serde_json::from_str::<Value>(&value).unwrap()["read_until_ms"].as_i64().unwrap()
+    }
+    let initial_horizon = read_horizon(&runtime).await;
+    let app = super::router(runtime.clone());
+    let worker = json!({"worker_id":"offer-worker","task_queue":"offer-queue","runtime":"php",
+        "supported_workflow_types":["fixture"],"supported_activity_types":[],"capabilities":["task_delivery_offers"],
+        "capability_manifest":{
+            "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+            "local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+            "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"}
+        }});
+    let (status, registered) = request(&app, "/api/worker/register", &worker, true, false).await;
+    assert_eq!(status, StatusCode::CREATED, "registration refused: {:?}", registered["reason"]);
+    assert_eq!(registered["server_capabilities"]["task_delivery"], super::task_offer_dispatch::descriptor());
+    let input = crate::codec::ValueCodec::new().unwrap().encode(&crate::codec::Value::Array(Vec::new())).unwrap();
+    for id in ["route-offer-one", "route-offer-two"] {
+        runtime.in_namespace("offer-test").start(json!({"workflow_id":id,"workflow_type":"fixture",
+            "task_queue":"offer-queue","input":{"codec":"avro","blob":input}}), None).await.unwrap();
+    }
+
+    let path = "/api/worker/workflow-tasks/offers";
+    let mut poll = json!({"worker_id":"offer-worker","task_queue":"offer-queue","poll_request_id":"route-claim",
+        "registration_token":registered["registration_token"],"timeout_seconds":0});
+    assert_eq!(request(&app, path, &poll, false, true).await.0, StatusCode::UNAUTHORIZED);
+    let anonymous = super::router(runtime.clone().with_auth_options(true, false));
+    assert_eq!(request(&anonymous, path, &poll, false, true).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(request(&app, path, &poll, true, false).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, offered) = request(&app, path, &poll, true, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(offered["poll_status"], "offered");
+    assert!(offered["task"].is_null());
+    let attempt: i64 = sqlx::query_scalar("SELECT attempt_count FROM workflow_tasks WHERE id=?")
+        .bind(offered["task_offer"]["task_id"].as_str().unwrap()).fetch_one(&runtime.sqlite_store().pool).await.unwrap();
+    assert_eq!(attempt, 0);
+
+    poll["task_offer_token"] = offered["task_offer"]["token"].clone();
+    let (status, legacy) = request(&app, "/api/worker/workflow-tasks/poll", &poll, true, false).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(legacy["reason"], "task_offer_endpoint_required");
+    let (status, wrong) = request(&app, "/api/worker/query-tasks/offers", &poll, true, true).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(wrong["reason"], "task_offer_scope_mismatch");
+    for _ in 0..2 {
+        let (status, leased) = request(&app, path, &poll, true, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(leased["task"]["task_id"], offered["task_offer"]["task_id"]);
+        assert_eq!(leased["task"]["task_kind"], "workflow");
+        assert_eq!(leased["task"]["workflow_task_attempt"], 1);
+    }
+
+    poll["poll_request_id"] = json!("expire-before-accept");
+    poll.as_object_mut().unwrap().remove("task_offer_token");
+    let (status, offered) = request(&app, path, &poll, true, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(offered["poll_status"], "offered");
+    poll["task_offer_token"] = offered["task_offer"]["token"].clone();
+    tokio::time::sleep(Duration::from_millis(2050)).await;
+    let (status, expired) = request(&app, path, &poll, true, true).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(expired, json!({"task":null,"poll_status":"task_offer_expired","reason":"task_offer_expired"}));
+
+    let (status, _) = request(&app, "/api/worker/register", &worker, true, false).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, stale) = request(&app, path, &poll, true, true).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(stale, json!({"task":null,"poll_status":"stale_worker_registration",
+        "reason":"worker_registration_lost_authority"}));
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while read_horizon(&runtime).await <= initial_horizon {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await.expect("the service renews its durable signing window without a poll");
+    runtime.close().await;
 }

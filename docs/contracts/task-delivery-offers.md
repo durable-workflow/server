@@ -39,6 +39,14 @@ descriptor can select legacy polling before a logical poll begins. A malformed
 supported descriptor is an error. Protocol support alone does not supply this
 capability.
 
+The authenticated native routes use the worker's ordinary namespace and poll
+capacity checks. Registration advertises the descriptor for an eligible worker
+with an open issuance window and storage admission. Native Server refreshes
+the 30-second issuance window every ten seconds while storage accepts new
+work. A failed refresh suspends new offers until a window is committed.
+Acceptance of an already issued packet uses its own signed scope and durable
+receipt.
+
 ## Offer and acceptance
 
 Use `POST /api/worker/{workflow,activity,query,update-validation}-tasks/offers`
@@ -131,6 +139,12 @@ Confirmed `task_offer_expired` permits a new logical poll.
 terminal outcomes require the existing typed poll contract; an unstructured
 409 is not a definitive no-claim result. An older endpoint's 404 or 405 remains
 uncertain once acceptance has begun.
+
+These two definitive responses contain exactly `task`, `poll_status`, and
+`reason`. Their `poll_status` values are `task_offer_expired` and
+`stale_worker_registration`, respectively. The worker protocol version stays
+in the response header. The legacy poll routes refuse requests that carry a
+task delivery header or a signed offer token.
 
 ## Remaining source and acceptance work
 

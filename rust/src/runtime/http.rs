@@ -317,6 +317,7 @@ pub fn router(runtime: Runtime) -> Router {
             get(describe_worker).delete(deregister),
         )
         .route("/api/worker/workflow-tasks/poll", post(poll_workflow))
+        .route("/api/worker/workflow-tasks/offers", post(offer_workflow))
         .route(
             "/api/worker/workflow-tasks/{task_id}/deliver-cancellation",
             post(deliver_cancellation),
@@ -363,6 +364,7 @@ pub fn router(runtime: Runtime) -> Router {
             post(fail_workflow_task),
         )
         .route("/api/worker/activity-tasks/poll", post(poll_activity))
+        .route("/api/worker/activity-tasks/offers", post(offer_activity))
         .route(
             "/api/worker/activity-tasks/{task_id}/status",
             post(activity_status),
@@ -400,6 +402,7 @@ pub fn router(runtime: Runtime) -> Router {
             post(complete_activity_continuation),
         )
         .route("/api/worker/query-tasks/poll", post(poll_query))
+        .route("/api/worker/query-tasks/offers", post(offer_query))
         .route(
             "/api/worker/query-tasks/{task_id}/status",
             get(query_status),
@@ -410,6 +413,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         .route("/api/worker/query-tasks/{task_id}/fail", post(fail_query))
         .route("/api/worker/update-validation-tasks/poll", post(poll_update_validation))
+        .route("/api/worker/update-validation-tasks/offers", post(offer_validation))
         .route(
             "/api/worker/update-validation-tasks/{task_id}/approve",
             post(approve_update_validation),
@@ -753,7 +757,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
 /// Every answer on a plane carries its version header, and every worker
 /// answer its body envelope.
 async fn finish_answer(mut response: Response, worker: bool, header: &'static str, version: &'static str) -> Response {
-    if worker {
+    if worker && response.extensions().get::<ExactTaskOfferRefusal>().is_none() {
         response = worker_protocol_envelope(response).await;
     }
     response
@@ -1064,6 +1068,7 @@ fn worker_route(rest: &str) -> Option<Allowed> {
             | ["sessions", _]
             | ["sessions", _, "heartbeat"]
             | ["workflow-tasks" | "activity-tasks", "poll"]
+            | ["workflow-tasks" | "activity-tasks" | "query-tasks" | "update-validation-tasks", "offers"]
             | ["query-tasks", "poll"]
             | ["query-tasks", _, "complete" | "fail" | "status"]
             | ["update-validation-tasks", "poll"]
@@ -2059,8 +2064,16 @@ async fn register(
         .cloned()
         .collect();
     body["capabilities"] = json!(flags);
+    let negotiate = protocol.trim() == "1.20"
+        && body["capabilities"].as_array().is_some_and(|flags| flags.iter().any(|flag| flag == "task_delivery_offers"));
     let registered = runtime.register(body, Some(protocol)).await.map_err(worker_refusal)?;
-    Ok((StatusCode::CREATED, Json(worker_response(registered))))
+    let mut response = worker_response(registered);
+    if negotiate && response["registration_token"].is_string()
+        && let Some(descriptor) = runtime.task_delivery_descriptor()
+    {
+        response["server_capabilities"]["task_delivery"] = descriptor;
+    }
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// `WorkerProtocol::json` names the protocol and server capabilities on
@@ -2588,11 +2601,58 @@ fn poll_rules(body: &Value, rules: &super::laravel_rules::Rules) -> Result<()> {
     super::laravel_rules::validate(&super::laravel_rules::normalize(body), rules).map_err(worker_refusal)
 }
 
+#[derive(Clone)]
+struct ExactTaskOfferRefusal;
+
+async fn worker_offer(runtime: Runtime, headers: HeaderMap, body: Value, kind: &'static str) -> Result<Response> {
+    use super::task_offer_dispatch as delivery;
+    let protocol = request_protocol(&headers)?.trim();
+    if runtime.auth.anonymous {
+        return Err(refuse(StatusCode::UNAUTHORIZED, "task_offer_authentication_required"));
+    }
+    if protocol != "1.20"
+        || headers.get(delivery::DELIVERY_HEADER).and_then(|value| value.to_str().ok()) != Some(delivery::DELIVERY_PROTOCOL)
+        || headers.get_all(delivery::DELIVERY_HEADER).iter().count() != 1
+    {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "unsupported_task_delivery_protocol"));
+    }
+    poll_rules(&body, if kind == "workflow" { WORKFLOW_POLL_RULES } else { ACTIVITY_POLL_RULES })?;
+    let (status, answer) = runtime.handle_task_offer(kind, &body, protocol).await?;
+    let definitive = status == StatusCode::CONFLICT && matches!(answer["reason"].as_str(),
+        Some("task_offer_expired" | "worker_registration_lost_authority"));
+    let mut response = (status, Json(answer)).into_response();
+    if definitive {
+        response.extensions_mut().insert(ExactTaskOfferRefusal);
+    }
+    Ok(response)
+}
+
+macro_rules! task_offer_endpoint {
+    ($handler:ident, $kind:literal) => {
+        async fn $handler(Extension(runtime): Extension<Runtime>, headers: HeaderMap, Json(body): Json<Value>) -> Result<Response> {
+            worker_offer(runtime, headers, body, $kind).await
+        }
+    };
+}
+
+task_offer_endpoint!(offer_workflow, "workflow");
+task_offer_endpoint!(offer_activity, "activity");
+task_offer_endpoint!(offer_query, "query");
+task_offer_endpoint!(offer_validation, "update_validation");
+
+fn require_legacy_poll(headers: &HeaderMap, body: &Value) -> Result<()> {
+    if headers.contains_key(super::task_offer_dispatch::DELIVERY_HEADER) || body.get("task_offer_token").is_some() {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "task_offer_endpoint_required"));
+    }
+    Ok(())
+}
+
 async fn poll_workflow(
     Extension(runtime): Extension<Runtime>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    require_legacy_poll(&headers, &body)?;
     let protocol = request_protocol(&headers)?;
     poll_rules(&body, WORKFLOW_POLL_RULES)?;
     runtime
@@ -2607,6 +2667,7 @@ async fn poll_update_validation(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    require_legacy_poll(&headers, &body)?;
     request_protocol(&headers)?;
     runtime
         .poll_update_validation(body)
@@ -2641,6 +2702,7 @@ async fn poll_activity(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    require_legacy_poll(&headers, &body)?;
     let protocol = request_protocol(&headers)?;
     poll_rules(&body, ACTIVITY_POLL_RULES)?;
     let wait = runtime.worker_poll_wait();
@@ -3097,8 +3159,10 @@ async fn query_run(
 }
 async fn poll_query(
     Extension(runtime): Extension<Runtime>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    require_legacy_poll(&headers, &body)?;
     runtime.poll_query(body).await.map(Json)
 }
 async fn complete_query(

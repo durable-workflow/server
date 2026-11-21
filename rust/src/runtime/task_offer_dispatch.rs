@@ -1,10 +1,10 @@
 //! Bind a read-only observation and its exact claim to one authenticated poll.
 use super::{
-    Result, refuse,
-    task_delivery_receipts::{Acceptance, OfferClaim, OpenedOffer},
-    task_offer_key_usage::IssuanceWindow,
+    QueryTaskConfig, Result, refuse,
+    task_delivery_receipts::{Acceptance, OfferClaim, OfferScope, OpenedOffer},
+    task_offer_key_usage::{IssuanceWindow, OfferWindow},
     task_offer_seal::{
-        KeyRing, PACKET_SCHEMA, PacketContext, SealError, TaskKind, authority_digest,
+        KeyRing, OpenedToken, PACKET_SCHEMA, PacketContext, SealError, TaskKind, authority_digest,
     },
     transaction::ClaimTarget,
     worker_sessions::incarnation_digest,
@@ -15,6 +15,44 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub(super) const OFFER_LIFETIME_MS: i64 = 2000;
+pub(super) const DELIVERY_PROTOCOL: &str = "offer-accept.v1";
+pub(super) const DELIVERY_SCHEMA: &str = "durable-workflow.task-delivery.v1";
+pub(super) const DELIVERY_HEADER: &str = "x-durable-workflow-task-delivery";
+
+pub(super) struct IncomingOffer<'a> {
+    pub(super) scope: OfferScope<'a>,
+    pub(super) body: &'a Value,
+    pub(super) protocol: &'a str,
+    pub(super) page: Option<i64>,
+    pub(super) timeout: u64,
+    pub(super) packet: Option<&'a str>,
+}
+
+pub(super) enum Delivery {
+    Offer(Option<IssuedOffer>),
+    Acceptance(Acceptance),
+}
+
+pub(super) fn descriptor() -> Value {
+    serde_json::json!({
+        "schema": DELIVERY_SCHEMA, "supported": true, "minimum_protocol_version": "1.20",
+        "worker_capability": "task_delivery_offers", "header": "X-Durable-Workflow-Task-Delivery",
+        "version": DELIVERY_PROTOCOL, "endpoint_suffix": "/offers",
+        "acceptance_timeout_seconds": OFFER_LIFETIME_MS / 1000,
+        "unaccepted_offer_reserves_task": false
+    })
+}
+
+fn lost_worker_authority() -> super::RuntimeError {
+    refuse(StatusCode::CONFLICT, "worker_registration_lost_authority")
+}
+
+pub(super) fn unavailable() -> super::RuntimeError {
+    refuse(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "task_offer_issuance_unavailable",
+    )
+}
 
 pub(super) struct IssuedOffer {
     pub(super) token: String,
@@ -73,7 +111,93 @@ impl OfferClaim<'_> {
     }
 }
 
+fn authenticate_packet(
+    keys: &KeyRing,
+    token: &str,
+    scope: &OfferScope<'_>,
+    namespace: &str,
+    registration: &str,
+) -> Result<OpenedToken> {
+    let opened = keys.open(token).map_err(seal_error)?;
+    let context = &opened.context;
+    let registration_digest: [u8; 32] = Sha256::digest(registration.as_bytes()).into();
+    let requested_kinds = normalized(scope.kinds)
+        .into_iter()
+        .map(TaskKind::from_wire)
+        .collect::<Result<Vec<_>>>()?;
+    if context.namespace != namespace
+        || context.worker_id != scope.worker_id
+        || context.queue != scope.queue
+        || context.endpoint != TaskKind::from_wire(scope.endpoint)?
+        || context.request_id != scope.request_id
+        || context.requested_kinds != requested_kinds
+        || context.registration_digest != registration_digest
+    {
+        return Err(scope_mismatch());
+    }
+    Ok(opened)
+}
+
 store_methods! {
+    pub(super) async fn dispatch_task_offer(
+        &self, request: &IncomingOffer<'_>, keys: &KeyRing, windows: &OfferWindow, config: &QueryTaskConfig,
+    ) -> Result<Delivery> {
+        use super::{poll_capacity::Pool, worker_poll_fence::PollAdmission};
+        let scope = &request.scope;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(request.timeout);
+        let probe = self.poll_capacity.probe().await;
+        let fence = match self.admit_worker_poll(scope.worker_id, scope.queue).await? {
+            PollAdmission::Fenced(fence) => fence,
+            _ => {
+                if let Some(packet) = request.packet {
+                    authenticate_packet(keys, packet, scope, self.namespace.as_ref(), super::text(request.body, "registration_token")?)?;
+                }
+                return Err(lost_worker_authority());
+            }
+        };
+        drop(probe);
+        let claim = OfferClaim { scope, fence: &fence, body: request.body, protocol: request.protocol,
+            history_page: request.page, query_config: config };
+        if let Some(packet) = request.packet {
+            let _probe = self.poll_capacity.probe().await;
+            return self.accept_sealed_task_offer(&claim, keys, packet).await.map(Delivery::Acceptance);
+        }
+
+        let (pool, kind) = match scope.endpoint {
+            "query" => (Pool::QueryTask, "query_task"),
+            "activity" => (Pool::Worker, "activity_task"),
+            "update_validation" => (Pool::Worker, "update_validation_task"),
+            _ => (Pool::Worker, "workflow_task"),
+        };
+        let mut slot = None;
+        let mut pace = super::poll_readiness::ReadPace::new();
+        loop {
+            let probe = self.poll_capacity.probe().await;
+            let pressure = self.storage_admission.snapshot();
+            if !pressure.accepts_new_work() {
+                return Err(super::RuntimeError::Protocol {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    response: super::storage_admission::refusal(&pressure, super::storage_admission::Admission::Poll, Some(scope.request_id)),
+                });
+            }
+            let wake = self.wake.notified();
+            let window = windows.current().ok_or_else(unavailable)?;
+            match self.issue_task_offer(&claim, keys, &window).await {
+                Ok(Some(offer)) => return Ok(Delivery::Offer(Some(offer))),
+                Err(error) if super::worker_poll_fence::is_stale_claim(&error) => return Err(lost_worker_authority()),
+                Err(error) => return Err(error),
+                Ok(None) => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(Delivery::Offer(None));
+            }
+            self.poll_capacity.hold(&mut slot, pool, &self.namespace, scope.queue, kind)?;
+            drop(probe);
+            pace.wait(wake, deadline).await;
+        }
+    }
+
+
     pub(super) async fn issue_task_offer(
         &self, claim: &OfferClaim<'_>, keys: &KeyRing, window: &IssuanceWindow,
     ) -> Result<Option<IssuedOffer>> {
@@ -122,16 +246,13 @@ store_methods! {
     pub(super) async fn accept_sealed_task_offer(
         &self, claim: &OfferClaim<'_>, keys: &KeyRing, token: &str,
     ) -> Result<Acceptance> {
-        let (registration, routing_digest) = claim.validate_offer_scope()?;
-        let opened = keys.open(token).map_err(seal_error)?;
+        // Establish the original signed scope before a stale registration can
+        // produce a definitive refusal for that logical poll.
+        let registration = super::text(claim.body, "registration_token")?;
+        let opened = authenticate_packet(keys, token, claim.scope, self.namespace.as_ref(), registration)?;
         let context = opened.context;
-        let scope = claim.scope;
-        let registration_digest: [u8; 32] = Sha256::digest(registration.as_bytes()).into();
-        if context.namespace != self.namespace.as_ref() || context.worker_id != scope.worker_id
-            || context.queue != scope.queue || context.endpoint != TaskKind::from_wire(scope.endpoint)?
-            || context.request_id != scope.request_id || context.requested_kinds != claim.requested_kinds()?
-            || context.registration_digest != registration_digest || context.routing_digest != routing_digest
-        {
+        let (_, routing_digest) = claim.validate_offer_scope()?;
+        if context.routing_digest != routing_digest {
             return Err(scope_mismatch());
         }
         let offer = OpenedOffer {
