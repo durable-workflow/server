@@ -31,12 +31,12 @@ const TASK_TYPES: [&str; 2] = ["workflow", "activity"];
 const TYPE_LIMIT: usize = 100;
 
 macro_rules! ready_types {
-    ($activity_id:literal, $availability:literal, $group:literal, $order:literal, $scope:expr $(, $run_group:literal)?) => {
+    ($activity_id:literal, $availability:literal, $group:literal, $order:literal, $task_source:literal, $scope:expr $(, $run_group:literal)?) => {
         concat!(
             "SELECT ", $($run_group,)? "task_queue, task_kind, type_name, COUNT(*) AS task_count FROM (",
             "SELECT t.workflow_run_id AS run_id, t.queue AS task_queue, t.task_type AS task_kind, ",
             "CASE WHEN t.task_type='workflow' THEN r.workflow_type ELSE a.activity_type END AS type_name ",
-            "FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id ",
+            "FROM ", $task_source, " JOIN workflow_runs r ON r.id=t.workflow_run_id ",
             "LEFT JOIN activity_executions a ON t.task_type='activity' ",
             "AND a.id=", $activity_id, " AND a.workflow_run_id=r.id AND a.status IN ('pending','running') ",
             "WHERE t.namespace=$1 AND t.status='ready' AND t.task_type IN ('workflow','activity') ",
@@ -49,11 +49,11 @@ macro_rules! ready_types {
 }
 
 macro_rules! ready_types_sqlite {
-    ($scope:expr $(, $run_group:literal)?) => {
+    ($task_source:literal, $scope:expr $(, $run_group:literal)?) => {
         ready_types!(
             "CASE WHEN json_valid(t.payload) THEN json_extract(t.payload,'$.activity_execution_id') END",
             "replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','')",
-            "", "task_queue, task_kind, type_name", $scope $(, $run_group)?
+            "", "task_queue, task_kind, type_name", $task_source, $scope $(, $run_group)?
         )
     };
 }
@@ -65,6 +65,7 @@ macro_rules! ready_types_postgres {
             "t.available_at",
             "",
             "task_queue, task_kind, type_name",
+            "workflow_tasks t",
             $scope $(, $run_group)?
         )
     };
@@ -76,19 +77,13 @@ macro_rules! ready_types_mysql {
             "CASE WHEN JSON_VALID(t.payload) THEN JSON_UNQUOTE(JSON_EXTRACT(t.payload,'$.activity_execution_id')) END",
             "t.available_at",
             ", BINARY task_queue, BINARY type_name",
-            "BINARY task_queue, task_kind, BINARY type_name", $scope $(, $run_group)?
+            "BINARY task_queue, task_kind, BINARY type_name", "workflow_tasks t", $scope $(, $run_group)?
         )
     };
 }
 
 // The visibility page already bounds the list. Passing it as one parameter
 // gives the database a stable statement and reuses the workflow-task run index.
-macro_rules! sqlite_page_ids {
-    ($argument:literal) => {
-        concat!("SELECT value FROM json_each(", $argument, ")")
-    };
-}
-
 macro_rules! postgres_page_ids {
     ($argument:literal) => {
         concat!("SELECT jsonb_array_elements_text(CAST(", $argument, " AS jsonb))")
@@ -103,12 +98,12 @@ macro_rules! mysql_page_ids {
 }
 
 macro_rules! page_workers {
-    ($ids:expr) => {
+    ($task_source:literal, $scope:expr) => {
         concat!(
             "SELECT namespace,task_queue,status,last_heartbeat_at,supported_workflow_types,supported_activity_types ",
             "FROM workflow_worker_registrations WHERE namespace=$1 AND last_heartbeat_at>$2 AND status='active' ",
-            "AND task_queue IN (SELECT queue FROM workflow_tasks WHERE namespace=$3 ",
-            "AND status='ready' AND task_type IN ('workflow','activity') AND workflow_run_id IN (", $ids, "))",
+            "AND task_queue IN (SELECT t.queue FROM ", $task_source, " WHERE t.namespace=$3 ",
+            "AND t.status='ready' AND t.task_type IN ('workflow','activity')", $scope, ")",
         )
     };
 }
@@ -292,8 +287,8 @@ where
         let advertised = self.advertised_types(&mut tx, workers, queue, cutoff).await?;
 
         let query_sql = match (DB::PHP_CONNECTION, queue.is_some()) {
-            ("sqlite", false) => ready_types_sqlite!(""),
-            ("sqlite", true) => ready_types_sqlite!(" AND t.queue=$3"),
+            ("sqlite", false) => ready_types_sqlite!("workflow_tasks t", ""),
+            ("sqlite", true) => ready_types_sqlite!("workflow_tasks t", " AND t.queue=$3"),
             ("mysql", false) => ready_types_mysql!(" AND BINARY t.namespace=BINARY $3"),
             ("mysql", true) => {
                 ready_types_mysql!(" AND BINARY t.namespace=BINARY $3 AND t.queue=$4")
@@ -411,17 +406,21 @@ where
         }
 
         let (worker_sql, task_sql) = match DB::PHP_CONNECTION {
+            // SQLite otherwise prefers the namespace index for an IN
+            // subquery. Drive both reads from the selected run IDs.
             "sqlite" => (
-                page_workers!(sqlite_page_ids!("$4")),
-                ready_types_sqlite!(concat!(" AND t.workflow_run_id IN (", sqlite_page_ids!("$3"), ")"), "run_id, "),
+                page_workers!("json_each($4) AS ids CROSS JOIN workflow_tasks t ON t.workflow_run_id=ids.value", ""),
+                ready_types_sqlite!(
+                    "json_each($3) AS ids CROSS JOIN workflow_tasks t ON t.workflow_run_id=ids.value", "", "run_id, "
+                ),
             ),
             "mysql" => (
-                page_workers!(mysql_page_ids!("$4")),
+                page_workers!("workflow_tasks t", concat!(" AND t.workflow_run_id IN (", mysql_page_ids!("$4"), ")")),
                 ready_types_mysql!(concat!(" AND BINARY t.namespace=BINARY $3 AND t.workflow_run_id IN (",
                     mysql_page_ids!("$4"), ")"), "run_id, "),
             ),
             _ => (
-                page_workers!(postgres_page_ids!("$4")),
+                page_workers!("workflow_tasks t", concat!(" AND t.workflow_run_id IN (", postgres_page_ids!("$4"), ")")),
                 ready_types_postgres!(concat!(" AND t.workflow_run_id IN (", postgres_page_ids!("$3"), ")"), "run_id, "),
             ),
         };
