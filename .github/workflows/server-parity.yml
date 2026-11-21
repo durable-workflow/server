@@ -2277,9 +2277,11 @@ jobs:
           }
           trap rust_test_failures ERR
           mkdir -p cargo-home rust-target parity-evidence
-          # Compiling the test targets with two jobs peaked at 6.8 GB cold (cgroup memory.peak, October 27); a 6 GB limit OOM-killed rustc (signal 9, PR #801).
+          # Keep the 8 GB limit. Rustc was killed compiling the test binary
+          # with two Cargo jobs and incremental compilation (PRs #1287 and #1288).
           docker run --rm --user="$(id -u):$(id -g)" --cpus=2 --memory=8g --memory-swap=8g \
-            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=2 \
+            -e CARGO_HOME=/cargo -e CARGO_TARGET_DIR=/target -e CARGO_BUILD_JOBS=1 \
+            -e CARGO_PROFILE_TEST_INCREMENTAL=false \
             -e DW_UPGRADE_TEST_WRITABLE=/evidence -e DW_UPGRADE_TEST_READONLY=/source/parity-evidence \
             -v "$PWD:/source:ro" -v "$PWD/cargo-home:/cargo" -v "$PWD/rust-target:/target" \
             -v "$PWD/parity-evidence:/evidence" -w /source/rust --entrypoint bash \
