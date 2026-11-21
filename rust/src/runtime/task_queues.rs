@@ -46,7 +46,7 @@ fn age_ms(time: Option<DateTime<Utc>>, at: DateTime<Utc>) -> i64 {
 }
 
 /// `StandaloneWorkerVisibility::stringList`: trimmed, unique and sorted.
-fn string_list(value: Option<Value>) -> Value {
+pub(super) fn registration_types(value: Option<Value>) -> BTreeSet<String> {
     let values = match value {
         Some(Value::Array(values)) => values,
         Some(Value::String(text)) => serde_json::from_str::<Value>(&text)
@@ -55,14 +55,13 @@ fn string_list(value: Option<Value>) -> Value {
             .unwrap_or_else(|| text.split(',').map(|part| json!(part)).collect()),
         _ => vec![],
     };
-    let unique: BTreeSet<String> = values
+    values
         .iter()
         .filter_map(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_owned)
-        .collect();
-    json!(unique)
+        .collect()
 }
 
 /// `TaskQueueController::taskAdmission` under PHP's default unlimited
@@ -135,8 +134,8 @@ where
         Ok(json!({"worker_id":text("worker_id")?,"runtime":text("runtime")?,"sdk_version":text("sdk_version")?,
             "build_id":text("build_id")?,"last_heartbeat_at":json_time(heartbeat),"heartbeat_expires_at":json_time(deadline),
             "status":if stale { "stale".to_owned() } else { stored },"is_stale":stale,
-            "supported_workflow_types":string_list(DB::optional_document_row(row, "supported_workflow_types")?),
-            "supported_activity_types":string_list(DB::optional_document_row(row, "supported_activity_types")?),
+            "supported_workflow_types":registration_types(DB::optional_document_row(row, "supported_workflow_types")?),
+            "supported_activity_types":registration_types(DB::optional_document_row(row, "supported_activity_types")?),
             "max_concurrent_workflow_tasks":DB::optional_number(row, "max_concurrent_workflow_tasks")?.unwrap_or(0).max(0),
             "max_concurrent_activity_tasks":DB::optional_number(row, "max_concurrent_activity_tasks")?.unwrap_or(0).max(0)}))
     }
@@ -385,6 +384,7 @@ where
         let base = self.queue_detail(queue, config).await?;
         let pollers: Vec<Value> = base["pollers"].as_array().cloned().unwrap_or_default();
         let mut stats = base["stats"].clone();
+        stats["type_coverage"] = self.ready_task_type_coverage(Some(queue), at).await?;
         stats["activity_attempts"] = self.activity_attempt_counts(queue).await?;
         let repair = base["repair"].clone();
         let active = self.grouped_counts("active_leases", queue, at).await?;
@@ -465,8 +465,8 @@ mod tests {
         assert_eq!(age_label(Some(125)), json!("2m05s"));
         assert_eq!(age_label(Some(3725)), json!("1h02m05s"));
         assert_eq!(age_label(None), Value::Null);
-        assert_eq!(string_list(Some(json!([" b", "a", "b", 7]))), json!(["a", "b"]));
-        assert_eq!(string_list(Some(json!("[\"x\",\"y\"]"))), json!(["x", "y"]));
+        assert_eq!(json!(registration_types(Some(json!([" b", "a", "b", 7])))), json!(["a", "b"]));
+        assert_eq!(json!(registration_types(Some(json!("[\"x\",\"y\"]")))), json!(["x", "y"]));
     }
 
     #[test]

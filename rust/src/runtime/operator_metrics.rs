@@ -338,6 +338,7 @@ where
     /// server adds.
     pub(super) async fn operator_metrics(&self, config: &MetricsConfig) -> Result<Value> {
         let mut metrics = self.operator_metrics_snapshot(config).await?;
+        metrics["backlog"]["type_coverage"] = self.ready_task_type_coverage(None, now()).await?;
         metrics["worker_sessions"] = self.worker_session_metrics().await?;
         metrics["capacity_evidence"] =
             json!({"available": false, "reason": "native_capacity_evidence_unavailable"});
