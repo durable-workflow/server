@@ -87,9 +87,10 @@ Use an image containing that fix or align all roles to the actual HTTP identity.
 #### Read-only root filesystem
 
 For a native Server with a read-only container root, keep the local payload
-volume writable at `/app/storage`. For SQLite also keep the database's parent
-directory writable as described above. The native schema-upgrade command only
-needs writable access to the database it upgrades.
+volume writable at `/app/storage`. With SQLite, also mount a writable `/tmp`
+and keep the database's parent directory writable as described above. The
+native schema-upgrade command only needs writable access to the database it
+upgrades.
 
 The PHP 2.x image with MySQL or PostgreSQL, Redis-backed cache and queue, and
 stderr logging needs writable `/tmp` for each role. Set
