@@ -15,7 +15,7 @@ base64 = "0.22"
 crc = "3.4"
 miniz_oxide = "0.9"
 thiserror = "2"
-axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order", "raw_value", "unbounded_depth"] }
 sha2 = { version = "0.11", default-features = false }

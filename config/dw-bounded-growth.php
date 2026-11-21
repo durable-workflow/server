@@ -457,6 +457,19 @@ return [
             'suppression' => 'The endpoint reports observed, reported, truncated, and suppressed queue series under cardinality.series_limits.task_queues; counts are exact until the cap is exceeded, then disclosed as lower bounds.',
         ],
 
+        'dw_http_request_duration_seconds' => [
+            'owner' => 'rust/src/runtime/http_request_metrics.rs',
+            'surface' => 'GET /metrics on the default namespace using an instance-wide credential.',
+            'dimensions' => [
+                'route' => 'finite_matched_route_inventory',
+                'status' => 'bounded_http_status_code',
+                'kind' => 'finite_request_kind_inventory',
+            ],
+            'cardinality' => 'At most 512 observed route, status and kind combinations, plus one overflow histogram per kind. Histograms have 12 finite buckets and an infinite bucket.',
+            'selection' => 'First observed combinations in this Server process. Routes use only router templates and the fixed unmatched value. Every completed response contributes exactly one observation.',
+            'suppression' => 'New combinations after the cap are summed under route __overflow__ and status other, separately for requests and worker polls. No observations are dropped.',
+        ],
+
         'dw_server_image' => [
             'owner' => ActivityRuntimeResultGate::class,
             'surface' => 'Activities conformance published_artifact_worker_execution evidence.',

@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 
 use super::command_context::CommandRequest;
+use super::http_request_metrics::{self, HttpRequestMetrics};
 use super::runtime_credentials::Principal;
 use super::{Result, Runtime, cancellation::TerminalCommand, refuse, store::capabilities};
 
@@ -24,6 +25,9 @@ pub(super) struct AuthenticatedPrincipal {
 }
 
 pub fn router(runtime: Runtime) -> Router {
+    let request_metrics = HttpRequestMetrics::new(matches!(
+        std::env::var("DW_HTTP_ACCESS_LOG").as_deref(), Ok("1" | "true"),
+    ));
     Router::new()
         .route("/api/health", get(health))
         .route("/api/ready", get(ready))
@@ -429,9 +433,10 @@ pub fn router(runtime: Runtime) -> Router {
         // compression: the digest layer reads the plain JSON body, and
         // compression must encode what it returns.
         .layer(middleware::from_fn(super::capabilities_digest::elide))
-        // PHP's CompressResponse wraps every answer, refusals included. It
-        // must stay outermost.
+        // PHP's CompressResponse wraps every answer, refusals included.
         .layer(middleware::from_fn(super::response_compression::compress))
+        .layer(middleware::from_fn(http_request_metrics::observe))
+        .layer(Extension(request_metrics))
         .with_state(runtime)
 }
 
@@ -564,8 +569,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     {
         &["worker"]
     } else if path == METRICS_PATH {
-        // The scrape reads the namespace's queue and run aggregates only. The
-        // `metrics` role reaches no other route.
+        // The `metrics` role reaches no other route. A tenant-bound scrape
+        // reads only the namespace's aggregates.
         &["metrics", "admin"]
     } else if payload || path == "/api/worker/register" || path == "/api/cluster/info" {
         &["worker", "operator", "admin"]
@@ -2241,16 +2246,27 @@ const METRICS_PATH: &str = "/metrics";
 /// and activity series in Prometheus text format 0.0.4. A failed read is a
 /// 503 with no samples, so a scraper records the target as down and an
 /// autoscaler never reads missing telemetry as an empty queue.
-async fn prometheus_exposition(Extension(runtime): Extension<Runtime>) -> Response {
+async fn prometheus_exposition(
+    Extension(runtime): Extension<Runtime>,
+    Extension(AuthenticatedPrincipal { principal }): Extension<AuthenticatedPrincipal>,
+    Extension(request_metrics): Extension<HttpRequestMetrics>,
+) -> Response {
     match runtime.prometheus_exposition().await {
-        Ok(text) => (
-            [
-                (header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8")),
-                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
-            ],
-            text,
-        )
-            .into_response(),
+        Ok(mut text) => {
+            // Process-wide aggregates appear on one conventional scrape. A
+            // namespace-bound credential must never see other tenants' timing.
+            if principal.tenant.is_none() && runtime.namespace() == "default" {
+                request_metrics.append_exposition(&mut text);
+            }
+            (
+                [
+                    (header::CONTENT_TYPE, HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8")),
+                    (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+                ],
+                text,
+            )
+                .into_response()
+        }
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             [
