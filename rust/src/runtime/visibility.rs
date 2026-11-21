@@ -16,6 +16,7 @@ pub(super) struct VisibilityQuery {
     workflow_type: Option<String>,
     status: Option<String>,
     query: Option<String>,
+    task_attention: Option<String>,
     page_size: Option<String>,
     next_page_token: Option<String>,
 }
@@ -26,6 +27,7 @@ pub(super) struct VisibilityFilter {
     pattern: Option<String>,
     /// A structured query, which replaces the free-text `pattern`.
     visibility: Option<super::visibility_query::Parsed>,
+    task_attention: Option<bool>,
     limit: i64,
     offset: i64,
 }
@@ -33,7 +35,7 @@ pub(super) struct VisibilityFilter {
 impl VisibilityFilter {
     /// The run list for one workflow type, as a status bucket and page.
     pub(super) fn of_type(workflow_type: &str, status: Option<String>, limit: i64, offset: i64) -> Self {
-        Self { workflow_type: Some(workflow_type.to_owned()), status, pattern: None, visibility: None, limit, offset }
+        Self { workflow_type: Some(workflow_type.to_owned()), status, pattern: None, visibility: None, task_attention: None, limit, offset }
     }
 }
 
@@ -64,6 +66,12 @@ impl VisibilityQuery {
                 })?,
             None => 50,
         };
+        let task_attention = match self.task_attention.as_deref() {
+            None => None,
+            Some("true" | "1") => Some(true),
+            Some("false" | "0") => Some(false),
+            Some(_) => return Err(validation("task_attention", "The task attention filter must be true or false.")),
+        };
         // `WorkflowVisibilityQuery::apply`; a plain term keeps the free-text
         // workflow ID and business key search.
         let term = self.query.as_deref().unwrap_or("").trim_matches([' ', '\t', '\n', '\r', '\0', '\x0b']);
@@ -84,6 +92,7 @@ impl VisibilityQuery {
             status: self.status,
             pattern: (!term.is_empty() && visibility.is_none()).then(|| format!("%{term}%")),
             visibility,
+            task_attention,
             limit,
             offset,
         })
@@ -296,6 +305,9 @@ where
     }
 
     async fn visibility_page(&self, filter: &VisibilityFilter, limit: i64, offset: i64) -> Result<Vec<DB::Row>> {
+        if filter.task_attention.is_some() {
+            return self.candidate_page(filter, None, limit, offset).await;
+        }
         // PHP's index filters cancelled and terminated runs by their exact
         // status and the other values by status bucket.
         Ok(Self::query(DB::VISIBILITY_PAGE)
@@ -344,6 +356,11 @@ where
         if let Some(pattern) = filter.pattern.as_deref() {
             statement.push(" AND (r.workflow_instance_id LIKE ").text(pattern);
             statement.push(" OR COALESCE(r.business_key,i.business_key) LIKE ").text(pattern).push(")");
+        }
+        if let Some(task_attention) = filter.task_attention {
+            statement.push(if task_attention { " AND " } else { " AND NOT " });
+            statement.push("(r.status IN ('pending','running','waiting') AND EXISTS (SELECT 1 FROM workflow_tasks t WHERE t.workflow_run_id=r.id AND t.task_type='workflow' AND t.status IN ('ready','leased') AND t.lost_lease_count >= ");
+            statement.int(self.workflow_task_lost_lease_attention_threshold).push("))");
         }
         if let Some(groups) = narrowing {
             statement.narrowing(groups);
@@ -534,9 +551,11 @@ where
         }
         let next =
             more.then(|| STANDARD.encode((filter.offset.saturating_add(filter.limit)).to_string()));
-        Ok(response(
-            json!({"workflow_count":workflows.len(), "workflows":workflows, "next_page_token":next}),
-        ))
+        let mut body = json!({"workflow_count":workflows.len(), "workflows":workflows, "next_page_token":next});
+        if let Some(task_attention) = filter.task_attention {
+            body["task_attention_filter"] = json!(task_attention);
+        }
+        Ok(response(body))
     }
 }
 

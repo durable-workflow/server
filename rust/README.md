@@ -336,6 +336,11 @@ defaults to 3. Losses are counted when repair or a subsequent worker claim
 recovers a lost lease. The diagnostic clears when the task completes or its run
 closes. Existing tasks begin with zero recorded losses after a schema upgrade.
 
+When cluster info advertises `task_attention_workflow_list`, the workflow list
+accepts `task_attention=true` or `task_attention=false` alongside its other
+filters. The Server applies the condition before paginating the results and
+confirms the applied value in `task_attention_filter` on each page.
+
 ## First HTTP execution slice
 
 Build with `cargo build --locked` in the same container/mount setup. Run the

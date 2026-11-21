@@ -83,6 +83,7 @@ pub(super) fn capabilities() -> Value {
         "principal_attribution_contract",
         "embedded_v2_import",
         "waterline_v1_projection",
+        super::task_attention::VISIBILITY_FILTER_CAPABILITY,
         super::task_queue_pauses::CAPABILITY,
         // Server #934: a signal or update request_id is a durable command key.
         "command_request_keys",
@@ -230,9 +231,10 @@ mod tests {
         // PHP's names plus native's child turn, occurrence-id reopen,
         // occurrence deadline, update outcome reads, task queue pauses and
         // command request keys, open-run version usage, guarded build
-        // retirement, the Prometheus text scrape, signal-with-start and
-        // signal-external.
-        assert_eq!(caps.as_object().unwrap().len(), 67);
+        // retirement, the Prometheus text scrape, signal-with-start,
+        // signal-external and the task-attention workflow list filter.
+        assert_eq!(caps.as_object().unwrap().len(), 68);
+        assert_eq!(caps[super::super::task_attention::VISIBILITY_FILTER_CAPABILITY], json!(true));
         assert_eq!(caps[super::super::external_signals::CAPABILITY], json!(true));
         assert_eq!(caps[super::super::version_usage::CAPABILITY], json!(true));
         assert_eq!(caps[super::super::retirement::CAPABILITY], json!(true));

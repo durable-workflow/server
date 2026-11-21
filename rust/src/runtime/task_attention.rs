@@ -8,6 +8,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::collections::{BTreeMap, btree_map::Entry};
 
 pub(super) const DEFAULT_THRESHOLD: i64 = 3;
+pub(super) const VISIBILITY_FILTER_CAPABILITY: &str = "task_attention_workflow_list";
 
 pub(super) struct TaskAttentionMetrics {
     pub(super) runs: i64,
