@@ -541,7 +541,6 @@ where
             let status = DB::string(row, "status")?;
             let bucket = status_bucket(&status)?;
             let task_attention = attention.remove(&run_id).unwrap_or(Value::Null);
-            let unsupported_ready_task = unsupported_ready.remove(&run_id);
             // `getTypedSearchAttributes`; PHP renders an empty set as `[]`.
             let typed = Self::typed_rows(&mut connection, &run_id).await?;
             let search_attributes = if typed.is_empty() {
@@ -549,14 +548,17 @@ where
             } else {
                 Value::Object(typed.into_iter().map(|(key, value)| (key, value.json())).collect())
             };
-            workflows.push(json!({"workflow_id":DB::string(row,"workflow_instance_id")?, "run_id":run_id,
+            let mut workflow = json!({"workflow_id":DB::string(row,"workflow_instance_id")?, "run_id":run_id,
                 "workflow_type":DB::string(row,"workflow_type")?, "business_key":DB::optional_string(row,"business_key")?,
                 "status":status, "status_bucket":bucket, "task_queue":DB::optional_string(row,"queue")?,
                 "is_terminal":bucket!="running", "compatibility":null, "compatibility_status":"compatible",
                 "compatibility_supported_in_fleet":true, "compatibility_fleet_reason":null,
                 "started_at":super::task_queues::json_time(DB::optional_instant(row,"started_at")?), "closed_at":super::task_queues::json_time(DB::optional_instant(row,"closed_at")?),
-                "search_attributes":search_attributes,"task_attention":task_attention,
-                "unsupported_ready_task":unsupported_ready_task}));
+                "search_attributes":search_attributes,"task_attention":task_attention});
+            if let Some(task) = unsupported_ready.remove(&run_id) {
+                workflow["unsupported_ready_task"] = task;
+            }
+            workflows.push(workflow);
         }
         let next =
             more.then(|| STANDARD.encode((filter.offset.saturating_add(filter.limit)).to_string()));

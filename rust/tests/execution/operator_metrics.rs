@@ -76,7 +76,7 @@ async fn ready_type_coverage_agrees_between_queues_and_operator_metrics() {
     assert_eq!(by_workflow("coverage-activity-unserved")["unsupported_ready_task"],
         json!({"task_queue":"coverage","task_kind":"activity","type":"greet"}));
     for id in ["coverage-served", "coverage-delayed", "coverage-unpolled", "coverage-activity-served"] {
-        assert_eq!(by_workflow(id)["unsupported_ready_task"], Value::Null, "{id}");
+        assert!(by_workflow(id).get("unsupported_ready_task").is_none(), "{id}");
     }
 
     let all = metrics(&app).await["backlog"]["type_coverage"].clone();
