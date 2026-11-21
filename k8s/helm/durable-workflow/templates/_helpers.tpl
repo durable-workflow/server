@@ -796,6 +796,7 @@ the PHP bootstrap hook's are, so the hook connects with this upgrade's values
 rather than the previous release's ConfigMap.
 */}}
 {{- define "durable-workflow.nativeSchemaUpgradeEnv" -}}
+{{- $upgrade := .Values.native.schemaUpgrade -}}
 - name: DB_CONNECTION
   value: {{ .Values.externalDatabase.connection | quote }}
 - name: DB_HOST
@@ -820,7 +821,18 @@ rather than the previous release's ConfigMap.
 - name: {{ $k }}
   value: {{ $v | quote }}
 {{- end }}
-{{- if .Values.externalDatabase.existingSecret }}
+{{- if $upgrade.existingSecret }}
+- name: DB_USERNAME
+  valueFrom:
+    secretKeyRef:
+      name: {{ $upgrade.existingSecret | quote }}
+      key: {{ $upgrade.existingSecretUsernameKey | default "DB_USERNAME" | quote }}
+- name: DB_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $upgrade.existingSecret | quote }}
+      key: {{ $upgrade.existingSecretPasswordKey | default "DB_PASSWORD" | quote }}
+{{- else if .Values.externalDatabase.existingSecret }}
 {{ include "durable-workflow.databaseCredentialEnv" . }}
 {{- else }}
 - name: DB_USERNAME

@@ -34,6 +34,9 @@
           "type": "object",
           "properties": {
             "enabled":               { "type": "boolean" },
+            "existingSecret":        { "type": "string" },
+            "existingSecretUsernameKey": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$" },
+            "existingSecretPasswordKey": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$" },
             "backoffLimit":          { "type": "integer", "minimum": 0 },
             "activeDeadlineSeconds": { "type": "integer", "minimum": 1 },
             "resources":             { "type": "object" }
