@@ -1,6 +1,6 @@
 //! Durable offer acceptance under the ordinary database transition lock.
 use super::{
-    Result, refuse,
+    QueryTaskConfig, Result, query_authority, refuse,
     store::now,
     transaction::{ClaimTarget, Transaction},
     worker_poll_fence::WorkerPollFence,
@@ -23,6 +23,15 @@ pub(super) struct OfferScope<'a> {
     pub(super) endpoint: &'static str,
     pub(super) request_id: &'a str,
     pub(super) kinds: &'a [&'static str],
+}
+
+pub(super) struct OfferClaim<'a> {
+    pub(super) scope: &'a OfferScope<'a>,
+    pub(super) fence: &'a WorkerPollFence,
+    pub(super) body: &'a Value,
+    pub(super) protocol: &'a str,
+    pub(super) history_page: Option<i64>,
+    pub(super) query_config: &'a QueryTaskConfig,
 }
 
 /// Data from a successfully authenticated offer envelope. The HTTP boundary
@@ -55,6 +64,7 @@ struct Receipt {
     namespace: String,
     queue: String,
     worker_id: String,
+    registration_digest: String,
     kind: String,
     task_id: String,
     attempt: i64,
@@ -103,6 +113,46 @@ fn identity(
 }
 
 store_methods! {
+    async fn offer_receipt_lease(
+        tx: &mut Transaction<'_, DB>, receipt: &Receipt, at: DateTime<Utc>,
+    ) -> Result<Option<DateTime<Utc>>> {
+        match receipt.kind.as_str() {
+            "query" => {
+                let task = Self::offer_query_row(&mut **tx, &receipt.namespace, &receipt.queue, &receipt.task_id, at).await?;
+                Ok(task.filter(|task| {
+                    task["registration_incarnation"] == receipt.registration_digest
+                        && query_authority::claim_reason(task, &receipt.worker_id, receipt.attempt, at).is_none()
+                }).and_then(|task| query_authority::timestamp(&task["lease_expires_at"])))
+            }
+            "update_validation" => {
+                Self::query("SELECT lease_expires_at FROM workflow_update_validation_tasks WHERE id=$1 AND namespace=$2 AND task_queue=$3 AND lease_owner=$4 AND attempt_count=$5 AND status='leased' AND lease_expires_at>$6")
+                    .bind(&receipt.task_id).bind(&receipt.namespace).bind(&receipt.queue)
+                    .bind(&receipt.worker_id).bind(receipt.attempt).bind(DB::bind_time(at))
+                    .fetch_optional(&mut **tx).await?
+                    .map(|row| DB::instant(&row, "lease_expires_at")).transpose()
+            }
+            "workflow" | "activity" => Self::execution_receipt_lease(tx, receipt, at).await,
+            _ => Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_task_offer_receipt")),
+        }
+    }
+
+    async fn offer_task_attempt(
+        &self, tx: &mut Transaction<'_, DB>, queue: &str, target: &ClaimTarget, at: DateTime<Utc>,
+    ) -> Result<Option<i64>> {
+        if target.kind == "query" {
+            return Ok(Self::offer_query_row(&mut **tx, self.namespace.as_ref(), queue, &target.task_id, at).await?
+                .and_then(|task| task["query_task_attempt"].as_i64()));
+        }
+        let task = if target.kind == "update_validation" {
+            Self::query("SELECT attempt_count FROM workflow_update_validation_tasks WHERE id=$1 AND namespace=$2 AND task_queue=$3")
+                .bind(&target.task_id).bind(self.namespace.as_ref()).bind(queue).fetch_optional(&mut **tx).await?
+        } else {
+            Self::query("SELECT attempt_count FROM workflow_tasks WHERE namespace=$1 AND queue=$2 AND task_type=$3 AND id=$4")
+                .bind(self.namespace.as_ref()).bind(queue).bind(target.kind).bind(&target.task_id).fetch_optional(&mut **tx).await?
+        };
+        task.map(|row| DB::number(&row, "attempt_count")).transpose()
+    }
+
     async fn execution_receipt_lease(
         tx: &mut Transaction<'_, DB>, receipt: &Receipt, at: DateTime<Utc>,
     ) -> Result<Option<DateTime<Utc>>> {
@@ -125,14 +175,14 @@ store_methods! {
 
     /// Review a bounded page of old receipts while holding the transition.
     /// An expiration timestamp schedules a review; it cannot evict a live lease.
-    async fn sweep_execution_offer_receipts(tx: &mut Transaction<'_, DB>, at: DateTime<Utc>) -> Result<()> {
+    async fn sweep_offer_receipts(tx: &mut Transaction<'_, DB>, at: DateTime<Utc>) -> Result<()> {
         let rows = Self::query(DB::OFFER_RECEIPT_REVIEW)
             .bind(at.timestamp()).bind(SWEEP_BATCH).fetch_all(&mut **tx).await?;
         for row in rows {
             let key = DB::string(&row, "key")?;
             let raw = DB::string(&row, "value")?;
             let receipt = Receipt::decode(&raw)?;
-            if Self::execution_receipt_lease(tx, &receipt, at).await?.is_some() {
+            if Self::offer_receipt_lease(tx, &receipt, at).await?.is_some() {
                 Self::query(DB::QUERY_CACHE_UPDATE).bind(raw).bind(at.timestamp() + REVIEW_AFTER_SECONDS)
                     .bind(key).execute(&mut **tx).await?;
             } else {
@@ -142,13 +192,9 @@ store_methods! {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn accept_execution_offer(
-        &self, scope: &OfferScope<'_>, offer: &OpenedOffer, fence: &WorkerPollFence, body: &Value,
-        protocol: &str, history_page: Option<i64>,
-    ) -> Result<Acceptance> {
+    pub(super) async fn accept_task_offer(&self, offer: &OpenedOffer, claim: &OfferClaim<'_>) -> Result<Acceptance> {
         let mut tx = self.begin().await?;
-        let accepted = self.accept_execution_offer_in(&mut tx, scope, offer, fence, body, protocol, history_page, now()).await?;
+        let accepted = self.accept_task_offer_in(&mut tx, offer, claim, now()).await?;
         if matches!(accepted, Acceptance::Claimed(_) | Acceptance::Replayed(_)) {
             tx.commit().await?;
         } else {
@@ -157,13 +203,15 @@ store_methods! {
         Ok(accepted)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn accept_execution_offer_in(
-        &self, tx: &mut Transaction<'_, DB>, scope: &OfferScope<'_>, offer: &OpenedOffer,
-        fence: &WorkerPollFence, body: &Value, protocol: &str, history_page: Option<i64>, at: DateTime<Utc>,
+    async fn accept_task_offer_in(
+        &self, tx: &mut Transaction<'_, DB>, offer: &OpenedOffer, claim: &OfferClaim<'_>, at: DateTime<Utc>,
     ) -> Result<Acceptance> {
+        let OfferClaim { scope, fence, body, protocol, history_page, query_config } = *claim;
         let kind = offer.target.kind;
-        if !matches!(kind, "workflow" | "activity") || scope.endpoint != kind || !scope.kinds.contains(&kind)
+        let endpoint_accepts_kind = matches!((scope.endpoint, kind),
+            ("workflow", "workflow" | "update_validation")
+            | ("activity", "activity") | ("query", "query") | ("update_validation", "update_validation"));
+        if !endpoint_accepts_kind || !scope.kinds.contains(&kind)
             || super::text(body, "worker_id")? != scope.worker_id
             || super::text(body, "task_queue")? != scope.queue
             || request_id(body).as_deref() != Some(scope.request_id)
@@ -181,6 +229,13 @@ store_methods! {
             return Err(lost());
         }
 
+        if kind == "query"
+            && Self::query_worker_proof(&mut **tx, self.namespace.as_ref(), scope.worker_id, query_config)
+                .await?.as_deref() != Some(&offer.registration_digest)
+        {
+            return Err(lost());
+        }
+
         let (key, binding) = identity(self.namespace.as_ref(), scope, &offer.registration_digest);
         if let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&mut **tx).await? {
             let receipt = Receipt::decode(&DB::string(&row, "value")?)?;
@@ -190,22 +245,20 @@ store_methods! {
             {
                 return Ok(Acceptance::ConflictingOffer);
             }
-            let Some(expires) = Self::execution_receipt_lease(tx, &receipt, at).await? else {
+            let Some(expires) = Self::offer_receipt_lease(tx, &receipt, at).await? else {
                 return Ok(Acceptance::LeaseEnded);
             };
             let mut task = receipt.task;
             task["lease_expires_at"] = json!(super::cooperative::timestamp(expires));
+            if kind == "query" {
+                task["server_time"] = json!(query_authority::wire(at));
+            }
             return Ok(Acceptance::Replayed(task));
         }
         if offer.expires_at_ms <= at.timestamp_millis() {
             // This also distinguishes an offer whose accepted receipt aged
             // out from an offer that never advanced the task's attempt.
-            let task = Self::query("SELECT attempt_count FROM workflow_tasks WHERE namespace=$1 AND queue=$2 AND task_type=$3 AND id=$4")
-                .bind(self.namespace.as_ref()).bind(scope.queue).bind(kind).bind(&offer.target.task_id)
-                .fetch_optional(&mut **tx).await?;
-            if let Some(task) = task
-                && Some(DB::number(&task, "attempt_count")?) == offer.target.observed_attempt
-            {
+            if self.offer_task_attempt(tx, scope.queue, &offer.target, at).await? == offer.target.observed_attempt {
                 return Ok(Acceptance::Expired);
             }
             return Ok(Acceptance::Unclaimable);
@@ -218,16 +271,21 @@ store_methods! {
             fields.remove("poll_request_id");
         }
         tx.claim_only = Some(offer.target.clone());
-        let task = self.claim_with_registration(tx, &claim, kind, protocol, history_page, None, Some(worker)).await?;
+        let task = match kind {
+            "query" => self.claim_query_offer_in(tx, &claim, query_config, &offer.registration_digest).await,
+            "update_validation" => self.claim_validation_offer_in(tx, scope.worker_id, scope.queue).await,
+            _ => self.claim_with_registration(tx, &claim, kind, protocol, history_page, None, Some(worker)).await,
+        };
         tx.claim_only = None;
-        let Some(task) = task else { return Ok(Acceptance::Unclaimable); };
+        let Some(task) = task? else { return Ok(Acceptance::Unclaimable); };
         let receipt = Receipt {
             version: RECEIPT_VERSION, binding, packet_digest: offer.packet_digest,
             key_id: offer.key_id.clone(), namespace: self.namespace.to_string(), queue: scope.queue.to_owned(),
-            worker_id: scope.worker_id.to_owned(), kind: kind.to_owned(), task_id: offer.target.task_id.clone(),
+            worker_id: scope.worker_id.to_owned(), registration_digest: offer.registration_digest.clone(),
+            kind: kind.to_owned(), task_id: offer.target.task_id.clone(),
             attempt, task: task.clone(),
         };
-        Self::sweep_execution_offer_receipts(tx, at).await?;
+        Self::sweep_offer_receipts(tx, at).await?;
         Self::query(DB::QUERY_CACHE_INSERT).bind(key).bind(serde_json::to_string(&receipt)?)
             .bind(at.timestamp() + REVIEW_AFTER_SECONDS).execute(&mut **tx).await?;
         Ok(Acceptance::Claimed(task))
@@ -237,7 +295,7 @@ store_methods! {
 #[cfg(test)]
 store_methods! {
     pub(super) async fn qualify_execution_offer_receipts(&self) {
-        use super::{QueryTaskConfig, store::Store, worker_poll_fence::PollAdmission};
+        use super::{store::Store, worker_poll_fence::PollAdmission};
         use crate::codec::{Value as Payload, ValueCodec};
         use std::sync::Arc;
         use tokio::sync::Semaphore;
@@ -269,6 +327,9 @@ store_methods! {
             let kinds = [kind];
             let scope = OfferScope { worker_id: "worker", queue: "received", endpoint: kind, request_id: "original", kinds: &kinds };
             let body = json!({"worker_id":"worker","task_queue":"received","poll_request_id":"original","timeout_seconds":0});
+            let config = QueryTaskConfig::default();
+            let claim = OfferClaim { scope: &scope, fence: &fence, body: &body, protocol: "1.20",
+                history_page: None, query_config: &config };
             let target = store.peek_execution_offer("worker", "received", kind, "1.20", &fence).await.unwrap().unwrap();
             let task_id = target.task_id.clone();
             let at = now();
@@ -278,11 +339,11 @@ store_methods! {
             };
             let (key, _) = identity(&namespace, &scope, &offer.registration_digest);
             let mut tx = store.begin().await.unwrap();
-            assert!(matches!(store.accept_execution_offer_in(&mut tx, &scope, &offer, &fence, &body, "1.20", None,
+            assert!(matches!(store.accept_task_offer_in(&mut tx, &offer, &claim,
                 at + chrono::Duration::seconds(11)).await.unwrap(), Acceptance::Expired));
             tx.rollback().await.unwrap();
             let mut tx = store.begin().await.unwrap();
-            assert!(matches!(store.accept_execution_offer_in(&mut tx, &scope, &offer, &fence, &body, "1.20", None, at)
+            assert!(matches!(store.accept_task_offer_in(&mut tx, &offer, &claim, at)
                 .await.unwrap(), Acceptance::Claimed(_)));
             tx.rollback().await.unwrap();
             assert!(Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&store.pool).await.unwrap().is_none());
@@ -294,8 +355,8 @@ store_methods! {
             // Independent Store queues still serialize on the backend lock.
             let replica = Store::<DB>::new(store.pool.clone()).in_namespace(&namespace);
             let (a,b) = tokio::join!(
-                store.accept_execution_offer(&scope, &offer, &fence, &body, "1.20", None),
-                replica.accept_execution_offer(&scope, &offer, &fence, &body, "1.20", None),
+                store.accept_task_offer(&offer, &claim),
+                replica.accept_task_offer(&offer, &claim),
             );
             let (claimed, replayed) = match (a.unwrap(), b.unwrap()) {
                 (Acceptance::Claimed(task), Acceptance::Replayed(replayed)) |
@@ -319,7 +380,7 @@ store_methods! {
             let mut competing = offer.clone();
             competing.target.task_id = other_id.clone();
             competing.packet_digest = [8; 32];
-            assert!(matches!(replica.accept_execution_offer(&scope, &competing, &fence, &body, "1.20", None).await.unwrap(),
+            assert!(matches!(replica.accept_task_offer(&competing, &claim).await.unwrap(),
                 Acceptance::ConflictingOffer));
 
             let renewed = at + chrono::Duration::hours(2);
@@ -332,9 +393,8 @@ store_methods! {
             }
             let later = at + chrono::Duration::seconds(REVIEW_AFTER_SECONDS + 1);
             let mut tx = replica.begin().await.unwrap();
-            Self::sweep_execution_offer_receipts(&mut tx, later).await.unwrap();
-            let Acceptance::Replayed(replay) = replica.accept_execution_offer_in(&mut tx, &scope, &offer, &fence, &body,
-                "1.20", None, later).await.unwrap() else { panic!("a renewed lease keeps its receipt"); };
+            Self::sweep_offer_receipts(&mut tx, later).await.unwrap();
+            let Acceptance::Replayed(replay) = replica.accept_task_offer_in(&mut tx, &offer, &claim, later).await.unwrap() else { panic!("a renewed lease keeps its receipt"); };
             assert_eq!(replay["task_id"], task_id.as_str());
             let expires = DateTime::parse_from_rfc3339(replay["lease_expires_at"].as_str().unwrap()).unwrap().timestamp();
             assert_eq!(expires, renewed.timestamp());
@@ -347,11 +407,11 @@ store_methods! {
 
             let mut tx = store.begin().await.unwrap();
             let after_lease = renewed + chrono::Duration::seconds(2);
-            assert!(matches!(store.accept_execution_offer_in(&mut tx, &scope, &offer, &fence, &body, "1.20", None, after_lease)
+            assert!(matches!(store.accept_task_offer_in(&mut tx, &offer, &claim, after_lease)
                 .await.unwrap(), Acceptance::LeaseEnded));
-            Self::sweep_execution_offer_receipts(&mut tx, after_lease).await.unwrap();
+            Self::sweep_offer_receipts(&mut tx, after_lease).await.unwrap();
             assert!(Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&mut *tx).await.unwrap().is_none());
-            assert!(matches!(store.accept_execution_offer_in(&mut tx, &scope, &offer, &fence, &body, "1.20", None, after_lease)
+            assert!(matches!(store.accept_task_offer_in(&mut tx, &offer, &claim, after_lease)
                 .await.unwrap(), Acceptance::Unclaimable));
             tx.commit().await.unwrap();
             let other = Self::query("SELECT status,attempt_count FROM workflow_tasks WHERE id=$1")
