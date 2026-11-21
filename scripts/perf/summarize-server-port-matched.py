@@ -10,6 +10,7 @@ cgroup usage, not RSS. It prints a Markdown table and writes summary.json in
 each directory. It never discards a failed or missing window.
 """
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -116,8 +117,7 @@ def add_offer_probe(entry, probe, impl):
         entry["mysql_core_seconds_per_workflow"] = round(mysql / done, 4) if mysql is not None else None
 
 
-def summarize(directory):
-    identity = json.loads((directory / "identity.json").read_text())
+def summarize(directory, identity):
     impl = identity["implementation"]
     samples = load_samples(directory / "samples.tsv") if (directory / "samples.tsv").exists() else []
     marks = windows(directory / "windows.tsv")
@@ -170,10 +170,44 @@ def result_directory(argument):
     return directory
 
 
+def comparison_digests(identity):
+    impl = identity["implementation"]
+    if impl == "native":
+        digest = identity.get("native_binary_sha256")
+        return {("binary", digest)} if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) else set()
+    keys = set()
+    image_id = identity.get("server_image_id")
+    if isinstance(image_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        keys.add(("image_id", image_id))
+    reference = identity.get("native_image" if impl == "native-image" else "php_server")
+    reference_digest = reference.rpartition("@")[2] if isinstance(reference, str) and "@" in reference else None
+    for digest in (identity.get("server_platform_manifest"), reference_digest):
+        if isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            keys.add(("manifest", digest))
+    return keys
+
+
+def verify_comparison(inputs):
+    if len(inputs) < 2:
+        return
+    seen = {}
+    for directory, identity in inputs:
+        digests = comparison_digests(identity)
+        if not digests:
+            sys.exit(f"{directory} lacks a verified Server image or binary digest.")
+        for digest in sorted(digests):
+            if digest in seen:
+                sys.exit(f"{seen[digest]} and {directory} use the same Server artifact ({digest[1]}).")
+            seen[digest] = directory
+
+
 def main():
     rows, idle_rows = [], []
-    for argument in sys.argv[1:]:
-        impl, result = summarize(result_directory(argument))
+    directories = [result_directory(argument) for argument in sys.argv[1:]]
+    inputs = [(directory, json.loads((directory / "identity.json").read_text())) for directory in directories]
+    verify_comparison(inputs)
+    for directory, identity in inputs:
+        impl, result = summarize(directory, identity)
         rows += [(impl, name, w) for name, w in result["windows"].items()]
         idle_rows += [(impl, name, w) for name, w in result["idle"].items()]
     table(rows)
@@ -188,4 +222,5 @@ def main():
               f"{health.get('failures', '–')}/{health.get('replies', '–')}, {health.get('slowest_ok_seconds', '–')} |")
 
 
-main()
+if __name__ == "__main__":
+    main()

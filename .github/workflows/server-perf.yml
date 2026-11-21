@@ -58,6 +58,7 @@ on:
       - "tests/Unit/Support/server_soak_test.py"
       - "tests/Unit/Support/vultr_soak_cleanup_test.py"
       - "tests/Unit/Support/capacity_benchmark_test.py"
+      - "tests/Unit/Support/matched_port_identity_test.py"
       - "tests/Unit/Support/small_host_summary_test.py"
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
@@ -119,6 +120,7 @@ on:
       - "tests/Unit/Support/server_soak_test.py"
       - "tests/Unit/Support/vultr_soak_cleanup_test.py"
       - "tests/Unit/Support/capacity_benchmark_test.py"
+      - "tests/Unit/Support/matched_port_identity_test.py"
       - "tests/Unit/Support/small_host_summary_test.py"
       - "tests/Feature/SystemMetricsTest.php"
       - "tests/Feature/HealthControllerTest.php"
@@ -225,6 +227,7 @@ jobs:
 
       - name: Qualify capacity benchmark contract and bounded reference cell
         run: |
+          python3 -m unittest tests/Unit/Support/matched_port_identity_test.py
           python3 -m unittest tests/Unit/Support/capacity_benchmark_test.py
           python3 scripts/benchmark/capacity_suite.py validate
           python3 scripts/benchmark/capacity_matrix.py dry-run \
