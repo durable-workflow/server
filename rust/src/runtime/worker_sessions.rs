@@ -745,6 +745,32 @@ store_methods! {
         Ok(Some(compact(&options, row.as_ref())))
     }
 
+    /// Observe the current admission decision without renewing a session or
+    /// persisting a status change. The claim still owns those effects.
+    pub(super) async fn session_activity_offerable(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        worker: &DB::Row,
+        session: &CommandSession,
+        activity_queue: &str,
+        activity_connection: Option<&str>,
+        task_id: &str,
+    ) -> Result<bool> {
+        let worker_id = DB::string(worker, "worker_id")?;
+        let limit = DB::optional_number(worker, "max_concurrent_worker_sessions")?.unwrap_or(10);
+        let options = session.options(Some(activity_queue), activity_connection);
+        let allowed = match self.current_session(tx, &options.session_id).await? {
+            None => options.create_if_missing,
+            Some((row, _)) if row.status == "active" => {
+                return Ok(row.lease_owner.as_deref() == Some(worker_id.as_str())
+                    && self.running_session_activities(tx, &row, task_id).await? < row.max_concurrent_activities.max(1));
+            }
+            Some((row, _)) => row.status != "closed" && row.failure_reason.as_deref() != Some("ttl_expired")
+                && row.allow_reacquire_after_failure && options.allow_reacquire_after_failure,
+        };
+        Ok(allowed && self.session_limit(tx, &worker_id, limit, &options.session_id).await?.is_none())
+    }
+
     /// `heartbeatForAttempt`: an activity heartbeat or lease renewal renews
     /// its session by the command's lease. Answers the full snapshot, or the
     /// refusal's status, its snapshot (if any) and the renewal's failure.
@@ -923,12 +949,23 @@ store_methods! {
 
     /// The session, refreshed (`refreshStatusLocked`).
     async fn locked_session(&self, tx: &mut Transaction<'_, DB>, session_id: &str) -> Result<Option<Session>> {
+        let Some((session, changed)) = self.current_session(tx, session_id).await? else {
+            return Ok(None);
+        };
+        if changed {
+            self.save(tx, &session).await?;
+        }
+        Ok(Some(session))
+    }
+
+    /// Compute the current status for either a read snapshot or a transition.
+    async fn current_session(&self, tx: &mut Transaction<'_, DB>, session_id: &str) -> Result<Option<(Session, bool)>> {
         let Some(row) = Self::query(SESSION_BY_ID).bind(self.namespace.as_ref()).bind(session_id).fetch_optional(&mut **tx).await? else {
             return Ok(None);
         };
         let mut session = Self::session(&row)?;
         if session.status == "closed" || session.failure_reason.as_deref() == Some("ttl_expired") {
-            return Ok(Some(session));
+            return Ok(Some((session, false)));
         }
         let at = now();
         let change = if session.ttl_expires_at.is_some_and(|ttl| ttl <= at) {
@@ -943,9 +980,8 @@ store_methods! {
         if let Some((status, reason)) = change {
             session.status = status.into();
             session.failure_reason = Some(reason.into());
-            self.save(tx, &session).await?;
         }
-        Ok(Some(session))
+        Ok(Some((session, change.is_some())))
     }
 
     /// Why an active session's holder no longer holds it: its registration

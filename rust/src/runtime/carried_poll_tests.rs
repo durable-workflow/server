@@ -101,7 +101,54 @@ store_methods! {
             BTreeMap::new(), None, polling(), Default::default(), None, None).await
     }
 
+    async fn qualify_activity_offer_session(&self) {
+        let store = self.in_namespace("offer-session");
+        store.carrier_workers().await;
+        let mut runs = vec![];
+        for name in ["offer-first", "offer-second"] {
+            let task = store.carrier_task(name).await;
+            store.carrier_complete(&task, None).await.unwrap();
+            let run = task["run_id"].as_str().unwrap();
+            let activity = Self::query("SELECT id,activity_options FROM activity_executions WHERE workflow_run_id=$1")
+                .bind(run).fetch_one(&store.pool).await.unwrap();
+            let mut options = DB::optional_document_row(&activity, "activity_options").unwrap().unwrap_or_else(|| json!({}));
+            options["worker_session"] = json!({"session_id":"offer-capacity", "max_concurrent_activities":1});
+            Self::query("UPDATE activity_executions SET activity_options=$1 WHERE id=$2")
+                .bind(DB::document(&options)).bind(DB::string(&activity, "id").unwrap())
+                .execute(&store.pool).await.unwrap();
+            runs.push(task);
+        }
+        use super::worker_poll_fence::PollAdmission;
+        let PollAdmission::Fenced(owner) = store.admit_worker_poll("owner", "carried").await.unwrap()
+        else { panic!("the owner must have an active registration"); };
+        let PollAdmission::Fenced(other) = store.admit_worker_poll("other", "carried").await.unwrap()
+        else { panic!("the peer must have an active registration"); };
+        store.test_transitions.store(0, Ordering::Relaxed);
+        let offer = store.peek_execution_offer("owner", "carried", "activity", "1.20", &owner).await.unwrap().unwrap();
+        assert_eq!(offer.observed_attempt, Some(0));
+        assert_eq!(store.test_transitions.load(Ordering::Relaxed), 0);
+        for run in &runs {
+            assert_eq!(store.carrier_activity_state(run).await, ("ready".into(), 0));
+        }
+        assert_eq!(Self::scalar("SELECT COUNT(*) FROM workflow_worker_sessions WHERE namespace=$1")
+            .bind(store.namespace.as_ref()).fetch_one(&store.pool).await.unwrap(), 0);
+        let taken = store.poll(activity_poll(), "activity", "1.20").await.unwrap()["task"].clone();
+        assert_eq!(taken["task_id"], offer.task_id);
+        for (worker, fence) in [("owner", &owner), ("other", &other)] {
+            assert!(store.peek_execution_offer(worker, "carried", "activity", "1.20", fence).await.unwrap().is_none());
+        }
+        let held = Self::query("SELECT lease_owner,lease_expires_at FROM workflow_worker_sessions WHERE namespace=$1 AND session_id='offer-capacity'")
+            .bind(store.namespace.as_ref()).fetch_one(&store.pool).await.unwrap();
+        assert_eq!(DB::string(&held, "lease_owner").unwrap(), "owner");
+        assert!(DB::optional_instant(&held, "lease_expires_at").unwrap().is_some());
+        store.carrier_finish_activity(&taken, None).await.unwrap();
+        let next = store.peek_execution_offer("owner", "carried", "activity", "1.20", &owner).await.unwrap().unwrap();
+        assert_ne!(next.task_id, offer.task_id);
+        assert_eq!(next.observed_attempt, Some(0));
+    }
+
     pub(super) async fn qualify_carried_activity_polls(&self) {
+        self.qualify_activity_offer_session().await;
         let store = self.in_namespace("carrier-positive");
         store.carrier_workers().await;
         let task = store.carrier_task("carrier-positive").await;
