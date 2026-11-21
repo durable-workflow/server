@@ -125,7 +125,13 @@ where
         result["run_id"] = json!(run_id);
         result["selected_run_id"] = json!(run_id);
         result["task_queue"] = result["queue"].clone();
-        result["is_terminal"] = json!(terminal(&status));
+        let is_terminal = terminal(&status);
+        result["is_terminal"] = json!(is_terminal);
+        result["task_attention"] = if is_terminal {
+            Value::Null
+        } else {
+            self.task_attention_for_run(&mut *self.pool.acquire().await?, run_id).await?
+        };
         result["read_mode"] = json!("bounded");
         result["observed_at"] = json!(iso(now));
         result["history_audit"] = json!("not_evaluated");

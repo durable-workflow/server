@@ -15,10 +15,11 @@ use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 /// 13, and keyed command intents (server#934): MySQL 15, MariaDB 14.
 /// Immutable external storage bindings are MySQL 17 / MariaDB 16, child
 /// supervisions MySQL 18 / MariaDB 17, and the maintenance scan indexes
-/// (server#1256) MySQL 19 / MariaDB 18.
+/// (server#1256) MySQL 19 / MariaDB 18. Workflow task lease loss uses
+/// MySQL 20 / MariaDB 19.
 /// `Flavor::version` selects the one a server needs.
-pub const MYSQL_VERSION: i64 = 19;
-pub const MARIADB_VERSION: i64 = 18;
+pub const MYSQL_VERSION: i64 = 20;
+pub const MARIADB_VERSION: i64 = 19;
 type Catalog = Vec<(String, String)>;
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
@@ -45,6 +46,88 @@ impl Flavor {
         })
     }
     fn migrator(self) -> &'static Migrator {
+        static MYSQL: OnceLock<Migrator> = OnceLock::new();
+        static MARIA: OnceLock<Migrator> = OnceLock::new();
+        let (slot, sql) = match self {
+            Self::MySql => (
+                &MYSQL,
+                concat!(
+                    include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0013_json_text.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0014_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0015_command_intents.sql"), "\n", include_str!("../../migrations/mysql/0016_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mysql/0017_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mysql/0018_child_supervisions.sql"), "\n", include_str!("../../migrations/mysql/0019_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/mysql/0020_workflow_task_lease_loss.sql")
+                ),
+            ),
+            Self::MariaDb => (
+                &MARIA,
+                concat!(
+                    include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0014_command_intents.sql"), "\n", include_str!("../../migrations/mariadb/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mariadb/0016_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mariadb/0017_child_supervisions.sql"), "\n", include_str!("../../migrations/mariadb/0018_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/mariadb/0019_workflow_task_lease_loss.sql")
+                ),
+            ),
+        };
+        slot.get_or_init(|| {
+            let description = match self {
+                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss",
+                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss",
+            };
+            let mut migrations = Migrator::with_migrations(vec![Migration::new(
+                self.version(),
+                description.into(),
+                MigrationType::Simple,
+                AssertSqlSafe(self.bootstrap_sql(sql)).into_sql_str(),
+                false,
+            )]);
+            // A bounded named lock on this dedicated initialization connection
+            // covers preflight, DDL, resumption and final marking.
+            migrations.set_locking(false);
+            migrations
+        })
+    }
+
+    fn retained_lease_loss_predecessor(self) -> &'static Migrator {
         static MYSQL: OnceLock<Migrator> = OnceLock::new();
         static MARIA: OnceLock<Migrator> = OnceLock::new();
         let (slot, sql) = match self {
@@ -113,7 +196,7 @@ impl Flavor {
                 Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes",
             };
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
-                self.version(),
+                task_lease_loss_step(self),
                 description.into(),
                 MigrationType::Simple,
                 AssertSqlSafe(self.bootstrap_sql(sql)).into_sql_str(),
@@ -379,8 +462,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0019_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0018_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0020_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0019_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -486,6 +569,8 @@ impl Flavor {
     static DISPATCH_MYSQL: OnceLock<Migration> = OnceLock::new();
     static DISPATCH_MARIADB: OnceLock<Migration> = OnceLock::new();
         match (self, version) {
+            (Self::MySql, 19) => self.retained_lease_loss_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0019_catalog.json"))),
+            (Self::MariaDb, 18) => self.retained_lease_loss_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0018_catalog.json"))),
             (Self::MySql, 18) => self.retained_scan_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0018_catalog.json"))),
             (Self::MariaDb, 17) => self.retained_scan_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0017_catalog.json"))),
             (Self::MySql, 17) => self.retained_supervision_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0017_catalog.json"))),
@@ -900,6 +985,8 @@ impl Flavor {
     /// The step file that moves a native database from `version` to the next.
     fn step(self, version: i64) -> Option<&'static str> {
         match (self, version) {
+            (Self::MySql, 19) => Some(include_str!("../../migrations/mysql/0020_workflow_task_lease_loss.sql")),
+            (Self::MariaDb, 18) => Some(include_str!("../../migrations/mariadb/0019_workflow_task_lease_loss.sql")),
             (Self::MySql, 18) => Some(include_str!("../../migrations/mysql/0019_maintenance_scan_indexes.sql")),
             (Self::MariaDb, 17) => Some(include_str!("../../migrations/mariadb/0018_maintenance_scan_indexes.sql")),
             (Self::MySql, 17) => Some(include_str!("../../migrations/mysql/0018_child_supervisions.sql")),
@@ -978,8 +1065,23 @@ impl Flavor {
             Self::MySql => json_text_bootstrap_sql(&bootstrap_sql_v11(sql)),
             Self::MariaDb => bootstrap_sql_v11(sql),
         };
-        maintenance_scan_bootstrap_sql(external_storage_bootstrap_sql(dispatch_summary_bootstrap_sql(sql)))
+        let sql = maintenance_scan_bootstrap_sql(external_storage_bootstrap_sql(dispatch_summary_bootstrap_sql(sql)));
+        task_lease_loss_bootstrap_sql(sql)
     }
+}
+
+/// Init creates the final table directly so a lost bootstrap acknowledgement
+/// cannot cause a second implicit-commit ALTER.
+fn task_lease_loss_bootstrap_sql(mut sql: String) -> String {
+    let alter = include_str!("../../migrations/mysql/0020_workflow_task_lease_loss.sql").trim();
+    assert_eq!(alter, include_str!("../../migrations/mariadb/0019_workflow_task_lease_loss.sql").trim());
+    if !sql.contains(alter) {
+        return sql;
+    }
+    let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_tasks` (").expect("compiled workflow tasks");
+    let key = start + sql[start..].find("  PRIMARY KEY").expect("compiled workflow task primary key");
+    sql.insert_str(key, "  `lost_lease_count` BIGINT NOT NULL DEFAULT 0,\n  `last_lease_lost_at` DATETIME(6) NULL,\n");
+    sql.replace(alter, "")
 }
 
 /// The maintenance scan indexes (server#1256): each table and the index the
@@ -1222,6 +1324,35 @@ pub(super) async fn ensure_maintenance_scan_indexes(connection: &mut MySqlConnec
     Ok(())
 }
 
+fn task_lease_loss_step(flavor: Flavor) -> i64 {
+    match flavor { Flavor::MySql => 19, Flavor::MariaDb => 18 }
+}
+
+fn workflow_task_table(rows: Catalog) -> Option<(String, String)> {
+    rows.into_iter().find(|(name, _)| name == "workflow_tasks")
+}
+
+fn pre_lease_loss_task_table(flavor: Flavor) -> Result<Option<(String, String)>> {
+    let (_, old) = flavor.earlier(task_lease_loss_step(flavor)).expect("retained lease loss predecessor");
+    Ok(workflow_task_table(serde_json::from_str(&canonical(old))?))
+}
+
+pub(super) async fn ensure_task_lease_loss(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let found = workflow_task_table(catalog(connection).await?);
+    let expected = workflow_task_table(flavor.expected()?);
+    if found == expected {
+        return Ok(());
+    }
+    if found != pre_lease_loss_task_table(flavor)? {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    connection.execute(flavor.step(task_lease_loss_step(flavor)).expect("compiled lease loss step")).await?;
+    if workflow_task_table(catalog(connection).await?) != expected {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    Ok(())
+}
+
 fn dispatch_summary_step(flavor: Flavor) -> i64 {
     match flavor { Flavor::MySql => 15, Flavor::MariaDb => 14 }
 }
@@ -1253,7 +1384,7 @@ pub(super) async fn ensure_ready_origin(connection: &mut MySqlConnection, flavor
     let actual = catalog(connection).await?;
     let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
     let found = task(actual.clone());
-    if found == task(flavor.v12_catalog()?) || found == task(flavor.expected()?) { return Ok(()); }
+    if found == task(flavor.v12_catalog()?) || found == task(flavor.expected()?) || found == pre_lease_loss_task_table(flavor)? { return Ok(()); }
     let (_, ready) = flavor.earlier(10).expect("retained v10 schema");
     let expected = task(serde_json::from_str(&canonical(ready))?);
     match task(actual) {
@@ -1300,7 +1431,7 @@ pub(super) async fn ensure_scoped_dispatch_index(connection: &mut MySqlConnectio
     let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
     let expected = task(flavor.v12_catalog()?);
     let found = task(catalog(connection).await?);
-    if found == expected || found == task(flavor.expected()?) { return Ok(()); }
+    if found == expected || found == task(flavor.expected()?) || found == pre_lease_loss_task_table(flavor)? { return Ok(()); }
     if found != task(old) { return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")); }
     connection.execute(flavor.step(10).expect("compiled scoped dispatch index")).await?;
     if task(catalog(connection).await?) != expected {
@@ -1759,10 +1890,12 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             // An indexed table may stand at its definition before the
             // maintenance scan step, after an earlier step changed it.
             let pre_scan = pre_scan_index_tables(flavor)?;
+            let pre_lease_loss = pre_lease_loss_task_table(flavor)?;
             let partial = actual.iter().all(|(name, ddl)| {
                 earlier_tables.get(name) == Some(ddl) || current.get(name) == Some(ddl) || v12.get(name) == Some(ddl) || (["runtime_external_payloads", "workflow_namespaces"].contains(&name.as_str()) && pre_binding.get(name) == Some(ddl))
                     || pre_scan.get(name) == Some(ddl)
-                    || name == "workflow_tasks" && intermediate_task.as_ref().is_some_and(|(_, task)| task == ddl)
+                    || name == "workflow_tasks" && [intermediate_task.as_ref(), pre_lease_loss.as_ref()]
+                        .into_iter().flatten().any(|(_, task)| task == ddl)
             }) && earlier_tables
                 .keys()
                 .all(|name| actual.iter().any(|(table, _)| table == name));
@@ -1773,6 +1906,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         // Each step's own marker update names the development engine, so it
         // changes nothing while the marker fences the upgrade.
         for version in from..flavor.version() {
+            if version == task_lease_loss_step(flavor) {
+                ensure_task_lease_loss(&mut connection, flavor).await?;
+                continue;
+            }
             if version == maintenance_scan_step(flavor) {
                 ensure_maintenance_scan_indexes(&mut connection, flavor).await?;
                 continue;
@@ -2025,7 +2162,6 @@ mod tests {
             assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_child_supervisions (").count(), 1);
             assert!(flavor.step(version).unwrap().contains("CREATE TABLE dw_child_supervisions ("));
         }
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (19, 18));
     }
 
     #[test]
@@ -2358,7 +2494,6 @@ mod tests {
                 assert!(flavor.step(version).unwrap().contains(statement));
             }
         }
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (19, 18));
     }
 
     #[tokio::test]
@@ -3501,7 +3636,6 @@ mod tests {
         assert_eq!(checksum_hex(Flavor::MariaDb.earlier(12).unwrap().0),
             include_str!("../../migrations/mariadb/0012_checksum.txt").trim());
         let sql: &str = Flavor::MySql.migration().sql.as_ref();
-        assert_eq!(Flavor::MySql.version(), 19);
         assert!(!sql.contains("ALTER TABLE `activity_executions`"), "upgrade ALTERs are folded into the bootstrap");
         assert!(!regex_lite::Regex::new(r"(?i)`?\w+`? json( |,)").unwrap().is_match(sql), "no json column remains");
         assert_eq!(sql.matches("CHECK (json_valid(").count(), 75);
@@ -3680,7 +3814,6 @@ mod tests {
             include_str!("../../migrations/mysql/0014_checksum.txt").trim());
         assert_eq!(checksum_hex(Flavor::MariaDb.earlier(13).unwrap().0),
             include_str!("../../migrations/mariadb/0013_checksum.txt").trim());
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (19, 18));
         for flavor in [Flavor::MySql, Flavor::MariaDb] {
             let sql: &str = flavor.migration().sql.as_ref();
             assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_command_intents (").count(), 1);
@@ -3740,6 +3873,51 @@ mod tests {
             let sql = flavor.migration().sql.as_ref();
             assert_eq!(sql.matches("KEY `dw_workflow_tasks_scoped_dispatch`").count(), 1);
             assert!(!sql.contains("CREATE INDEX dw_workflow_tasks_scoped_dispatch"));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_task_lease_loss_upgrade_preserves_tasks_and_resumes() {
+        for alter_committed in [false, true] {
+            let db = Database::new().await;
+            let mut connection = db.connection().await;
+            let flavor = Flavor::detect(&mut connection).await.unwrap();
+            connection.close().await.unwrap();
+            let from = task_lease_loss_step(flavor);
+            retained_version_database(&db, from).await;
+            let mut connection = db.connection().await;
+            connection.execute("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,attempt_count) VALUES ('legacy-task','run','workflow','leased',5)").await.unwrap();
+            if alter_committed {
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                connection.execute(flavor.step(from).unwrap()).await.unwrap();
+            }
+            connection.close().await.unwrap();
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection = db.connection().await;
+            let task: (String, u32, i64, Option<chrono::NaiveDateTime>) = sqlx::query_as(
+                "SELECT status,attempt_count,lost_lease_count,last_lease_lost_at FROM workflow_tasks WHERE id='legacy-task'",
+            ).fetch_one(&mut connection).await.unwrap();
+            assert_eq!(task, ("leased".into(), 5, 0, None));
+            connection.close().await.unwrap();
+            db.remove().await;
+        }
+    }
+
+    #[test]
+    fn current_bootstraps_create_the_lease_loss_columns_once() {
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (20, 19));
+        for flavor in [Flavor::MySql, Flavor::MariaDb] {
+            let predecessor = task_lease_loss_step(flavor);
+            let (retained, _) = flavor.earlier(predecessor).unwrap();
+            let previous: &str = retained.sql.as_ref();
+            let current = flavor.migration().sql.as_ref();
+            for column in ["`lost_lease_count`", "`last_lease_lost_at`"] {
+                assert!(!previous.contains(column));
+                assert_eq!(current.matches(column).count(), 1);
+            }
+            assert!(!current.contains(flavor.step(predecessor).unwrap().trim()));
         }
     }
 

@@ -323,6 +323,19 @@ and later) and always needs the explicit, backed-up `schema-upgrade` step
 above; startup never upgrades. Each minor release's notes say whether its
 schema changed.
 
+## Workflow task lease loss
+
+Run descriptions, observations and lists expose `task_attention` when an
+open workflow task loses its lease repeatedly before completing. The
+diagnostic shows its task ID, consecutive losses, threshold and the most
+recent loss time. Operator metrics include the affected run and task counts
+and the maximum consecutive losses among open workflow tasks.
+
+`DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD` sets the threshold and
+defaults to 3. Losses are counted when repair or a subsequent worker claim
+recovers a lost lease. The diagnostic clears when the task completes or its run
+closes. Existing tasks begin with zero recorded losses after a schema upgrade.
+
 ## First HTTP execution slice
 
 Build with `cargo build --locked` in the same container/mount setup. Run the

@@ -691,6 +691,9 @@ store_methods! {
                 if let Some(execution) = &execution {
                     Self::close_current_attempt(tx, execution, "expired", at).await?;
                 }
+                if task_type == "workflow" {
+                    Self::record_workflow_lease_loss(tx, &task_id, at).await?;
+                }
                 Self::query("UPDATE workflow_tasks SET status='ready',leased_at=NULL,lease_owner=NULL,lease_expires_at=NULL,repair_count=$1,repair_available_at=NULL,last_error=NULL,updated_at=$2,ready_origin_at=$3 WHERE id=$4")
                     .bind(repair_count).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(&task_id).execute(&mut **tx).await?;
             }

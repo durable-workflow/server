@@ -1,0 +1,1 @@
+ALTER TABLE workflow_tasks ADD COLUMN lost_lease_count BIGINT NOT NULL DEFAULT 0, ADD COLUMN last_lease_lost_at DATETIME(6) NULL, ALGORITHM=INSTANT;

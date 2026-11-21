@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {withoutNativeRedriveActions} from './redrive-actions.mjs';
+import {withoutEmptyTaskAttention} from './task-attention.mjs';
 
 // Reviewed history import (EmbeddedV2ImportController), recorded against
 // published Server 2.11.1 and moved to 2.11.8. The fixture's `expected` holds the whole
@@ -24,7 +25,8 @@ export function checkWorkflowImport(fixture, observation, workflowId, target) {
     return projection;
   }
   const definition = fixture.workflow_import;
-  const actual = withoutNativeRedriveActions(JSON.parse(JSON.stringify(state).replaceAll(workflowId, '{id}')), target, 'workflow import');
+  const normalized = withoutEmptyTaskAttention(JSON.parse(JSON.stringify(state).replaceAll(workflowId, '{id}')));
+  const actual = withoutNativeRedriveActions(normalized, target, 'workflow import');
   for (const defect of Object.values(definition.published_defects)) {
     const steps = Object.keys(defect.published);
     let published = true;

@@ -13,7 +13,7 @@ use sqlx::{
 
 use super::{Result, refuse};
 
-pub const VERSION: i64 = 18;
+pub const VERSION: i64 = 19;
 pub const CATALOG_QUERY: &str = include_str!("postgres-catalog.sql");
 type Catalog = Vec<(String, String, Json<Value>)>;
 
@@ -53,6 +53,49 @@ fn migrator() -> &'static Migrator {
     MIGRATOR.get_or_init(|| {
         let mut migrations = Migrator::with_migrations(vec![Migration::new(
             VERSION,
+            "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss".into(),
+            MigrationType::Simple,
+            concat!(
+                include_str!("../../migrations/postgres/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0013_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/postgres/0014_command_intents.sql"), "\n", include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/postgres/0016_external_storage_bindings.sql"), "\n", include_str!("../../migrations/postgres/0017_child_supervisions.sql"), "\n", include_str!("../../migrations/postgres/0018_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/postgres/0019_workflow_task_lease_loss.sql")
+            )
+            .into_sql_str(),
+            false,
+        )]);
+        // The caller's transaction-scoped PostgreSQL advisory lock covers
+        // the pre-migration recheck, ledger, DDL and marker together.
+        migrations.set_locking(false);
+        migrations
+    })
+}
+
+// Retain the released bootstrap for the schema immediately before lease loss tracking.
+fn retained_v18_migrator() -> &'static Migrator {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    MIGRATOR.get_or_init(|| {
+        let mut migrations = Migrator::with_migrations(vec![Migration::new(
+            18,
             "full frozen PHP PostgreSQL schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes".into(),
             MigrationType::Simple,
             concat!(
@@ -237,6 +280,7 @@ fn earlier_migration(version: i64) -> Option<(&'static Migration, &'static str)>
     static V13: OnceLock<Migration> = OnceLock::new();
     static V14: OnceLock<Migration> = OnceLock::new();
     match version {
+        18 => retained_v18_migrator().iter().next().map(|migration| (migration, include_str!("../../migrations/postgres/0018_catalog.json"))),
         17 => retained_v17_migrator().iter().next().map(|migration| (migration, include_str!("../../migrations/postgres/0017_catalog.json"))),
         16 => retained_v16_migrator().iter().next().map(|migration| (migration, include_str!("../../migrations/postgres/0016_catalog.json"))),
         15 => retained_v15_migrator().iter().next().map(|migration| (migration, include_str!("../../migrations/postgres/0015_catalog.json"))),
@@ -439,6 +483,7 @@ fn earlier_migration(version: i64) -> Option<(&'static Migration, &'static str)>
 /// The step file that moves a native database from `version` to the next.
 fn step(version: i64) -> Option<&'static str> {
     match version {
+        18 => Some(include_str!("../../migrations/postgres/0019_workflow_task_lease_loss.sql")),
         17 => Some(include_str!("../../migrations/postgres/0018_maintenance_scan_indexes.sql")),
         16 => Some(include_str!("../../migrations/postgres/0017_child_supervisions.sql")),
         15 => Some(include_str!("../../migrations/postgres/0016_external_storage_bindings.sql")),
@@ -482,7 +527,7 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/postgres/0013_task_queue_pauses.sql"),
                 "\n",
-                include_str!("../../migrations/postgres/0014_command_intents.sql"), "\n", include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/postgres/0016_external_storage_bindings.sql"), "\n", include_str!("../../migrations/postgres/0017_child_supervisions.sql"), "\n", include_str!("../../migrations/postgres/0018_maintenance_scan_indexes.sql")
+                include_str!("../../migrations/postgres/0014_command_intents.sql"), "\n", include_str!("../../migrations/postgres/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/postgres/0016_external_storage_bindings.sql"), "\n", include_str!("../../migrations/postgres/0017_child_supervisions.sql"), "\n", include_str!("../../migrations/postgres/0018_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/postgres/0019_workflow_task_lease_loss.sql")
         ),
     )
 }
@@ -620,7 +665,7 @@ pub(super) async fn verify(connection: &mut PgConnection) -> Result<()> {
     // from SQL text. It retains types, precision, defaults, indexes, foreign
     // keys and sequence ownership while excluding live rows/sequence values.
     let expected: Catalog =
-        serde_json::from_str(include_str!("../../migrations/postgres/0018_catalog.json"))?;
+        serde_json::from_str(include_str!("../../migrations/postgres/0019_catalog.json"))?;
     let actual = catalog(connection).await?;
     if actual != expected {
         return Err(refuse(
@@ -865,6 +910,26 @@ mod tests {
             assert!(!earlier_migration(17).unwrap().0.sql.as_ref().contains(index));
             assert_eq!(migrator().iter().next().unwrap().sql.as_ref().matches(&format!("CREATE INDEX {index} ON public.")).count(), 1);
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable postgres source suite"]
+    async fn qualification_task_lease_loss_upgrade_preserves_existing_tasks() {
+        let db = Database::new().await;
+        version_database(&db, 18).await;
+        let mut connection = db.connection().await;
+        sqlx::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,attempt_count) VALUES ('legacy-task','run','workflow','leased',5)")
+            .execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        assert_eq!(PostgresStorage::upgrade(db.options.clone()).await.unwrap(), 18);
+        PostgresStorage::check(db.options.clone()).await.unwrap();
+        let mut connection = db.connection().await;
+        let task: (String, i32, i64, Option<chrono::NaiveDateTime>) = sqlx::query_as(
+            "SELECT status,attempt_count,lost_lease_count,last_lease_lost_at FROM workflow_tasks WHERE id='legacy-task'",
+        ).fetch_one(&mut connection).await.unwrap();
+        assert_eq!(task, ("leased".into(), 5, 0, None));
+        connection.close().await.unwrap();
+        db.remove().await;
     }
 
     #[tokio::test]
