@@ -2162,7 +2162,6 @@ mod tests {
             assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_child_supervisions (").count(), 1);
             assert!(flavor.step(version).unwrap().contains("CREATE TABLE dw_child_supervisions ("));
         }
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (19, 18));
     }
 
     #[test]
@@ -2495,7 +2494,6 @@ mod tests {
                 assert!(flavor.step(version).unwrap().contains(statement));
             }
         }
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (19, 18));
     }
 
     #[tokio::test]
@@ -3638,7 +3636,6 @@ mod tests {
         assert_eq!(checksum_hex(Flavor::MariaDb.earlier(12).unwrap().0),
             include_str!("../../migrations/mariadb/0012_checksum.txt").trim());
         let sql: &str = Flavor::MySql.migration().sql.as_ref();
-        assert_eq!(Flavor::MySql.version(), 20);
         assert!(!sql.contains("ALTER TABLE `activity_executions`"), "upgrade ALTERs are folded into the bootstrap");
         assert!(!regex_lite::Regex::new(r"(?i)`?\w+`? json( |,)").unwrap().is_match(sql), "no json column remains");
         assert_eq!(sql.matches("CHECK (json_valid(").count(), 75);
@@ -3817,7 +3814,6 @@ mod tests {
             include_str!("../../migrations/mysql/0014_checksum.txt").trim());
         assert_eq!(checksum_hex(Flavor::MariaDb.earlier(13).unwrap().0),
             include_str!("../../migrations/mariadb/0013_checksum.txt").trim());
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (19, 18));
         for flavor in [Flavor::MySql, Flavor::MariaDb] {
             let sql: &str = flavor.migration().sql.as_ref();
             assert_eq!(sql.matches("CREATE TABLE IF NOT EXISTS dw_command_intents (").count(), 1);
@@ -3906,6 +3902,22 @@ mod tests {
             assert_eq!(task, ("leased".into(), 5, 0, None));
             connection.close().await.unwrap();
             db.remove().await;
+        }
+    }
+
+    #[test]
+    fn current_bootstraps_create_the_lease_loss_columns_once() {
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (20, 19));
+        for flavor in [Flavor::MySql, Flavor::MariaDb] {
+            let predecessor = task_lease_loss_step(flavor);
+            let (retained, _) = flavor.earlier(predecessor).unwrap();
+            let previous: &str = retained.sql.as_ref();
+            let current = flavor.migration().sql.as_ref();
+            for column in ["`lost_lease_count`", "`last_lease_lost_at`"] {
+                assert!(!previous.contains(column));
+                assert_eq!(current.matches(column).count(), 1);
+            }
+            assert!(!current.contains(flavor.step(predecessor).unwrap().trim()));
         }
     }
 
