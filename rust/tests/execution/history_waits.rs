@@ -75,7 +75,7 @@ async fn history_wait_times_out_with_an_empty_page_and_skips_wait_for_ready_even
     .await
     .unwrap();
     assert_eq!(status, StatusCode::OK, "{page}");
-    assert_eq!(page["events"][0]["event_type"], "WorkflowStarted", "{page}");
+    assert_eq!(page["events"][0]["event_type"], "StartAccepted", "{page}");
     assert!(page["next_page_token"].is_string(), "{page}");
     runtime.close().await;
     database.remove().await;
