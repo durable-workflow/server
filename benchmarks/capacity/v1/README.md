@@ -35,6 +35,8 @@ passes all resolved container identities to the controller and collector,
 executes the five-second simple Python cell, writes
 build/capacity-v1/local-docker-smoke.result.json with qualified=true and
 publishable=false, and always removes its containers, network, and volumes.
+It samples infrastructure at the end of the five-second admission window and
+again after drain so collector calls cannot consume a scheduled start.
 Host, engine, kernel, cgroup, storage, image, resource, network, Server,
 MySQL, or Redis drift stops the run before workload admission.
 

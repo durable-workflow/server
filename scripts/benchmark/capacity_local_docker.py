@@ -266,7 +266,7 @@ def validate_topology() -> dict[str, Any]:
         "cell_id": "simple-start-complete",
         "binding": "python",
         "load_step": 1,
-        "sample_interval_seconds": 1,
+        "sample_interval_seconds": 5,
         "execution": {
             "concurrent_open_workflows": 2,
             "client_concurrency": 1,
