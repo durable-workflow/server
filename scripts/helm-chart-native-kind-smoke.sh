@@ -264,6 +264,52 @@ if [[ "${hook_keys}" != "3" ]]; then
 fi
 echo "PASS allowed: schema-upgrade hook renders once every Server is stopped"
 
+database_secret_options=(
+  --set-string externalDatabase.existingSecret=smoke-runtime-db
+  --set-string externalDatabase.existingSecretUsernameKey=runtime-user
+  --set-string externalDatabase.existingSecretPasswordKey=runtime-password
+)
+schema_upgrade "${release}" --dry-run=server --output json \
+  "${database_secret_options[@]}" >"${work_dir}/shared-db.json"
+schema_upgrade "${release}" --dry-run=server --output json \
+  "${database_secret_options[@]}" \
+  --set-string native.schemaUpgrade.existingSecret=smoke-upgrade-db \
+  --set-string native.schemaUpgrade.existingSecretUsernameKey=upgrade-user \
+  --set-string native.schemaUpgrade.existingSecretPasswordKey=upgrade-password >"${work_dir}/separate-db.json"
+
+python3 - "${work_dir}/shared-db.json" "${work_dir}/separate-db.json" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+
+def credential_refs(manifest):
+    return re.findall(
+        r'^ +\- name: (DB_USERNAME|DB_PASSWORD)\n +valueFrom:\n +secretKeyRef:\n'
+        r' +name: "?([a-z0-9-]+)"?\n +key: "?([a-z0-9-]+)"?$',
+        manifest,
+        re.MULTILINE,
+    )
+
+
+runtime = [
+    ("DB_USERNAME", "smoke-runtime-db", "runtime-user"),
+    ("DB_PASSWORD", "smoke-runtime-db", "runtime-password"),
+]
+upgrade = [
+    ("DB_USERNAME", "smoke-upgrade-db", "upgrade-user"),
+    ("DB_PASSWORD", "smoke-upgrade-db", "upgrade-password"),
+]
+for file, expected in zip(sys.argv[1:], [runtime, upgrade]):
+    release = json.loads(Path(file).read_text())
+    assert credential_refs(release["manifest"]) == runtime, "Deployment must use the runtime Secret"
+    assert "smoke-upgrade-db" not in release["manifest"], "upgrade Secret leaked outside the hook"
+    [hook] = [hook for hook in release["hooks"] if hook["name"].endswith("-schema-upgrade")]
+    assert credential_refs(hook["manifest"]) == expected, "schema-upgrade Job has unexpected credentials"
+PY
+echo "PASS allowed: schema upgrade uses the selected Secret and the Server keeps its own credentials"
+
 schema_upgrade "${release}" --wait --timeout 5m
 "${kubectl_bin}" -n "${namespace}" rollout status "deploy/${server_deployment}" --timeout=180s
 echo "PASS allowed: schema-upgrade hook ran with every Server stopped"

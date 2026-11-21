@@ -354,13 +354,41 @@ running. Otherwise it refuses. An install, `helm template`, a client-side dry
 run or a GitOps render with the option enabled is always refused, because a
 Job applied without Helm's hook ordering could run beside a live Server.
 
+### Separate database accounts
+
+Use `externalDatabase` for the Server's runtime account. On an initialized
+native database, the runtime account needs to connect and read, insert,
+update, and delete workflow data. For PostgreSQL, also grant schema usage and
+access to any sequences used by those writes. The upgrade account needs the
+schema-change privileges required by the selected release in addition to
+data access. For MySQL and MariaDB, grant the required DDL on the Durable
+Workflow database. For PostgreSQL, run the upgrade as the owner of the
+Durable Workflow schema objects or an authorized role that can act as owner.
+Initializing an empty database also requires schema creation privileges.
+
+Create the upgrade Secret in the Helm release's namespace, then configure
+the hook to reference it:
+
+```yaml
+native:
+  schemaUpgrade:
+    existingSecret: durable-workflow-schema-owner
+    existingSecretUsernameKey: username
+    existingSecretPasswordKey: password
+```
+
+Only the native schema-upgrade Job receives these references. The chart
+defaults the keys to `DB_USERNAME` and `DB_PASSWORD`. A missing Secret or
+key prevents the Job from starting. Leaving `existingSecret` empty uses
+the existing `externalDatabase` credentials.
+
 ### Manual path (GitOps and helm template)
 
 1. Set `server.replicaCount: 0` with autoscaling off, sync, and wait until no
    server pod of the release remains.
 2. Back up the database.
 3. Run `schema-upgrade` once with the new image, the release's database
-   settings and its database Secret, then wait for it to complete:
+   settings and the upgrade account's Secret, then wait for it to complete:
 
    ```yaml
    apiVersion: batch/v1
@@ -382,9 +410,9 @@ Job applied without Helm's hook ordering could run beside a live Server.
                - configMapRef: {name: durable-workflow-config}
              env:
                - name: DB_USERNAME
-                 valueFrom: {secretKeyRef: {name: durable-workflow-database, key: DB_USERNAME}}
+                 valueFrom: {secretKeyRef: {name: durable-workflow-schema-owner, key: DB_USERNAME}}
                - name: DB_PASSWORD
-                 valueFrom: {secretKeyRef: {name: durable-workflow-database, key: DB_PASSWORD}}
+                 valueFrom: {secretKeyRef: {name: durable-workflow-schema-owner, key: DB_PASSWORD}}
    ```
 
    ```bash
@@ -394,8 +422,8 @@ Job applied without Helm's hook ordering could run beside a live Server.
    kubectl -n durable-workflow logs job/durable-workflow-schema-upgrade
    ```
 
-   Use your `externalDatabase.existingSecret` and its keys if you set one,
-   and mount the database CA Secret at
+   If you use a single database account, use the release's database Secret
+   and its keys instead. Mount the database CA Secret at
    `/etc/durable-workflow/database-tls/ca.pem` when you use database TLS. Keep
    this Job out of the GitOps application so it never runs again on its own.
 4. Set `image.tag` to the new release and restore `server.replicaCount`.

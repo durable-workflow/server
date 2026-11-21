@@ -69,6 +69,16 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.2.0 / Server 3.17.1 (native)
+
+The native schema-upgrade hook can use an existing Secret through
+`native.schemaUpgrade.existingSecret`. The Server Deployment uses
+`externalDatabase`. On an initialized database, grant the runtime account
+data access and reserve schema ownership or DDL privileges for the upgrade
+account. See [Separate database accounts](../README.md#separate-database-accounts)
+for the grants and keys. Leaving the new option empty preserves the shared
+account. The default Server image and database schema stay the same.
+
 ### Chart 5.1.1 / Server 3.17.1 (native)
 
 Chart 5.1.1 selects [native Server 3.17.1](../../../../docs/releases/3.17.1.md).
