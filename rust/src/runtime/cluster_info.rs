@@ -83,6 +83,7 @@ pub(super) fn capabilities() -> Value {
         "principal_attribution_contract",
         "embedded_v2_import",
         "waterline_v1_projection",
+        super::task_attention::VISIBILITY_FILTER_CAPABILITY,
         super::task_queue_pauses::CAPABILITY,
         // Server #934: a signal or update request_id is a durable command key.
         "command_request_keys",

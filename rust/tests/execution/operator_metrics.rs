@@ -318,6 +318,26 @@ async fn repeated_workflow_lease_loss_is_visible_until_the_task_completes() {
     assert_eq!(active["tasks"]["lease_lost_repeatedly"], 1);
     assert_eq!(active["tasks"]["max_lost_lease_count"], 3);
 
+    let (status, unaffected) = request(&app, "POST", "/api/workflows", json!({
+        "workflow_id": "no-lease-loss", "workflow_type": "echo", "task_queue": "unpolled",
+        "input": envelope(Payload::Array(vec![])),
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{unaffected}");
+    for (selection, expected) in [("true", workflow), ("false", "no-lease-loss")] {
+        let uri = format!("/api/workflows?status=running&page_size=1&task_attention={selection}");
+        let (status, selected) = request(&app, "GET", &uri, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{selected}");
+        assert_eq!(selected["workflows"][0]["workflow_id"], expected);
+        assert_eq!(selected["task_attention_filter"], selection == "true");
+        assert!(selected["next_page_token"].is_null());
+    }
+    let (status, filtered) = request(&app, "GET", "/api/workflows?task_attention=true&query=WorkflowId%20%3D%20%22no-lease-loss%22", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{filtered}");
+    assert_eq!(filtered["workflows"], json!([]));
+    let (status, rejected) = request(&app, "GET", "/api/workflows?task_attention=invalid", Value::Null).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{rejected}");
+    assert!(rejected["errors"]["task_attention"].is_array());
+
     let recovered = poll(&app, "lease-worker", "workflow").await;
     assert_eq!(recovered["task_id"], task_id);
     let (status, completed) = finish_task(&app, &recovered, json!([{
