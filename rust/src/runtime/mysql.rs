@@ -2385,6 +2385,7 @@ mod tests {
         store.qualify_claim_history_sequence().await;
         store.qualify_fenced_registration_reuse().await;
         store.qualify_query_poll_transactions().await;
+        store.qualify_exact_update_validation_claim().await;
         store.close().await;
         db.remove().await;
     }

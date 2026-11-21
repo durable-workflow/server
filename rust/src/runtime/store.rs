@@ -1,5 +1,5 @@
 //! One durable execution state machine for typed database adapters.
-use super::transaction::{RunTags, Transaction};
+use super::transaction::{ClaimTarget, RunTags, Transaction};
 use super::{Result, backend::Backend, envelope, refuse, side_effect_result, text, wire};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
@@ -2716,6 +2716,22 @@ where
         self.claim_with_registration(tx,body,kind,protocol_version,page,poll_request,None).await
     }
 
+    fn check_targeted_replay(target: Option<&ClaimTarget>, kind: &str, task: &Value) -> Result<()> {
+        let Some((target, observed)) = target.and_then(|target| {
+            target.observed_attempt.map(|observed| (target, observed))
+        }) else {
+            return Ok(());
+        };
+        let attempt_field = if kind == "workflow" { "workflow_task_attempt" } else { "attempt_number" };
+        if task["task_kind"] != "update_validation"
+            && task["task_id"].as_str() == Some(target.task_id.as_str())
+            && observed.checked_add(1).is_some_and(|attempt| task[attempt_field].as_i64() == Some(attempt))
+        {
+            return Ok(());
+        }
+        Err(refuse(StatusCode::CONFLICT, "task_offer_receipt_conflict"))
+    }
+
     /// Read the worker and execution conditions for a candidate. Timeout
     /// cleanup, session admission and lease effects belong to the caller.
     #[allow(clippy::too_many_arguments)]
@@ -2844,6 +2860,9 @@ where
     ) -> Result<Option<Value>> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
+        if tx.claim_only.as_ref().is_some_and(|target| target.kind != kind) {
+            return Ok(None);
+        }
         let worker = match registration {
             Some(row) => row,
             None => Self::query(
@@ -2867,10 +2886,11 @@ where
             && !request.replayed_in(tx)
         {
             let cached = Self::bind_workflow_poll(tx, request).await?;
-            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, queue, cached).await?
-                && answer["task"]["task_kind"] != "update_validation"
-            {
-                return Ok(Some(answer["task"].clone()));
+            if let Some(answer) = self.deliverable_workflow_lease(tx, request, worker_id, queue, cached).await? {
+                Self::check_targeted_replay(tx.claim_only.as_ref(), kind, &answer["task"])?;
+                if answer["task"]["task_kind"] != "update_validation" {
+                    return Ok(Some(answer["task"].clone()));
+                }
             }
         }
         // Activity polls keep their receipts; workflow polls use the answer
@@ -2896,7 +2916,9 @@ where
                     && DB::optional_string(&receipt, "lease_owner")?.as_deref() == Some(worker_id)
                     && DB::optional_instant(&receipt, "lease_expires_at")?.is_some_and(|expires| expires > at)
                 {
-                    return Ok(Some(DB::document_row(&receipt, "response")?));
+                    let task = DB::document_row(&receipt, "response")?;
+                    Self::check_targeted_replay(tx.claim_only.as_ref(), kind, &task)?;
+                    return Ok(Some(task));
                 } else {
                     return Err(refuse(StatusCode::CONFLICT, "poll_cached_task_expired"));
                 }
@@ -2917,12 +2939,27 @@ where
         let build = worker_build::<DB>(&worker)?;
         let lease_at = now();
         let ready_at = now();
-        // A continuation leases only its own resumed task, under the same
-        // queue, readiness and build conditions as an ordinary candidate.
+        // Scoped claims select one row under the transition lock. An observed
+        // workflow lease can be recovered under the usual expired-lease rule.
+        // A carried continuation can only take its ready resumed task.
         let first = match tx.claim_only.clone() {
-            Some(task_id) => Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$1 AND t.namespace=$2 AND t.queue=$3 AND t.task_type=$4 AND t.status='ready' AND r.status IN ('pending','running','waiting') AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6)")
-                .bind(task_id).bind(self.namespace.as_ref()).bind(queue).bind(kind).bind(DB::bind_time(ready_at)).bind(build.as_deref())
-                .fetch_all(&mut **tx).await?,
+            Some(target) => {
+                let candidate = Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$1 AND t.namespace=$2 AND t.queue=$3 AND t.task_type=$4 AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$5)) AND r.status IN ('pending','running','waiting') AND (t.available_at IS NULL OR t.available_at<=$6) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$7)")
+                    .bind(&target.task_id).bind(self.namespace.as_ref()).bind(queue).bind(kind)
+                    .bind(DB::optional_time(target.observed_attempt.map(|_| lease_at)))
+                    .bind(DB::bind_time(ready_at)).bind(build.as_deref()).fetch_optional(&mut **tx).await?;
+                match candidate {
+                    Some(task) => {
+                        if let Some(attempt) = target.observed_attempt
+                            && DB::number(&task, "attempt_count")? != attempt
+                        {
+                            return Ok(None);
+                        }
+                        vec![task]
+                    }
+                    None => Vec::new(),
+                }
+            }
             None => self.task_candidate_query(queue, kind, build.as_deref(), lease_at, ready_at, true)
                 .fetch_all(&mut **tx).await?,
         };
@@ -4894,7 +4931,11 @@ where
         };
         // A continuation whose prefix still holds claims only its resumed
         // task: a same-worker priority, like eager activity dispatch.
-        tx.claim_only = if prefix_holds == Some(true) { next_task_id.clone() } else { None };
+        tx.claim_only = if prefix_holds == Some(true) {
+            next_task_id.clone().map(|task_id| ClaimTarget { task_id, kind: "workflow", observed_attempt: None })
+        } else {
+            None
+        };
         let carried = match workflow_poll.as_ref() {
             Some(poll) => self.claim_carried_workflow(tx, poll, &DB::string(&task, "lease_owner")?).await?,
             None => super::carried_polls::Outcome::Declined,

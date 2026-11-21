@@ -216,6 +216,85 @@ store_methods! {
             Self::query("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1")
                 .bind(run).execute(&self.pool).await.unwrap();
         }
+        self.qualify_exact_task_claim().await;
+    }
+
+    async fn qualify_exact_task_claim(&self) {
+        let first = self.count_start("targeted-claim-first").await;
+        let second = self.count_start("targeted-claim-second").await;
+        let task_id = |workflow: Value| async move {
+            let row = Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1")
+                .bind(workflow["run_id"].as_str().unwrap()).fetch_one(&self.pool).await.unwrap();
+            DB::string(&row, "id").unwrap()
+        };
+        let first_id = task_id(first).await;
+        let second_id = task_id(second).await;
+        // Put the other ready task first in normal polling order.
+        Self::query("UPDATE workflow_tasks SET available_at=$1 WHERE id=$2")
+            .bind(DB::bind_time(super::store::now() - chrono::Duration::seconds(10)))
+            .bind(&first_id).execute(&self.pool).await.unwrap();
+        let body = json!({"worker_id":"count-worker","task_queue":"counted","poll_request_id":"targeted-claim","timeout_seconds":0});
+        let request = self.workflow_poll_request("count-worker", "counted", "targeted-claim".into(),
+            Some("targeted-claim"), 0, &["workflow"]).await.unwrap();
+        let target = |id: &str, observed_attempt: i64| super::transaction::ClaimTarget {
+            task_id: id.to_owned(),
+            kind: "workflow",
+            observed_attempt: Some(observed_attempt),
+        };
+
+        let mut tx = self.begin().await.unwrap();
+        tx.claim_only = Some(super::transaction::ClaimTarget {
+            kind: "activity",
+            ..target(&second_id, 0)
+        });
+        assert!(self.claim_in(&mut tx, &body, "workflow", "1.20", None, None).await.unwrap().is_none());
+        tx.commit().await.unwrap();
+
+        let mut tx = self.begin().await.unwrap();
+        tx.claim_only = Some(target(&second_id, 0));
+        let claimed = self.claim_in(&mut tx, &body, "workflow", "1.20", None, Some(&request))
+            .await.unwrap().unwrap();
+        assert_eq!(claimed["task_id"], second_id);
+        assert_eq!(claimed["workflow_task_attempt"], 1);
+        tx.commit().await.unwrap();
+
+        let mut tx = self.begin().await.unwrap();
+        tx.claim_only = Some(target(&second_id, 0));
+        assert_eq!(self.claim_in(&mut tx, &body, "workflow", "1.20", None, Some(&request))
+            .await.unwrap().unwrap(), claimed);
+        tx.commit().await.unwrap();
+
+        let mut tx = self.begin().await.unwrap();
+        tx.claim_only = Some(target(&first_id, 0));
+        assert!(matches!(self.claim_in(&mut tx, &body, "workflow", "1.20", None, Some(&request)).await,
+            Err(super::RuntimeError::Refused { reason: "task_offer_receipt_conflict", .. })));
+        drop(tx);
+
+        Self::query("UPDATE workflow_tasks SET lease_expires_at=$1 WHERE id=$2")
+            .bind(DB::bind_time(super::store::now() - chrono::Duration::seconds(10)))
+            .bind(&second_id).execute(&self.pool).await.unwrap();
+        let mut tx = self.begin().await.unwrap();
+        tx.claim_only = Some(target(&second_id, 0));
+        assert!(self.claim_in(&mut tx, &body, "workflow", "1.20", None, None).await.unwrap().is_none());
+        tx.commit().await.unwrap();
+
+        let mut tx = self.begin().await.unwrap();
+        tx.claim_only = Some(target(&second_id, 1));
+        let recovered = self.claim_in(&mut tx, &body, "workflow", "1.20", None, None)
+            .await.unwrap().unwrap();
+        assert_eq!(recovered["task_id"], second_id);
+        assert_eq!(recovered["workflow_task_attempt"], 2);
+        tx.commit().await.unwrap();
+
+        let untouched = Self::query("SELECT status,attempt_count,lease_owner FROM workflow_tasks WHERE id=$1")
+            .bind(&first_id).fetch_one(&self.pool).await.unwrap();
+        assert_eq!(DB::string(&untouched, "status").unwrap(), "ready");
+        assert_eq!(DB::number(&untouched, "attempt_count").unwrap(), 0);
+        assert!(DB::optional_string(&untouched, "lease_owner").unwrap().is_none());
+        for id in [&first_id, &second_id] {
+            Self::query("UPDATE workflow_tasks SET status='completed' WHERE id=$1")
+                .bind(id).execute(&self.pool).await.unwrap();
+        }
     }
 
     pub(super) async fn qualify_claim_history_sequence(&self) {
@@ -359,5 +438,6 @@ async fn sqlite_workflow_and_query_poll_transaction_counts() {
     store.qualify_claim_history_sequence().await;
     store.qualify_fenced_registration_reuse().await;
     store.qualify_query_poll_transactions().await;
+    store.qualify_exact_update_validation_claim().await;
     store.close().await;
 }

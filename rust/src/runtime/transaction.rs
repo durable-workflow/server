@@ -31,6 +31,15 @@ pub(super) struct PollSavepoint {
     workflow_poll_replayed: Option<String>,
 }
 
+#[derive(Clone)]
+pub(super) struct ClaimTarget {
+    pub(super) task_id: String,
+    pub(super) kind: &'static str,
+    /// Delivery acceptance must still see the attempt that was observed.
+    /// A carried continuation originates inside the current transaction.
+    pub(super) observed_attempt: Option<i64>,
+}
+
 /// Every mutable transaction cache, taken before continuation speculation.
 /// The database rollback and this restoration are one fallible operation.
 pub(super) struct ContinuationSavepoint {
@@ -41,7 +50,7 @@ pub(super) struct ContinuationSavepoint {
     meter: Option<super::history_meter::Meter>,
     scope_history: Option<super::cancellation_scopes::HistoryCache>,
     local_writes: super::local_activities::Writes,
-    claim_only: Option<String>,
+    claim_only: Option<ClaimTarget>,
 }
 
 pub(super) struct Transaction<'a, DB: Backend> {
@@ -55,9 +64,8 @@ pub(super) struct Transaction<'a, DB: Backend> {
     /// The run history the cancellation scope engine has read (`scope_events`).
     pub(super) scope_history: Option<super::cancellation_scopes::HistoryCache>,
     pub(super) local_writes: super::local_activities::Writes,
-    /// A continuation's resumed task (Server #1078): the only task a carried
-    /// workflow claim in this transaction may lease.
-    pub(super) claim_only: Option<String>,
+    /// A scoped claim can acquire only its selected task.
+    pub(super) claim_only: Option<ClaimTarget>,
     history_wakes: Option<Arc<super::history_waits::HistoryWakes>>,
     // An implicit failure drops the database transaction before this guard.
     _queue_guard: Option<OwnedMutexGuard<()>>,
