@@ -138,6 +138,8 @@ auth:
 
 server:
   replicaCount: 1
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
   pdb:
     enabled: false
 EOF

@@ -186,6 +186,23 @@ holds `DW_SERVER_KEY`, the role tokens, optional `DW_PRINCIPAL_TOKENS`, and
 Redis Secret holds `REDIS_USERNAME` and `REDIS_PASSWORD` when Redis enforces
 AUTH. See `examples/` for complete PHP values files.
 
+### Read-only root filesystems
+
+For native installs, set `server.containerSecurityContext.readOnlyRootFilesystem`
+to `true`. This applies to the Server Deployment and the optional schema
+upgrade Job. The Deployment's existing `/app/storage` mount holds local
+payloads. Keep using the existing persistent claim when payloads need to
+survive pod replacement. The schema upgrade Job uses the external database.
+
+In PHP mode, set `containerSecurityContext.readOnlyRootFilesystem: true`
+under each of `server`, `worker`, `scheduler` and `bootstrap` to enable it for all
+four roles. The chart gives each role its own writable `/tmp` for the runtime
+config cache and gives the HTTP container a writable `/var/run/apache2` for its
+PID file. An explicit Server or worker mount at one of those paths takes
+precedence. An explicit `APP_CONFIG_CACHE` needs a writable parent directory.
+For PHP storage overrides or image-only deployments, see the [writable path
+reference](../../../docs/server-reference.md#read-only-root-filesystem).
+
 ## What the chart renders
 
 | Resource | Runtime | Purpose | Disabled when |

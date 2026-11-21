@@ -1,4 +1,6 @@
 {{- if and (include "durable-workflow.isPhp" .) .Values.bootstrap.enabled }}
+{{- $readOnly := get (default (dict) .Values.bootstrap.containerSecurityContext) "readOnlyRootFilesystem" }}
+{{- $writable := include "durable-workflow.phpReadOnlyMounts" (dict "readOnly" $readOnly) | fromYamlArray }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -53,11 +55,15 @@ spec:
           {{- end }}
           env:
             {{- include "durable-workflow.bootstrapEnv" . | nindent 12 }}
+            {{- include "durable-workflow.phpReadOnlyCacheEnv" (dict "readOnly" $readOnly "config" (default (dict) .Values.config.extraEnv)) | nindent 12 }}
           resources:
             {{- toYaml .Values.bootstrap.resources | nindent 12 }}
-          {{- if .Values.externalDatabase.tls.existingSecret }}
+          {{- if or $writable .Values.externalDatabase.tls.existingSecret }}
           volumeMounts:
             {{- include "durable-workflow.databaseTlsVolumeMount" . | nindent 12 }}
+            {{- if $writable }}
+            {{- toYaml $writable | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- with .Values.bootstrap.containerSecurityContext }}
           securityContext:
@@ -66,9 +72,10 @@ spec:
         {{- with .Values.sidecars }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- if .Values.externalDatabase.tls.existingSecret }}
+      {{- if or $writable .Values.externalDatabase.tls.existingSecret }}
       volumes:
         {{- include "durable-workflow.databaseTlsVolume" . | nindent 8 }}
+        {{- include "durable-workflow.phpReadOnlyVolumes" $writable | nindent 8 }}
       {{- end }}
       {{- with .Values.bootstrap.nodeSelector }}
       nodeSelector:
