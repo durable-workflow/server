@@ -8,7 +8,7 @@
 //! for `DW_UPDATE_VALIDATION_LEASE_TIMEOUT` seconds and approves or rejects it.
 //! Every outcome stays on the task row, so a retry with the same `request_id`
 //! and arguments gets the same answer.
-use super::transaction::Transaction;
+use super::transaction::{ClaimTarget, Transaction};
 use super::workflow_poll_requests::WorkflowPollRequest;
 use super::{Result, backend::Backend, refuse, store::{Store, id, now}, text, wire};
 use axum::http::StatusCode;
@@ -492,6 +492,54 @@ where
         Ok(claimed.map(|claim| claim.task_id))
     }
 
+    async fn validation_claim_candidates(
+        &self, tx: &mut Transaction<'_, DB>, queue: &str, at: chrono::DateTime<chrono::Utc>,
+        task_id: Option<&str>,
+    ) -> Result<Vec<DB::Row>> {
+        Ok(match task_id {
+            Some(id) => Self::query("SELECT * FROM workflow_update_validation_tasks WHERE namespace=$1 AND task_queue=$2 AND (status='pending' OR (status='leased' AND lease_expires_at<=$3)) AND id=$4")
+                .bind(self.namespace.as_ref()).bind(queue).bind(DB::bind_time(at))
+                .bind(id).fetch_all(&mut **tx).await?,
+            None => Self::query("SELECT * FROM workflow_update_validation_tasks WHERE namespace=$1 AND task_queue=$2 AND (status='pending' OR (status='leased' AND lease_expires_at<=$3)) ORDER BY created_at,id LIMIT 25")
+                .bind(self.namespace.as_ref()).bind(queue).bind(DB::bind_time(at))
+                .fetch_all(&mut **tx).await?,
+        })
+    }
+
+    fn validator_matches_task(worker: &Registration, task: &DB::Row) -> Result<bool> {
+        let compatibility = DB::optional_string(task, "compatibility")?;
+        let fingerprint = DB::optional_string(task, "workflow_definition_fingerprint")?;
+        Ok(worker.serves(&DB::string(task, "workflow_type")?, &DB::string(task, "update_name")?,
+            compatibility.as_deref(), fingerprint.as_deref()))
+    }
+
+    pub(super) async fn peek_validation_offer(
+        &self, worker_id: &str, queue: &str, fence: &super::worker_poll_fence::WorkerPollFence,
+    ) -> Result<Option<ClaimTarget>> {
+        let mut read = self.begin_repeatable_read().await?;
+        let row = self.fenced_claim_registration(&mut read, fence, worker_id).await?
+            .ok_or_else(super::worker_poll_fence::stale_claim)?;
+        if DB::string(&row, "task_queue")? != queue {
+            return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
+        }
+        let worker = self.registration(&row)?;
+        if worker.fresh && worker.capable {
+            for task in self.validation_claim_candidates(&mut read, queue, now(), None).await? {
+                if !Self::validator_matches_task(&worker, &task)? {
+                    continue;
+                }
+                let observed = DB::number(&task, "attempt_count")?;
+                if observed.checked_add(1).is_some() {
+                    let task_id = DB::string(&task, "id")?;
+                    read.commit().await?;
+                    return Ok(Some(ClaimTarget { task_id, kind: "update_validation", observed_attempt: Some(observed) }));
+                }
+            }
+        }
+        read.commit().await?;
+        Ok(None)
+    }
+
     /// `claim` inside the caller's transaction, which commits it.
     async fn claim_update_validation_in(
         &self,
@@ -516,20 +564,9 @@ where
         }
         let at = now();
         let target = tx.claim_only.clone();
-        let tasks = match &target {
-            Some(target) => Self::query("SELECT * FROM workflow_update_validation_tasks WHERE namespace=$1 AND task_queue=$2 AND (status='pending' OR (status='leased' AND lease_expires_at<=$3)) AND id=$4")
-                .bind(self.namespace.as_ref()).bind(task_queue).bind(DB::bind_time(at))
-                .bind(&target.task_id).fetch_all(&mut **tx).await?,
-            None => Self::query("SELECT * FROM workflow_update_validation_tasks WHERE namespace=$1 AND task_queue=$2 AND (status='pending' OR (status='leased' AND lease_expires_at<=$3)) ORDER BY created_at,id LIMIT 25")
-                .bind(self.namespace.as_ref()).bind(task_queue).bind(DB::bind_time(at))
-                .fetch_all(&mut **tx).await?,
-        };
+        let tasks = self.validation_claim_candidates(tx, task_queue, at, target.as_ref().map(|scope| scope.task_id.as_str())).await?;
         for task in tasks {
-            let compatibility = DB::optional_string(&task, "compatibility")?;
-            let fingerprint = DB::optional_string(&task, "workflow_definition_fingerprint")?;
-            if !worker.serves(&DB::string(&task, "workflow_type")?, &DB::string(&task, "update_name")?,
-                compatibility.as_deref(), fingerprint.as_deref())
-            {
+            if !Self::validator_matches_task(&worker, &task)? {
                 continue;
             }
             let attempt = DB::number(&task, "attempt_count")?;
@@ -554,7 +591,6 @@ where
 
     #[cfg(test)]
     pub(super) async fn qualify_exact_update_validation_claim(&self) {
-        use super::transaction::ClaimTarget;
         let queue = "scoped-validator";
         let workflow = "scoped-validation-workflow";
         let arguments = crate::codec::ValueCodec::new().unwrap()
@@ -575,6 +611,10 @@ where
                 .bind(task).bind("a".repeat(64)).bind(&arguments).bind(DB::bind_time(created)).bind(DB::bind_time(created))
                 .execute(&self.pool).await.unwrap();
         }
+        let super::worker_poll_fence::PollAdmission::Fenced(fence) = self.admit_worker_poll(queue, queue).await.unwrap()
+        else { panic!("the validator must have an active registration"); };
+        let offer = self.peek_validation_offer(queue, queue, &fence).await.unwrap().unwrap();
+        assert_eq!((offer.task_id.as_str(), offer.kind, offer.observed_attempt), (first.as_str(), "update_validation", Some(0)));
         for (kind, observed) in [("workflow", 0), ("update_validation", 1), ("update_validation", 0)] {
             let mut tx = self.begin().await.unwrap();
             tx.claim_only = Some(ClaimTarget { task_id: selected.clone(), kind, observed_attempt: Some(observed) });

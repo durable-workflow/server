@@ -310,6 +310,10 @@ store_methods! {
             let other_before = self.raw(&key(first).unwrap()).await.unwrap();
             let (proof, fence, _) = self.proof_inputs("exact-query").await;
             let (poll, config) = (body("exact-query"), config());
+            let before = self.cache_rows().await;
+            let offer = self.peek_query_offer(WORKER, QUEUE, &config, fence.as_ref().unwrap()).await.unwrap().unwrap();
+            assert_eq!((offer.task_id.as_str(), offer.kind, offer.observed_attempt), (first.as_str(), "query", Some(0)));
+            assert_eq!(self.cache_rows().await, before, "offer observation leaves the query and poll caches unchanged");
             for (kind, attempt, should_claim) in [
                 ("workflow", 0, false),
                 ("query", 1, false),
