@@ -169,10 +169,14 @@ store_methods! {
             .bind("count-worker").bind(self.namespace.as_ref()).fetch_one(&mut *connection).await.unwrap();
         let payload = DB::document_row(candidate, "payload").unwrap();
         let types = DB::document_row(&worker, "supported_workflow_types").unwrap();
+        let super::worker_poll_fence::PollAdmission::Fenced(fence) = self.admit_worker_poll("count-worker", "counted").await.unwrap()
+        else { panic!("the registered fixture worker must be fenced"); };
         self.count_reset();
         assert!(self.task_eligibility(
             &mut connection, candidate, &payload, &run, &worker, &types, "workflow", "counted", "1.20",
         ).await.unwrap().is_some());
+        let offer = self.peek_execution_offer("count-worker", "counted", "workflow", "1.20", &fence).await.unwrap().unwrap();
+        assert_eq!((offer.task_id.as_str(), offer.kind, offer.observed_attempt), (task_id.as_str(), "workflow", Some(0)));
         assert_eq!(self.count_get(), 0, "looking at task eligibility must not acquire a transition");
         let after = Self::query("SELECT status,attempt_count,lease_owner FROM workflow_tasks WHERE id=$1")
             .bind(&task_id).fetch_one(&mut *connection).await.unwrap();

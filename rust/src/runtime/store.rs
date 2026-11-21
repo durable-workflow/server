@@ -2732,6 +2732,91 @@ where
         Err(refuse(StatusCode::CONFLICT, "task_offer_receipt_conflict"))
     }
 
+    async fn workflow_history_supported(
+        connection: &mut DB::Connection, worker: &DB::Row, run_id: &str,
+    ) -> Result<bool> {
+        let flags = DB::optional_document_row(worker, "capabilities")?;
+        let supports = |flag: &str| flags.as_ref().and_then(Value::as_array)
+            .is_some_and(|flags| flags.iter().any(|value| value == flag));
+        if !supports("memo_upserts") {
+            let memo_history = Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='MemoUpserted'")
+                .bind(run_id).fetch_one(&mut *connection).await?;
+            if memo_history > 0 {
+                return Ok(false);
+            }
+        }
+        if !supports(super::search_attribute_upserts::CAPABILITY) {
+            let typed_history = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SearchAttributesUpserted' ORDER BY sequence LIMIT 1001")
+                .bind(run_id).fetch_all(&mut *connection).await?;
+            let mut typed = false;
+            for event in &typed_history {
+                typed |= DB::document_row(event, "payload")?.get("attribute_types").is_some();
+            }
+            if typed {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Observe a workflow or activity candidate from one read-only snapshot.
+    /// The observed attempt is checked again under the acceptance transition.
+    pub(super) async fn peek_execution_offer(
+        &self, worker_id: &str, queue: &str, kind: &'static str, protocol_version: &str,
+        fence: &super::worker_poll_fence::WorkerPollFence,
+    ) -> Result<Option<ClaimTarget>> {
+        let type_field = match kind {
+            "workflow" => "supported_workflow_types",
+            "activity" => "supported_activity_types",
+            _ => return Err(refuse(StatusCode::BAD_REQUEST, "invalid_task_offer_kind")),
+        };
+        let mut read = self.begin_repeatable_read().await?;
+        let worker = self.fenced_claim_registration(&mut read, fence, worker_id).await?
+            .ok_or_else(super::worker_poll_fence::stale_claim)?;
+        if DB::string(&worker, "task_queue")? != queue {
+            return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
+        }
+        if kind == "activity" && Self::activity_dispatch_paused(&mut *read, self.namespace.as_ref(), queue).await? {
+            read.commit().await?;
+            return Ok(None);
+        }
+        let types = DB::document_row(&worker, type_field)?;
+        let build = worker_build::<DB>(&worker)?;
+        let at = now();
+        let rows = self.task_candidate_query(queue, kind, build.as_deref(), at, at, false)
+            .fetch_all(&mut *read).await?;
+        for task in Self::fairness_batches(rows, kind, &types)? {
+            let task_id = DB::string(&task, "id")?;
+            let run_id = DB::string(&task, "workflow_run_id")?;
+            if kind == "workflow" && !Self::workflow_history_supported(&mut *read, &worker, &run_id).await? {
+                continue;
+            }
+            let run = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut *read).await?;
+            let payload = DB::document_row(&task, "payload")?;
+            let Some(eligibility) = self.task_eligibility(&mut *read, &task, &payload, &run, &worker, &types, kind, queue, protocol_version).await?
+            else { continue; };
+            if let Some(session) = eligibility.session.as_ref() {
+                let connection = match eligibility.activity.as_ref() {
+                    Some(activity) => DB::optional_string(activity, "connection")?,
+                    None => None,
+                };
+                if !self.session_activity_offerable(
+                    &mut read, &worker, session, &eligibility.activity_queue, connection.as_deref(), &task_id,
+                ).await? {
+                    continue;
+                }
+            }
+            let observed_attempt = DB::number(&task, "attempt_count")?;
+            if observed_attempt.checked_add(1).is_none() {
+                continue;
+            }
+            read.commit().await?;
+            return Ok(Some(ClaimTarget { task_id, kind, observed_attempt: Some(observed_attempt) }));
+        }
+        read.commit().await?;
+        Ok(None)
+    }
+
     /// Read the worker and execution conditions for a candidate. Timeout
     /// cleanup, session admission and lease effects belong to the caller.
     #[allow(clippy::too_many_arguments)]
@@ -3001,37 +3086,8 @@ where
             DB::optional_instant(&task, "lease_expires_at")?;
             let run_id = DB::string(&task, "workflow_run_id")?;
             let mut task_payload = DB::document_row(&task, "payload")?;
-            if kind == "workflow"
-                && !DB::optional_document_row(&worker, "capabilities")?.is_some_and(|flags| {
-                    flags
-                        .as_array()
-                        .is_some_and(|flags| flags.iter().any(|flag| flag == "memo_upserts"))
-                })
-            {
-                let memo_history = Self::scalar("SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='MemoUpserted'")
-                    .bind(&run_id).fetch_one(&mut **tx).await?;
-                if memo_history > 0 {
-                    continue;
-                }
-            }
-            // `WorkflowMetadataCapabilityPolicy::canReplayRun`: typed upsert
-            // history needs a worker that advertises typed search attributes.
-            if kind == "workflow"
-                && !DB::optional_document_row(&worker, "capabilities")?.is_some_and(|flags| {
-                    flags.as_array().is_some_and(|flags| {
-                        flags.iter().any(|flag| flag == super::search_attribute_upserts::CAPABILITY)
-                    })
-                })
-            {
-                let typed_history = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SearchAttributesUpserted' ORDER BY sequence LIMIT 1001")
-                    .bind(&run_id).fetch_all(&mut **tx).await?;
-                let mut typed = false;
-                for event in &typed_history {
-                    typed |= DB::document_row(event, "payload")?.get("attribute_types").is_some();
-                }
-                if typed {
-                    continue;
-                }
+            if kind == "workflow" && !Self::workflow_history_supported(&mut **tx, &worker, &run_id).await? {
+                continue;
             }
             let mut run = Self::query("SELECT * FROM workflow_runs WHERE id=$1")
                 .bind(&run_id)

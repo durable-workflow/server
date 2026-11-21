@@ -1,6 +1,6 @@
 //! Bounded transient queries over an immutable, quiescent history snapshot.
 //! These cache entries are native-owned; PHP cache values are never decoded.
-use super::transaction::Transaction;
+use super::transaction::{ClaimTarget, Transaction};
 use super::{
     Result,
     backend::Backend,
@@ -1201,6 +1201,74 @@ where
         Ok(claim)
     }
 
+    fn query_matches_poll(&self, task: &Value, queue: &str, types: &Value) -> bool {
+        // A worker answers a matching workflow type even when it has not
+        // declared the query's name.
+        matches!(task["status"].as_str(), Some("pending" | "leased"))
+            && task["namespace"] == self.namespace.as_ref()
+            && authority::deadline(task).is_some_and(|deadline| deadline > authority::now())
+            && task["task_queue"] == queue
+            && task["workflow_type"].is_string()
+            && types.as_array().is_some_and(|types| types.contains(&task["workflow_type"]))
+    }
+
+    async fn query_has_live_lease(
+        &self, connection: &mut DB::Connection, task: &Value, config: &QueryTaskConfig,
+    ) -> Result<bool> {
+        if task["status"] != "leased"
+            || authority::timestamp(&task["lease_expires_at"]).is_none_or(|lease| lease <= authority::now())
+        {
+            return Ok(false);
+        }
+        let existing_owner = task["lease_owner"].as_str().unwrap_or("");
+        Ok(Self::query_worker_proof(connection, self.namespace.as_ref(), existing_owner, config).await?
+            .as_deref().is_some_and(|proof| task["registration_incarnation"] == proof))
+    }
+
+    pub(super) async fn peek_query_offer(
+        &self, owner: &str, queue: &str, config: &QueryTaskConfig,
+        fence: &super::worker_poll_fence::WorkerPollFence,
+    ) -> Result<Option<ClaimTarget>> {
+        let mut read = self.begin_repeatable_read().await?;
+        let worker = self.fenced_claim_registration(&mut read, fence, owner).await?
+            .ok_or_else(super::worker_poll_fence::stale_claim)?;
+        if DB::string(&worker, "task_queue")? != queue {
+            return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
+        }
+        if Self::query_worker_proof(&mut *read, self.namespace.as_ref(), owner, config).await?.is_none() {
+            return Err(super::worker_poll_fence::stale_claim());
+        }
+        let capabilities = DB::optional_document_row(&worker, "capabilities")?.unwrap_or_default();
+        let types = DB::document_row(&worker, "supported_workflow_types")?;
+        if capabilities.as_array().is_some_and(|values| values.iter().any(|v| v == "query_tasks")) {
+            for task_id in Self::open_set(&mut read, self.namespace.as_ref()).await? {
+                let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(key(&task_id)?)
+                    .fetch_optional(&mut *read).await? else { continue; };
+                if DB::number(&row, "expiration")? <= now() {
+                    continue;
+                }
+                let mut task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+                if task["query_task_id"] != task_id || !self.query_matches_poll(&task, queue, &types)
+                    || self.query_has_live_lease(&mut *read, &task, config).await?
+                    || Self::query_hold(&mut *read, &task).await?.is_some()
+                {
+                    continue;
+                }
+                let Some(attempt) = task["query_task_attempt"].as_i64().filter(|attempt| attempt.checked_add(1).is_some())
+                else { continue; };
+                // Rendering the history may change this in-memory candidate.
+                // The acceptance path owns every write and terminal receipt.
+                if !Self::query_delivery_history(&mut *read, &mut task).await? {
+                    continue;
+                }
+                read.commit().await?;
+                return Ok(Some(ClaimTarget { task_id, kind: "query", observed_attempt: Some(attempt) }));
+            }
+        }
+        read.commit().await?;
+        Ok(None)
+    }
+
     async fn claim_query_in(
         &self,
         tx: &mut Transaction<'_, DB>,
@@ -1275,53 +1343,26 @@ where
         };
         let mut held = None;
         for (key, mut task) in entries {
-            if !matches!(task["status"].as_str(), Some("pending" | "leased"))
-                || task["namespace"] != self.namespace.as_ref()
-                || authority::deadline(&task).is_none_or(|deadline| deadline <= authority::now())
-                || task["task_queue"] != queue
-                || !types
-                    .as_array()
-                    .is_some_and(|types| types.contains(&task["workflow_type"]))
-            {
+            if !self.query_matches_poll(&task, queue, &types) {
                 continue;
             }
-            // `queryTaskMatchesPoller` matches the workflow type, not the
-            // query name: a worker answers a query it does not declare.
-            if task["workflow_type"].as_str().is_none() {
-                continue;
-            }
-            if task["status"] == "leased"
-                && authority::timestamp(&task["lease_expires_at"])
-                    .is_some_and(|lease| lease > authority::now())
-            {
+            if self.query_has_live_lease(&mut **tx, &task, config).await? {
                 let existing_owner = task["lease_owner"].as_str().unwrap_or("");
-                let existing_proof = Self::query_worker_proof(
-                    &mut **tx,
-                    self.namespace.as_ref(),
-                    existing_owner,
-                    config,
-                )
-                .await?;
                 // A live lease belongs to the poll request that claimed it. As in
                 // published PHP, only a retry of that same request receives it
                 // again; any other poll from the same worker is an independent slot.
-                if existing_proof
-                    .as_deref()
-                    .is_some_and(|proof| task["registration_incarnation"] == proof)
+                if existing_owner == owner
+                    && request_id.is_some_and(|id| task["poll_request_id"] == id)
                 {
-                    if existing_owner == owner
-                        && request_id.is_some_and(|id| task["poll_request_id"] == id)
+                    if let Some(attempt) = observed_attempt
+                        && !attempt.checked_add(1).is_some_and(|next| task["query_task_attempt"].as_i64() == Some(next))
                     {
-                        if let Some(attempt) = observed_attempt
-                            && !attempt.checked_add(1).is_some_and(|next| task["query_task_attempt"].as_i64() == Some(next))
-                        {
-                            return Err(refuse(StatusCode::CONFLICT, "task_offer_receipt_conflict"));
-                        }
-                        let delivered = Self::query_delivery(&task);
-                        return Ok(QueryClaim::Task(delivered));
+                        return Err(refuse(StatusCode::CONFLICT, "task_offer_receipt_conflict"));
                     }
-                    continue;
+                    let delivered = Self::query_delivery(&task);
+                    return Ok(QueryClaim::Task(delivered));
                 }
+                continue;
             }
             if let Some(attempt) = observed_attempt
                 && task["query_task_attempt"].as_i64() != Some(attempt)
