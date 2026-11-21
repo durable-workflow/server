@@ -1748,6 +1748,11 @@ queue, task kind, type, and reason. It contains up to `type_limit` entries.
 `types_truncated` indicates additional groups, which are included in the
 totals. Type coverage only describes advertised types. Worker capacity, build
 compatibility, and dispatch pauses have their own diagnostics.
+
+On `GET /api/workflows`, an open run can include `unsupported_ready_task`
+with the `task_queue`, `task_kind`, and exact `type` of one affected ready
+task. Each workflow page checks only its own runs, and a finding requires an
+active registration on the task's queue.
 - `GET /api/task-queues/{name}/activity-dispatch` — Whether activity dispatch on the queue is paused (native only)
 - `POST /api/task-queues/{name}/activity-dispatch/pause` — Pause activity dispatch, with an optional `reason` (native only)
 - `POST /api/task-queues/{name}/activity-dispatch/resume` — Resume activity dispatch (native only)

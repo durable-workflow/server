@@ -18,7 +18,7 @@ use super::{
 use chrono::{DateTime, Duration, Utc};
 use futures_util::TryStreamExt;
 use serde_json::{Value, json};
-use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type, query::Query};
 use std::collections::{BTreeMap, BTreeSet};
 
 const CURRENT_LEASE_LIMIT: usize = 50;
@@ -31,51 +31,79 @@ const TASK_TYPES: [&str; 2] = ["workflow", "activity"];
 const TYPE_LIMIT: usize = 100;
 
 macro_rules! ready_types {
-    ($activity_id:literal, $availability:literal, $group:literal, $order:literal, $queue:literal) => {
+    ($activity_id:literal, $availability:literal, $group:literal, $order:literal, $task_source:literal, $scope:expr $(, $run_group:literal)?) => {
         concat!(
-            "SELECT task_queue, task_kind, type_name, COUNT(*) AS task_count FROM (",
-            "SELECT t.queue AS task_queue, t.task_type AS task_kind, ",
+            "SELECT ", $($run_group,)? "task_queue, task_kind, type_name, COUNT(*) AS task_count FROM (",
+            "SELECT t.workflow_run_id AS run_id, t.queue AS task_queue, t.task_type AS task_kind, ",
             "CASE WHEN t.task_type='workflow' THEN r.workflow_type ELSE a.activity_type END AS type_name ",
-            "FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id ",
+            "FROM ", $task_source, " JOIN workflow_runs r ON r.id=t.workflow_run_id ",
             "LEFT JOIN activity_executions a ON t.task_type='activity' ",
             "AND a.id=", $activity_id, " AND a.workflow_run_id=r.id AND a.status IN ('pending','running') ",
             "WHERE t.namespace=$1 AND t.status='ready' AND t.task_type IN ('workflow','activity') ",
             "AND r.status IN ('pending','running','waiting') ",
-            "AND (t.available_at IS NULL OR ", $availability, "<=$2)", $queue, ") AS ready_types ",
-            "GROUP BY task_queue, task_kind, type_name", $group, $order,
+            "AND (t.available_at IS NULL OR ", $availability, "<=$2)", $scope, ") AS ready_types ",
+            "GROUP BY ", $($run_group,)? "task_queue, task_kind, type_name", $group,
+            " ORDER BY ", $($run_group,)? $order,
         )
     };
 }
 
 macro_rules! ready_types_sqlite {
-    ($queue:literal) => {
+    ($task_source:literal, $scope:expr $(, $run_group:literal)?) => {
         ready_types!(
             "CASE WHEN json_valid(t.payload) THEN json_extract(t.payload,'$.activity_execution_id') END",
             "replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','')",
-            "", " ORDER BY task_queue, task_kind, type_name", $queue
+            "", "task_queue, task_kind, type_name", $task_source, $scope $(, $run_group)?
         )
     };
 }
 
 macro_rules! ready_types_postgres {
-    ($queue:literal) => {
+    ($scope:expr $(, $run_group:literal)?) => {
         ready_types!(
             "(t.payload->>'activity_execution_id')",
             "t.available_at",
             "",
-            " ORDER BY task_queue, task_kind, type_name",
-            $queue
+            "task_queue, task_kind, type_name",
+            "workflow_tasks t",
+            $scope $(, $run_group)?
         )
     };
 }
 
 macro_rules! ready_types_mysql {
-    ($queue:literal) => {
+    ($scope:expr $(, $run_group:literal)?) => {
         ready_types!(
             "CASE WHEN JSON_VALID(t.payload) THEN JSON_UNQUOTE(JSON_EXTRACT(t.payload,'$.activity_execution_id')) END",
             "t.available_at",
             ", BINARY task_queue, BINARY type_name",
-            " ORDER BY BINARY task_queue, task_kind, BINARY type_name", $queue
+            "BINARY task_queue, task_kind, BINARY type_name", "workflow_tasks t", $scope $(, $run_group)?
+        )
+    };
+}
+
+// The visibility page already bounds the list. Passing it as one parameter
+// gives the database a stable statement and reuses the workflow-task run index.
+macro_rules! postgres_page_ids {
+    ($argument:literal) => {
+        concat!("SELECT jsonb_array_elements_text(CAST(", $argument, " AS jsonb))")
+    };
+}
+
+macro_rules! mysql_page_ids {
+    ($argument:literal) => {
+        concat!("SELECT ids.id FROM JSON_TABLE(", $argument,
+            ", '$[*]' COLUMNS (id VARCHAR(255) COLLATE utf8mb4_unicode_ci PATH '$')) ids")
+    };
+}
+
+macro_rules! page_workers {
+    ($task_source:literal, $scope:expr) => {
+        concat!(
+            "SELECT namespace,task_queue,status,last_heartbeat_at,supported_workflow_types,supported_activity_types ",
+            "FROM workflow_worker_registrations WHERE namespace=$1 AND last_heartbeat_at>$2 AND status='active' ",
+            "AND task_queue IN (SELECT t.queue FROM ", $task_source, " WHERE t.namespace=$3 ",
+            "AND t.status='ready' AND t.task_type IN ('workflow','activity')", $scope, ")",
         )
     };
 }
@@ -84,6 +112,16 @@ macro_rules! ready_types_mysql {
 struct AdvertisedTypes {
     workflows: BTreeSet<String>,
     activities: BTreeSet<String>,
+}
+
+impl AdvertisedTypes {
+    fn supports(&self, kind: &str, name: &str) -> bool {
+        if kind == "workflow" {
+            self.workflows.contains(name)
+        } else {
+            self.activities.contains(name)
+        }
+    }
 }
 
 /// Carbon's `toJSON()`.
@@ -246,36 +284,11 @@ where
             Some(queue) => workers.bind(queue),
             None => workers,
         };
-        let mut advertised = BTreeMap::<String, AdvertisedTypes>::new();
-        {
-            let mut rows = workers.fetch(&mut *tx);
-            while let Some(row) = rows.try_next().await? {
-                let Some(task_queue) = DB::optional_string(&row, "task_queue")? else {
-                    continue;
-                };
-                // The database can use a case-insensitive collation, and
-                // older SQLite timestamps can use an RFC3339 separator.
-                if DB::string(&row, "namespace")? != self.namespace.as_ref()
-                    || queue.is_some_and(|selected| selected != task_queue)
-                    || DB::string(&row, "status")? != "active"
-                    || DB::optional_instant(&row, "last_heartbeat_at")?
-                        .is_none_or(|seen| seen <= cutoff)
-                {
-                    continue;
-                }
-                let types = advertised.entry(task_queue).or_default();
-                for (field, names) in [
-                    ("supported_workflow_types", &mut types.workflows),
-                    ("supported_activity_types", &mut types.activities),
-                ] {
-                    names.extend(registration_types(DB::optional_document_row(&row, field)?));
-                }
-            }
-        }
+        let advertised = self.advertised_types(&mut tx, workers, queue, cutoff).await?;
 
         let query_sql = match (DB::PHP_CONNECTION, queue.is_some()) {
-            ("sqlite", false) => ready_types_sqlite!(""),
-            ("sqlite", true) => ready_types_sqlite!(" AND t.queue=$3"),
+            ("sqlite", false) => ready_types_sqlite!("workflow_tasks t", ""),
+            ("sqlite", true) => ready_types_sqlite!("workflow_tasks t", " AND t.queue=$3"),
             ("mysql", false) => ready_types_mysql!(" AND BINARY t.namespace=BINARY $3"),
             ("mysql", true) => {
                 ready_types_mysql!(" AND BINARY t.namespace=BINARY $3 AND t.queue=$4")
@@ -321,12 +334,7 @@ where
                         "no_active_pollers"
                     }
                     Some(types) => {
-                        let supported = if kind == "workflow" {
-                            &types.workflows
-                        } else {
-                            &types.activities
-                        };
-                        if supported.contains(&type_name) {
+                        if types.supports(&kind, &type_name) {
                             continue;
                         }
                         unsupported += count;
@@ -350,6 +358,104 @@ where
             "type_limit": TYPE_LIMIT,
             "types_truncated": types_truncated,
         }))
+    }
+
+    async fn advertised_types(
+        &self,
+        connection: &mut DB::Connection,
+        workers: Query<'static, DB, DB::Arguments>,
+        queue: Option<&str>,
+        cutoff: DateTime<Utc>,
+    ) -> Result<BTreeMap<String, AdvertisedTypes>> {
+        let mut advertised = BTreeMap::<String, AdvertisedTypes>::new();
+        let mut rows = workers.fetch(connection);
+        while let Some(row) = rows.try_next().await? {
+            let Some(task_queue) = DB::optional_string(&row, "task_queue")? else {
+                continue;
+            };
+            // The database can use a case-insensitive collation, and older
+            // SQLite timestamps can use an RFC3339 separator.
+            if DB::string(&row, "namespace")? != self.namespace.as_ref()
+                || queue.is_some_and(|selected| selected != task_queue)
+                || DB::string(&row, "status")? != "active"
+                || DB::optional_instant(&row, "last_heartbeat_at")?
+                    .is_none_or(|seen| seen <= cutoff)
+            {
+                continue;
+            }
+            let types = advertised.entry(task_queue).or_default();
+            for (field, names) in [
+                ("supported_workflow_types", &mut types.workflows),
+                ("supported_activity_types", &mut types.activities),
+            ] {
+                names.extend(registration_types(DB::optional_document_row(&row, field)?));
+            }
+        }
+        Ok(advertised)
+    }
+
+    /// A representative unsupported ready task type for each selected run.
+    /// Read both the task and registration evidence from one snapshot.
+    pub(super) async fn unsupported_ready_tasks_for_runs(
+        &self,
+        run_ids: &[String],
+        at: DateTime<Utc>,
+    ) -> Result<BTreeMap<String, Value>> {
+        if run_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let (worker_sql, task_sql) = match DB::PHP_CONNECTION {
+            // SQLite otherwise prefers the namespace index for an IN
+            // subquery. Drive both reads from the selected run IDs.
+            "sqlite" => (
+                page_workers!("json_each($4) AS ids CROSS JOIN workflow_tasks t ON t.workflow_run_id=ids.value", ""),
+                ready_types_sqlite!(
+                    "json_each($3) AS ids CROSS JOIN workflow_tasks t ON t.workflow_run_id=ids.value", "", "run_id, "
+                ),
+            ),
+            "mysql" => (
+                page_workers!("workflow_tasks t", concat!(" AND t.workflow_run_id IN (", mysql_page_ids!("$4"), ")")),
+                ready_types_mysql!(concat!(" AND BINARY t.namespace=BINARY $3 AND t.workflow_run_id IN (",
+                    mysql_page_ids!("$4"), ")"), "run_id, "),
+            ),
+            _ => (
+                page_workers!("workflow_tasks t", concat!(" AND t.workflow_run_id IN (", postgres_page_ids!("$4"), ")")),
+                ready_types_postgres!(concat!(" AND t.workflow_run_id IN (", postgres_page_ids!("$3"), ")"), "run_id, "),
+            ),
+        };
+        let mut tx = self.begin_repeatable_read().await?;
+        let ids = serde_json::to_string(run_ids)?;
+        let namespace = self.namespace.as_ref();
+        let cutoff = at - Duration::seconds(self.worker_stale_after_seconds.max(1));
+        let workers = Self::query(worker_sql)
+            .bind(namespace)
+            .bind(DB::bind_time(cutoff))
+            .bind(namespace)
+            .bind(ids.as_str());
+        let advertised = self.advertised_types(&mut tx, workers, None, cutoff).await?;
+        let mut unsupported = BTreeMap::new();
+        if !advertised.is_empty() {
+            let tasks = Self::query(task_sql).bind(namespace).bind(DB::bind_time(at));
+            let tasks = if DB::PHP_CONNECTION == "mysql" { tasks.bind(namespace) } else { tasks };
+            let mut rows = tasks.bind(ids.as_str()).fetch(&mut *tx);
+            while let Some(row) = rows.try_next().await? {
+                let run_id = DB::string(&row, "run_id")?;
+                if unsupported.contains_key(&run_id) {
+                    continue;
+                }
+                let (Some(queue), Some(name)) = (
+                    DB::optional_string(&row, "task_queue")?,
+                    DB::optional_string(&row, "type_name")?,
+                ) else { continue; };
+                let kind = DB::string(&row, "task_kind")?;
+                if advertised.get(&queue).is_some_and(|types| !types.supports(&kind, &name)) {
+                    unsupported.insert(run_id, json!({"task_queue": queue, "task_kind": kind, "type": name}));
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(unsupported)
     }
 
     /// Workflow and activity task counts for one condition.
