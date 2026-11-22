@@ -27,7 +27,7 @@ const MARKED: i64 = 0;
 /// Sessions rechecked and the source fingerprinted again after the marker:
 /// nothing PHP wrote can be missing from the backup.
 const FENCED: i64 = 1;
-const LAST: i64 = 11;
+pub(crate) const MYSQL_FINAL_STEP: i64 = 11;
 
 /// One takeover run: what its steps need and what its report says.
 struct Run<'a> {
@@ -121,7 +121,7 @@ pub async fn take_over_mysql(
                 return Err(refuse(StatusCode::CONFLICT, "upgrade_source_already_owned"));
             }
         };
-        for step in completed + 1..=LAST {
+        for step in completed + 1..=MYSQL_FINAL_STEP {
             perform(connection, &mut run, step).await?;
             #[cfg(test)]
             super::interruption_point(&format!("after-step-{step}"));
@@ -467,6 +467,7 @@ async fn finish(connection: &mut MySqlConnection, run: &Run<'_>) -> Result<()> {
     mysql::ensure_child_supervisions(connection, run.flavor).await?;
     mysql::ensure_maintenance_scan_indexes(connection, run.flavor).await?;
     mysql::ensure_task_lease_loss(connection, run.flavor).await?;
+    mysql::ensure_child_summary_checkpoints(connection, run.flavor).await?;
     connection.execute(LEDGER_SQL).await?;
     let migration = run.flavor.migration();
     let mut tx = connection.begin().await?;
@@ -480,7 +481,7 @@ async fn finish(connection: &mut MySqlConnection, run: &Run<'_>) -> Result<()> {
         .bind(run.flavor.version())
         .bind(run.flavor.checksum())
         .bind(format!("{TAKEOVER_ENGINE}{}", run.layout))
-        .bind(LAST)
+        .bind(MYSQL_FINAL_STEP)
         .execute(&mut *tx)
         .await?
         .rows_affected();

@@ -104,6 +104,27 @@ else
     '.image==$image and .resources.nano_cpus==1000000000 and .resources.memory_bytes==$memory and .resources.memory_swap_bytes==$memory and .state.status=="running" and .state.oom_killed==false' "$output/database.json" >/dev/null
   env_args+=(-e DB_HOST=codec-db -e DB_DATABASE=native_cpu -e DB_USERNAME=parity -e DB_PASSWORD=parity-disposable-password)
 fi
+if test "$connection" = mysql || test "$connection" = mariadb; then
+  native_schema() {
+    docker run --rm --init --name "$scope-schema" --user="$(id -u):$(id -g)" --cpus=1 \
+      --memory=256m --memory-swap=256m --pids-limit 130 --network "$scope" \
+      --entrypoint /bin-owned/server -v "$binary:/bin-owned:ro" \
+      -e DW_RUST_EXPERIMENTAL=1 "${env_args[@]}" "$runtime" "$@"
+  }
+  if native_schema schema-bootstrap > "$output/schema-bootstrap.json" 2> "$output/schema-bootstrap.log"; then
+    :
+  elif grep -Fxq native_child_checkpoint_trigger_privilege_required "$output/schema-bootstrap.log"; then
+    # Exercise the documented binlogged install with the original scoped
+    # application role. The fixture administrator installs only the DDL the
+    # staged schema exports. The database's logging and grants stay in place.
+    native_schema schema-checkpoint-ddl \
+      | docker exec -i "$db" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec "$1" --user=root --batch' command "$client"
+    native_schema schema-bootstrap > "$output/schema-bootstrap-resumed.json"
+  else
+    cat "$output/schema-bootstrap.log" >&2
+    exit 1
+  fi
+fi
 docker run -d --name "$native_server" --user="$(id -u):$(id -g)" --cpus=1 --memory=512m --memory-swap=512m \
   --network "$scope" --network-alias codec-native --entrypoint /bin-owned/server \
   -v "$binary:/bin-owned:ro" -e DW_RUST_EXPERIMENTAL=1 -e DW_AUTH_TOKEN=parity-test-token \

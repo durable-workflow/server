@@ -30,7 +30,7 @@ pub(super) const DEVELOPMENT_ENGINE: &str = "rust-development";
 pub(super) const UPGRADING_ENGINE: &str = "rust-upgrading";
 /// Earlier native schema versions this binary upgrades in place. Release
 /// candidates `3.0.0-rc.1` and `3.0.0-rc.2` shipped version 7.
-pub(super) const UPGRADABLE: &[i64] = &[7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+pub(super) const UPGRADABLE: &[i64] = &[7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 
 /// The refusal for a native marker this binary does not open as it is.
 pub(super) fn marker_refusal(engine: &str, version: i64, current: i64) -> RuntimeError {
@@ -133,6 +133,12 @@ pub async fn upgrade_postgres(options: PgConnectOptions) -> Result<Value> {
 pub async fn upgrade_mysql(options: MySqlConnectOptions) -> Result<Value> {
     let (backend, from, to) = super::mysql::upgrade(options).await?;
     Ok(report(backend, from, to))
+}
+
+/// Read the remaining checkpoint DDL after a MySQL-family schema operation
+/// has staged its tables and paused for administrator installation.
+pub async fn mysql_checkpoint_ddl(options: MySqlConnectOptions) -> Result<String> {
+    super::mysql::child_summary_checkpoint_ddl(options).await
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ use tokio::time::{Instant, timeout_at};
 
 mod mysql_journal;
 pub use mysql_journal::take_over_mysql;
+pub(crate) use mysql_journal::MYSQL_FINAL_STEP;
 
 /// Takeover reads every row twice (inspection and fingerprint).
 const BUDGET: Duration = Duration::from_secs(3600);

@@ -6,6 +6,7 @@ require_once __DIR__.'/ready-origin-schema.php';
 require_once __DIR__.'/dispatch-summary-schema.php';
 require_once __DIR__.'/storage-binding-schema.php';
 require_once __DIR__.'/task-attention-schema.php';
+require_once __DIR__.'/child-checkpoint-schema.php';
 
 // Physical fixture inspection only. This is not a database backup procedure.
 if (! in_array($argc, [3, 4], true) || ! in_array($argv[1], ['dump', 'catalog', 'snapshot', 'compare'], true)) {
@@ -55,18 +56,28 @@ function definition(string $sql): string
     return substr($sql, 0, $start).substr($sql, $end);
 }
 
-function catalog(PDO $pdo): array
+function catalog(PDO $pdo, bool $native = false): array
 {
     $tables = $pdo->query("SELECT TABLE_NAME,TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME")->fetchAll(PDO::FETCH_NUM);
     $result = [];
     foreach ($tables as [$name, $type]) {
+        if ($native && $type === 'VIEW' && $name === 'dw_child_summary_catalog') {
+            continue;
+        }
         if ($type !== 'BASE TABLE') {
             throw new RuntimeException('Fixture contains an unsupported view.');
         }
         $row = $pdo->query('SHOW CREATE TABLE '.identifier($name))->fetch(PDO::FETCH_NUM);
         $result[] = [$name, definition($row[1])];
     }
-    foreach (['ROUTINES' => 'ROUTINE_SCHEMA', 'TRIGGERS' => 'TRIGGER_SCHEMA', 'EVENTS' => 'EVENT_SCHEMA'] as $table => $column) {
+    $storedCode = ['EVENTS' => 'EVENT_SCHEMA'];
+    if ($native) {
+        verifyMysqlChildCheckpointCode($pdo);
+    } else {
+        $storedCode['ROUTINES'] = 'ROUTINE_SCHEMA';
+        $storedCode['TRIGGERS'] = 'TRIGGER_SCHEMA';
+    }
+    foreach ($storedCode as $table => $column) {
         if ((int) $pdo->query("SELECT COUNT(*) FROM information_schema.{$table} WHERE {$column}=DATABASE()")->fetchColumn() !== 0) {
             throw new RuntimeException('Fixture contains unsupported stored code.');
         }
@@ -111,7 +122,8 @@ if ($argc !== 4) {
 }
 $pdo->exec('ROLLBACK');
 $pdo = connection($argv[3]);
-$native = projectMysqlTaskAttention(catalog($pdo));
+$native = projectMysqlChildCheckpoints(catalog($pdo, native: true), str_contains($pdo->query("SELECT VERSION()")->fetchColumn(), "MariaDB"));
+$native = projectMysqlTaskAttention($native);
 $native = array_values(array_filter(projectMysqlStorageBindings(projectMysqlDispatchSummary(projectMysqlJsonText(projectMysqlScopedDispatch(projectMysqlReadyOrigin($native)), $php))), static fn (array $row): bool => ! in_array($row[0], ['dw_server_schema', '_sqlx_migrations', 'dw_task_completions', 'dw_poll_receipts', 'dw_query_cache', 'dw_worker_registration_incarnations', 'dw_worker_session_holders', 'dw_stream_reclaims', 'dw_service_call_deadlines', 'dw_service_admission_counters', 'dw_external_payload_deletions', 'dw_run_command_contracts', 'dw_task_queue_pauses', 'dw_command_intents', 'dw_child_supervisions'], true)));
 $pdo->exec('ROLLBACK');
 // Native polling and the maintenance scans (server#1256) use additional
