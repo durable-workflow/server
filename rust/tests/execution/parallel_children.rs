@@ -328,6 +328,7 @@ async fn incomplete_nested_mixed_selected_and_started_groups_leave_the_original_
         "started",
         "scope",
         "sequence",
+        "explicit-policy",
     ] {
         let mut commands = children(2);
         match shape {
@@ -353,6 +354,11 @@ async fn incomplete_nested_mixed_selected_and_started_groups_leave_the_original_
             "select" => commands[0]["parallel_group_mode"] = json!("select"),
             "started" => commands[0]["await"] = json!("started"),
             "scope" => commands[0]["cancellation_scope_id"] = json!("unqualified-child-scope"),
+            "explicit-policy" => {
+                for command in commands.as_array_mut().unwrap() {
+                    command["parallel_group_path"][0]["parallel_group_policy"] = json!("propagate");
+                }
+            }
             "sequence" => {
                 for command in commands.as_array_mut().unwrap() {
                     command["parallel_group_base_sequence"] = json!(2);

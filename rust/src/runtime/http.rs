@@ -2034,16 +2034,12 @@ async fn register(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let protocol = request_protocol(&headers)?;
-    // Laravel trims every string and turns empty ones into null first.
-    let mut body = super::laravel_rules::normalize(&body);
-    super::worker_admission::admit(&body, Some(protocol.trim())).map_err(worker_refusal)?;
-    // PHP names an unnamed worker with a fresh ULID and stores the
-    // normalized capability manifest.
+    let mut body = super::worker_admission::normalize_registration(&body, protocol.trim())
+        .map_err(worker_refusal)?;
+    // PHP names an unnamed worker with a fresh ULID.
     if body["worker_id"].is_null() {
         body["worker_id"] = json!(ulid::Ulid::new().to_string());
     }
-    let manifest = super::worker_admission::manifest(&body);
-    body["capability_manifest"] = manifest;
     // Missing type lists are empty; capabilities keep their non-empty
     // strings (`nonEmptyStringArray`).
     for field in ["supported_workflow_types", "supported_activity_types"] {

@@ -21,6 +21,8 @@ const NEXUS_COOPERATIVE: &str = "nexus_cooperative_cancellation";
 const METADATA: &[(&str, &str)] = &[("memo_upserts", "1.14"), ("typed_search_attributes", "1.16")];
 /// `MessageStreamsContract`.
 const MESSAGE_STREAMS: (&str, &str) = ("message_streams", "1.15");
+pub(super) const PARALLEL_GROUP_POLICIES: &str = "parallel_group_policies";
+const GROUP_POLICIES: &[&str] = &["propagate", "cancel_remaining", "settle"];
 
 const RUNTIMES: &[&str] = &["php", "python", "rust", "typescript", "go", "java", "external"];
 const MANIFEST_REQUIRED: &[Rule] = &[Required, Array, RequiredArrayKeys(AFFINITY)];
@@ -97,10 +99,74 @@ fn capabilities(body: &Value) -> Vec<&str> {
         .collect()
 }
 
+fn invalid_group_capability() -> RuntimeError {
+    refused(json!({"reason": "invalid_parallel_group_policy_capability", "capability": PARALLEL_GROUP_POLICIES}))
+}
+
+fn group_policy_descriptor(body: &Value) -> Result<Option<Value>> {
+    if body.get(PARALLEL_GROUP_POLICIES).is_some() {
+        return Err(invalid_group_capability());
+    }
+    let advertised = capabilities(body).contains(&PARALLEL_GROUP_POLICIES);
+    let entry = match (advertised, body["capability_manifest"].get(PARALLEL_GROUP_POLICIES)) {
+        (false, None) => return Ok(None),
+        (true, Some(entry)) => entry,
+        _ => return Err(invalid_group_capability()),
+    };
+    if !entry.as_object().is_some_and(|fields| fields.len() == 3)
+        || entry["supported"] != Value::Bool(true)
+        || entry["version"].as_i64() != Some(1)
+    {
+        return Err(invalid_group_capability());
+    }
+    let policies = entry["policies"]
+        .as_array()
+        .filter(|policies| !policies.is_empty())
+        .ok_or_else(invalid_group_capability)?;
+    let mut requested = Vec::new();
+    for policy in policies {
+        let policy = policy.as_str()
+            .filter(|policy| GROUP_POLICIES.contains(policy))
+            .ok_or_else(invalid_group_capability)?;
+        if requested.contains(&policy) {
+            return Err(invalid_group_capability());
+        }
+        requested.push(policy);
+    }
+    let canonical: Vec<_> = GROUP_POLICIES.iter().copied()
+        .filter(|policy| requested.contains(policy))
+        .collect();
+    Ok(Some(json!({"supported": true, "version": 1, "policies": canonical})))
+}
+
+pub(super) fn normalize_registration(raw: &Value, version: &str) -> Result<Value> {
+    let group_policies = group_policy_descriptor(raw)?;
+    let mut body = laravel_rules::normalize(raw);
+    if group_policies.is_none() && capabilities(&body).contains(&PARALLEL_GROUP_POLICIES) {
+        return Err(invalid_group_capability());
+    }
+    // The versioned descriptor has a different contract from the affinity entries.
+    if group_policies.is_some()
+        && let Some(entries) = body.get_mut("capability_manifest").and_then(Value::as_object_mut)
+    {
+        entries.shift_remove(PARALLEL_GROUP_POLICIES);
+        if entries.is_empty() {
+            body["capability_manifest"] = Value::Null;
+        }
+    }
+    admit(&body, Some(version))?;
+    let mut manifest = manifest(&body);
+    if let Some(group_policies) = group_policies {
+        manifest[PARALLEL_GROUP_POLICIES] = group_policies;
+    }
+    body["capability_manifest"] = manifest;
+    Ok(body)
+}
+
 /// `portableWorkerCapabilityManifest`: the three affinity entries that are
 /// arrays, with `supported` and a trimmed floor, plus non-empty
 /// `implementation` and `reason`.
-pub(super) fn manifest(body: &Value) -> Value {
+fn manifest(body: &Value) -> Value {
     let mut normalized = Map::new();
     for capability in AFFINITY {
         let Some(entry) = body["capability_manifest"].get(*capability).filter(|entry| entry.is_object()) else {
@@ -143,7 +209,7 @@ pub(super) fn manifest(body: &Value) -> Value {
 /// The admission checks before any registration state is read. `body` is
 /// the request after Laravel's trimming; `version` is the request's
 /// worker protocol header.
-pub(super) fn admit(body: &Value, version: Option<&str>) -> Result<()> {
+fn admit(body: &Value, version: Option<&str>) -> Result<()> {
     let manifest_rule = if at_least(Some(version.unwrap_or(super::WORKER_PROTOCOL_VERSION)), AFFINITY_FLOOR) {
         MANIFEST_REQUIRED
     } else {
