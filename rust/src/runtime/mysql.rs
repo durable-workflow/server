@@ -4258,14 +4258,15 @@ mod tests {
             let database: String = sqlx::query_scalar("SELECT DATABASE()").fetch_one(&mut connection).await.unwrap();
             assert!(database.starts_with("dw_schema_") && database.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
             let account = format!("ckp_{}", ulid::Ulid::new().to_string().to_lowercase());
-            connection.execute(AssertSqlSafe(format!("CREATE USER '{account}'@'%'"))).await.unwrap();
+            let password = format!("{}{}a!", ulid::Ulid::new(), ulid::Ulid::new());
+            connection.execute(AssertSqlSafe(format!("CREATE USER '{account}'@'%' IDENTIFIED BY '{password}'"))).await.unwrap();
             connection.execute(AssertSqlSafe(format!("GRANT ALL PRIVILEGES ON \x60{database}\x60.* TO '{account}'@'%'"))).await.unwrap();
             connection.close().await.unwrap();
             let from = flavor.version() - 1;
             if upgrading {
                 retained_version_database(&db, from).await;
             }
-            let app = db.options.clone().username(&account).password("");
+            let app = db.options.clone().username(&account).password(&password);
             let denied = if upgrading {
                 upgrade(app.clone()).await.unwrap_err()
             } else {
