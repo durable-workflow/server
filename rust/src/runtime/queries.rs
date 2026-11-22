@@ -1084,7 +1084,7 @@ where
         }
     }
 
-    async fn query_worker_proof<'e, E>(
+    pub(super) async fn query_worker_proof<'e, E>(
         executor: E,
         namespace: &str,
         owner: &str,
@@ -1269,6 +1269,37 @@ where
         Ok(None)
     }
 
+    pub(super) async fn offer_query_row(
+        connection: &mut DB::Connection,
+        namespace: &str,
+        queue: &str,
+        task_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<Value>> {
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(key(task_id)?)
+            .fetch_optional(&mut *connection).await? else { return Ok(None); };
+        if DB::number(&row, "expiration")? <= at.timestamp() {
+            return Ok(None);
+        }
+        let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
+        Ok((task["query_task_id"] == task_id && task["namespace"] == namespace
+            && task["task_queue"] == queue).then_some(task))
+    }
+
+    pub(super) async fn claim_query_offer_in(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+    ) -> Result<Option<Value>> {
+        match self.claim_query_in(tx, body, config, proof, None, None, Some(CheckedQueryPoll { proof })).await? {
+            QueryClaim::Task(task) => Ok(Some(task)),
+            QueryClaim::StaleWorker => Err(refuse(StatusCode::CONFLICT, "worker_registration_lost_authority")),
+            QueryClaim::Empty | QueryClaim::Blocked(_) | QueryClaim::Superseded => Ok(None),
+        }
+    }
+
     async fn claim_query_in(
         &self,
         tx: &mut Transaction<'_, DB>,
@@ -1329,15 +1360,10 @@ where
         }
         let observed_attempt = tx.claim_only.as_ref().and_then(|target| target.observed_attempt);
         let entries = if let Some(task_id) = tx.claim_only.as_ref().map(|target| target.task_id.clone()) {
-            let key = key(&task_id)?;
-            let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&mut **tx).await? else {
+            let Some(task) = Self::offer_query_row(&mut **tx, self.namespace.as_ref(), queue, &task_id, authority::now()).await? else {
                 return Ok(QueryClaim::Empty);
             };
-            let task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
-            if DB::number(&row, "expiration")? <= now() || task["query_task_id"] != task_id {
-                return Ok(QueryClaim::Empty);
-            }
-            vec![(key, task)]
+            vec![(key(&task_id)?, task)]
         } else {
             self.query_entries(tx).await?
         };

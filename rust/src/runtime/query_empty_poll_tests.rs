@@ -2,7 +2,7 @@
 //! read snapshot, without the transition lock, only while every fact of that
 //! answer holds at once. Each other state takes the maintained locked path.
 // `now` is the query cache's clock: epoch seconds, as the bookkeeping rows use.
-use super::{CUTOVER_MARK, EXPIRY_MARK, QueryClaim, key, now, read_arguments};
+use super::{CUTOVER_MARK, EXPIRY_MARK, key, now, read_arguments};
 use crate::codec::{Value as Payload, ValueCodec};
 use crate::runtime::{QueryTaskConfig, RuntimeError, store::Store, transaction::ClaimTarget, worker_poll_fence::PollAdmission};
 use serde_json::{Value, json};
@@ -289,6 +289,8 @@ store_methods! {
     }
 
     async fn qualify_exact_query_claim(&self) {
+        use crate::runtime::task_delivery_receipts::{Acceptance, OfferClaim, OfferScope, OpenedOffer};
+
         let original = self.submit_query();
         let second = async {
             self.wait_for_pending_query().await;
@@ -314,27 +316,35 @@ store_methods! {
             let offer = self.peek_query_offer(WORKER, QUEUE, &config, fence.as_ref().unwrap()).await.unwrap().unwrap();
             assert_eq!((offer.task_id.as_str(), offer.kind, offer.observed_attempt), (first.as_str(), "query", Some(0)));
             assert_eq!(self.cache_rows().await, before, "offer observation leaves the query and poll caches unchanged");
-            for (kind, attempt, should_claim) in [
-                ("workflow", 0, false),
-                ("query", 1, false),
-                ("query", 0, true),
-                ("query", 0, true),
-            ] {
-                let mut tx = self.begin().await.unwrap();
-                tx.claim_only = Some(ClaimTarget { task_id: selected.clone(), kind, observed_attempt: Some(attempt) });
-                let claim = self.claim_query_in(&mut tx, &poll, &config, &proof, fence.as_ref(), None, None).await.unwrap();
-                match claim {
-                    QueryClaim::Task(task) if should_claim => {
-                        assert_eq!(task["query_task_id"], selected.as_str());
-                        assert_eq!(task["query_task_attempt"], 1);
-                    }
-                    QueryClaim::Empty if !should_claim => {}
-                    _ => panic!("the query claim must match only the selected kind and attempt"),
-                }
-                tx.commit().await.unwrap();
+            let scope = OfferScope { worker_id: WORKER, queue: QUEUE, endpoint: "query",
+                request_id: "exact-query", kinds: &["query"] };
+            let claim = OfferClaim { scope: &scope, fence: fence.as_ref().unwrap(), body: &poll,
+                protocol: "1.20", history_page: None, query_config: &config };
+            let mut offered = OpenedOffer {
+                target: ClaimTarget { task_id: selected.clone(), kind: "query", observed_attempt: Some(1) },
+                registration_digest: proof, key_id: "fixture-key".to_owned(), packet_digest: [1; 32],
+                expires_at_ms: chrono::Utc::now().timestamp_millis() + 10_000,
+            };
+            assert!(matches!(self.accept_task_offer(&offered, &claim).await.unwrap(), Acceptance::Unclaimable));
+            assert_eq!(self.cache_rows().await, before, "a refused offer leaves no query or receipt write");
+            offered.target.observed_attempt = Some(0);
+            offered.packet_digest = [2; 32];
+            let Acceptance::Claimed(task) = self.accept_task_offer(&offered, &claim).await.unwrap()
+            else { panic!("exactly the selected query must be leased"); };
+            let Acceptance::Replayed(replay) = self.accept_task_offer(&offered, &claim).await.unwrap()
+            else { panic!("the same receipt must replay without another attempt"); };
+            for task in [&task, &replay] {
+                assert_eq!(task["query_task_id"], selected.as_str());
+                assert_eq!(task["query_task_attempt"], 1);
+                assert_eq!(task["lease_owner"], WORKER);
             }
+            let mut competing = offered.clone();
+            competing.target.task_id = first.clone();
+            competing.packet_digest = [3; 32];
+            assert!(matches!(self.accept_task_offer(&competing, &claim).await.unwrap(), Acceptance::ConflictingOffer));
             assert_eq!(self.raw(&key(first).unwrap()).await.unwrap(), other_before);
             self.finish_query(selected, json!({"lease_owner":WORKER,"query_task_attempt":1,"result":7}), false, &config).await.unwrap();
+            assert!(matches!(self.accept_task_offer(&offered, &claim).await.unwrap(), Acceptance::LeaseEnded));
             let other = self.poll_query(body("exact-query-other"), &config).await.unwrap();
             assert_eq!(other["task"]["query_task_id"], first.as_str());
             self.answer(&other).await;

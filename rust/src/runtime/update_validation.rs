@@ -589,17 +589,29 @@ where
         Ok(None)
     }
 
+    pub(super) async fn claim_validation_offer_in(
+        &self, tx: &mut Transaction<'_, DB>, worker_id: &str, task_queue: &str,
+    ) -> Result<Option<Value>> {
+        let Some(claim) = self.claim_update_validation_in(tx, worker_id, task_queue).await? else {
+            return Ok(None);
+        };
+        Self::update_validation_payload_in(tx, &claim.task_id).await.map(Some)
+    }
+
     #[cfg(test)]
     pub(super) async fn qualify_exact_update_validation_claim(&self) {
+        use super::task_delivery_receipts::{Acceptance, OfferClaim, OfferScope, OpenedOffer};
+
+        let config = super::QueryTaskConfig::default();
         let queue = "scoped-validator";
         let workflow = "scoped-validation-workflow";
         let arguments = crate::codec::ValueCodec::new().unwrap()
             .encode(&crate::codec::Value::Array(vec![])).unwrap();
-        self.register(json!({"worker_id":queue,"task_queue":queue,"runtime":"php",
+        let registration = self.register(json!({"worker_id":queue,"task_queue":queue,"runtime":"php",
             "supported_workflow_types":[workflow],"supported_activity_types":[],
             "capabilities":[CAPABILITY],
             "workflow_command_contracts":{(workflow):{"update_validators":["validate"]}}}),
-            &Default::default(), Some("1.20")).await.unwrap();
+            &config, Some("1.20")).await.unwrap();
         let started = self.start(json!({"workflow_id":workflow,"workflow_type":workflow,"task_queue":queue,
             "input":{"codec":"avro","blob":arguments}}), Default::default(), None, None).await.unwrap();
         let run = started["run_id"].as_str().unwrap();
@@ -615,18 +627,41 @@ where
         else { panic!("the validator must have an active registration"); };
         let offer = self.peek_validation_offer(queue, queue, &fence).await.unwrap().unwrap();
         assert_eq!((offer.task_id.as_str(), offer.kind, offer.observed_attempt), (first.as_str(), "update_validation", Some(0)));
-        for (kind, observed) in [("workflow", 0), ("update_validation", 1), ("update_validation", 0)] {
-            let mut tx = self.begin().await.unwrap();
-            tx.claim_only = Some(ClaimTarget { task_id: selected.clone(), kind, observed_attempt: Some(observed) });
-            let claim = self.claim_update_validation_in(&mut tx, queue, queue).await.unwrap();
-            if kind == "update_validation" && observed == 0 {
-                let claim = claim.unwrap();
-                assert_eq!((claim.task_id, claim.attempt), (selected.clone(), 1));
-            } else {
-                assert!(claim.is_none());
-            }
-            tx.commit().await.unwrap();
-        }
+        let scope = OfferScope { worker_id: queue, queue, endpoint: "workflow", request_id: "mixed",
+            kinds: &["workflow", "update_validation"] };
+        let body = json!({"worker_id":queue,"task_queue":queue,"poll_request_id":"mixed"});
+        let claim = OfferClaim { scope: &scope, fence: &fence, body: &body, protocol: "1.20",
+            history_page: None, query_config: &config };
+        let mut offered = OpenedOffer {
+            target: ClaimTarget { task_id: selected.clone(), kind: "update_validation", observed_attempt: Some(1) },
+            registration_digest: super::worker_sessions::incarnation_digest(registration["registration_token"].as_str().unwrap()),
+            key_id: "fixture-key".to_owned(), packet_digest: [1; 32], expires_at_ms: at.timestamp_millis() + 10_000,
+        };
+        assert!(matches!(self.accept_task_offer(&offered, &claim).await.unwrap(), Acceptance::Unclaimable));
+        offered.target.observed_attempt = Some(0);
+        offered.packet_digest = [2; 32];
+        let Acceptance::Claimed(task) = self.accept_task_offer(&offered, &claim).await.unwrap()
+        else { panic!("exactly the selected validation task must be leased"); };
+        let Acceptance::Replayed(replay) = self.accept_task_offer(&offered, &claim).await.unwrap()
+        else { panic!("the same validation receipt must replay"); };
+        assert_eq!(replay, task);
+        assert_eq!(task["update_validation_task_id"], selected.as_str());
+        assert_eq!(task["update_validation_attempt"], 1);
+        assert_eq!(task["task_kind"], "update_validation");
+        assert!(task["history_events"].is_array());
+
+        let mut competing = offered.clone();
+        competing.target = self.peek_execution_offer(queue, queue, "workflow", "1.20", &fence)
+            .await.unwrap().unwrap();
+        competing.packet_digest = [3; 32];
+        assert!(matches!(self.accept_task_offer(&competing, &claim).await.unwrap(), Acceptance::ConflictingOffer));
+        let untouched_workflow = Self::query("SELECT status,attempt_count FROM workflow_tasks WHERE id=$1")
+            .bind(&competing.target.task_id).fetch_one(&self.pool).await.unwrap();
+        assert_eq!(DB::string(&untouched_workflow, "status").unwrap(), "ready");
+        assert_eq!(DB::number(&untouched_workflow, "attempt_count").unwrap(), 0);
+        Self::query("UPDATE workflow_update_validation_tasks SET status='timed_out' WHERE id=$1")
+            .bind(&selected).execute(&self.pool).await.unwrap();
+        assert!(matches!(self.accept_task_offer(&offered, &claim).await.unwrap(), Acceptance::LeaseEnded));
         let untouched = Self::query("SELECT status,attempt_count,lease_owner FROM workflow_update_validation_tasks WHERE id=$1")
             .bind(&first).fetch_one(&self.pool).await.unwrap();
         assert_eq!(DB::string(&untouched, "status").unwrap(), "pending");
@@ -636,13 +671,17 @@ where
 
     /// `taskPayload` without its history export, which the runtime adds.
     pub(super) async fn update_validation_payload(&self, task_id: &str) -> Result<Value> {
+        let mut connection = self.pool.acquire().await?;
+        Self::update_validation_payload_in(&mut connection, task_id).await
+    }
+
+    async fn update_validation_payload_in(connection: &mut DB::Connection, task_id: &str) -> Result<Value> {
         let task = Self::query("SELECT * FROM workflow_update_validation_tasks WHERE id=$1")
             .bind(task_id)
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *connection)
             .await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
         let mut payload = json!({});
-        let mut connection = self.pool.acquire().await?;
         if let Some(run) = Self::query("SELECT workflow_class,arguments,status,last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_optional(&mut *connection)
@@ -652,7 +691,7 @@ where
             let mut history = Vec::new();
             let mut after = 0;
             loop {
-                let (page, next) = Self::history_page_connection(&mut connection, &run_id, after, 1000).await?;
+                let (page, next) = Self::history_page_connection(connection, &run_id, after, 1000).await?;
                 after = page.last().and_then(|event| event["sequence"].as_i64()).unwrap_or(after);
                 history.extend(page);
                 if next.is_none() {
