@@ -145,13 +145,14 @@ pub(super) struct AllHistory {
 
 struct Group {
     size: usize,
-    members: BTreeMap<usize, Member>,
+    indices: BTreeSet<usize>,
+    members: BTreeMap<String, Member>,
+    terminal_count: usize,
 }
 
 struct Member {
     metadata: Value,
     kind: &'static str,
-    identity: String,
     terminal: bool,
 }
 
@@ -215,23 +216,21 @@ impl AllHistory {
         ) {
             let group = self.groups.entry(group_id).or_insert_with(|| Group {
                 size,
+                indices: BTreeSet::new(),
                 members: BTreeMap::new(),
+                terminal_count: 0,
             });
             if group.size != size
-                || group.members.contains_key(&index)
-                || group
-                    .members
-                    .values()
-                    .any(|member| member.identity == identity)
+                || group.members.contains_key(identity)
+                || !group.indices.insert(index)
             {
                 return false;
             }
             group.members.insert(
-                index,
+                identity.into(),
                 Member {
                     metadata: metadata.clone(),
                     kind,
-                    identity: identity.into(),
                     terminal: false,
                 },
             );
@@ -240,13 +239,12 @@ impl AllHistory {
         let Some(group) = self.groups.get_mut(&group_id) else {
             return false;
         };
-        let Some(member) = group.members.get_mut(&index) else {
+        let Some(member) = group.members.get_mut(identity) else {
             return false;
         };
         if group.size != size
             || member.terminal
             || member.metadata != *metadata
-            || member.identity != identity
             || member.kind != kind
         {
             return false;
@@ -265,7 +263,8 @@ impl AllHistory {
                 | "ChildRunTerminated"
         ) {
             member.terminal = true;
-            if group.members.len() == size && group.members.values().all(|member| member.terminal) {
+            group.terminal_count += 1;
+            if group.terminal_count == size {
                 self.groups.remove(&group_id);
             }
         }
