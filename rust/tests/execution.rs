@@ -133,6 +133,8 @@ mod child_policies;
 mod definition_routing;
 #[path = "execution/worker_admission.rs"]
 mod worker_admission;
+#[path = "execution/worker_slot_diagnostics.rs"]
+mod worker_slot_diagnostics;
 #[path = "execution/local_activities.rs"]
 mod local_activities;
 #[path = "execution/completion_budget.rs"]
