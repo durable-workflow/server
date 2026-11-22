@@ -13,6 +13,8 @@ use super::{
     refuse,
     store::{Store, now},
     task_queues::json_time,
+    transaction::Transaction,
+    worker_management::{PROTOCOL_METRIC, slot_observation_is_fresh},
 };
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -31,6 +33,7 @@ const REDISPATCH_AFTER_SECONDS: i64 = 3;
 const FAILURE_BACKOFF_MAX_SECONDS: i64 = 60;
 /// `workflows.v2.compatibility.heartbeat_ttl_seconds`.
 const FLEET_TTL_SECONDS: i64 = 30;
+const SLOT_DIAGNOSTIC_ROSTER_LIMIT: usize = 32;
 
 /// `WorkflowRunDiagnostics::compact`: without nulls and empty arrays.
 fn compact(value: Value) -> Value {
@@ -771,6 +774,99 @@ where
         Ok(findings)
     }
 
+    /// Diagnose due work using the same read-only eligibility checks as an
+    /// offer. An incomplete roster or unknown observation cannot prove that
+    /// every eligible worker is busy.
+    async fn worker_slot_findings(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<Vec<Value>> {
+        let Some(run) = Self::query("SELECT * FROM workflow_runs WHERE id=$1 AND namespace=$2 AND status IN ('pending','running','waiting')")
+            .bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&mut **tx).await?
+        else { return Ok(Vec::new()) };
+        let rows = Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.workflow_run_id=$1 AND t.namespace=$2 AND t.status='ready' AND t.task_type IN ('workflow','activity') AND (t.available_at IS NULL OR t.available_at<=$3) ORDER BY t.available_at,t.created_at,t.id LIMIT 25")
+            .bind(run_id).bind(self.namespace.as_ref()).bind(DB::bind_time(at))
+            .fetch_all(&mut **tx).await?;
+        let mut findings = Vec::new();
+        let fresh_after = at - Duration::seconds(self.worker_stale_after_seconds);
+        for task in rows {
+            let Some(queue) = DB::optional_string(&task, "queue")? else { continue };
+            let kind = DB::string(&task, "task_type")?;
+            let (types_field, capacity, slots, observation) = if kind == "workflow" {
+                ("supported_workflow_types", "max_concurrent_workflow_tasks", "available_workflow_slots", "workflow_available")
+            } else {
+                if Self::activity_dispatch_paused(&mut **tx, self.namespace.as_ref(), &queue).await? {
+                    continue;
+                }
+                ("supported_activity_types", "max_concurrent_activity_tasks", "available_activity_slots", "activity_available")
+            };
+            if DB::number(&task, "attempt_count")? == i64::MAX {
+                continue;
+            }
+            // Some schemas round the stored heartbeat to a whole second. A
+            // later rounded timestamp cannot remove an otherwise eligible
+            // worker, especially one whose slot observation is unknown.
+            let workers = Self::query("SELECT w.* FROM workflow_worker_registrations w JOIN workflow_tasks t ON t.id=$1 JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE w.namespace=$2 AND w.task_queue=$3 AND w.status='active' AND w.last_heartbeat_at>$4 AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=NULLIF(TRIM(w.build_id),'')) ORDER BY w.worker_id LIMIT 33")
+                .bind(DB::string(&task, "id")?).bind(self.namespace.as_ref()).bind(&queue)
+                .bind(DB::bind_time(fresh_after))
+                .fetch_all(&mut **tx).await?;
+            if workers.len() > SLOT_DIAGNOSTIC_ROSTER_LIMIT {
+                continue;
+            }
+            let payload = DB::document_row(&task, "payload")?;
+            if kind == "activity" && payload["activity_execution_id"].as_str().is_none_or(str::is_empty) {
+                continue;
+            }
+            let mut busy = 0;
+            let mut task_type = None;
+            for worker in workers {
+                if DB::optional_number(&worker, capacity)?.is_some_and(|capacity| capacity <= 0) {
+                    continue;
+                }
+                let types = DB::optional_document_row(&worker, types_field)?.unwrap_or(Value::Null);
+                if kind == "workflow" {
+                    let workflow_type = DB::string(&task, "workflow_type")?;
+                    if !types.as_array().is_some_and(|types| types.iter().any(|value| value == &workflow_type))
+                        || !Self::workflow_history_supported(&mut **tx, &worker, run_id).await?
+                    {
+                        continue;
+                    }
+                }
+                let metrics = DB::optional_document_row(&worker, "process_metrics")?.unwrap_or(Value::Null);
+                let protocol = metrics[PROTOCOL_METRIC].as_str().unwrap_or_default();
+                let Some(eligible) = self.task_eligibility(&mut **tx, &task, &payload, &run, &worker, &types, &kind, &queue, protocol).await?
+                else { continue };
+                if kind == "activity" && eligible.activity.is_none() {
+                    continue;
+                }
+                if let Some(session) = eligible.session.as_ref() {
+                    let activity = eligible.activity.as_ref().expect("an activity session has an execution");
+                    let connection = DB::optional_string(activity, "connection")?;
+                    if !self.session_activity_offerable(tx, &worker, session, &eligible.activity_queue, connection.as_deref(), &DB::string(&task, "id")?).await? {
+                        continue;
+                    }
+                }
+                if DB::optional_number(&worker, slots)? != Some(0)
+                    || !slot_observation_is_fresh(&metrics, observation, at, self.worker_stale_after_seconds)
+                {
+                    busy = 0;
+                    break;
+                }
+                busy += 1;
+                task_type = Some(eligible.type_name);
+            }
+            if busy > 0 {
+                findings.push(json!({"severity":"info","code":"eligible_worker_slots_busy",
+                    "message":format!("Every eligible worker on task queue [{queue}] reported zero free {kind} slots."),
+                    "task_id":DB::string(&task,"id")?,"task_kind":kind,"task_type":task_type,"task_queue":queue,
+                    "eligible_worker_count":busy}));
+            }
+        }
+        Ok(findings)
+    }
+
     /// `WorkflowRunDiagnostics::forRun`.
     pub(crate) async fn run_diagnostics(
         &self,
@@ -845,8 +941,11 @@ where
         payload["cancellation_cascade"] = cascade;
         // `WorkflowRunDiagnostics`: the definition route of the next ready
         // task, and a warning when no eligible worker can take it.
-        let mut tx = self.begin_read().await?;
+        let mut tx = self.begin_repeatable_read().await?;
         let routing = self.definition_inspect(&mut tx, &run, None, None).await?;
+        if !terminal {
+            findings.extend(self.worker_slot_findings(&mut tx, &fields.run_id, at).await?);
+        }
         tx.commit().await?;
         if routing["blocked"] == true {
             findings.push(json!({"severity": "warning", "code": "workflow_definition_routing_blocked",

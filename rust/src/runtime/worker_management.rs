@@ -93,6 +93,37 @@ fn slot(value: &Value, capacity: i64) -> Option<i64> {
 
 /// The key under which PHP records a worker's protocol version.
 pub(super) const PROTOCOL_METRIC: &str = "_worker_protocol_version";
+const SLOT_OBSERVATIONS_METRIC: &str = "_task_slot_observations";
+
+fn record_slot_observation(observations: &mut Map<String, Value>, field: &str, count: Option<i64>, at: DateTime<Utc>) {
+    if !matches!(field, "workflow_available" | "activity_available") {
+        return;
+    }
+    if count.is_some() {
+        observations.insert(field.to_owned(), json!(at.timestamp_millis()));
+    } else {
+        observations.remove(field);
+    }
+}
+
+fn store_slot_observations(metrics: &mut Value, observations: Map<String, Value>) {
+    if observations.is_empty() {
+        if let Some(metrics) = metrics.as_object_mut() {
+            metrics.remove(SLOT_OBSERVATIONS_METRIC);
+        }
+    } else {
+        metrics[SLOT_OBSERVATIONS_METRIC] = Value::Object(observations);
+    }
+}
+
+/// A later heartbeat may omit slot counts. Its liveness timestamp does not
+/// make an earlier slot observation current again.
+pub(super) fn slot_observation_is_fresh(metrics: &Value, field: &str, at: DateTime<Utc>, stale_after: i64) -> bool {
+    let at = at.timestamp_millis();
+    metrics[SLOT_OBSERVATIONS_METRIC][field].as_i64().is_some_and(|reported| {
+        reported <= at && reported > at.saturating_sub(stale_after.saturating_mul(1000))
+    })
+}
 
 /// Process metrics with the request's protocol version added, as PHP's
 /// `[...$metrics, PROTOCOL_METRIC => requestVersion]`.
@@ -433,9 +464,16 @@ where
         fingerprints: &Value,
     ) -> Result<()> {
         let [workflow, activity, sessions] = registration.capacity;
+        let mut metrics = registration.process_metrics.clone().unwrap_or(Value::Null);
+        let mut observations = Map::new();
+        let at = now();
+        for (count, value) in SLOTS.iter().zip(registration.slots) {
+            record_slot_observation(&mut observations, count.field, value, at);
+        }
+        store_slot_observations(&mut metrics, observations);
         Self::query("UPDATE workflow_worker_registrations SET workflow_definition_fingerprints=$1,max_concurrent_workflow_tasks=$2,max_concurrent_activity_tasks=$3,max_concurrent_worker_sessions=$4,process_metrics=$5 WHERE worker_id=$6 AND namespace=$7")
             .bind(DB::document(fingerprints)).bind(workflow).bind(activity).bind(sessions)
-            .bind(registration.process_metrics.as_ref().map(DB::document))
+            .bind(DB::optional_document(&metrics))
             .bind(worker_id).bind(namespace)
             .execute(&mut **tx).await?;
         for (count, value) in SLOTS.iter().zip(registration.slots) {
@@ -546,27 +584,30 @@ where
         // A heartbeat keeps a draining build's worker draining.
         let status = Self::registration_status(&mut tx, self.namespace.as_ref(), &DB::string(&worker, "task_queue")?,
             DB::optional_string(&worker, "build_id")?.as_deref()).await?;
+        let at = now();
         Self::query("UPDATE workflow_worker_registrations SET last_heartbeat_at=$1,updated_at=$2,status=$3 WHERE worker_id=$4 AND namespace=$5")
-            .bind(DB::bind_time(now())).bind(DB::bind_time(now())).bind(status).bind(worker_id).bind(self.namespace.as_ref())
+            .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(status).bind(worker_id).bind(self.namespace.as_ref())
             .execute(&mut *tx).await?;
         // Only the slots, metrics and cadence the heartbeat reports change.
         let reported = task_slots(&body, capacity)?;
         let namespace = self.namespace.as_ref();
+        let previous_metrics = DB::optional_document_row(&worker, "process_metrics").ok().flatten();
+        let mut observations = previous_metrics.as_ref()
+            .and_then(|metrics| metrics[SLOT_OBSERVATIONS_METRIC].as_object()).cloned().unwrap_or_default();
         if let (Some(bounded), Some(slots)) = (reported, body["task_slots"].as_object()) {
             for (count, value) in SLOTS.iter().zip(bounded) {
                 if slots.contains_key(count.field) {
                     Self::set_count(&mut tx, count, value, worker_id, namespace).await?;
+                    record_slot_observation(&mut observations, count.field, value, at);
                 }
             }
         }
         // PHP stores the reported metrics, else keeps the stored ones, and adds
         // this heartbeat's protocol version either way.
-        let reported = match metrics {
-            Some(metrics) => metrics,
-            None => DB::optional_document_row(&worker, "process_metrics").ok().flatten(),
-        };
+        let mut metrics = with_protocol(metrics.unwrap_or(previous_metrics), protocol);
+        store_slot_observations(&mut metrics, observations);
         Self::query("UPDATE workflow_worker_registrations SET process_metrics=$1 WHERE worker_id=$2 AND namespace=$3")
-            .bind(DB::document(&with_protocol(reported, protocol))).bind(worker_id).bind(namespace)
+            .bind(DB::document(&metrics)).bind(worker_id).bind(namespace)
             .execute(&mut *tx).await?;
         if interval.is_some() {
             Self::set_count(&mut tx, &INTERVAL, interval, worker_id, namespace).await?;
@@ -610,6 +651,10 @@ where
             DB::number(row, "max_concurrent_activity_tasks")?,
             DB::number(row, "max_concurrent_worker_sessions")?,
         ];
+        let mut metrics = DB::optional_document_row(row, "process_metrics")?.filter(|value| !value.is_null());
+        if let Some(metrics) = metrics.as_mut().and_then(Value::as_object_mut) {
+            metrics.remove(SLOT_OBSERVATIONS_METRIC);
+        }
         Ok(json!({
             "worker_id": DB::string(row, "worker_id")?,
             "namespace": DB::string(row, "namespace")?,
@@ -634,7 +679,7 @@ where
                 "activity_capacity": capacity[1],
                 "session_capacity": capacity[2],
             },
-            "process_metrics": DB::optional_document_row(row, "process_metrics")?.filter(|v| !v.is_null()),
+            "process_metrics": metrics,
             "heartbeat_interval_seconds": DB::optional_number(row, "heartbeat_interval_seconds")?,
             "status": if stale { "stale".to_owned() } else { stored },
             "last_heartbeat_at": time(heartbeat),
@@ -764,6 +809,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slot_reports_expire_independently_of_worker_liveness() {
+        let at = Utc::now();
+        let mut observations = Map::new();
+        record_slot_observation(&mut observations, "workflow_available", Some(0), at - chrono::Duration::seconds(30));
+        record_slot_observation(&mut observations, "activity_available", Some(0), at);
+        let mut metrics = json!({});
+        store_slot_observations(&mut metrics, observations);
+        assert!(!slot_observation_is_fresh(&metrics, "workflow_available", at, 30));
+        assert!(slot_observation_is_fresh(&metrics, "activity_available", at, 30));
+        assert!(!slot_observation_is_fresh(&metrics, "activity_available", at - chrono::Duration::seconds(1), 30));
+        assert!(!slot_observation_is_fresh(&json!({}), "workflow_available", at, 30));
+    }
 
     #[test]
     fn registration_keeps_php_facts_and_bounds_slots() {

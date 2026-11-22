@@ -21,11 +21,11 @@ pub(super) struct PreparedControlArguments {
     pub(super) command: String,
 }
 pub(super) struct TaskEligibility<Row> {
-    activity: Option<Row>,
-    activity_queue: String,
+    pub(super) activity: Option<Row>,
+    pub(super) activity_queue: String,
     cancellation: Option<Value>,
-    session: Option<super::worker_sessions::CommandSession>,
-    type_name: String,
+    pub(super) session: Option<super::worker_sessions::CommandSession>,
+    pub(super) type_name: String,
 }
 
 /// The events PHP's Workflow package records with the task model in hand,
@@ -2732,7 +2732,7 @@ where
         Err(refuse(StatusCode::CONFLICT, "task_offer_receipt_conflict"))
     }
 
-    async fn workflow_history_supported(
+    pub(super) async fn workflow_history_supported(
         connection: &mut DB::Connection, worker: &DB::Row, run_id: &str,
     ) -> Result<bool> {
         let flags = DB::optional_document_row(worker, "capabilities")?;
