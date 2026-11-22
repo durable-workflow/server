@@ -600,3 +600,50 @@ async fn child_group_projection_failure_rolls_back_all_starts_and_original_lease
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn installed_child_checkpoint_guards_summary_reuse_after_reopen() {
+    for damaged in [false, true] {
+        let database = TestDatabase::Sqlite(tempfile::tempdir().unwrap());
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        workers(&app).await;
+        let run = start(&app, "projection-generation-control").await;
+        let initial = poll(&app, "parent-worker", "workflow").await;
+        let admitted = finish_task(&app, &initial, children(3)).await;
+        assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+        let prefix = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+        let first_run = scheduled(&prefix)[0]["child_workflow_run_id"].clone();
+        let mut tasks = Vec::new();
+        for _ in 0..3 {
+            tasks.push(child_poll(&app).await);
+        }
+        let first = tasks.iter().find(|task| task["run_id"] == first_run).unwrap();
+        assert_eq!(observation(&app, &run).await["summary_state"], "observed");
+
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM dw_child_summary_checkpoints").await, 1);
+        drop(app);
+        runtime.close().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+
+        if damaged {
+            database.execute("DELETE FROM workflow_run_waits WHERE kind='child' AND sequence=3").await;
+        } else {
+            database.execute("CREATE TRIGGER reject_incremental_summary BEFORE UPDATE ON workflow_run_summaries WHEN NEW.workflow_type='echo' BEGIN SELECT RAISE(ABORT,'abort summary update'); END").await;
+            let refused = finish_task(&app, first, done(1)).await;
+            assert_eq!(refused.0, StatusCode::SERVICE_UNAVAILABLE, "{}", refused.1);
+            assert_eq!(task_retry::rows(&database, "SELECT generation FROM dw_child_summary_checkpoints").await, 0);
+            assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, prefix);
+            database.execute("DROP TRIGGER reject_incremental_summary").await;
+        }
+        let closed = finish_task(&app, first, done(1)).await;
+        assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+        assert_eq!(parent_tasks(&database, &run, "ready").await, 0);
+        assert_eq!(task_retry::rows(&database, "SELECT generation FROM dw_child_summary_checkpoints").await, if damaged {5} else {4});
+        assert_eq!(task_retry::rows(&database, "SELECT verified_generation FROM dw_child_summary_checkpoints").await, if damaged {0} else {4});
+        assert_eq!(observation(&app, &run).await["summary_state"], if damaged {"unavailable"} else {"observed"});
+        runtime.close().await;
+        database.remove().await;
+    }
+}

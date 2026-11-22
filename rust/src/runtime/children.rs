@@ -2,7 +2,7 @@
 //! A retried child keeps the call under a new link (`child_retries`).
 //! Flat child-only all groups keep their path on every physical child link.
 use super::schedule_storage::iso8601;
-use super::transaction::Transaction;
+use super::transaction::{ChildSummaryChange, Transaction};
 use super::{
     Result,
     backend::Backend,
@@ -655,13 +655,26 @@ where
             }
         }
         super::selections::merge(&mut payload, &parallel);
-        Self::append(tx, &parent_run, event_type, payload, None, None).await?;
+        let previous_sequence = if event_type == "ChildRunCompleted"
+            && parallel["parallel_group_kind"] == "child"
+            && payload["child_run_number"] == 1
+            && DB::string(&parent, "status")? == "waiting"
+            && tx.summary_is_unchanged(&parent_run)
+        {
+            Some(DB::number(&parent, "last_history_sequence")?)
+        } else {
+            None
+        };
+        let event_id = Self::append_returning(tx, &parent_run, event_type, payload, None, None).await?;
         // Record the outcome even while the all barrier remains closed. The
         // last successful member observes every committed call under the same
         // parent transition lock; any failed member wakes the parent at once.
         if matches!(resolution, ChildResolution::Completed(_))
             && !Self::all_groups_closed(tx, &parent_run, &parallel).await?
         {
+            if let Some(previous_sequence) = previous_sequence {
+                tx.summary_child_completed(&parent_run, ChildSummaryChange { previous_sequence, event_id });
+            }
             return Ok(());
         }
         let parent_resume = Self::child_parent_resume(tx, &parent).await?;

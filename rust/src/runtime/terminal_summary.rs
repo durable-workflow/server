@@ -164,7 +164,7 @@ where
             Some(summary) => summary.reason.clone(),
             None => format!(
                 "Run closed as {}.",
-                DB::optional_string(&run, "closed_reason")?.unwrap_or(status)
+                DB::optional_string(&run, "closed_reason")?.as_deref().unwrap_or(&status)
             ),
         };
         let pressure = tx.history_budget.summarize(count, bytes, fan_out).pressure;
@@ -182,8 +182,8 @@ where
                 Self::query("INSERT INTO workflow_run_summaries(id,workflow_instance_id,run_number,is_current_run,engine_source,projection_schema_version,class,workflow_type,namespace,compatibility,declared_entry_mode,declared_contract_source,business_key,visibility_labels,status,status_bucket,closed_reason,connection,queue,started_at,sort_timestamp,sort_key,closed_at,archived_at,archive_command_id,archive_reason,duration_ms,liveness_state,liveness_reason,repair_blocked_reason,repair_attention,task_problem,exception_count,history_event_count,history_size_bytes,history_fan_out,continue_as_new_recommended,history_budget_pressure,created_at,updated_at) SELECT r.id,r.workflow_instance_id,r.run_number,CASE WHEN i.current_run_id=r.id THEN TRUE ELSE FALSE END,'v2',2,r.workflow_class,r.workflow_type,COALESCE(r.namespace,i.namespace),r.compatibility,$1,$2,COALESCE(r.business_key,i.business_key),COALESCE(r.visibility_labels,i.visibility_labels),r.status,CASE WHEN r.status='completed' THEN 'completed' WHEN r.status IN ('failed','cancelled','terminated') THEN 'failed' ELSE 'running' END,r.closed_reason,r.connection,r.queue,r.started_at,$3,$4,r.closed_at,r.archived_at,r.archive_command_id,r.archive_reason,CASE WHEN r.started_at IS NULL OR r.closed_at IS NULL THEN NULL ELSE $5 END,$6,$7,CASE WHEN i.current_run_id=r.id THEN $8 ELSE 'selected_run_not_current' END,FALSE,FALSE,$9,$10,$11,$12,CASE WHEN $13='continue_as_new_recommended' THEN TRUE ELSE FALSE END,$14,r.created_at,COALESCE(r.closed_at,r.last_progress_at,r.updated_at) FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id WHERE r.id=$15")
                     .bind(contract["entry_mode"].as_str()).bind(contract["source"].as_str()).bind(DB::optional_time(sort_time)).bind(sort_key.as_deref()).bind(duration).bind(state).bind(reason).bind(repair_blocked)
                     .bind(failures.len() as i64).bind(count).bind(bytes).bind(fan_out).bind(pressure).bind(pressure).bind(run_id).execute(&mut **tx).await?;
-                if let Some(active) = active {
-                    Self::write_active_summary_fields(tx, run_id, &active).await?;
+                if let Some(active) = active.as_ref() {
+                    Self::write_active_summary_fields(tx, run_id, active).await?;
                 }
             }
             _ => {
@@ -218,6 +218,17 @@ where
                 .bind(run_id)
                 .execute(&mut **tx)
                 .await?;
+        }
+        if DB::NAME == "SQLite"
+            && upsert
+            && import_source.is_none()
+            && status == "waiting"
+            && active.as_ref().is_some_and(|summary| {
+                summary.state == "waiting_for_child" && summary.task_id.is_none() && !summary.problem
+            })
+            && let Some(group_id) = children.checkpoint_group()
+        {
+            Self::verify_child_summary_checkpoint(tx, run_id, group_id, count).await?;
         }
         Ok(())
     }
