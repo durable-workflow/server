@@ -520,6 +520,37 @@ async fn one_and_full_batch_child_barriers_have_bounded_wait_inventory() {
 }
 
 #[tokio::test]
+async fn stale_open_wait_does_not_hold_a_completed_child_barrier() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    workers(&app).await;
+    let run = start(&app, "stale-child-wait").await;
+    let initial = poll(&app, "parent-worker", "workflow").await;
+    let admitted = finish_task(&app, &initial, children(2)).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+
+    let first = child_poll(&app).await;
+    let closed = finish_task(&app, &first, done(1)).await;
+    assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+    assert_eq!(parent_tasks(&database, &run, "ready").await, 0);
+    database.execute("UPDATE workflow_run_waits SET status='open' WHERE kind='child' AND source_status='completed'").await;
+
+    let second = child_poll(&app).await;
+    let closed = finish_task(&app, &second, done(2)).await;
+    assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+    assert_eq!(parent_tasks(&database, &run, "ready").await, 1);
+    let resume = poll(&app, "parent-worker", "workflow").await;
+    assert_eq!(resume["run_id"], run["run_id"]);
+    let completed = finish_task(&app, &resume, done(3)).await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    assert!(poll(&app, "parent-worker", "workflow").await.is_null());
+
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn child_group_projection_failure_rolls_back_all_starts_and_original_lease() {
     let database = TestDatabase::new().await;
     let TestDatabase::Sqlite(_) = &database else {
