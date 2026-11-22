@@ -113,7 +113,7 @@ if test "$connection" = mysql || test "$connection" = mariadb; then
   }
   if native_schema schema-bootstrap > "$output/schema-bootstrap.json" 2> "$output/schema-bootstrap.log"; then
     :
-  elif rg -Fxq native_child_checkpoint_trigger_privilege_required "$output/schema-bootstrap.log"; then
+  elif grep -Fxq native_child_checkpoint_trigger_privilege_required "$output/schema-bootstrap.log"; then
     # Exercise the documented binlogged install with the original scoped
     # application role. The fixture administrator installs only the DDL the
     # staged schema exports. The database's logging and grants stay in place.
