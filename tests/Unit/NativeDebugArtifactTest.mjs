@@ -318,7 +318,9 @@ for (const part of ['native-tests', 'native-tests-b']) {
     const flags = ['--locked', '--offline'];
     const expected = part === 'native-tests' ? [
       ['test', ...flags, '--lib', 'runtime::mysql::', '--', '--ignored', '--skip',
-        'runtime::mysql::tests::bootstrap_child', '--nocapture', '--test-threads=2'],
+        'runtime::mysql::tests::bootstrap_child', '--skip',
+        'runtime::mysql::tests::binlogged_checkpoint_upgrade_resumes_with_scoped_trigger_definer',
+        '--nocapture', '--test-threads=2'],
     ] : [];
     expected.push(['test', ...flags, '--test', 'execution', '--', '--list', '--format', 'terse'],
       ['test', ...flags, '--test', 'execution', '--', '--exact', '--nocapture', '--test-threads=2',
