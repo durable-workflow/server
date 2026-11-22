@@ -774,9 +774,7 @@ where
         Ok(findings)
     }
 
-    /// Diagnose due work using the same read-only eligibility checks as an
-    /// offer. An incomplete roster or unknown observation cannot prove that
-    /// every eligible worker is busy.
+    /// Diagnose due work using the same read-only eligibility checks as an offer.
     async fn worker_slot_findings(
         &self,
         tx: &mut Transaction<'_, DB>,
@@ -790,81 +788,90 @@ where
             .bind(run_id).bind(self.namespace.as_ref()).bind(DB::bind_time(at))
             .fetch_all(&mut **tx).await?;
         let mut findings = Vec::new();
-        let fresh_after = at - Duration::seconds(self.worker_stale_after_seconds);
         for task in rows {
-            let Some(queue) = DB::optional_string(&task, "queue")? else { continue };
-            let kind = DB::string(&task, "task_type")?;
-            let (types_field, capacity, slots, observation) = if kind == "workflow" {
-                ("supported_workflow_types", "max_concurrent_workflow_tasks", "available_workflow_slots", "workflow_available")
-            } else {
-                if Self::activity_dispatch_paused(&mut **tx, self.namespace.as_ref(), &queue).await? {
-                    continue;
-                }
-                ("supported_activity_types", "max_concurrent_activity_tasks", "available_activity_slots", "activity_available")
-            };
-            if DB::number(&task, "attempt_count")? == i64::MAX {
-                continue;
-            }
-            // Some schemas round the stored heartbeat to a whole second. A
-            // later rounded timestamp cannot remove an otherwise eligible
-            // worker, especially one whose slot observation is unknown.
-            let workers = Self::query("SELECT w.* FROM workflow_worker_registrations w JOIN workflow_tasks t ON t.id=$1 JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE w.namespace=$2 AND w.task_queue=$3 AND w.status='active' AND w.last_heartbeat_at>$4 AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=NULLIF(TRIM(w.build_id),'')) ORDER BY w.worker_id LIMIT 33")
-                .bind(DB::string(&task, "id")?).bind(self.namespace.as_ref()).bind(&queue)
-                .bind(DB::bind_time(fresh_after))
-                .fetch_all(&mut **tx).await?;
-            if workers.len() > SLOT_DIAGNOSTIC_ROSTER_LIMIT {
-                continue;
-            }
-            let payload = DB::document_row(&task, "payload")?;
-            if kind == "activity" && payload["activity_execution_id"].as_str().is_none_or(str::is_empty) {
-                continue;
-            }
-            let mut busy = 0;
-            let mut task_type = None;
-            for worker in workers {
-                if DB::optional_number(&worker, capacity)?.is_some_and(|capacity| capacity <= 0) {
-                    continue;
-                }
-                let types = DB::optional_document_row(&worker, types_field)?.unwrap_or(Value::Null);
-                if kind == "workflow" {
-                    let workflow_type = DB::string(&task, "workflow_type")?;
-                    if !types.as_array().is_some_and(|types| types.iter().any(|value| value == &workflow_type))
-                        || !Self::workflow_history_supported(&mut **tx, &worker, run_id).await?
-                    {
-                        continue;
-                    }
-                }
-                let metrics = DB::optional_document_row(&worker, "process_metrics")?.unwrap_or(Value::Null);
-                let protocol = metrics[PROTOCOL_METRIC].as_str().unwrap_or_default();
-                let Some(eligible) = self.task_eligibility(&mut **tx, &task, &payload, &run, &worker, &types, &kind, &queue, protocol).await?
-                else { continue };
-                if kind == "activity" && eligible.activity.is_none() {
-                    continue;
-                }
-                if let Some(session) = eligible.session.as_ref() {
-                    let activity = eligible.activity.as_ref().expect("an activity session has an execution");
-                    let connection = DB::optional_string(activity, "connection")?;
-                    if !self.session_activity_offerable(tx, &worker, session, &eligible.activity_queue, connection.as_deref(), &DB::string(&task, "id")?).await? {
-                        continue;
-                    }
-                }
-                if DB::optional_number(&worker, slots)? != Some(0)
-                    || !slot_observation_is_fresh(&metrics, observation, at, self.worker_stale_after_seconds)
-                {
-                    busy = 0;
-                    break;
-                }
-                busy += 1;
-                task_type = Some(eligible.type_name);
-            }
-            if busy > 0 {
-                findings.push(json!({"severity":"info","code":"eligible_worker_slots_busy",
-                    "message":format!("Every eligible worker on task queue [{queue}] reported zero free {kind} slots."),
-                    "task_id":DB::string(&task,"id")?,"task_kind":kind,"task_type":task_type,"task_queue":queue,
-                    "eligible_worker_count":busy}));
+            if let Some(finding) = self.worker_slot_finding(tx, &run, &task, at).await? {
+                findings.push(finding);
             }
         }
         Ok(findings)
+    }
+
+    /// An incomplete roster or unknown observation cannot prove that every
+    /// eligible worker is busy.
+    async fn worker_slot_finding(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        run: &DB::Row,
+        task: &DB::Row,
+        at: DateTime<Utc>,
+    ) -> Result<Option<Value>> {
+        let Some(queue) = DB::optional_string(task, "queue")? else { return Ok(None) };
+        let kind = DB::string(task, "task_type")?;
+        let activity = kind == "activity";
+        if DB::number(task, "attempt_count")? == i64::MAX
+            || (activity && Self::activity_dispatch_paused(&mut **tx, self.namespace.as_ref(), &queue).await?)
+        {
+            return Ok(None);
+        }
+        let (types_field, capacity, slots, observation) = if activity {
+            ("supported_activity_types", "max_concurrent_activity_tasks", "available_activity_slots", "activity_available")
+        } else {
+            ("supported_workflow_types", "max_concurrent_workflow_tasks", "available_workflow_slots", "workflow_available")
+        };
+        let fresh_after = at - Duration::seconds(self.worker_stale_after_seconds);
+        let task_id = DB::string(task, "id")?;
+        // Some schemas round the stored heartbeat to a whole second. A
+        // later rounded timestamp cannot remove an otherwise eligible
+        // worker, especially one whose slot observation is unknown.
+        let workers = Self::query("SELECT w.* FROM workflow_worker_registrations w JOIN workflow_tasks t ON t.id=$1 JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE w.namespace=$2 AND w.task_queue=$3 AND w.status='active' AND w.last_heartbeat_at>$4 AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=NULLIF(TRIM(w.build_id),'')) ORDER BY w.worker_id LIMIT 33")
+            .bind(&task_id).bind(self.namespace.as_ref()).bind(&queue).bind(DB::bind_time(fresh_after))
+            .fetch_all(&mut **tx).await?;
+        if workers.len() > SLOT_DIAGNOSTIC_ROSTER_LIMIT {
+            return Ok(None);
+        }
+        let payload = DB::document_row(task, "payload")?;
+        if activity && payload["activity_execution_id"].as_str().is_none_or(str::is_empty) {
+            return Ok(None);
+        }
+        let run_id = DB::string(run, "id")?;
+        let workflow_type = (!activity).then(|| DB::string(task, "workflow_type")).transpose()?;
+        let mut busy = 0;
+        let mut task_type = None;
+        for worker in workers {
+            if DB::optional_number(&worker, capacity)?.is_some_and(|capacity| capacity <= 0) {
+                continue;
+            }
+            let types = DB::optional_document_row(&worker, types_field)?.unwrap_or(Value::Null);
+            if let Some(workflow_type) = &workflow_type
+                && (!types.as_array().is_some_and(|types| types.iter().any(|value| value == workflow_type))
+                    || !Self::workflow_history_supported(&mut **tx, &worker, &run_id).await?)
+            {
+                continue;
+            }
+            let metrics = DB::optional_document_row(&worker, "process_metrics")?.unwrap_or(Value::Null);
+            let protocol = metrics[PROTOCOL_METRIC].as_str().unwrap_or_default();
+            let Some(eligible) = self.task_eligibility(&mut **tx, task, &payload, run, &worker, &types, &kind, &queue, protocol).await?
+            else { continue };
+            if activity && eligible.activity.is_none() {
+                continue;
+            }
+            if let (Some(session), Some(execution)) = (eligible.session.as_ref(), eligible.activity.as_ref())
+                && !self.session_activity_offerable(tx, &worker, session, &eligible.activity_queue,
+                    DB::optional_string(execution, "connection")?.as_deref(), &task_id).await?
+            {
+                continue;
+            }
+            if DB::optional_number(&worker, slots)? != Some(0)
+                || !slot_observation_is_fresh(&metrics, observation, at, self.worker_stale_after_seconds)
+            {
+                return Ok(None);
+            }
+            busy += 1;
+            task_type = Some(eligible.type_name);
+        }
+        Ok(task_type.map(|task_type| json!({"severity":"info","code":"eligible_worker_slots_busy",
+            "message":format!("Every eligible worker on task queue [{queue}] reported zero free {kind} slots."),
+            "task_id":task_id,"task_kind":kind,"task_type":task_type,"task_queue":queue,"eligible_worker_count":busy})))
     }
 
     /// `WorkflowRunDiagnostics::forRun`.
