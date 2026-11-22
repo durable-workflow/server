@@ -159,3 +159,58 @@ async fn capability_guards_refuse_like_php() {
         "capability_manifest": affinity(true, false, false)})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
+
+#[tokio::test]
+async fn parallel_group_policy_registration_preserves_the_canonical_descriptor() {
+    let (_database, app) = app().await;
+    let name = "parallel_group_policies";
+    let mut manifest = affinity(false, false, false);
+    manifest[name] = json!({"supported": true, "version": 1, "policies": ["settle", "propagate"]});
+    let registration = json!({"capabilities": [name], "capability_manifest": manifest});
+    let (status, accepted) = register_at(&app, "1.20", registration.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{accepted}");
+    let canonical = json!({"supported": true, "version": 1, "policies": ["propagate", "settle"]});
+    assert_eq!(accepted["capability_manifest"][name], canonical);
+    assert_eq!(accepted["capabilities"], json!([name]));
+    assert!(accepted["server_capabilities"].get(name).is_none());
+
+    let mut malformed = vec![
+        json!({"capabilities": [name], "capability_manifest": affinity(false, false, false)}),
+        json!({"capability_manifest": manifest}),
+        json!({"capabilities": [{(name): canonical}], "capability_manifest": manifest}),
+        json!({"capabilities": [name], (name): canonical, "capability_manifest": affinity(false, false, false)}),
+        json!({"capabilities": [" parallel_group_policies "], "capability_manifest": affinity(false, false, false)}),
+    ];
+    for descriptor in [
+        Value::Null,
+        json!([]),
+        json!({"supported": true, "version": 1}),
+        json!({"supported": true, "version": 1, "policies": ["propagate"], "extra": true}),
+        json!({"supported": false, "version": 1, "policies": ["propagate"]}),
+        json!({"supported": "true", "version": 1, "policies": ["propagate"]}),
+        json!({"supported": true, "version": true, "policies": ["propagate"]}),
+        json!({"supported": true, "version": 1.0, "policies": ["propagate"]}),
+        json!({"supported": true, "version": "1", "policies": ["propagate"]}),
+        json!({"supported": true, "version": 2, "policies": ["propagate"]}),
+        json!({"supported": true, "version": 1, "policies": "propagate"}),
+        json!({"supported": true, "version": 1, "policies": []}),
+        json!({"supported": true, "version": 1, "policies": [" propagate "]}),
+        json!({"supported": true, "version": 1, "policies": ["propagate", "propagate"]}),
+        json!({"supported": true, "version": 1, "policies": [true]}),
+    ] {
+        let mut invalid = registration.clone();
+        invalid["capability_manifest"][name] = descriptor;
+        malformed.push(invalid);
+    }
+    for mut invalid in malformed {
+        invalid["task_queue"] = json!("different-queue");
+        let (status, rejected) = register_at(&app, "1.20", invalid.clone()).await;
+        assert_eq!(status, StatusCode::CONFLICT, "request={invalid} response={rejected}");
+        assert_eq!(rejected["registered"], false, "{rejected}");
+    }
+    let (status, described) = request(&app, "GET", "/api/workers/admitted", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    assert_eq!(described["task_queue"], "test", "{described}");
+    assert_eq!(described["capability_manifest"][name], canonical, "{described}");
+    assert_eq!(described["capability_manifest"]["worker_sessions"], affinity(false, false, false)["worker_sessions"]);
+}

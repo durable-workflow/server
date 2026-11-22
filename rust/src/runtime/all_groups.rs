@@ -12,6 +12,10 @@ fn invalid() -> super::RuntimeError {
 }
 
 fn entry(value: &Value, leaf: &str) -> Result<Value> {
+    // Until explicit policies are admitted, never turn one into a legacy group.
+    if value.get("parallel_group_policy").is_some() {
+        return Err(invalid());
+    }
     let base = value["parallel_group_base_sequence"]
         .as_i64()
         .filter(|base| *base > 0)
