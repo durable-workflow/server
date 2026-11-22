@@ -298,6 +298,16 @@ where
                 return Ok(true);
             };
             let last = base + size - 1;
+            if group["parallel_group_kind"] == "child" {
+                // The wait projection indexes open rows by run and position.
+                // Confirm its first child hint against the authoritative call.
+                // A missing or stale hint falls back to checking the barrier.
+                let pending = Self::query("SELECT 1 FROM (SELECT workflow_run_id,position FROM workflow_run_waits WHERE workflow_run_id=$1 AND status='open' AND kind='child' AND position>=$2 AND position<=$3 ORDER BY position LIMIT 1) w JOIN workflow_child_calls c ON c.parent_workflow_run_id=w.workflow_run_id AND c.sequence=w.position+1 WHERE c.status IN ('scheduled','started') LIMIT 1")
+                    .bind(run_id).bind(base - 1).bind(last - 1).fetch_optional(&mut **tx).await?;
+                if pending.is_some() {
+                    return Ok(false);
+                }
+            }
             let mut closed = std::collections::BTreeSet::new();
             for (sql, done) in [
                 (
