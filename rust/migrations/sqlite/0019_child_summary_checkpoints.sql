@@ -169,6 +169,24 @@ BEGIN
     WHERE run_id = OLD.current_run_id;
 END;
 
+CREATE TRIGGER dw_child_summary_summary_insert AFTER INSERT ON workflow_run_summaries
+BEGIN
+    UPDATE dw_child_summary_checkpoints SET generation = generation + 1
+    WHERE run_id = NEW.id;
+END;
+
+CREATE TRIGGER dw_child_summary_summary_update AFTER UPDATE ON workflow_run_summaries
+BEGIN
+    UPDATE dw_child_summary_checkpoints SET generation = generation + 1
+    WHERE run_id IN (OLD.id, NEW.id);
+END;
+
+CREATE TRIGGER dw_child_summary_summary_delete AFTER DELETE ON workflow_run_summaries
+BEGIN
+    UPDATE dw_child_summary_checkpoints SET generation = generation + 1
+    WHERE run_id = OLD.id;
+END;
+
 CREATE INDEX dw_child_calls_run_status_sequence ON workflow_child_calls(parent_workflow_run_id, status, sequence);
 
 UPDATE dw_server_schema SET version=19 WHERE engine='rust-development';

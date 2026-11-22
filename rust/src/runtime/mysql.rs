@@ -16,11 +16,70 @@ use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 /// Immutable external storage bindings are MySQL 17 / MariaDB 16, child
 /// supervisions MySQL 18 / MariaDB 17, and the maintenance scan indexes
 /// (server#1256) MySQL 19 / MariaDB 18. Workflow task lease loss uses
-/// MySQL 20 / MariaDB 19.
+/// MySQL 20 / MariaDB 19. Child summary checkpoints use MySQL 21 / MariaDB 20.
 /// `Flavor::version` selects the one a server needs.
-pub const MYSQL_VERSION: i64 = 20;
-pub const MARIADB_VERSION: i64 = 19;
+pub const MYSQL_VERSION: i64 = 21;
+pub const MARIADB_VERSION: i64 = 20;
 type Catalog = Vec<(String, String)>;
+const CHILD_SUMMARY_CHECKPOINT_SCHEMA: &str = include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql");
+const CHILD_SUMMARY_CALL_INDEX: &str = "CREATE INDEX dw_child_calls_run_status_sequence ON workflow_child_calls(parent_workflow_run_id,status,sequence);";
+
+struct ChildSummaryTrigger {
+    name: String,
+    table: &'static str,
+    event: &'static str,
+    action: String,
+}
+
+impl ChildSummaryTrigger {
+    fn statement(&self) -> String {
+        format!("CREATE TRIGGER {} AFTER {} ON {} FOR EACH ROW {};\n", self.name, self.event, self.table, self.action)
+    }
+}
+
+fn child_summary_triggers() -> &'static [ChildSummaryTrigger] {
+    static TRIGGERS: OnceLock<Vec<ChildSummaryTrigger>> = OnceLock::new();
+    TRIGGERS.get_or_init(|| {
+        let tables = [
+            ("history", "workflow_history_events", "workflow_run_id"),
+            ("wait", "workflow_run_waits", "workflow_run_id"),
+            ("call", "workflow_child_calls", "parent_workflow_run_id"),
+            ("link", "workflow_links", "parent_workflow_run_id"),
+            ("task", "workflow_tasks", "workflow_run_id"),
+            ("failure", "workflow_failures", "workflow_run_id"),
+            ("signal", "workflow_signal_records", "workflow_run_id"),
+            ("run", "workflow_runs", "id"),
+            ("current", "workflow_instances", "current_run_id"),
+            ("summary", "workflow_run_summaries", "id"),
+        ];
+        tables.into_iter().flat_map(|(name, table, key)| {
+            [("INSERT", format!("= NEW.{key}")),
+             ("UPDATE", format!("IN (OLD.{key}, NEW.{key})")),
+             ("DELETE", format!("= OLD.{key}"))]
+                .into_iter().map(move |(event, condition)| ChildSummaryTrigger {
+                    name: format!("dw_child_summary_{name}_{}", event.to_ascii_lowercase()),
+                    table,
+                    event,
+                    action: format!("UPDATE dw_child_summary_checkpoints SET generation = generation + 1 WHERE run_id {condition}"),
+                })
+        }).collect()
+    })
+}
+
+fn child_summary_trigger_sql() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| child_summary_triggers().iter().map(ChildSummaryTrigger::statement).collect())
+}
+
+fn child_summary_checkpoint_bootstrap_sql(mut sql: String) -> String {
+    let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_child_calls` (").expect("compiled child calls");
+    let key = start + sql[start..].find("  CONSTRAINT").expect("compiled child call foreign key");
+    sql.insert_str(key, "  KEY `dw_child_calls_run_status_sequence` (`parent_workflow_run_id`,`status`,`sequence`),\n");
+    sql = sql.replace(CHILD_SUMMARY_CALL_INDEX, "");
+    sql.push('\n');
+    sql.push_str(child_summary_trigger_sql());
+    sql
+}
 
 pub const MARKER_SQL: &str = "CREATE TABLE dw_server_schema (engine VARCHAR(64) NOT NULL PRIMARY KEY,version BIGINT NOT NULL,bootstrap_checksum VARBINARY(48) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
 /// The marker row of a takeover in progress: `rust-takeover:<layout>`, with
@@ -46,6 +105,88 @@ impl Flavor {
         })
     }
     fn migrator(self) -> &'static Migrator {
+        static MYSQL: OnceLock<Migrator> = OnceLock::new();
+        static MARIA: OnceLock<Migrator> = OnceLock::new();
+        let (slot, sql) = match self {
+            Self::MySql => (
+                &MYSQL,
+                concat!(
+                    include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0013_json_text.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0014_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0015_command_intents.sql"), "\n", include_str!("../../migrations/mysql/0016_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mysql/0017_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mysql/0018_child_supervisions.sql"), "\n", include_str!("../../migrations/mysql/0019_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/mysql/0020_workflow_task_lease_loss.sql"), "\n", include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql")
+                ),
+            ),
+            Self::MariaDb => (
+                &MARIA,
+                concat!(
+                    include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0014_command_intents.sql"), "\n", include_str!("../../migrations/mariadb/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mariadb/0016_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mariadb/0017_child_supervisions.sql"), "\n", include_str!("../../migrations/mariadb/0018_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/mariadb/0019_workflow_task_lease_loss.sql"), "\n", include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql")
+                ),
+            ),
+        };
+        slot.get_or_init(|| {
+            let description = match self {
+                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints",
+                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints",
+            };
+            let mut migrations = Migrator::with_migrations(vec![Migration::new(
+                self.version(),
+                description.into(),
+                MigrationType::Simple,
+                AssertSqlSafe(child_summary_checkpoint_bootstrap_sql(self.bootstrap_sql(sql))).into_sql_str(),
+                false,
+            )]);
+            // A bounded named lock on this dedicated initialization connection
+            // covers preflight, DDL, resumption and final marking.
+            migrations.set_locking(false);
+            migrations
+        })
+    }
+
+    fn retained_checkpoint_predecessor(self) -> &'static Migrator {
         static MYSQL: OnceLock<Migrator> = OnceLock::new();
         static MARIA: OnceLock<Migrator> = OnceLock::new();
         let (slot, sql) = match self {
@@ -114,7 +255,7 @@ impl Flavor {
                 Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss",
             };
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
-                self.version(),
+                match self { Self::MySql => 20, Self::MariaDb => 19 },
                 description.into(),
                 MigrationType::Simple,
                 AssertSqlSafe(self.bootstrap_sql(sql)).into_sql_str(),
@@ -462,8 +603,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0020_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0019_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0021_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0020_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -569,6 +710,8 @@ impl Flavor {
     static DISPATCH_MYSQL: OnceLock<Migration> = OnceLock::new();
     static DISPATCH_MARIADB: OnceLock<Migration> = OnceLock::new();
         match (self, version) {
+            (Self::MySql, 20) => self.retained_checkpoint_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0020_catalog.json"))),
+            (Self::MariaDb, 19) => self.retained_checkpoint_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0019_catalog.json"))),
             (Self::MySql, 19) => self.retained_lease_loss_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0019_catalog.json"))),
             (Self::MariaDb, 18) => self.retained_lease_loss_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0018_catalog.json"))),
             (Self::MySql, 18) => self.retained_scan_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0018_catalog.json"))),
@@ -985,6 +1128,7 @@ impl Flavor {
     /// The step file that moves a native database from `version` to the next.
     fn step(self, version: i64) -> Option<&'static str> {
         match (self, version) {
+            (Self::MySql, 20) | (Self::MariaDb, 19) => Some(CHILD_SUMMARY_CHECKPOINT_SCHEMA),
             (Self::MySql, 19) => Some(include_str!("../../migrations/mysql/0020_workflow_task_lease_loss.sql")),
             (Self::MariaDb, 18) => Some(include_str!("../../migrations/mariadb/0019_workflow_task_lease_loss.sql")),
             (Self::MySql, 18) => Some(include_str!("../../migrations/mysql/0019_maintenance_scan_indexes.sql")),
@@ -1353,6 +1497,58 @@ pub(super) async fn ensure_task_lease_loss(connection: &mut MySqlConnection, fla
     Ok(())
 }
 
+pub(super) async fn ensure_child_summary_checkpoints(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let actual: BTreeMap<_, _> = catalog(connection).await?.into_iter().collect();
+    let current: BTreeMap<_, _> = flavor.expected()?.into_iter().collect();
+    let (_, earlier) = flavor.earlier(flavor.version() - 1).expect("retained checkpoint predecessor");
+    let earlier: BTreeMap<_, _> = serde_json::from_str::<Catalog>(&canonical(earlier))?.into_iter().collect();
+    let table = "dw_child_summary_checkpoints";
+    let indexed = "workflow_child_calls";
+    let (table_sql, _) = CHILD_SUMMARY_CHECKPOINT_SCHEMA.split_once(CHILD_SUMMARY_CALL_INDEX)
+        .expect("compiled checkpoint index statement");
+    let (_, installed) = physical_scope(connection).await?;
+    if installed > 0 && (actual.get(table) != current.get(table) || actual.get(indexed) != current.get(indexed)) {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    match actual.get(table) {
+        None => { connection.execute(AssertSqlSafe(table_sql)).await?; }
+        Some(ddl) if current.get(table) == Some(ddl) => {}
+        _ => return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")),
+    }
+    if actual.get(indexed) == earlier.get(indexed) {
+        connection.execute(CHILD_SUMMARY_CALL_INDEX).await?;
+    } else if actual.get(indexed) != current.get(indexed) {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    let actual: BTreeMap<_, _> = catalog(connection).await?.into_iter().collect();
+    if actual.get(table) != current.get(table) || actual.get(indexed) != current.get(indexed) {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    ensure_child_summary_triggers(connection).await
+}
+
+async fn ensure_child_summary_triggers(connection: &mut MySqlConnection) -> Result<()> {
+    let (_, installed) = physical_scope(connection).await?;
+    for trigger in &child_summary_triggers()[installed..] {
+        if let Err(error) = connection.execute(AssertSqlSafe(trigger.statement())).await {
+            if child_summary_trigger_privilege_required(&error) {
+                return Err(refuse(StatusCode::CONFLICT, "native_child_checkpoint_trigger_privilege_required"));
+            }
+            return Err(error.into());
+        }
+    }
+    if physical_scope(connection).await?.1 != child_summary_triggers().len() {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    Ok(())
+}
+
+fn child_summary_trigger_privilege_required(error: &sqlx::Error) -> bool {
+    error.as_database_error().is_some_and(|error| {
+        error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>().is_some_and(|error| error.number() == 1419)
+    })
+}
+
 fn dispatch_summary_step(flavor: Flavor) -> i64 {
     match flavor { Flavor::MySql => 15, Flavor::MariaDb => 14 }
 }
@@ -1522,16 +1718,55 @@ pub fn definition(sql: String) -> String {
     format!("{}{}", &sql[..start], &sql[end..])
 }
 
-async fn scope(connection: &mut MySqlConnection) -> Result<Vec<String>> {
+async fn physical_scope(connection: &mut MySqlConnection) -> Result<(Vec<String>, usize)> {
     let tables:Vec<(String,String)>=sqlx::query_as("SELECT TABLE_NAME,TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME").fetch_all(&mut *connection).await?;
-    let stored:i64=sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE())+(SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE())+(SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA=DATABASE())").fetch_one(connection).await?;
+    let stored:i64=sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE())+(SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA=DATABASE())").fetch_one(&mut *connection).await?;
     if stored != 0 || tables.iter().any(|(_, kind)| kind != "BASE TABLE") {
         return Err(refuse(
             StatusCode::CONFLICT,
             "existing_database_requires_qualified_takeover",
         ));
     }
-    Ok(tables.into_iter().map(|(name, _)| name).collect())
+    let expected = child_summary_triggers();
+    let triggers = sqlx::query("SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,EVENT_MANIPULATION,ACTION_TIMING,
+        ACTION_ORIENTATION,CAST(ACTION_ORDER AS SIGNED) AS trigger_order,ACTION_STATEMENT,
+        CAST(BINARY DEFINER=BINARY CURRENT_USER() AS SIGNED) AS owner_matches
+        FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() ORDER BY TRIGGER_NAME LIMIT 31")
+        .fetch_all(&mut *connection).await?;
+    if !triggers.is_empty() {
+        if !tables.iter().any(|(name, _)| name == "dw_server_schema") {
+            return Err(refuse(StatusCode::CONFLICT, "existing_database_requires_qualified_takeover"));
+        }
+        if triggers.len() > expected.len() {
+            return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+        }
+        for row in &triggers {
+            let name: String = row.try_get("TRIGGER_NAME")?;
+            let definition = expected[..triggers.len()].iter().find(|trigger| trigger.name == name);
+            let Some(definition) = definition else {
+                return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+            };
+            let action: String = row.try_get("ACTION_STATEMENT")?;
+            let action = action.trim();
+            // MySQL preserves the terminator when a trigger is created in a batch.
+            let action = action.strip_suffix(';').unwrap_or(action);
+            if row.try_get::<String, _>("EVENT_OBJECT_TABLE")? != definition.table
+                || row.try_get::<String, _>("EVENT_MANIPULATION")? != definition.event
+                || row.try_get::<String, _>("ACTION_TIMING")? != "AFTER"
+                || row.try_get::<String, _>("ACTION_ORIENTATION")? != "ROW"
+                || row.try_get::<i64, _>("trigger_order")? != 1
+                || action != definition.action
+                || row.try_get::<i64, _>("owner_matches")? != 1
+            {
+                return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+            }
+        }
+    }
+    Ok((tables.into_iter().map(|(name, _)| name).collect(), triggers.len()))
+}
+
+async fn scope(connection: &mut MySqlConnection) -> Result<Vec<String>> {
+    Ok(physical_scope(connection).await?.0)
 }
 async fn catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
     let mut result = vec![];
@@ -1695,7 +1930,10 @@ async fn history(
             _ => refuse(StatusCode::CONFLICT, "unsupported_rust_schema"),
         });
     }
-    let tables = scope(connection).await?;
+    let (tables, triggers) = physical_scope(connection).await?;
+    if !initializing && triggers != child_summary_triggers().len() {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
     if !tables.iter().any(|name| name == "_sqlx_migrations") {
         if initializing {
             return Ok(None);
@@ -1723,6 +1961,64 @@ async fn history(
         ));
     }
     Ok(Some(applied[0].1))
+}
+
+/// Export the missing, compiled trigger statements from a fenced schema.
+pub(super) async fn child_summary_trigger_ddl(connect_options: MySqlConnectOptions) -> Result<String> {
+    let mut connection = MySqlConnection::connect_with(&options(connect_options)).await?;
+    configure(&mut connection).await?;
+    let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
+    let flavor = Flavor::detect(&mut tx).await?;
+    let (tables, installed) = physical_scope(&mut tx).await?;
+    let refused = || refuse(StatusCode::CONFLICT, "native_child_checkpoint_schema_not_staged");
+    if !tables.iter().any(|table| table == "dw_server_schema") {
+        return Err(refused());
+    }
+    let markers: Vec<(String, i64, Vec<u8>)> =
+        sqlx::query_as("SELECT engine,version,bootstrap_checksum FROM dw_server_schema LIMIT 2")
+            .fetch_all(&mut *tx)
+            .await?;
+    let [(engine, version, checksum)] = markers.as_slice() else {
+        return Err(refused());
+    };
+    let mut expected = flavor.expected()?;
+    match engine.as_str() {
+        "rust-initializing" if verify_initializing(&mut tx, flavor).await? == Some(false) => {}
+        super::schema_upgrade::UPGRADING_ENGINE => {
+            let (previous, _) = flavor.earlier(*version).ok_or_else(refused)?;
+            let ledger: Vec<(i64, bool, Vec<u8>)> =
+                sqlx::query_as("SELECT version,success,checksum FROM _sqlx_migrations ORDER BY version LIMIT 2")
+                    .fetch_all(&mut *tx)
+                    .await?;
+            if checksum.as_slice() != previous.checksum.as_ref() || ledger != [(*version, true, checksum.clone())] {
+                return Err(refused());
+            }
+        }
+        engine if engine.starts_with(TAKEOVER_ENGINE)
+            && *version == super::upgrade::takeover::MYSQL_FINAL_STEP
+            && checksum.len() == 32 =>
+        {
+            // The initial ledger is created after the takeover's final DDL.
+            expected.retain(|(table, _)| table != "_sqlx_migrations");
+        }
+        _ => return Err(refused()),
+    }
+    if catalog(&mut tx).await? != expected {
+        return Err(refused());
+    }
+    let (database, account): (String, String) =
+        sqlx::query_as("SELECT DATABASE(),CURRENT_USER()").fetch_one(&mut *tx).await?;
+    tx.rollback().await?;
+    let (user, host) = account.rsplit_once('@').ok_or_else(refused)?;
+    let quote = |identifier: &str| format!("`{}`", identifier.replace('`', "``"));
+    let definer = format!("{}@{}", quote(user), quote(host));
+    let mut ddl = format!("USE {};\n", quote(&database));
+    for trigger in &child_summary_triggers()[installed..] {
+        let create = trigger.statement();
+        let statement = create.strip_prefix("CREATE ").expect("compiled trigger statement");
+        ddl.push_str(&format!("CREATE DEFINER={definer} {statement}"));
+    }
+    Ok(ddl)
 }
 
 pub(super) async fn verify_history(connection: &mut MySqlConnection) -> Result<()> {
@@ -1827,7 +2123,8 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "native_initialization_busy"));
         }
         let flavor = Flavor::detect(&mut connection).await?;
-        if !scope(&mut connection).await?.iter().any(|name| name == "dw_server_schema") {
+        let (tables, installed_triggers) = physical_scope(&mut connection).await?;
+        if !tables.iter().any(|name| name == "dw_server_schema") {
             return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
         }
         let markers: Vec<(String, i64, Vec<u8>)> =
@@ -1861,7 +2158,7 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         let earlier_catalog: Catalog = serde_json::from_str(&canonical(earlier_catalog))?;
         let actual = catalog(&mut connection).await?;
         if engine == DEVELOPMENT_ENGINE {
-            if actual != earlier_catalog {
+            if installed_triggers != 0 || actual != earlier_catalog {
                 return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
             }
             let fenced = sqlx::query("UPDATE dw_server_schema SET engine=? WHERE engine=? AND version=? AND bootstrap_checksum=?")
@@ -1906,6 +2203,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         // Each step's own marker update names the development engine, so it
         // changes nothing while the marker fences the upgrade.
         for version in from..flavor.version() {
+            if version == flavor.version() - 1 {
+                ensure_child_summary_checkpoints(&mut connection, flavor).await?;
+                continue;
+            }
             if version == task_lease_loss_step(flavor) {
                 ensure_task_lease_loss(&mut connection, flavor).await?;
                 continue;
@@ -2074,9 +2375,19 @@ impl MySqlStorage {
                     // as dirty. Resume only after the exact partial catalog,
                     // checksum and absence of application data were verified.
                     let migration=flavor.migrator().iter().next().unwrap();
-                    connection.execute(migration.sql.clone()).await?;
+                    let tables = migration.sql.as_ref().strip_suffix(child_summary_trigger_sql())
+                        .expect("compiled checkpoint triggers at the end of the bootstrap");
+                    connection.execute(AssertSqlSafe(tables)).await?;
+                    ensure_child_summary_triggers(&mut connection).await?;
                     sqlx::query("UPDATE _sqlx_migrations SET success=TRUE WHERE version=? AND checksum=? AND success=FALSE").bind(flavor.version()).bind(flavor.checksum()).execute(&mut connection).await?;
-                } else {flavor.migrator().run(&mut connection).await?;}
+                } else if let Err(error) = flavor.migrator().run(&mut connection).await {
+                    if matches!(&error, sqlx::migrate::MigrateError::ExecuteMigration(cause, _)
+                        if child_summary_trigger_privilege_required(cause))
+                    {
+                        return Err(refuse(StatusCode::CONFLICT, "native_child_checkpoint_trigger_privilege_required"));
+                    }
+                    return Err(error.into());
+                }
                 if catalog(&mut connection).await?!=flavor.expected()? {return Err(refuse(StatusCode::CONFLICT,"native_schema_catalog_mismatch"));}
                 let mut tx=connection.begin().await?;
                 sqlx::query("UPDATE dw_server_schema SET engine='rust-development' WHERE engine='rust-initializing' AND version=? AND bootstrap_checksum=?").bind(flavor.version()).bind(flavor.checksum()).execute(&mut *tx).await?;
@@ -3909,7 +4220,7 @@ mod tests {
 
     #[test]
     fn current_bootstraps_create_the_lease_loss_columns_once() {
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (20, 19));
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (21, 20));
         for flavor in [Flavor::MySql, Flavor::MariaDb] {
             let predecessor = task_lease_loss_step(flavor);
             let (retained, _) = flavor.earlier(predecessor).unwrap();
@@ -3920,6 +4231,92 @@ mod tests {
                 assert_eq!(current.matches(column).count(), 1);
             }
             assert!(!current.contains(flavor.step(predecessor).unwrap().trim()));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_child_summary_checkpoint_upgrade_resumes_and_verifies_trigger_bodies() {
+        let db = Database::new().await;
+        let mut connection = db.connection().await;
+        let flavor = Flavor::detect(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        let from = flavor.version() - 1;
+        retained_version_database(&db, from).await;
+        let mut connection = db.connection().await;
+        connection.execute("INSERT INTO dw_query_cache VALUES ('kept','original',1)").await.unwrap();
+        connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+        connection.execute(CHILD_SUMMARY_CHECKPOINT_SCHEMA).await.unwrap();
+        connection.execute(AssertSqlSafe(child_summary_triggers()[0].statement())).await.unwrap();
+        connection.close().await.unwrap();
+
+        assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+        MySqlStorage::check(db.options.clone()).await.unwrap();
+        let mut connection = db.connection().await;
+        let kept: String = sqlx::query_scalar("SELECT value FROM dw_query_cache WHERE `key`='kept'")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(kept, "original");
+        let markers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dw_child_summary_checkpoints")
+            .fetch_one(&mut connection).await.unwrap();
+        assert_eq!(markers, 0);
+        connection.execute("DROP TRIGGER dw_child_summary_history_insert").await.unwrap();
+        let changed = child_summary_triggers()[0].statement().replace("generation + 1", "generation + 2");
+        connection.execute(AssertSqlSafe(changed)).await.unwrap();
+        connection.close().await.unwrap();
+        refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+        db.remove().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated binlogged database with trigger trust disabled"]
+    async fn binlogged_checkpoint_upgrade_resumes_with_scoped_trigger_definer() {
+        for upgrading in [true, false] {
+            let db = Database::new().await;
+            let mut connection = db.connection().await;
+            let flavor = Flavor::detect(&mut connection).await.unwrap();
+            let logging: (i64, i64) = sqlx::query_as("SELECT CAST(@@GLOBAL.log_bin AS SIGNED), CAST(@@GLOBAL.log_bin_trust_function_creators AS SIGNED)")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(logging, (1, 0));
+            let database: String = sqlx::query_scalar("SELECT DATABASE()").fetch_one(&mut connection).await.unwrap();
+            assert!(database.starts_with("dw_schema_") && database.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+            let account = format!("ckp_{}", ulid::Ulid::new().to_string().to_lowercase());
+            connection.execute(AssertSqlSafe(format!("CREATE USER '{account}'@'%'"))).await.unwrap();
+            connection.execute(AssertSqlSafe(format!("GRANT ALL PRIVILEGES ON \x60{database}\x60.* TO '{account}'@'%'"))).await.unwrap();
+            connection.close().await.unwrap();
+            let from = flavor.version() - 1;
+            if upgrading {
+                retained_version_database(&db, from).await;
+            }
+            let app = db.options.clone().username(&account).password("");
+            let denied = if upgrading {
+                upgrade(app.clone()).await.unwrap_err()
+            } else {
+                MySqlStorage::open(app.clone()).await.err().expect("bootstrap requires trigger privileges")
+            };
+            assert!(matches!(denied, super::super::RuntimeError::Refused { reason: "native_child_checkpoint_trigger_privilege_required", .. }));
+
+            let mut connection = db.connection().await;
+            let marker: String = sqlx::query_scalar("SELECT engine FROM dw_server_schema").fetch_one(&mut connection).await.unwrap();
+            assert_eq!(marker, if upgrading { "rust-upgrading" } else { "rust-initializing" });
+            let ddl = child_summary_trigger_ddl(app.clone()).await.unwrap();
+            assert_eq!(ddl.matches("CREATE DEFINER=").count(), child_summary_triggers().len());
+            connection.execute(AssertSqlSafe(ddl)).await.unwrap();
+            connection.close().await.unwrap();
+            if upgrading {
+                assert_eq!(upgrade(app.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+            } else {
+                MySqlStorage::open(app.clone()).await.unwrap().close().await;
+            }
+            MySqlStorage::check(app.clone()).await.unwrap();
+            assert!(matches!(child_summary_trigger_ddl(app).await,
+                Err(super::super::RuntimeError::Refused { reason: "native_child_checkpoint_schema_not_staged", .. })));
+            let mut connection = db.connection().await;
+            let retained: (i64, i64) = sqlx::query_as("SELECT CAST(@@GLOBAL.log_bin AS SIGNED), CAST(@@GLOBAL.log_bin_trust_function_creators AS SIGNED)")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(retained, logging);
+            connection.execute(AssertSqlSafe(format!("DROP USER '{account}'@'%'"))).await.unwrap();
+            connection.close().await.unwrap();
+            db.remove().await;
         }
     }
 

@@ -219,8 +219,7 @@ where
                 .execute(&mut **tx)
                 .await?;
         }
-        if DB::NAME == "SQLite"
-            && upsert
+        if upsert
             && import_source.is_none()
             && status == "waiting"
             && active.as_ref().is_some_and(|summary| {

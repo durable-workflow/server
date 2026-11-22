@@ -73,6 +73,7 @@ SELECT kind, name, definition FROM (
     WHERE n.nspname='public' AND NOT (r.rulename='_RETURN' AND c.relkind IN ('v','m'))
     UNION ALL
     SELECT 'routine', p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')',
-        jsonb_build_object('kind', p.prokind)
+        jsonb_build_object('kind', p.prokind,
+            'definition', CASE WHEN p.prokind <> 'a' THEN pg_get_functiondef(p.oid) END)
     FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public'
 ) AS catalog ORDER BY kind,name

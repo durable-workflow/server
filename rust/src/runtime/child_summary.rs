@@ -199,9 +199,6 @@ where
         run_id: &str,
         change: &ChildSummaryChange,
     ) -> Result<bool> {
-        if DB::NAME != "SQLite" {
-            return Ok(false);
-        }
         let Some(sequence) = change.previous_sequence.checked_add(1) else {
             return Ok(false);
         };
@@ -310,12 +307,18 @@ where
         group_id: &str,
         sequence: i64,
     ) -> Result<()> {
-        Self::query(
+        let sql = if DB::NAME == "MySQL" {
+            "INSERT INTO dw_child_summary_checkpoints(run_id,generation,verified_generation,history_sequence,group_id)
+             VALUES($1,0,0,$2,$3) ON DUPLICATE KEY UPDATE
+             verified_generation=dw_child_summary_checkpoints.generation,
+             history_sequence=VALUES(history_sequence),group_id=VALUES(group_id)"
+        } else {
             "INSERT INTO dw_child_summary_checkpoints(run_id,generation,verified_generation,history_sequence,group_id)
              VALUES($1,0,0,$2,$3) ON CONFLICT(run_id) DO UPDATE SET
              verified_generation=dw_child_summary_checkpoints.generation,
-             history_sequence=excluded.history_sequence,group_id=excluded.group_id",
-        )
+             history_sequence=excluded.history_sequence,group_id=excluded.group_id"
+        };
+        Self::query(sql)
         .bind(run_id).bind(sequence).bind(group_id).execute(&mut **tx).await?;
         Ok(())
     }
