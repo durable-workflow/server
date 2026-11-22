@@ -603,7 +603,7 @@ async fn child_group_projection_failure_rolls_back_all_starts_and_original_lease
 
 #[tokio::test]
 async fn installed_child_checkpoint_guards_summary_reuse_after_reopen() {
-    for damage in [None, Some("checkpoint"), Some("wait"), Some("summary")] {
+    for damage in [None, Some("checkpoint"), Some("wait"), Some("summary"), Some("run")] {
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
         let app = router(runtime.clone());
@@ -627,7 +627,9 @@ async fn installed_child_checkpoint_guards_summary_reuse_after_reopen() {
         let runtime = database.open().await.unwrap();
         let app = router(runtime.clone());
 
-        let summary_bytes = if matches!(database, TestDatabase::MySql { .. }) {
+        let mysql = matches!(database, TestDatabase::MySql { .. });
+        let close_writes = if mysql { 4 } else { 5 };
+        let summary_bytes = if mysql {
             "SELECT CAST(history_size_bytes AS SIGNED) FROM workflow_run_summaries WHERE workflow_type='echo'"
         } else {
             "SELECT history_size_bytes FROM workflow_run_summaries WHERE workflow_type='echo'"
@@ -636,6 +638,7 @@ async fn installed_child_checkpoint_guards_summary_reuse_after_reopen() {
         match damage {
             Some("checkpoint") => database.execute("DELETE FROM dw_child_summary_checkpoints").await,
             Some("wait") => database.execute("DELETE FROM workflow_run_waits WHERE kind='child' AND sequence=3").await,
+            Some("run") => database.execute("UPDATE workflow_runs SET business_key='changed-run' WHERE workflow_type='echo'").await,
             Some("summary") => database.execute("UPDATE workflow_run_summaries SET history_size_bytes=history_size_bytes+1000000 WHERE workflow_type='echo'").await,
             _ => {
                 let (create, drop) = match &database {
@@ -676,19 +679,24 @@ async fn installed_child_checkpoint_guards_summary_reuse_after_reopen() {
                 assert_eq!(summary["summary_state"], "observed");
             }
             Some("wait") => {
-                assert!(generation > 5);
+                assert!(generation > close_writes);
                 assert_eq!(verified, 0);
                 assert_eq!(summary["summary_state"], "unavailable");
             }
             Some("summary") => {
-                assert!(generation > 5);
+                assert!(generation > close_writes);
                 assert_eq!(verified, generation);
                 assert_eq!(summary["summary_state"], "observed");
                 let rebuilt = task_retry::rows(&database, summary_bytes).await;
                 assert!(rebuilt > previous_bytes && rebuilt < previous_bytes + 1000000);
             }
+            Some("run") => {
+                assert_eq!(verified, generation);
+                assert_eq!(summary["summary_state"], "observed");
+                assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_summaries WHERE business_key='changed-run'").await, 1);
+            }
             _ => {
-                assert_eq!(generation, 5);
+                assert_eq!(generation, close_writes);
                 assert_eq!(verified, generation);
                 assert_eq!(summary["summary_state"], "observed");
             }

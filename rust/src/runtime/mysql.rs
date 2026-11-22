@@ -1,6 +1,10 @@
 //! MySQL/MariaDB initialization and ownership checks for the native runtime.
 //! DDL implicitly commits: only unchanged native initialization can resume.
 use super::{Result, refuse};
+
+#[path = "mysql_checkpoint_catalog.rs"]
+mod checkpoint_catalog;
+use checkpoint_catalog::CheckpointCode;
 use axum::http::StatusCode;
 use sqlx::{
     AssertSqlSafe, Connection, Executor, MySqlConnection, MySqlPool, Row, SqlSafeStr,
@@ -24,60 +28,13 @@ type Catalog = Vec<(String, String)>;
 const CHILD_SUMMARY_CHECKPOINT_SCHEMA: &str = include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql");
 const CHILD_SUMMARY_CALL_INDEX: &str = "CREATE INDEX dw_child_calls_run_status_sequence ON workflow_child_calls(parent_workflow_run_id,status,sequence);";
 
-struct ChildSummaryTrigger {
-    name: String,
-    table: &'static str,
-    event: &'static str,
-    action: String,
-}
-
-impl ChildSummaryTrigger {
-    fn statement(&self) -> String {
-        format!("CREATE TRIGGER {} AFTER {} ON {} FOR EACH ROW {};\n", self.name, self.event, self.table, self.action)
-    }
-}
-
-fn child_summary_triggers() -> &'static [ChildSummaryTrigger] {
-    static TRIGGERS: OnceLock<Vec<ChildSummaryTrigger>> = OnceLock::new();
-    TRIGGERS.get_or_init(|| {
-        let tables = [
-            ("history", "workflow_history_events", "workflow_run_id"),
-            ("wait", "workflow_run_waits", "workflow_run_id"),
-            ("call", "workflow_child_calls", "parent_workflow_run_id"),
-            ("link", "workflow_links", "parent_workflow_run_id"),
-            ("task", "workflow_tasks", "workflow_run_id"),
-            ("failure", "workflow_failures", "workflow_run_id"),
-            ("signal", "workflow_signal_records", "workflow_run_id"),
-            ("run", "workflow_runs", "id"),
-            ("current", "workflow_instances", "current_run_id"),
-            ("summary", "workflow_run_summaries", "id"),
-        ];
-        tables.into_iter().flat_map(|(name, table, key)| {
-            [("INSERT", format!("= NEW.{key}")),
-             ("UPDATE", format!("IN (OLD.{key}, NEW.{key})")),
-             ("DELETE", format!("= OLD.{key}"))]
-                .into_iter().map(move |(event, condition)| ChildSummaryTrigger {
-                    name: format!("dw_child_summary_{name}_{}", event.to_ascii_lowercase()),
-                    table,
-                    event,
-                    action: format!("UPDATE dw_child_summary_checkpoints SET generation = generation + 1 WHERE run_id {condition}"),
-                })
-        }).collect()
-    })
-}
-
-fn child_summary_trigger_sql() -> &'static str {
-    static SQL: OnceLock<String> = OnceLock::new();
-    SQL.get_or_init(|| child_summary_triggers().iter().map(ChildSummaryTrigger::statement).collect())
-}
-
 fn child_summary_checkpoint_bootstrap_sql(mut sql: String) -> String {
     let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_child_calls` (").expect("compiled child calls");
     let key = start + sql[start..].find("  CONSTRAINT").expect("compiled child call foreign key");
     sql.insert_str(key, "  KEY `dw_child_calls_run_status_sequence` (`parent_workflow_run_id`,`status`,`sequence`),\n");
     sql = sql.replace(CHILD_SUMMARY_CALL_INDEX, "");
     sql.push('\n');
-    sql.push_str(child_summary_trigger_sql());
+    sql.push_str(checkpoint_catalog::bootstrap_sql());
     sql
 }
 
@@ -1507,7 +1464,7 @@ pub(super) async fn ensure_child_summary_checkpoints(connection: &mut MySqlConne
     let (table_sql, _) = CHILD_SUMMARY_CHECKPOINT_SCHEMA.split_once(CHILD_SUMMARY_CALL_INDEX)
         .expect("compiled checkpoint index statement");
     let (_, installed) = physical_scope(connection).await?;
-    if installed > 0 && (actual.get(table) != current.get(table) || actual.get(indexed) != current.get(indexed)) {
+    if !installed.empty() && (actual.get(table) != current.get(table) || actual.get(indexed) != current.get(indexed)) {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
     }
     match actual.get(table) {
@@ -1524,20 +1481,20 @@ pub(super) async fn ensure_child_summary_checkpoints(connection: &mut MySqlConne
     if actual.get(table) != current.get(table) || actual.get(indexed) != current.get(indexed) {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
     }
-    ensure_child_summary_triggers(connection).await
+    ensure_child_summary_code(connection).await
 }
 
-async fn ensure_child_summary_triggers(connection: &mut MySqlConnection) -> Result<()> {
+async fn ensure_child_summary_code(connection: &mut MySqlConnection) -> Result<()> {
     let (_, installed) = physical_scope(connection).await?;
-    for trigger in &child_summary_triggers()[installed..] {
-        if let Err(error) = connection.execute(AssertSqlSafe(trigger.statement())).await {
+    for statement in installed.missing_ddl() {
+        if let Err(error) = connection.execute(AssertSqlSafe(statement)).await {
             if child_summary_trigger_privilege_required(&error) {
                 return Err(refuse(StatusCode::CONFLICT, "native_child_checkpoint_trigger_privilege_required"));
             }
             return Err(error.into());
         }
     }
-    if physical_scope(connection).await?.1 != child_summary_triggers().len() {
+    if !physical_scope(connection).await?.1.complete() {
         return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
     }
     Ok(())
@@ -1718,65 +1675,47 @@ pub fn definition(sql: String) -> String {
     format!("{}{}", &sql[..start], &sql[end..])
 }
 
-async fn physical_scope(connection: &mut MySqlConnection) -> Result<(Vec<String>, usize)> {
-    let tables:Vec<(String,String)>=sqlx::query_as("SELECT TABLE_NAME,TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME").fetch_all(&mut *connection).await?;
-    let stored:i64=sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE())+(SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA=DATABASE())").fetch_one(&mut *connection).await?;
-    if stored != 0 || tables.iter().any(|(_, kind)| kind != "BASE TABLE") {
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "existing_database_requires_qualified_takeover",
-        ));
-    }
-    let expected = child_summary_triggers();
-    let triggers = sqlx::query("SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,EVENT_MANIPULATION,ACTION_TIMING,
-        ACTION_ORIENTATION,CAST(ACTION_ORDER AS SIGNED) AS trigger_order,ACTION_STATEMENT,
-        CAST(BINARY DEFINER=BINARY CURRENT_USER() AS SIGNED) AS owner_matches
-        FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() ORDER BY TRIGGER_NAME LIMIT 31")
-        .fetch_all(&mut *connection).await?;
-    if !triggers.is_empty() {
-        if !tables.iter().any(|(name, _)| name == "dw_server_schema") {
-            return Err(refuse(StatusCode::CONFLICT, "existing_database_requires_qualified_takeover"));
-        }
-        if triggers.len() > expected.len() {
-            return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
-        }
-        for row in &triggers {
-            let name: String = row.try_get("TRIGGER_NAME")?;
-            let definition = expected[..triggers.len()].iter().find(|trigger| trigger.name == name);
-            let Some(definition) = definition else {
-                return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
-            };
-            let action: String = row.try_get("ACTION_STATEMENT")?;
-            let action = action.trim();
-            // MySQL preserves the terminator when a trigger is created in a batch.
-            let action = action.strip_suffix(';').unwrap_or(action);
-            if row.try_get::<String, _>("EVENT_OBJECT_TABLE")? != definition.table
-                || row.try_get::<String, _>("EVENT_MANIPULATION")? != definition.event
-                || row.try_get::<String, _>("ACTION_TIMING")? != "AFTER"
-                || row.try_get::<String, _>("ACTION_ORIENTATION")? != "ROW"
-                || row.try_get::<i64, _>("trigger_order")? != 1
-                || action != definition.action
-                || row.try_get::<i64, _>("owner_matches")? != 1
-            {
-                return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
-            }
+async fn table_inventory(connection: &mut MySqlConnection) -> Result<(Vec<String>, bool)> {
+    let relations: Vec<(String, String)> = sqlx::query_as(
+        "SELECT TABLE_NAME,TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME")
+        .fetch_all(connection).await?;
+    let mut tables = Vec::new();
+    let mut checkpoint_view = false;
+    for (name, kind) in relations {
+        match kind.as_str() {
+            "BASE TABLE" => tables.push(name),
+            "VIEW" if name == checkpoint_catalog::VIEW => checkpoint_view = true,
+            _ => return Err(refuse(StatusCode::CONFLICT, "existing_database_requires_qualified_takeover")),
         }
     }
-    Ok((tables.into_iter().map(|(name, _)| name).collect(), triggers.len()))
+    Ok((tables, checkpoint_view))
+}
+
+async fn physical_scope(connection: &mut MySqlConnection) -> Result<(Vec<String>, CheckpointCode)> {
+    let (tables, view) = table_inventory(connection).await?;
+    let marked = tables.iter().any(|name| name == "dw_server_schema");
+    let code = checkpoint_catalog::direct(connection, marked, view, None).await?;
+    Ok((tables, code))
 }
 
 async fn scope(connection: &mut MySqlConnection) -> Result<Vec<String>> {
     Ok(physical_scope(connection).await?.0)
 }
-async fn catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
+
+async fn catalog_tables(connection: &mut MySqlConnection, tables: Vec<String>) -> Result<Catalog> {
     let mut result = vec![];
-    for name in scope(connection).await? {
+    for name in tables {
         let row = sqlx::query(table_sql("SHOW CREATE TABLE ", &name, "")?)
             .fetch_one(&mut *connection)
             .await?;
         result.push((name, canonical(&definition(row.try_get(1)?))));
     }
     Ok(result)
+}
+
+async fn catalog(connection: &mut MySqlConnection) -> Result<Catalog> {
+    let tables = scope(connection).await?;
+    catalog_tables(connection, tables).await
 }
 
 pub(super) async fn php_source_catalog(connection: &mut MySqlConnection) -> Result<(Catalog, &'static str)> {
@@ -1908,6 +1847,7 @@ async fn history(
     connection: &mut MySqlConnection,
     flavor: Flavor,
     initializing: bool,
+    tables: &[String],
 ) -> Result<Option<bool>> {
     let markers: Vec<(String, i64, Vec<u8>)> =
         sqlx::query_as("SELECT engine,version,bootstrap_checksum FROM dw_server_schema")
@@ -1929,10 +1869,6 @@ async fn history(
             }
             _ => refuse(StatusCode::CONFLICT, "unsupported_rust_schema"),
         });
-    }
-    let (tables, triggers) = physical_scope(connection).await?;
-    if !initializing && triggers != child_summary_triggers().len() {
-        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
     }
     if !tables.iter().any(|name| name == "_sqlx_migrations") {
         if initializing {
@@ -1963,8 +1899,8 @@ async fn history(
     Ok(Some(applied[0].1))
 }
 
-/// Export the missing, compiled trigger statements from a fenced schema.
-pub(super) async fn child_summary_trigger_ddl(connect_options: MySqlConnectOptions) -> Result<String> {
+/// Export the missing, compiled checkpoint code from a fenced schema.
+pub(super) async fn child_summary_checkpoint_ddl(connect_options: MySqlConnectOptions) -> Result<String> {
     let mut connection = MySqlConnection::connect_with(&options(connect_options)).await?;
     configure(&mut connection).await?;
     let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
@@ -2013,9 +1949,8 @@ pub(super) async fn child_summary_trigger_ddl(connect_options: MySqlConnectOptio
     let quote = |identifier: &str| format!("`{}`", identifier.replace('`', "``"));
     let definer = format!("{}@{}", quote(user), quote(host));
     let mut ddl = format!("USE {};\n", quote(&database));
-    for trigger in &child_summary_triggers()[installed..] {
-        let create = trigger.statement();
-        let statement = create.strip_prefix("CREATE ").expect("compiled trigger statement");
+    for create in installed.missing_ddl() {
+        let statement = create.strip_prefix("CREATE ").expect("compiled checkpoint statement");
         ddl.push_str(&format!("CREATE DEFINER={definer} {statement}"));
     }
     Ok(ddl)
@@ -2023,17 +1958,52 @@ pub(super) async fn child_summary_trigger_ddl(connect_options: MySqlConnectOptio
 
 pub(super) async fn verify_history(connection: &mut MySqlConnection) -> Result<()> {
     let flavor = Flavor::detect(connection).await?;
-    history(connection, flavor, false).await?;
+    let (tables, code) = physical_scope(connection).await?;
+    history(connection, flavor, false, &tables).await?;
+    if !code.complete() {
+        return Err(checkpoint_catalog::mismatch());
+    }
     Ok(())
 }
 
 pub(super) async fn verify(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
-    history(connection, flavor, false).await?;
-    if catalog(connection).await? != flavor.expected()? {
-        return Err(refuse(
-            StatusCode::CONFLICT,
-            "native_schema_catalog_mismatch",
-        ));
+    let (tables, code) = physical_scope(connection).await?;
+    history(connection, flavor, false, &tables).await?;
+    if !code.complete() || catalog_tables(connection, tables).await? != flavor.expected()? {
+        return Err(checkpoint_catalog::mismatch());
+    }
+    Ok(())
+}
+
+async fn verify_inspection(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let (tables, view) = table_inventory(connection).await?;
+    history(connection, flavor, false, &tables).await?;
+    if !view || catalog_tables(connection, tables).await? != flavor.expected()? {
+        return Err(checkpoint_catalog::mismatch());
+    }
+    // The ordinary application account attests every definition directly.
+    // A SELECT-only account cannot see triggers, but can read the fixed
+    // native metadata view without any write or DDL privileges.
+    let inspection = sqlx::query("SHOW CREATE TRIGGER dw_child_summary_history_insert")
+        .fetch_one(&mut *connection).await;
+    match inspection {
+        Ok(_) => {
+            let definer: String = sqlx::query_scalar(
+                "SELECT DEFINER FROM information_schema.VIEWS
+                 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='dw_child_summary_catalog'")
+                .fetch_one(&mut *connection).await?;
+            if !checkpoint_catalog::direct(connection, true, true, Some(&definer)).await?.complete() {
+                return Err(checkpoint_catalog::mismatch());
+            }
+        }
+        Err(error) if error.as_database_error()
+            .and_then(|error| error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>())
+            .is_some_and(|error| matches!(error.number(), 1142 | 1227)
+                && error.message().contains("TRIGGER")) =>
+        {
+            checkpoint_catalog::read_only(connection).await?;
+        }
+        _ => return Err(checkpoint_catalog::mismatch()),
     }
     Ok(())
 }
@@ -2054,7 +2024,8 @@ async fn verify_initializing(
             ));
         }
     }
-    let applied = history(connection, flavor, true).await?;
+    let tables: Vec<String> = actual.iter().map(|(name, _)| name.clone()).collect();
+    let applied = history(connection, flavor, true, &tables).await?;
     for (name, _) in actual {
         if matches!(name.as_str(), "dw_server_schema" | "_sqlx_migrations") {
             continue;
@@ -2123,7 +2094,7 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, "native_initialization_busy"));
         }
         let flavor = Flavor::detect(&mut connection).await?;
-        let (tables, installed_triggers) = physical_scope(&mut connection).await?;
+        let (tables, installed_code) = physical_scope(&mut connection).await?;
         if !tables.iter().any(|name| name == "dw_server_schema") {
             return Err(refuse(StatusCode::CONFLICT, "native_schema_not_initialized"));
         }
@@ -2158,7 +2129,7 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         let earlier_catalog: Catalog = serde_json::from_str(&canonical(earlier_catalog))?;
         let actual = catalog(&mut connection).await?;
         if engine == DEVELOPMENT_ENGINE {
-            if installed_triggers != 0 || actual != earlier_catalog {
+            if !installed_code.empty() || actual != earlier_catalog {
                 return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
             }
             let fenced = sqlx::query("UPDATE dw_server_schema SET engine=? WHERE engine=? AND version=? AND bootstrap_checksum=?")
@@ -2375,10 +2346,10 @@ impl MySqlStorage {
                     // as dirty. Resume only after the exact partial catalog,
                     // checksum and absence of application data were verified.
                     let migration=flavor.migrator().iter().next().unwrap();
-                    let tables = migration.sql.as_ref().strip_suffix(child_summary_trigger_sql())
-                        .expect("compiled checkpoint triggers at the end of the bootstrap");
+                    let tables = migration.sql.as_ref().strip_suffix(checkpoint_catalog::bootstrap_sql())
+                        .expect("compiled checkpoint code at the end of the bootstrap");
                     connection.execute(AssertSqlSafe(tables)).await?;
-                    ensure_child_summary_triggers(&mut connection).await?;
+                    ensure_child_summary_code(&mut connection).await?;
                     sqlx::query("UPDATE _sqlx_migrations SET success=TRUE WHERE version=? AND checksum=? AND success=FALSE").bind(flavor.version()).bind(flavor.checksum()).execute(&mut connection).await?;
                 } else if let Err(error) = flavor.migrator().run(&mut connection).await {
                     if matches!(&error, sqlx::migrate::MigrateError::ExecuteMigration(cause, _)
@@ -2439,7 +2410,7 @@ impl MySqlStorage {
             configure(&mut connection).await?;
             let flavor = Flavor::detect(&mut connection).await?;
             let mut tx = connection.begin_with("START TRANSACTION READ ONLY").await?;
-            verify(&mut tx, flavor).await?;
+            verify_inspection(&mut tx, flavor).await?;
             tx.rollback().await?;
             Ok::<_, super::RuntimeError>(())
         }
@@ -3093,6 +3064,11 @@ mod tests {
                     .is_err()
             );
             read.close().await.unwrap();
+            admin.execute("DROP TRIGGER dw_child_summary_history_update").await.unwrap();
+            let changed = MySqlStorage::check(reader).await.unwrap_err();
+            assert!(matches!(changed, super::super::RuntimeError::Refused {
+                reason: "native_schema_catalog_mismatch", ..
+            }));
         })
         .catch_unwind()
         .await;
@@ -4247,7 +4223,9 @@ mod tests {
         connection.execute("INSERT INTO dw_query_cache VALUES ('kept','original',1)").await.unwrap();
         connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
         connection.execute(CHILD_SUMMARY_CHECKPOINT_SCHEMA).await.unwrap();
-        connection.execute(AssertSqlSafe(child_summary_triggers()[0].statement())).await.unwrap();
+        for statement in CheckpointCode::default().missing_ddl().into_iter().take(3) {
+            connection.execute(AssertSqlSafe(statement)).await.unwrap();
+        }
         connection.close().await.unwrap();
 
         assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
@@ -4260,7 +4238,7 @@ mod tests {
             .fetch_one(&mut connection).await.unwrap();
         assert_eq!(markers, 0);
         connection.execute("DROP TRIGGER dw_child_summary_history_insert").await.unwrap();
-        let changed = child_summary_triggers()[0].statement().replace("generation + 1", "generation + 2");
+        let changed = checkpoint_catalog::first_trigger().replace("generation + 1", "generation + 2");
         connection.execute(AssertSqlSafe(changed)).await.unwrap();
         connection.close().await.unwrap();
         refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
@@ -4298,8 +4276,8 @@ mod tests {
             let mut connection = db.connection().await;
             let marker: String = sqlx::query_scalar("SELECT engine FROM dw_server_schema").fetch_one(&mut connection).await.unwrap();
             assert_eq!(marker, if upgrading { "rust-upgrading" } else { "rust-initializing" });
-            let ddl = child_summary_trigger_ddl(app.clone()).await.unwrap();
-            assert_eq!(ddl.matches("CREATE DEFINER=").count(), child_summary_triggers().len());
+            let ddl = child_summary_checkpoint_ddl(app.clone()).await.unwrap();
+            assert_eq!(ddl.matches("CREATE DEFINER=").count(), checkpoint_catalog::trigger_count() + 2);
             connection.execute(AssertSqlSafe(ddl)).await.unwrap();
             connection.close().await.unwrap();
             if upgrading {
@@ -4308,7 +4286,8 @@ mod tests {
                 MySqlStorage::open(app.clone()).await.unwrap().close().await;
             }
             MySqlStorage::check(app.clone()).await.unwrap();
-            assert!(matches!(child_summary_trigger_ddl(app).await,
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            assert!(matches!(child_summary_checkpoint_ddl(app).await,
                 Err(super::super::RuntimeError::Refused { reason: "native_child_checkpoint_schema_not_staged", .. })));
             let mut connection = db.connection().await;
             let retained: (i64, i64) = sqlx::query_as("SELECT CAST(@@GLOBAL.log_bin AS SIGNED), CAST(@@GLOBAL.log_bin_trust_function_creators AS SIGNED)")

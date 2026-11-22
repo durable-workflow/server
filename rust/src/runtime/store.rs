@@ -5600,13 +5600,10 @@ where
             } else {
                 let result = Self::query(DB::HISTORY_BATCH_ADVANCE_SQL)
                     .bind(count_i64).bind(run_id).bind(maximum).execute(&mut **tx).await?;
-                let sequence = DB::advanced_history_sequence(&result);
+                let last = DB::advanced_history_sequence(&result);
                 if DB::affected(result) == 1 {
-                    let last = Self::acknowledged_history_sequence(tx, run_id, sequence).await?;
-                    if last < count_i64 {
-                        return Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_history_sequence"));
-                    }
-                    Some(last)
+                    Some(last.filter(|value| *value >= count_i64)
+                        .ok_or_else(|| refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_history_sequence"))?)
                 } else { None }
             };
             if let Some(last) = last {
@@ -5636,7 +5633,8 @@ where
                 .bind(run_id).bind(DB::HISTORY_SEQUENCE_MAX).execute(&mut **tx).await?;
             let sequence = DB::advanced_history_sequence(&result);
             if DB::affected(result) == 1 {
-                return Self::acknowledged_history_sequence(tx, run_id, sequence).await;
+                return sequence.filter(|sequence| *sequence > 0).ok_or_else(||
+                    refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_history_sequence"));
             }
         }
         // Missing, exhausted or noncanonical stored counters take the original
@@ -5644,33 +5642,14 @@ where
         Self::allocate_history_sequence_fallback(tx, run_id).await
     }
 
-    async fn stored_history_sequence(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<i64> {
+    pub(super) async fn allocate_history_sequence_fallback(
+        tx: &mut Transaction<'_, DB>, run_id: &str,
+    ) -> Result<i64> {
         let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut **tx)
             .await?;
-        DB::number(&row, "last_history_sequence")
-    }
-
-    async fn acknowledged_history_sequence(
-        tx: &mut Transaction<'_, DB>, run_id: &str, acknowledged: Option<i64>,
-    ) -> Result<i64> {
-        if let Some(sequence) = acknowledged.filter(|sequence| *sequence > 0) {
-            return Ok(sequence);
-        }
-        // MySQL-family UPDATE acknowledgements can omit LAST_INSERT_ID when
-        // triggers run. Read the row already updated in this transaction.
-        let sequence = Self::stored_history_sequence(tx, run_id).await?;
-        if sequence <= 0 {
-            return Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, "invalid_history_sequence"));
-        }
-        Ok(sequence)
-    }
-
-    pub(super) async fn allocate_history_sequence_fallback(
-        tx: &mut Transaction<'_, DB>, run_id: &str,
-    ) -> Result<i64> {
-        let sequence = Self::stored_history_sequence(tx, run_id).await?
+        let sequence = DB::number(&row, "last_history_sequence")?
             .checked_add(1)
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "history_sequence_exhausted"))?;
         Self::query("UPDATE workflow_runs SET last_history_sequence=$1 WHERE id=$2")

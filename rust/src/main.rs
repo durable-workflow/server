@@ -368,7 +368,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 "schema-bootstrap"
                     | "schema-check"
                     | "schema-upgrade"
-                    | "schema-checkpoint-trigger-ddl"
+                    | "schema-checkpoint-ddl"
                     | "upgrade-inspect"
                     | "upgrade-queue-inspect"
                     | "upgrade-payload-inspect"
@@ -380,12 +380,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
             return Err("unknown development command".into());
         }
         let backend = env::var("DB_CONNECTION").unwrap_or_default();
-        if command == "schema-checkpoint-trigger-ddl" {
+        if command == "schema-checkpoint-ddl" {
             use durable_workflow_server::runtime::schema_upgrade;
             if !matches!(backend.as_str(), "mysql" | "mariadb") {
-                return Err("schema-checkpoint-trigger-ddl requires DB_CONNECTION=mysql or mariadb".into());
+                return Err("schema-checkpoint-ddl requires DB_CONNECTION=mysql or mariadb".into());
             }
-            return match schema_upgrade::mysql_checkpoint_trigger_ddl(mysql_options()?).await {
+            return match schema_upgrade::mysql_checkpoint_ddl(mysql_options()?).await {
                 Ok(ddl) => {
                     print!("{ddl}");
                     Ok(())
@@ -396,7 +396,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                         _ => "storage_unavailable",
                     };
                     eprintln!("{reason}");
-                    Err("checkpoint trigger DDL export refused".into())
+                    Err("checkpoint DDL export refused".into())
                 }
             };
         }

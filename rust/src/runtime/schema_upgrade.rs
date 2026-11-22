@@ -135,10 +135,10 @@ pub async fn upgrade_mysql(options: MySqlConnectOptions) -> Result<Value> {
     Ok(report(backend, from, to))
 }
 
-/// Read the remaining trigger DDL after a MySQL-family schema operation
-/// has staged the checkpoint table and paused for administrator installation.
-pub async fn mysql_checkpoint_trigger_ddl(options: MySqlConnectOptions) -> Result<String> {
-    super::mysql::child_summary_trigger_ddl(options).await
+/// Read the remaining checkpoint DDL after a MySQL-family schema operation
+/// has staged its tables and paused for administrator installation.
+pub async fn mysql_checkpoint_ddl(options: MySqlConnectOptions) -> Result<String> {
+    super::mysql::child_summary_checkpoint_ddl(options).await
 }
 
 #[cfg(test)]

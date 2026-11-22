@@ -12,6 +12,48 @@ use serde_json::Value;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::collections::BTreeMap;
 
+macro_rules! checkpoint_proof {
+    ($writes:literal, $run_proof:literal) => {
+        concat!(
+            "SELECT s.open_wait_id,s.history_size_bytes,s.history_fan_out,g.group_id
+             FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id AND i.current_run_id=r.id
+             JOIN workflow_run_summaries s ON s.id=r.id AND s.workflow_instance_id=i.id AND s.namespace=r.namespace
+             JOIN dw_child_summary_checkpoints g ON g.run_id=r.id AND g.history_sequence=s.history_event_count
+             AND g.generation=g.verified_generation+", $writes, "
+             WHERE r.id=$1 AND s.history_event_count=$2 AND r.last_history_sequence=$3
+             AND r.status='waiting' AND s.status='waiting' AND r.import_source IS NULL AND r.details_pruned_at IS NULL
+             AND s.engine_source='v2' AND s.projection_schema_version=2 AND s.is_current_run=TRUE
+             AND s.wait_kind='child' AND s.liveness_state='waiting_for_child' AND s.next_task_id IS NULL
+             AND s.open_wait_id IS NOT NULL AND s.task_problem=FALSE AND s.repair_attention=FALSE
+             AND s.repair_blocked_reason='repair_not_needed'", $run_proof
+        )
+    };
+}
+
+const CHECKPOINT_PROOF: &str = checkpoint_proof!("4", "");
+
+// An UPDATE trigger on workflow_runs changes how MySQL-family engines
+// report LAST_INSERT_ID for ordinary history advancement. Compare the
+// source columns of the prior summary's run row in the same bounded join.
+const MYSQL_CHECKPOINT_PROOF: &str = checkpoint_proof!("3", "
+    AND s.run_number=r.run_number
+    AND BINARY s.class <=> BINARY r.workflow_class
+    AND BINARY s.workflow_type <=> BINARY r.workflow_type
+    AND BINARY s.compatibility <=> BINARY r.compatibility
+    AND BINARY s.business_key <=> BINARY COALESCE(r.business_key,i.business_key)
+    AND BINARY s.visibility_labels <=> BINARY COALESCE(r.visibility_labels,i.visibility_labels)
+    AND BINARY s.closed_reason <=> BINARY r.closed_reason
+    AND BINARY s.connection <=> BINARY r.connection
+    AND BINARY s.queue <=> BINARY r.queue
+    AND s.started_at <=> r.started_at
+    AND s.closed_at <=> r.closed_at
+    AND s.archived_at <=> r.archived_at
+    AND BINARY s.archive_command_id <=> BINARY r.archive_command_id
+    AND BINARY s.archive_reason <=> BINARY r.archive_reason
+    AND s.created_at <=> r.created_at
+    AND s.updated_at <=> COALESCE(r.closed_at,r.last_progress_at,r.updated_at)
+    AND s.sort_timestamp <=> COALESCE(r.started_at,r.created_at,r.updated_at)");
+
 #[derive(Default)]
 pub(super) struct ChildSummaryHistory {
     calls: BTreeMap<i64, ExpectedChild>,
@@ -202,19 +244,8 @@ where
         let Some(sequence) = change.previous_sequence.checked_add(1) else {
             return Ok(false);
         };
-        let Some(previous) = Self::query(
-            "SELECT s.open_wait_id,s.history_size_bytes,s.history_fan_out,g.group_id
-             FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id AND i.current_run_id=r.id
-             JOIN workflow_run_summaries s ON s.id=r.id AND s.workflow_instance_id=i.id AND s.namespace=r.namespace
-             JOIN dw_child_summary_checkpoints g ON g.run_id=r.id AND g.history_sequence=s.history_event_count
-             AND g.generation=g.verified_generation+4
-             WHERE r.id=$1 AND s.history_event_count=$2 AND r.last_history_sequence=$3
-             AND r.status='waiting' AND s.status='waiting' AND r.import_source IS NULL AND r.details_pruned_at IS NULL
-             AND s.engine_source='v2' AND s.projection_schema_version=2 AND s.is_current_run=TRUE
-             AND s.wait_kind='child' AND s.liveness_state='waiting_for_child' AND s.next_task_id IS NULL
-             AND s.open_wait_id IS NOT NULL AND s.task_problem=FALSE AND s.repair_attention=FALSE
-             AND s.repair_blocked_reason='repair_not_needed'",
-        )
+        let proof = if DB::NAME == "MySQL" { MYSQL_CHECKPOINT_PROOF } else { CHECKPOINT_PROOF };
+        let Some(previous) = Self::query(proof)
         .bind(run_id)
         .bind(change.previous_sequence)
         .bind(sequence)
