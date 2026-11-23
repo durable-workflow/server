@@ -575,6 +575,17 @@ def verify_oci(
             raise ReleaseError(
                 f"anonymous OCI pull returned {pulled_digest}, expected {expected_digest}"
             )
+        if int(source["app_version"].split(".", 1)[0]) >= 3:
+            bootstrap = run(
+                [
+                    "bash",
+                    str(REPOSITORY_ROOT / "scripts/helm-chart-native-database-fixture.sh"),
+                    "durable-workflow",
+                    "public-oci-check",
+                    f"{source['release_image_reference']}@{image_digest}",
+                ]
+            )
+            print(bootstrap.stdout, end="")
         run(
             [helm, *helm_install_arguments(oci_repository, source["version"], "public-oci-check")],
             env=environment,
