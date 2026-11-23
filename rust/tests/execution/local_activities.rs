@@ -243,7 +243,7 @@ async fn prepared_local_routes_are_refused_without_the_prepared_role() {
         assert_eq!(body["worker_id"], "worker-1", "{route}");
         assert_eq!(body["unavailable"], json!(["installed_runtime_prepared_local_activity"]), "{route}");
         assert_eq!(body["remediation"], "Use a prepared-local backend and a claim issued to a capable protocol 1.20 worker.");
-        assert_eq!(body["protocol_version"], super::WORKER_PROTOCOL_VERSION, "{route}");
+        assert_eq!(body["protocol_version"], "1.20", "{route}");
         assert_eq!(body["server_capabilities"]["prepared_local_activities"], false, "{route}");
 
         // An older worker is refused for its protocol too.

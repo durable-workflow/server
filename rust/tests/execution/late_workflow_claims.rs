@@ -20,7 +20,7 @@ async fn late(app: &Router, task: &Value, action: &str) -> (StatusCode, Value) {
     };
     let (status, mut response) = request(app, "POST", &path, body).await;
     assert_eq!(status, StatusCode::CONFLICT, "{action}: {response}");
-    assert_eq!(response["protocol_version"], super::WORKER_PROTOCOL_VERSION, "{action}");
+    assert_eq!(response["protocol_version"], "1.20", "{action}");
     let object = response.as_object_mut().unwrap();
     assert!(object.remove("server_capabilities").is_some(), "{action}");
     object.remove("protocol_version");

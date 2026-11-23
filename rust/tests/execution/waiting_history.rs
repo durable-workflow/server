@@ -66,7 +66,7 @@ async fn waiting_reports_preserve_original_activity_and_history_across_restart()
         let (status, mut acknowledgement) = report(&app, &replay, body.clone()).await;
         assert_eq!(status, StatusCode::OK, "{acknowledgement}");
         // Every worker response carries PHP's worker envelope.
-        assert_eq!(acknowledgement["protocol_version"], super::WORKER_PROTOCOL_VERSION, "{acknowledgement}");
+        assert_eq!(acknowledgement["protocol_version"], "1.20", "{acknowledgement}");
         assert!(acknowledgement["server_capabilities"].is_object(), "{acknowledgement}");
         for field in ["protocol_version", "server_capabilities"] {
             acknowledgement.as_object_mut().unwrap().remove(field);

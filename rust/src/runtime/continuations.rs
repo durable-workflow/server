@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
-const TARGET_BUILD_PROTOCOL_MINOR: u8 = 21;
+pub(super) const TARGET_BUILD_PROTOCOL_MINOR: u8 = 21;
 pub(super) const PROMOTED_BUILD_UNAVAILABLE: &str = "promoted_build_unavailable";
 pub(super) const REFUSAL_FIELD: &str = "continue_as_new_refusal";
 

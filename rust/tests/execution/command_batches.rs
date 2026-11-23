@@ -63,7 +63,7 @@ async fn a_terminal_command_applies_after_the_rest_of_its_batch_like_php() {
     assert_eq!(body["run_status"], "completed", "{body}");
     // PHP reports the tasks the batch's commands created, and its protocol.
     assert_eq!(body["created_task_ids"].as_array().map(Vec::len), Some(1), "{body}");
-    assert_eq!(body["protocol_version"], super::WORKER_PROTOCOL_VERSION, "{body}");
+    assert_eq!(body["protocol_version"], "1.20", "{body}");
     let order = kinds(&run_history(&app, &started["workflow_id"], &started["run_id"]).await);
     let timer = order.iter().position(|kind| kind == "TimerScheduled").expect("the timer is recorded");
     assert!(order.iter().position(|kind| kind == "WorkflowCompleted").expect("the run completes") > timer, "{order:?}");

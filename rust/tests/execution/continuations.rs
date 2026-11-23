@@ -1,5 +1,7 @@
 use super::*;
 
+const CONTINUATION_PROTOCOL: &str = "1.21";
+
 #[tokio::test]
 async fn continuation_inherits_committed_upserts_before_successor_commands() {
     let database = TestDatabase::new().await;
@@ -260,7 +262,7 @@ async fn explicit_continue_as_new_target_refuses_without_consuming_the_lease() {
             vec![Value::Null, json!(true), json!(false), json!(0), json!(1), json!([]), json!({}),
                 json!(""), json!("Promoted"), json!("latest"), json!("promoted ")],
             "invalid_target_build",
-            WORKER_PROTOCOL_VERSION,
+            CONTINUATION_PROTOCOL,
         ),
         (vec![json!("inherited"), json!("promoted")], "unsupported_target_build", "1.20"),
     ] {
@@ -309,7 +311,7 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
         let (status, body) = request_protocol(&app, "POST", "/api/worker/register", json!({
             "worker_id":worker,"task_queue":"test","runtime":"php","build_id":build,
             "supported_workflow_types":[kind],"supported_activity_types":[],
-        }), WORKER_PROTOCOL_VERSION).await;
+        }), CONTINUATION_PROTOCOL).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         body
     };
@@ -323,7 +325,7 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
     let original_history = run_history(&app, &original["workflow_id"], &original["run_id"]).await;
     let completion_path = format!("/api/worker/workflow-tasks/{}/complete", first["task_id"].as_str().unwrap());
     let promoted = completion(&first, json!([{"type":"continue_as_new","target_build":"promoted"}]));
-    let (status, refused) = request_protocol(&app, "POST", &completion_path, promoted.clone(), WORKER_PROTOCOL_VERSION).await;
+    let (status, refused) = request_protocol(&app, "POST", &completion_path, promoted.clone(), CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
     assert_eq!(refused["reason"], "promoted_build_unavailable");
     assert_eq!(refused["retryable"], true);
@@ -342,7 +344,7 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
     assert_eq!(status, StatusCode::OK, "{newest}");
     assert_eq!(newest["new_start_selected"], true);
     assert_eq!(newest["deployment"]["workflow_types"], json!(["only-c"]));
-    let (status, refused) = request_protocol(&app, "POST", &completion_path, promoted.clone(), WORKER_PROTOCOL_VERSION).await;
+    let (status, refused) = request_protocol(&app, "POST", &completion_path, promoted.clone(), CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
     assert_eq!(refused["reason"], "promoted_build_unavailable");
     assert_eq!(run_history(&app, &original["workflow_id"], &original["run_id"]).await, original_history);
@@ -356,7 +358,7 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
     runtime.close().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    let (status, committed) = request_protocol(&app, "POST", &completion_path, promoted.clone(), WORKER_PROTOCOL_VERSION).await;
+    let (status, committed) = request_protocol(&app, "POST", &completion_path, promoted.clone(), CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::OK, "{committed}");
     assert_eq!(committed["recorded"], true);
     let (status, successor) = request(&app, "GET", "/api/workflows/migrating-chain", Value::Null).await;
@@ -371,7 +373,7 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
 
     let inherited_path = format!("/api/worker/workflow-tasks/{}/complete", inherited_task["task_id"].as_str().unwrap());
     let (status, body) = request_protocol(&app, "POST", &inherited_path,
-        completion(&inherited_task, json!([{"type":"continue_as_new"}])), WORKER_PROTOCOL_VERSION).await;
+        completion(&inherited_task, json!([{"type":"continue_as_new"}])), CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let next_a = poll(&app, "worker-a", "workflow").await;
     assert_eq!(next_a["workflow_id"], inherited["workflow_id"]);
@@ -384,7 +386,7 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
     let (status, resumed) = request(&app, "POST", &format!("{build_ids}/resume"), json!({"build_id":"build-c"})).await;
     assert_eq!(status, StatusCode::OK, "{resumed}");
     assert_eq!(resumed["new_start_selected"], true);
-    let (status, duplicate) = request_protocol(&app, "POST", &completion_path, promoted, WORKER_PROTOCOL_VERSION).await;
+    let (status, duplicate) = request_protocol(&app, "POST", &completion_path, promoted, CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::OK, "{duplicate}");
     assert_eq!(duplicate["reason"], "already_completed");
     assert_eq!(run_history(&app, &original["workflow_id"], &original["run_id"]).await, closed);
@@ -417,7 +419,7 @@ async fn promoted_build_refusal_is_observed_only_until_the_fenced_retry() {
     let completion_path = |task: &Value| format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
     let command = json!([{"type":"continue_as_new","target_build":"promoted"}]);
     let (status, refusal) = request_protocol(&app, "POST", &completion_path(&first),
-        completion(&first, command.clone()), WORKER_PROTOCOL_VERSION).await;
+        completion(&first, command.clone()), CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
     assert_eq!(refusal["reason"], "promoted_build_unavailable");
     assert!(observe(app.clone(), original_run.clone()).await["continue_as_new_refusal"].is_null());
@@ -428,7 +430,7 @@ async fn promoted_build_refusal_is_observed_only_until_the_fenced_retry() {
     let (status, unsupported) = request_protocol(&app, "POST", &failure_path, failure.clone(), "1.20").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{unsupported}");
     assert_eq!(unsupported["reason"], "unsupported_target_build");
-    let (status, accepted) = request_protocol(&app, "POST", &failure_path, failure.clone(), WORKER_PROTOCOL_VERSION).await;
+    let (status, accepted) = request_protocol(&app, "POST", &failure_path, failure.clone(), CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::OK, "{accepted}");
     let waiting = observe(app.clone(), original_run.clone()).await;
     let retry = &waiting["continue_as_new_refusal"];
@@ -442,7 +444,7 @@ async fn promoted_build_refusal_is_observed_only_until_the_fenced_retry() {
     let current = poll(&app, "old-worker", "workflow").await;
     assert_eq!(current["task_id"], accepted["next_task_id"]);
     assert_eq!(current["workflow_task_attempt"], first["workflow_task_attempt"].as_i64().unwrap() + 1);
-    let (status, stale) = request_protocol(&app, "POST", &failure_path, failure, WORKER_PROTOCOL_VERSION).await;
+    let (status, stale) = request_protocol(&app, "POST", &failure_path, failure, CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::CONFLICT, "{stale}");
     assert!(observe(app.clone(), original_run.clone()).await["continue_as_new_refusal"].is_null());
 
@@ -454,7 +456,7 @@ async fn promoted_build_refusal_is_observed_only_until_the_fenced_retry() {
     let (status, promoted) = request(&app, "POST", "/api/task-queues/test/build-ids/promote", json!({"build_id":"new-build"})).await;
     assert_eq!(status, StatusCode::OK, "{promoted}");
     let (status, committed) = request_protocol(&app, "POST", &completion_path(&current),
-        completion(&current, command), WORKER_PROTOCOL_VERSION).await;
+        completion(&current, command), CONTINUATION_PROTOCOL).await;
     assert_eq!(status, StatusCode::OK, "{committed}");
     let (_, runs) = request(&app, "GET", "/api/workflows/retrying-continuation/runs", Value::Null).await;
     let successor = runs["runs"][1]["run_id"].clone();
@@ -497,7 +499,7 @@ async fn promoted_continuation_serializes_with_retirement_of_the_old_build() {
     let complete_path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
     let (continued, retired) = tokio::join!(
         request_protocol(&app, "POST", &complete_path,
-            completion(&task, json!([{"type":"continue_as_new","target_build":"promoted"}])), WORKER_PROTOCOL_VERSION),
+            completion(&task, json!([{"type":"continue_as_new","target_build":"promoted"}])), CONTINUATION_PROTOCOL),
         request(&retirement, "POST", retire_path, Value::Null),
     );
     assert_eq!(continued.0, StatusCode::OK, "{}", continued.1);

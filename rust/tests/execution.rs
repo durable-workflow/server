@@ -5,7 +5,7 @@ use axum::{
 };
 use durable_workflow_server::{
     codec::{Value as Payload, ValueCodec},
-    runtime::{Runtime, WORKER_PROTOCOL_VERSION},
+    runtime::Runtime,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -1239,7 +1239,7 @@ fn worker_envelope_sweep(method: &str, path: &str, status: StatusCode, header: O
         let mut out = std::fs::OpenOptions::new().create(true).append(true).open(file).unwrap();
         out.write_all(format!("{record}\n").as_bytes()).unwrap();
     }
-    assert_eq!(header, Some(WORKER_PROTOCOL_VERSION), "{method} {path}: worker protocol header");
+    assert_eq!(header, Some("1.20"), "{method} {path}: worker protocol header");
     assert_eq!(members.get("protocol_version").and_then(Value::as_str), header,
         "{method} {path} {status}: body protocol_version must echo the header: {body}");
     assert!(members.get("server_capabilities").is_some_and(Value::is_object),

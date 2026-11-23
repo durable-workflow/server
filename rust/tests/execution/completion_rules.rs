@@ -9,7 +9,7 @@ async fn refused(app: &Router, task: &Value, body: Value) -> (String, Value) {
     let (status, response) = request(app, "POST", &path(task), body).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
     assert_eq!(response["reason"], "validation_failed", "{response}");
-    assert_eq!(response["protocol_version"], super::WORKER_PROTOCOL_VERSION, "{response}");
+    assert_eq!(response["protocol_version"], "1.20", "{response}");
     (response["message"].as_str().unwrap().to_owned(), response["errors"].clone())
 }
 

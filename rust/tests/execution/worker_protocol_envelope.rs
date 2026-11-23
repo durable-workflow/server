@@ -40,8 +40,8 @@ async fn leased_and_empty_polls_echo_the_protocol_version_in_the_body() {
         let (status, header, body) = raw_poll(&app, kind, "envelope-worker").await;
         assert_eq!(status, StatusCode::OK, "{kind}: {body}");
         assert_eq!(body["task"].is_object(), leased, "{kind}: {body}");
-        assert_eq!(header.as_deref(), Some(super::WORKER_PROTOCOL_VERSION), "{kind}");
-        assert_eq!(body["protocol_version"], super::WORKER_PROTOCOL_VERSION, "{kind}: {body}");
+        assert_eq!(header.as_deref(), Some("1.20"), "{kind}");
+        assert_eq!(body["protocol_version"], "1.20", "{kind}: {body}");
         assert!(body["server_capabilities"].is_object(), "{kind}: {body}");
         if kind == "workflow" {
             assert_eq!(body["poll_status"], if leased { "leased" } else { "empty" }, "{kind}: {body}");
@@ -93,8 +93,8 @@ async fn a_namespace_storage_failure_carries_the_envelope() {
     runtime.close().await;
     let (status, header, body) = raw_poll(&app, "workflow", "envelope-closed").await;
     assert!(status.is_server_error(), "{status}: {body}");
-    assert_eq!(header.as_deref(), Some(super::WORKER_PROTOCOL_VERSION));
-    assert_eq!(body["protocol_version"], super::WORKER_PROTOCOL_VERSION, "{body}");
+    assert_eq!(header.as_deref(), Some("1.20"));
+    assert_eq!(body["protocol_version"], "1.20", "{body}");
     assert!(body["server_capabilities"].is_object(), "{body}");
     database.remove().await;
 }

@@ -244,7 +244,7 @@ pub use memo_limits::StructuralLimits;
 pub use http::router;
 
 /// The worker protocol version native implements and advertises.
-pub const WORKER_PROTOCOL_VERSION: &str = "1.21";
+pub const WORKER_PROTOCOL_VERSION: &str = "1.20";
 pub use query_authority::QueryTaskConfig;
 
 use axum::{

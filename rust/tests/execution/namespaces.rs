@@ -518,7 +518,7 @@ async fn same_worker_id_isolated_claims_completion_and_deregistration_by_namespa
         first_task["workflow_task_attempt"]
     );
     assert_eq!(refused.1["error"], "Workflow task not found.");
-    assert_eq!(refused.1["protocol_version"], super::WORKER_PROTOCOL_VERSION);
+    assert_eq!(refused.1["protocol_version"], "1.20");
     let history_path = format!(
         "/api/workflows/namespace-first/runs/{}/history",
         first["run_id"].as_str().unwrap()
