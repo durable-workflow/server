@@ -32,11 +32,11 @@
       "result": 500500,
       "child_closes": 1000,
       "parent_resumes": 1,
-      "client_wall_ms": 129277.466,
-      "fan_in_ms": 128262.0,
-      "last_child_to_resume_ms": 157.0,
-      "innodb_waits": 400,
-      "innodb_wait_ms": 34,
+      "client_wall_ms": 132236.81,
+      "fan_in_ms": 130941.0,
+      "last_child_to_resume_ms": 177.0,
+      "innodb_waits": 584,
+      "innodb_wait_ms": 50,
       "median_rows_examined": {
         "first_100": 9091.5,
         "middle_800": 9541.5,
@@ -65,5 +65,5 @@
       "samples": "rust-closes.csv"
     }
   },
-  "measurement_scope": "One isolated Docker pilot per binding. A bounded Rust build overlapped the Python pilot."
+  "measurement_scope": "One isolated Docker pilot per binding. Ran the Python baseline again after the adapter builds completed."
 }
