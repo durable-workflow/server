@@ -9,14 +9,25 @@ kubectl_bin="${KUBECTL:-kubectl}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "${work_dir}"' EXIT
 
-run_schema_command() {
+run_schema_command() (
   local command="$1"
-  "${kubectl_bin}" -n "${namespace}" run "${release}-${command}" \
-    --image="${native_image}" --restart=Never --attach --rm --quiet --pod-running-timeout=120s \
+  local pod="${release}-${command}"
+  local exit_status
+  local termination='{.status.containerStatuses[*].state.terminated.exitCode}'
+  "${kubectl_bin}" -n "${namespace}" run "${pod}" \
+    --image="${native_image}" --restart=Never \
     --env=DB_CONNECTION=mysql --env="DB_HOST=mysql.${namespace}.svc.cluster.local" \
     --env=DB_DATABASE=durable_workflow --env=DB_USERNAME=durable_workflow \
-    --env=DB_PASSWORD=durable_workflow --command -- durable-workflow-server "${command}"
-}
+    --env=DB_PASSWORD=durable_workflow --command -- durable-workflow-server "${command}" >/dev/null || exit 1
+  trap '"${kubectl_bin}" -n "${namespace}" delete pod "${pod}" --ignore-not-found --timeout=30s >/dev/null' EXIT
+
+  # Very short commands can exit before a client attaches. Read retained pod
+  # logs after termination so the checkpoint diagnostic and SQL survive.
+  "${kubectl_bin}" -n "${namespace}" wait "pod/${pod}" --for="jsonpath=${termination}" --timeout=120s >/dev/null || exit 1
+  exit_status="$("${kubectl_bin}" -n "${namespace}" get pod "${pod}" -o "jsonpath=${termination}")" || exit 1
+  "${kubectl_bin}" -n "${namespace}" logs "${pod}" || exit 1
+  [[ "${exit_status}" == 0 ]]
+)
 
 mysql_admin() {
   "${kubectl_bin}" -n "${namespace}" exec -i deploy/durable-workflow-mysql -- sh -ec '
