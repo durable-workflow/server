@@ -153,6 +153,178 @@ pub(super) fn mixed_commands(base: i64) -> Value {
     json!([{"type":"record_version_marker","change_id":"pending-repair","version":1,"min_supported":1,"max_supported":1}, activity, timer])
 }
 
+fn selection_pair(base: usize, group_kind: &str, members: [(Value, &str, &str); 2]) -> Value {
+    let commands = members.into_iter().enumerate().map(|(index, (mut command, key, kind))| {
+        let member = json!({
+            "parallel_group_id": format!("select-calls:{base}:2"),
+            "parallel_group_kind": group_kind,
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": base,
+            "parallel_group_size": 2,
+            "parallel_group_index": index,
+            "selection_member_key": key,
+            "selection_member_index": index,
+            "selection_member_base_sequence": base + index,
+            "selection_member_size": 1,
+            "selection_member_kind": kind,
+        });
+        command.as_object_mut().unwrap().extend(member.as_object().unwrap().clone());
+        command["parallel_group_path"] = json!([member]);
+        command
+    }).collect();
+    Value::Array(commands)
+}
+
+fn child_and_signal_selection() -> Value {
+    let child = json!({
+        "type": "start_child_workflow",
+        "workflow_type": "selection-child",
+        "payload_codec": "avro",
+        "arguments": envelope(Payload::Array(vec![Payload::String("loser".into())])),
+    });
+    let signal = json!({"type": "open_signal_wait", "signal_name": "first"});
+    selection_pair(1, "mixed", [(child, "child", "child"), (signal, "first", "signal")])
+}
+
+#[tokio::test]
+async fn signal_can_win_a_selection_while_the_started_child_remains_available() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "selection-parent-worker", json!(["echo"]), json!([])).await;
+    register(&app, "selection-child-worker", json!(["selection-child"]), json!([])).await;
+    let started = start(&app, "child-signal-selection").await;
+    let initial = poll(&app, "selection-parent-worker", "workflow").await;
+    let (status, scheduled) = finish_task(&app, &initial, child_and_signal_selection()).await;
+    assert_eq!(status, StatusCode::OK, "{scheduled}");
+    let child_task = poll(&app, "selection-child-worker", "workflow").await;
+    assert!(child_task["task_id"].is_string(), "{child_task}");
+    let (status, signal) = request(&app, "POST", "/api/workflows/child-signal-selection/signal/first",
+        json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{signal}");
+    let next = poll(&app, "selection-parent-worker", "workflow").await;
+    let later = selection_pair(3, "signal", [
+        (json!({"type":"open_signal_wait","signal_name":"second"}), "second", "signal"),
+        (json!({"type":"open_signal_wait","signal_name":"third"}), "third", "signal"),
+    ]);
+    let (status, scheduled) = finish_task(&app, &next, later).await;
+    assert_eq!(status, StatusCode::OK, "{scheduled}");
+    let (status, signal) = request(&app, "POST", "/api/workflows/child-signal-selection/signal/second",
+        json!({"input":envelope(Payload::Array(vec![Payload::Long(2)]))})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{signal}");
+    let next = poll(&app, "selection-parent-worker", "workflow").await;
+    let waiting_path = format!("/api/worker/workflow-tasks/{}/fail", next["task_id"].as_str().unwrap());
+    let handle = json!({
+        "selection_group_id": "select-calls:1:2",
+        "member_base_sequence": 1,
+        "member_size": 1,
+        "operation_identity": child_task["run_id"],
+        "await_position": 5,
+        "status": "waiting",
+    });
+    let waiting = json!({
+        "lease_owner": next["lease_owner"],
+        "workflow_task_attempt": next["workflow_task_attempt"],
+        "failure": {
+            "type": "WorkflowTaskWaitingForHistory",
+            "message": "Waiting for the original child.",
+            "selection_handle": handle,
+        },
+    });
+    let mut mismatched = waiting.clone();
+    mismatched["failure"]["selection_handle"]["selection_group_id"] = json!("select-calls:3:2");
+    let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let (status, refused) = request(&app, "POST", &waiting_path, mismatched).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused["reason"]);
+    assert_eq!(refused["reason"], "invalid_child_selection_await");
+    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, before);
+    let (status, acknowledged) = request(&app, "POST", &waiting_path, waiting).await;
+    assert_eq!(status, StatusCode::OK, "{acknowledged}");
+    assert_eq!(acknowledged["outcome"], "waiting_for_history");
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let events = history.as_array().unwrap();
+    let recorded_wait = events.iter().filter(|event| event["event_type"] == "ChildWorkflowAwaited").collect::<Vec<_>>();
+    assert_eq!(recorded_wait.len(), 1);
+    assert_eq!(recorded_wait[0]["payload"]["selection_handle"], handle);
+    let summary = observe_selection(&database, &app, &started).await;
+    assert_eq!(summary["liveness_state"], "waiting_for_child");
+    for (group_id, signal_name, index) in [("select-calls:1:2", "first", 1), ("select-calls:3:2", "second", 0)] {
+        let opened = events.iter().find(|event| event["event_type"] == "SignalWaitOpened"
+            && event["payload"]["signal_name"] == signal_name).unwrap();
+        assert_eq!(opened["payload"]["selection_member_key"], signal_name);
+        let winner = events.iter().find(|event| event["event_type"] == "SelectionResolved"
+            && event["payload"]["selection_group_id"] == group_id).unwrap();
+        assert_eq!(winner["payload"]["operation_kind"], "signal");
+        assert_eq!(winner["payload"]["operation_identity"], opened["payload"]["signal_wait_id"]);
+        assert_eq!(winner["payload"]["member_index"], index);
+    }
+    let (status, completed) = finish_task(&app, &child_task,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(history.as_array().unwrap().iter().filter(|event| event["event_type"] == "SelectionResolved").count(), 2);
+    assert!(history.as_array().unwrap().iter().any(|event| event["event_type"] == "ChildRunCompleted"));
+    let resumed = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(resumed["run_id"], started["run_id"], "{resumed}");
+    let run_id = started["run_id"].as_str().unwrap();
+    let lost_task = resumed["task_id"].as_str().unwrap();
+    assert!(ulid::Ulid::from_string(lost_task).is_ok());
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "DELETE FROM workflow_tasks WHERE id='{lost_task}' AND workflow_run_id='{run_id}'",
+    ))).await;
+    let repair_path = format!("/api/workflows/child-signal-selection/runs/{run_id}/repair");
+    let (status, repair) = request(&app, "POST", &repair_path, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{}", repair["reason"]);
+    let restored = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(restored["run_id"], started["run_id"], "{restored}");
+    assert_ne!(restored["task_id"], resumed["task_id"]);
+    let mut consumed = handle;
+    consumed["status"] = json!("resumed");
+    let restored_path = format!("/api/worker/workflow-tasks/{}/complete", restored["task_id"].as_str().unwrap());
+    let mut next_turn = completion(&restored, json!([{"type":"open_signal_wait","signal_name":"after"}]));
+    next_turn["selection_handle"] = consumed.clone();
+    let (status, result) = request(&app, "POST", &restored_path, next_turn.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{}", result["reason"]);
+    let (status, duplicate) = request(&app, "POST", &restored_path, next_turn).await;
+    assert_eq!(status, StatusCode::OK, "{}", duplicate["reason"]);
+    assert_eq!(duplicate["recorded"], false);
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let markers: Vec<_> = history.as_array().unwrap().iter()
+        .filter(|event| event["event_type"] == "ChildWorkflowAwaited").collect();
+    assert_eq!(markers.len(), 2);
+    assert_eq!(markers[1]["payload"]["selection_handle"], consumed);
+    let summary = observe_selection(&database, &app, &started).await;
+    assert_eq!(summary["liveness_state"], "waiting_for_signal");
+    assert_eq!(summary["liveness_reason"], "Waiting for signal after.");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn child_can_win_a_selection_while_the_signal_wait_is_open() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "selection-parent-worker", json!(["echo"]), json!([])).await;
+    register(&app, "selection-child-worker", json!(["selection-child"]), json!([])).await;
+    let started = start(&app, "child-wins-selection").await;
+    let initial = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(finish_task(&app, &initial, child_and_signal_selection()).await.0, StatusCode::OK);
+    let child = poll(&app, "selection-child-worker", "workflow").await;
+    let (status, completed) = finish_task(&app, &child,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let winner = history.as_array().unwrap().iter().find(|event| event["event_type"] == "SelectionResolved").unwrap();
+    assert_eq!(winner["payload"]["operation_kind"], "child");
+    assert_eq!(winner["payload"]["operation_identity"], child["run_id"]);
+    assert_eq!(winner["payload"]["resolution_event_type"], "ChildRunCompleted");
+    let resumed = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(resumed["run_id"], started["run_id"], "{resumed}");
+    runtime.close().await;
+    database.remove().await;
+}
+
 async fn debug(app: &Router, started: &Value) -> Value {
     let (status, value) = request(
         app,

@@ -272,7 +272,7 @@ store_methods! {
         tx.meter = Some(super::history_meter::Meter::new(&limits, &task_id, &body["workflow_task_attempt"]));
         // Core answers its own refusals as a refused checkpoint.
         match Self::apply_task_signal(&mut tx, &run_id, &task_id, &task, transition_codec, true, commands, signal).await {
-            Ok(()) => {}
+            Ok(_) => {}
             Err(RuntimeError::Refused { reason, .. }) => {
                 tx.rollback().await?;
                 return refusal(reason);

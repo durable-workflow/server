@@ -68,6 +68,7 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
             "workflow_type",
             "workflow_id",
             "arguments",
+            "payload_codec",
             "queue",
             "parent_close_policy",
             "cancellation_policy",
@@ -79,6 +80,9 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
         ],
     )?;
     requested_id(command)?;
+    if command.get("payload_codec").is_some_and(|codec| codec != "avro") {
+        return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_payload_codec"));
+    }
     let parallel = super::selections::metadata(command, "child")?;
     // This slice qualifies result barriers. A committed-start handle inside
     // a barrier has a different wakeup contract and stays separately refused.
@@ -697,10 +701,23 @@ where
             None
         };
         let event_id = Self::append_returning(tx, &parent_run, event_type, payload, None, None).await?;
+        if super::selections::is_selection(&parallel) {
+            let first_child_run = if link_id == call_id {
+                child_run.clone()
+            } else {
+                let first = Self::query(
+                    "SELECT child_workflow_run_id FROM workflow_links WHERE id=$1 AND parent_workflow_run_id=$2 AND link_type='child_workflow'",
+                )
+                .bind(&call_id).bind(&parent_run).fetch_one(&mut **tx).await?;
+                DB::string(&first, "child_workflow_run_id")?
+            };
+            Self::resolve_selection(tx, &parent_run, &parallel, "child", &first_child_run, event_type).await?;
+        }
         // Record the outcome even while the all barrier remains closed. The
         // last successful member observes every committed call under the same
         // parent transition lock; any failed member wakes the parent at once.
-        if matches!(resolution, ChildResolution::Completed(_))
+        if !super::selections::is_selection(&parallel)
+            && matches!(resolution, ChildResolution::Completed(_))
             && !Self::all_groups_closed(tx, &parent_run, &parallel).await?
         {
             if let Some(previous_sequence) = previous_sequence {

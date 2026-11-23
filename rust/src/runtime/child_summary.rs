@@ -57,6 +57,8 @@ const MYSQL_CHECKPOINT_PROOF: &str = checkpoint_proof!("3", "
 #[derive(Default)]
 pub(super) struct ChildSummaryHistory {
     calls: BTreeMap<i64, ExpectedChild>,
+    awaited_selection: Option<i64>,
+    resumed_selections: std::collections::BTreeSet<i64>,
 }
 
 struct ExpectedChild {
@@ -76,6 +78,14 @@ struct ExpectedChild {
 }
 
 impl ChildSummaryHistory {
+    pub(super) fn supersede_selection_await(&mut self) {
+        if let Some(sequence) = self.awaited_selection.take()
+            && self.calls.get(&sequence).is_some_and(|call| call.status != "waiting")
+        {
+            self.resumed_selections.insert(sequence);
+        }
+    }
+
     pub(super) fn checkpoint_group(&self) -> Option<&str> {
         let first = self.calls.first_key_value()?.1;
         let group = first.parallel["parallel_group_id"].as_str()?;
@@ -91,6 +101,23 @@ impl ChildSummaryHistory {
     }
 
     pub(super) fn apply(&mut self, event: &str, payload: &Value) -> bool {
+        if event == "ChildWorkflowAwaited" && payload.get("selection_handle").is_some() {
+            let Some(handle) = super::selections::ChildSelectionAwait::parse(&payload["selection_handle"]) else {
+                return false;
+            };
+            if !self.calls.get(&handle.sequence).is_some_and(|call| handle.matches(&call.run, &call.parallel)) {
+                return false;
+            }
+            if handle.waiting {
+                self.awaited_selection = Some(handle.sequence);
+            } else if self.awaited_selection == Some(handle.sequence) {
+                self.awaited_selection = None;
+                self.resumed_selections.insert(handle.sequence);
+            } else {
+                return false;
+            }
+            return true;
+        }
         let Some(sequence) = payload["sequence"].as_i64().filter(|v| *v > 0) else {
             return false;
         };
@@ -377,6 +404,10 @@ where
                 return Ok(false);
             }
         }
+        let rows = rows.iter().filter(|row| {
+            DB::optional_number(row, "sequence").ok().flatten()
+                .is_none_or(|sequence| !history.resumed_selections.contains(&sequence))
+        }).collect::<Vec<_>>();
         if rows.is_empty() {
             return Ok(true);
         }
@@ -401,10 +432,17 @@ where
         {
             return Ok(true);
         }
+        let selection_await = if summary.wait.as_ref()
+            .is_none_or(|wait| matches!(wait.kind, "workflow-task" | "signal" | "condition"))
+        {
+            history.awaited_selection
+        } else {
+            None
+        };
         if summary
             .wait
             .as_ref()
-            .is_some_and(|wait| wait.kind != "workflow-task")
+            .is_some_and(|wait| wait.kind != "workflow-task" && selection_await.is_none())
             || summary
                 .task_type
                 .as_deref()
@@ -412,13 +450,22 @@ where
         {
             return Ok(false);
         }
+        let selected_child = if let Some(sequence) = selection_await {
+            let Some(row) = rows.iter().find(|row| DB::optional_number(row, "sequence").ok().flatten() == Some(sequence)) else {
+                return Ok(false);
+            };
+            Some(row)
+        } else {
+            None
+        };
+        let applicable = selected_child.map_or(rows.as_slice(), std::slice::from_ref);
         let open = if summary.task_id.is_none() {
-            rows.iter()
+            applicable.iter()
                 .find(|row| DB::string(row, "status").is_ok_and(|status| status == "open"))
         } else {
             None
         };
-        let pending = rows.iter().find(|row| {
+        let pending = applicable.iter().find(|row| {
             DB::string(row, "source_status").is_ok_and(|status| {
                 matches!(status.as_str(), "cancelled" | "terminated" | "failed")
                     || (status == "completed" && open.is_none())

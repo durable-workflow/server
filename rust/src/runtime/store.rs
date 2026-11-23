@@ -2009,21 +2009,21 @@ where
         checkpoint: bool,
         commands: &[Value],
         resolved: Option<&super::signal_payloads::ResolvedSignal>,
-    ) -> Result<()> {
+    ) -> Result<Option<Value>> {
         let payload = DB::document_row(task, "payload")?;
         if payload["resume_source_kind"] != "workflow_signal" {
-            return Ok(());
+            return Ok(None);
         }
         let signal_id = text(&payload, "workflow_signal_id")?;
         // The signal's own command, never one of another workflow (Server #765).
         let Some(signal) = Self::query("SELECT s.*,c.message_sequence FROM workflow_signal_records s JOIN workflow_commands c ON c.id=s.workflow_command_id AND c.workflow_instance_id=s.workflow_instance_id WHERE s.id=$1 AND s.workflow_run_id=$2")
             .bind(signal_id).bind(run_id).fetch_optional(&mut **tx).await?
         else {
-            return if checkpoint { Ok(()) } else { Err(refuse(StatusCode::CONFLICT, "signal_command_unavailable")) };
+            return if checkpoint { Ok(None) } else { Err(refuse(StatusCode::CONFLICT, "signal_command_unavailable")) };
         };
         match DB::string(&signal, "status")?.as_str() {
             "received" => {}
-            "applied" => return Ok(()),
+            "applied" => return Ok(None),
             _ => return Err(refuse(StatusCode::CONFLICT, "signal_already_applied")),
         }
         let name = DB::string(&signal, "signal_name")?;
@@ -2065,7 +2065,7 @@ where
                 waits.conditions.iter().any(|wait| wait.is_open() && wait.fired_at.is_some_and(|fired| fired > received))
             });
             if checkpoint || known || raced {
-                return Ok(());
+                return Ok(None);
             }
             let reason = if waits.any_current() { "signal_wait_mismatch" } else { "signal_wait_not_open" };
             return Err(refuse(StatusCode::CONFLICT, reason));
@@ -2074,6 +2074,7 @@ where
         // condition wait at that wait's sequence, without `SignalApplied`
         // (`markConditionWaitSignalConsumed`).
         let record_sequence = if applies { sequence } else { condition.and_then(|wait| wait.sequence) };
+        let mut winner = None;
         if applies || record_sequence.is_some() {
             // Arguments stored by reference were resolved before this
             // transaction, for exactly this reference (Server #979).
@@ -2147,7 +2148,7 @@ where
                 applied.as_object_mut().unwrap().extend(group.clone());
                 Self::append(tx, run_id, "SignalApplied", applied, Some(task_id), Some(&command_id)).await?;
                 if let Some(id) = wait_id.as_deref() {
-                    Self::claim_wait_selection(tx, run_id, &group, "signal", id, "SignalApplied").await?;
+                    winner = Self::claim_wait_selection(tx, run_id, &group, "signal", id, "SignalApplied").await?;
                 }
             }
         }
@@ -2176,14 +2177,18 @@ where
                 }));
                 if !reopened {
                     let group = condition_opening.map(|opening| super::activity_metadata::payload_for_path(&opening.payload)).unwrap_or_default();
-                    Self::claim_wait_selection(tx, run_id, &group, "condition", &condition.id, "ConditionWaitSatisfied").await?;
+                    if let Some(selected) =
+                        Self::claim_wait_selection(tx, run_id, &group, "condition", &condition.id, "ConditionWaitSatisfied").await?
+                    {
+                        winner = Some(selected);
+                    }
                 }
                 if let Some(sequence) = condition.sequence {
                     Self::cancel_wait_timeout(tx, run_id, &json!({"sequence":sequence,"condition_wait_id":condition.id}), task_id, now()).await?;
                 }
             }
         }
-        Ok(())
+        Ok(winner)
     }
 
     /// `ParallelChildGroup::claimSelectionWinner` for a wait member: the
@@ -2198,10 +2203,10 @@ where
         kind: &str,
         identity: &str,
         event_type: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<Value>> {
         let path = group.get("parallel_group_path").and_then(Value::as_array).cloned().unwrap_or_default();
         if !path.iter().any(super::selections::is_selection) {
-            return Ok(());
+            return Ok(None);
         }
         let unqualified = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "development_selection_shape_unqualified");
         let [member] = path.as_slice() else { return Err(unqualified()) };
@@ -2217,7 +2222,8 @@ where
         if metadata.get("selection_member_index").is_none() {
             metadata["selection_member_index"] = json!(index);
         }
-        Self::resolve_selection(tx, run_id, &metadata, kind, identity, event_type).await
+        let recorded = Self::resolve_selection(tx, run_id, &metadata, kind, identity, event_type).await?;
+        Ok(recorded.then_some(metadata))
     }
 
     pub(crate) async fn register(
@@ -3611,6 +3617,10 @@ where
             .unwrap_or("")
             .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
         let waiting = !promoted_refusal && waiting_acknowledgement(&body["failure"]);
+        let selection_handle = failure.get("selection_handle");
+        if selection_handle.is_some() && !waiting {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_selection_await"));
+        }
         let range_blocked = !waiting
             && (failure
                 .get("reason")
@@ -3757,7 +3767,15 @@ where
         }
         // `acknowledgeWorkflowTaskWaitingForHistory` completes a signal task
         // through the bridge, which records its signal as applied.
-        Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, &[], signal).await?;
+        let selection_winner =
+            Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, &[], signal).await?;
+        if let Some(handle) = selection_handle {
+            Self::record_child_selection_await(&mut tx, &run_id, task_id, handle).await?;
+        } else if let Some(winner) = selection_winner {
+            // This turn saw the pending input. Give the worker a turn that
+            // can replay the winner recorded by the acknowledgement.
+            Self::selection_resume(&mut tx, &run_id, &DB::string(&run, "queue")?, json!({}), &winner, true).await?;
+        }
         payload["waiting_for_history_acknowledged"] = json!(true);
         tx.summary_changed(&run_id);
         payload["waiting_for_history_message"] = json!(message);
@@ -3841,6 +3859,17 @@ where
             .as_array()
             .filter(|c| !c.is_empty())
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
+        let selection_handle = body.get("selection_handle");
+        let selection_waiting = if let Some(handle) = selection_handle {
+            let invalid = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_selection_await");
+            let authored = super::selections::ChildSelectionAwait::parse(handle).ok_or_else(invalid)?;
+            if checkpoint.is_some() || (authored.waiting && commands.iter().any(is_terminal)) {
+                return Err(invalid());
+            }
+            authored.waiting
+        } else {
+            false
+        };
         let partial_occurrences = super::workflow_failures::validate_batch(commands)?;
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
@@ -3974,7 +4003,7 @@ where
                     super::external_signals::validate(command)?;
                 }
                 "open_signal_wait" => {
-                    reject_fields(command, &["type", "signal_name", "timeout_seconds"])?;
+                    super::selections::fields(command, &["type", "signal_name", "timeout_seconds"])?;
                     text(command, "signal_name")?;
                     super::wait_timeouts::timeout(command)?;
                 }
@@ -4229,6 +4258,9 @@ where
         let mut created = Vec::new();
         let codec = transition_codec.clone();
         Self::apply_task_signal(&mut tx, &run_id, task_id, &task, transition_codec, false, commands, signal).await?;
+        if let Some(handle) = selection_handle.filter(|_| !selection_waiting) {
+            Self::record_child_selection_await(&mut tx, &run_id, task_id, handle).await?;
+        }
         // Published parseCommands applies every other command first, whatever
         // the terminal command's position in the batch.
         let start_turn = std::sync::Mutex::new(None);
@@ -4322,6 +4354,9 @@ where
             }
         }
         Self::write_local_activities(&mut tx).await?;
+        if let Some(handle) = selection_handle.filter(|_| selection_waiting) {
+            Self::record_child_selection_await(&mut tx, &run_id, task_id, handle).await?;
+        }
         let failed = if let Some(command) = commands
             .iter()
             .find(|command| command["type"] == "fail_workflow")
@@ -4663,7 +4698,7 @@ where
             payload.as_object_mut().unwrap().remove("type");
             // A replacement gets a new physical sequence and timeout row
             // while its authored group position stays tied to the original.
-            let group = if direct { json!({}) } else { super::selections::metadata(command, "condition")? };
+            let group = super::selections::metadata(command, if direct { "signal" } else { "condition" })?;
             let repeat = command["condition_wait_occurrence_id"].as_str()
                 .is_some_and(|id| grouped_condition_repeats.contains(id));
             if group.get("parallel_group_id").is_some() && !repeat {
@@ -5114,7 +5149,13 @@ where
                 .await?;
             let task_id = DB::string(&task, "id")?;
             let task_payload = DB::document_row(&task, "payload")?;
-            let member = if task_payload.get("condition_wait_id").is_some() { "condition" } else { "timer" };
+            let (member, operation_id) = if let Some(signal) = task_payload["signal_wait_id"].as_str() {
+                ("signal", signal)
+            } else if let Some(condition) = task_payload["condition_wait_id"].as_str() {
+                ("condition", condition)
+            } else {
+                ("timer", timer_id.as_str())
+            };
             let metadata = super::selections::metadata(&task_payload, member)?;
             let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":super::cancellation_scopes::iso(fire_at),"fired_at":fired_at});
             if task_payload.get("signal_wait_id").is_some() {
@@ -5165,8 +5206,8 @@ where
                 &mut tx,
                 &run_id,
                 &metadata,
-                "timer",
-                &timer_id,
+                member,
+                operation_id,
                 "TimerFired",
             )
             .await?;
@@ -6538,6 +6579,7 @@ const HEARTBEAT_RESUME_SCAN: i64 = 1000;
 pub(crate) fn capabilities() -> Value {
     static TEMPLATE: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
     let mut value = TEMPLATE.get_or_init(capabilities_template).clone();
+    value["selection_child_await"] = json!(true);
     // Keep the transport's existing configuration lookup and fallback on
     // every call. Only its position, not its configured value, is cached.
     value["runtime_external_payload_transport"] = super::payload_discovery::transport_manifest();

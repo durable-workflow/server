@@ -473,6 +473,9 @@ impl SummaryHistory {
         let payload: Value = serde_json::from_str(raw)?;
         self.bytes += history_budget::parsed_event_size(kind, raw, &payload)? as i64;
         if !closed {
+            if matches!(kind, "SignalWaitOpened" | "ConditionWaitOpened") {
+                self.children.supersede_selection_await();
+            }
             self.active_history_supported &= self.barriers.apply(kind, &payload);
             self.active_history_supported &= self.selections.apply(id, kind, &payload);
             let supported = if kind == "SelectionResolved" {

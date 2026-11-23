@@ -1,4 +1,4 @@
-//! Bounded mixed activity/timer selection, with a durable first committed winner.
+//! Bounded two-member selection, with a durable first committed winner.
 use super::transaction::Transaction;
 use super::{Result, backend::Backend, refuse, store::Store};
 use axum::http::StatusCode;
@@ -35,6 +35,50 @@ pub(super) fn is_selection(value: &Value) -> bool {
     value["parallel_group_mode"] == "select"
 }
 
+pub(super) struct ChildSelectionAwait<'a> {
+    pub sequence: i64,
+    operation_identity: &'a str,
+    group: &'a str,
+    pub waiting: bool,
+}
+
+impl<'a> ChildSelectionAwait<'a> {
+    pub(super) fn parse(handle: &'a Value) -> Option<Self> {
+        if handle.as_object()?.len() != 6 || handle["member_size"] != 1 {
+            return None;
+        }
+        let sequence = handle["member_base_sequence"].as_i64().filter(|sequence| *sequence > 0)?;
+        handle["await_position"].as_i64().filter(|position| *position > sequence)?;
+        let operation_identity = handle["operation_identity"].as_str()
+            .filter(|identity| !identity.is_empty() && identity.len() <= 191)?;
+        let group = handle["selection_group_id"].as_str().filter(|group| !group.is_empty() && group.len() <= 191)?;
+        let waiting = match handle["status"].as_str()? {
+            "waiting" => true,
+            "resumed" => false,
+            _ => return None,
+        };
+        Some(Self { sequence, operation_identity, group, waiting })
+    }
+
+    pub(super) fn matches(&self, identity: &str, metadata: &Value) -> bool {
+        self.operation_identity == identity
+            && is_selection(metadata)
+            && metadata["parallel_group_id"] == self.group
+            && metadata["selection_member_kind"] == "child"
+            && metadata["selection_member_base_sequence"] == self.sequence
+            && metadata["selection_member_size"] == 1
+    }
+}
+
+pub(super) fn pair_kind(first: &str, second: &str) -> Option<&'static str> {
+    match (first, second) {
+        ("activity", "timer") | ("timer", "activity") | ("child", "signal") | ("signal", "child")
+        | ("child", "condition") | ("condition", "child") => Some("mixed"),
+        ("signal", "signal") => Some("signal"),
+        _ => None,
+    }
+}
+
 pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
     if !present(value) {
         return Ok(json!({}));
@@ -52,9 +96,10 @@ pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
         .ok_or_else(unqualified)?;
     let member_base = base.checked_add(index).ok_or_else(unqualified)?;
     let key = &value["selection_member_key"];
-    if !matches!(kind, "activity" | "timer")
+    if !matches!(kind, "activity" | "timer" | "child" | "signal" | "condition")
         || value["parallel_group_id"] != format!("select-calls:{base}:2")
-        || value["parallel_group_kind"] != "mixed"
+        || (value["parallel_group_kind"] != "mixed"
+            && !(kind == "signal" && value["parallel_group_kind"] == "signal"))
         || value["parallel_group_mode"] != "select"
         || value["parallel_group_size"] != 2
         || value["selection_member_index"] != index
@@ -113,6 +158,21 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<std::collections::BTr
         }
         let kind = match command["type"].as_str() {
             Some("schedule_activity") => "activity",
+            Some("start_child_workflow") => "child",
+            Some("open_signal_wait")
+                if command.get("timeout_seconds").is_none_or(|timeout| {
+                    timeout.is_null() || timeout.as_i64().is_some_and(|seconds| seconds > 0)
+                }) =>
+            {
+                "signal"
+            }
+            Some("open_condition_wait")
+                if command.get("timeout_seconds").is_none_or(|timeout| {
+                    timeout.is_null() || timeout.as_i64().is_some_and(|seconds| seconds > 0)
+                }) =>
+            {
+                "condition"
+            }
             Some("start_timer")
                 if command["delay_seconds"]
                     .as_i64()
@@ -132,10 +192,12 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<std::collections::BTr
     }
     let (first_offset, first_kind, first) = &members[0];
     let (second_offset, second_kind, second) = &members[1];
+    let group_kind = pair_kind(first_kind, second_kind).ok_or_else(unqualified)?;
     if *second_offset != *first_offset + 1
-        || first_kind == second_kind
         || first["parallel_group_index"] != 0
         || second["parallel_group_index"] != 1
+        || first["parallel_group_kind"] != group_kind
+        || second["parallel_group_kind"] != group_kind
         || first["parallel_group_id"] != second["parallel_group_id"]
         || first["selection_member_key"] == second["selection_member_key"]
     {
@@ -186,6 +248,13 @@ pub(super) fn merge(payload: &mut Value, metadata: &Value) {
         .extend(metadata.as_object().expect("metadata object").clone());
 }
 
+pub(super) fn outcome(event_type: &str) -> &'static str {
+    match event_type {
+        "ActivityTimedOut" | "ChildRunFailed" | "ChildRunCancelled" | "ChildRunTerminated" => "failed",
+        _ => "completed",
+    }
+}
+
 pub(super) fn activity_metadata(path: Option<Value>) -> Result<Value> {
     path_metadata(path, "activity")
 }
@@ -220,6 +289,55 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn record_child_selection_await(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        task_id: &str,
+        handle: &Value,
+    ) -> Result<()> {
+        let invalid = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_selection_await");
+        let authored = ChildSelectionAwait::parse(handle).ok_or_else(invalid)?;
+        let original = Self::query(
+            "SELECT l.id,l.child_workflow_run_id,l.parallel_group_path,c.metadata,c.status AS call_status FROM workflow_links l
+             JOIN workflow_child_calls c ON c.parent_workflow_run_id=l.parent_workflow_run_id AND c.sequence=l.sequence
+             WHERE l.parent_workflow_run_id=$1 AND l.child_workflow_run_id=$2 AND l.sequence=$3
+             AND l.link_type='child_workflow' LIMIT 2",
+        )
+        .bind(run_id).bind(authored.operation_identity).bind(authored.sequence)
+        .fetch_all(&mut **tx).await?;
+        let [original] = original.as_slice() else { return Err(invalid()); };
+        let metadata = child_metadata(DB::optional_document_row(original, "parallel_group_path")?)?;
+        if DB::document_row(original, "metadata")?["child_call_id"] != DB::string(original, "id")?
+            || !authored.matches(&DB::string(original, "child_workflow_run_id")?, &metadata)
+        {
+            return Err(invalid());
+        }
+        let last = Self::query(
+            "SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1
+             AND event_type IN ('ChildWorkflowAwaited','SignalWaitOpened','ConditionWaitOpened') ORDER BY sequence DESC LIMIT 1",
+        ).bind(run_id).fetch_optional(&mut **tx).await?;
+        let previous = match last {
+            Some(last) if DB::string(&last, "event_type")? == "ChildWorkflowAwaited" => {
+                DB::document_row(&last, "payload")?["selection_handle"].clone()
+            }
+            _ => Value::Null,
+        };
+        if previous == *handle {
+            return Ok(());
+        }
+        if !authored.waiting {
+            let mut waiting = handle.clone();
+            waiting["status"] = json!("waiting");
+            if previous != waiting
+                || !matches!(DB::string(original, "call_status")?.as_str(),
+                    "completed" | "cancelled" | "terminated" | "failed")
+            {
+                return Err(invalid());
+            }
+        }
+        Self::append(tx, run_id, "ChildWorkflowAwaited", json!({"selection_handle": handle}), Some(task_id), None).await
+    }
+
     pub(super) async fn resolve_selection(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -227,12 +345,12 @@ where
         kind: &str,
         identity: &str,
         event_type: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if !is_selection(metadata) {
-            return Ok(());
+            return Ok(false);
         }
         let Some(group_id) = metadata["parallel_group_id"].as_str() else {
-            return Ok(());
+            return Ok(false);
         };
         if Self::query(DB::SELECTION_RESOLUTION_SQL)
             .bind(run_id)
@@ -241,7 +359,7 @@ where
             .await?
             .is_some()
         {
-            return Ok(());
+            return Ok(false);
         }
         // Called immediately after the member's actual terminal event under
         // the same transition lock; bind its physical durable history ID.
@@ -257,9 +375,10 @@ where
             "selection_group_id":group_id,"selection_group_base_sequence":metadata["parallel_group_base_sequence"],
             "selection_group_size":metadata["parallel_group_size"],"member_key":metadata["selection_member_key"],
             "member_index":metadata["selection_member_index"],"member_base_sequence":metadata["selection_member_base_sequence"],
-            "member_size":1,"operation_kind":kind,"operation_identity":identity,"outcome":if event_type == "ActivityTimedOut" {"failed"} else {"completed"},
+            "member_size":1,"operation_kind":kind,"operation_identity":identity,"outcome":outcome(event_type),
             "resolution_event_id":DB::string(&event,"id")?,"resolution_event_type":event_type,
-        }), None, None).await
+        }), None, None).await?;
+        Ok(true)
     }
 
     /// Wakes the workflow after a member's close, or returns `None` when

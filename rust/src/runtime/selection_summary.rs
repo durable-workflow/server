@@ -18,6 +18,7 @@ struct Member {
     metadata: Value,
     kind: &'static str,
     identity: String,
+    child_call_id: Option<String>,
     terminal: Option<(String, String)>,
 }
 
@@ -35,6 +36,21 @@ impl SelectionHistory {
         }
         let (kind, identity_key) = if event.starts_with("Activity") {
             ("activity", "activity_execution_id")
+        } else if event == "SignalWaitOpened" || event == "SignalApplied"
+            || (event == "TimerFired" && payload["timer_kind"] == "signal_timeout")
+        {
+            ("signal", "signal_wait_id")
+        } else if event == "ConditionWaitOpened" || event == "ConditionWaitSatisfied"
+            || (event == "TimerFired" && payload["timer_kind"] == "condition_timeout")
+        {
+            ("condition", "condition_wait_id")
+        } else if matches!(event,
+            "ChildWorkflowScheduled" | "ChildRunCompleted" | "ChildRunFailed"
+            | "ChildRunCancelled" | "ChildRunTerminated"
+        ) {
+            ("child", "child_workflow_run_id")
+        } else if matches!(payload["timer_kind"].as_str(), Some("signal_timeout" | "condition_timeout")) {
+            return true;
         } else if event.starts_with("Timer") {
             ("timer", "timer_id")
         } else {
@@ -60,15 +76,26 @@ impl SelectionHistory {
         {
             return false;
         }
+        let child_call_id = if kind == "child" {
+            let Some(call_id) = payload["child_call_id"].as_str().filter(|id| !id.is_empty()) else {
+                return false;
+            };
+            Some(call_id.to_owned())
+        } else {
+            None
+        };
         let group = self.groups.entry(group_id.clone()).or_default();
         let index = index as usize;
-        if matches!(event, "ActivityScheduled" | "TimerScheduled") {
+        if matches!(event, "ActivityScheduled" | "TimerScheduled" | "ChildWorkflowScheduled" | "SignalWaitOpened" | "ConditionWaitOpened") {
             if group.resolved
                 || group.members.contains_key(&index)
                 || group.members.values().any(|member| {
-                    member.kind == kind
-                        || member.metadata["selection_member_key"]
+                    member.metadata["selection_member_key"]
                             == metadata["selection_member_key"]
+                        || super::selections::pair_kind(member.kind, kind).is_none_or(|group_kind| {
+                            metadata["parallel_group_kind"] != group_kind
+                                || member.metadata["parallel_group_kind"] != group_kind
+                        })
                 })
             {
                 return false;
@@ -79,6 +106,7 @@ impl SelectionHistory {
                     metadata,
                     kind,
                     identity: identity.into(),
+                    child_call_id,
                     terminal: None,
                 },
             );
@@ -87,7 +115,8 @@ impl SelectionHistory {
         let Some(member) = group.members.get_mut(&index) else {
             return false;
         };
-        if member.identity != identity
+        if (member.child_call_id.is_none() && member.identity != identity)
+            || member.child_call_id != child_call_id
             || member.kind != kind
             || member.metadata != metadata
             || member.terminal.is_some()
@@ -101,12 +130,20 @@ impl SelectionHistory {
                 | "TimerFired"
                 | "TimerCancelled"
                 | "ActivityCancelled"
+                | "ChildRunCompleted"
+                | "ChildRunFailed"
+                | "ChildRunCancelled"
+                | "ChildRunTerminated"
+                | "SignalApplied"
+                | "ConditionWaitSatisfied"
         ) {
             member.terminal = Some((id.into(), event.into()));
             if !group.resolved {
                 if !matches!(
                     event,
                     "ActivityCompleted" | "ActivityTimedOut" | "TimerFired"
+                        | "ChildRunCompleted" | "ChildRunFailed" | "ChildRunCancelled"
+                        | "ChildRunTerminated" | "SignalApplied" | "ConditionWaitSatisfied"
                 ) {
                     return false;
                 }
@@ -149,12 +186,7 @@ impl SelectionHistory {
             || payload["operation_identity"] != member.identity
             || payload["resolution_event_id"] != *event_id
             || payload["resolution_event_type"] != *event_type
-            || payload["outcome"]
-                != if event_type == "ActivityTimedOut" {
-                    "failed"
-                } else {
-                    "completed"
-                }
+            || payload["outcome"] != super::selections::outcome(event_type)
         {
             return false;
         }
