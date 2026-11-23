@@ -709,6 +709,56 @@ esac
         self.assertIn("auth.authToken=not-a-secret", arguments)
         self.assertIn("auth.authToken=not-a-secret", RELEASE.helm_value_arguments())
 
+    def test_anonymous_install_bootstraps_the_native_database_before_helm(self) -> None:
+        revision = "a" * 40
+        digest = "sha256:" + "b" * 64
+
+        for app_version in ("3.22.1", "2.11.8"):
+            with (
+                self.subTest(app_version=app_version),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                package = root / "durable-workflow-test.tgz"
+                package.write_bytes(b"fixture package")
+                image = f"docker.io/durableworkflow/server:{app_version}"
+                source = {
+                    "name": "durable-workflow",
+                    "version": "5.4.0",
+                    "app_version": app_version,
+                    "image_reference": image,
+                    "release_image_reference": image,
+                    "annotations": {RELEASE.SOURCE_REVISION_ANNOTATION: revision},
+                }
+
+                def pull(destination: Path, *_args: object, **_options: object) -> None:
+                    destination.mkdir()
+                    (destination / package.name).write_bytes(package.read_bytes())
+
+                with (
+                    patch.object(RELEASE, "validate_source", return_value=source),
+                    patch.object(RELEASE, "pull_chart", side_effect=pull),
+                    patch.object(RELEASE, "package_metadata", return_value=source),
+                    patch.object(
+                        RELEASE, "run",
+                        return_value=RELEASE.subprocess.CompletedProcess([], 0, "", ""),
+                    ) as run,
+                ):
+                    RELEASE.verify_oci(package, revision, digest, root / "evidence.json")
+
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual(commands[-1][:3], ["helm", "install", "public-oci-check"])
+                if app_version.startswith("3."):
+                    self.assertEqual(len(commands), 2)
+                    self.assertEqual(
+                        Path(commands[0][1]).name, "helm-chart-native-database-fixture.sh"
+                    )
+                    self.assertEqual(
+                        commands[0][2:], ["durable-workflow", "public-oci-check", f"{image}@{digest}"]
+                    )
+                else:
+                    self.assertEqual(len(commands), 1)
+
     def test_chart_app_version_is_separate_from_the_frozen_php_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             record = Path(temporary) / "source-release.json"
