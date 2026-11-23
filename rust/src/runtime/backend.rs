@@ -132,6 +132,7 @@ pub(super) trait Backend: Database {
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled' AND payload->>'timer_id'=$2 ORDER BY sequence DESC LIMIT 1";
     /// The history sequence of a signal's `SignalReceived` event.
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SignalReceived' AND payload->>'signal_id'=$2 ORDER BY sequence LIMIT 1";
+    const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ConditionWaitOpened' AND payload->>'condition_wait_input_order'='durable_receipt_order' LIMIT 1";
     // PostgreSQL compares text case-sensitively.
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
@@ -374,6 +375,7 @@ ORDER BY t.available_order,t.id LIMIT 100
     const TIMER_TASK_SQL: &str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' AND status='ready' AND json_extract(payload,'$.timer_id')=$2 AND namespace=$3";
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled' AND json_extract(payload,'$.timer_id')=$2 ORDER BY sequence DESC LIMIT 1";
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SignalReceived' AND json_extract(payload,'$.signal_id')=$2 ORDER BY sequence LIMIT 1";
+    const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ConditionWaitOpened' AND json_extract(payload,'$.condition_wait_input_order')='durable_receipt_order' LIMIT 1";
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
         "substr(s.arguments,1,30) COLLATE BINARY='dw-native-external-payload-v1:'",
@@ -712,6 +714,7 @@ impl Backend for MySql {
     const TIMER_TASK_SQL: &str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=? AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? AND BINARY namespace=BINARY ?";
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='TimerScheduled' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? ORDER BY sequence DESC LIMIT 1";
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SignalReceived' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.signal_id'))=? ORDER BY sequence LIMIT 1";
+    const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=? AND event_type='ConditionWaitOpened' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.condition_wait_input_order'))='durable_receipt_order' LIMIT 1";
     // The payload column's collation ignores case; compare bytes.
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(

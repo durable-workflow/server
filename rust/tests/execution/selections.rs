@@ -568,6 +568,7 @@ async fn ordered_selected_condition_keeps_the_timeout_boundary_without_claiming_
         let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
             "worker_id":worker,"task_queue":"test","runtime":"php",
             "supported_workflow_types":["echo"],"supported_activity_types":[],
+            "capabilities":["condition_wait_input_order"],
             "workflow_command_contracts":{"echo":{"signals":["approve"],"queries":[],"updates":[]}}
         })).await;
         assert_eq!(status, StatusCode::CREATED, "{registered}");

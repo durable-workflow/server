@@ -2804,6 +2804,13 @@ where
                 return Ok(false);
             }
         }
+        // A worker must understand these outcomes for the rest of the run,
+        // including replay after its marked condition has already resolved.
+        if !supports(super::wait_timeouts::CONDITION_INPUT_ORDER_FIELD)
+            && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(run_id).fetch_optional(&mut *connection).await?.is_some()
+        {
+            return Ok(false);
+        }
         Ok(true)
     }
 
@@ -4485,6 +4492,14 @@ where
         created: &mut Vec<String>,
     ) -> Result<()> {
         let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn, codec, grouped_condition_repeats } = *apply;
+        if (super::wait_timeouts::uses_condition_input_order(command)
+            || command["type"] == super::wait_timeouts::RESOLVE_CONDITION_WAIT)
+            && !super::wait_timeouts::supports_condition_input_order(
+                &DB::document_row(task, "payload")?[super::cooperative::CLAIM_KEY]["capabilities"],
+            )
+        {
+            return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_order_not_supported"));
+        }
         if command["type"] != super::local_activities::COMMAND {
             Self::write_local_activities(tx).await?;
         }

@@ -15,6 +15,7 @@ fn anchored(occurrence: &str, remaining: i64, budget: i64) -> Value {
 async fn author(app: &Router, namespace: &str, worker: &str) -> Value {
     let response = namespaces::scoped(app, namespace, "POST", "/api/worker/register", json!({
         "worker_id":worker,"task_queue":"test","runtime":"php","supported_workflow_types":["echo"],"supported_activity_types":[],
+        "capabilities":["condition_wait_input_order"],
         "workflow_command_contracts":{"echo":{"signals":["payload"],"signal_contracts":[{"name":"payload","parameters":[{
             "name":"value","position":0,"type":"int","required":true,"variadic":false,"default_available":false,"allows_null":false}]}]}}
     })).await;
@@ -271,7 +272,11 @@ async fn unhandled_signal_receipts_cannot_strand_an_ordered_timeout() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    register(&app, "deadline-worker", json!(["echo"]), json!([])).await;
+    let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
+        "worker_id":"deadline-worker","task_queue":"test","runtime":"php",
+        "supported_workflow_types":["echo"],"capabilities":["condition_wait_input_order"],
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
     let run = namespaces::start_scoped(&app, namespace, "ordered-receipt-without-handler").await;
     let initial = claim(&app, namespace).await;
     let mut command = anchored("receipt-order:0", 2, 2);
@@ -303,7 +308,15 @@ async fn after_fire_only_a_successful_update_can_supply_receipt_evidence() {
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
         let app = router(runtime.clone());
-        update_worker(&app, "deadline-worker").await;
+        let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
+            "worker_id":"deadline-worker","task_queue":"test","runtime":"php","supported_workflow_types":["echo"],
+            "capabilities":["workflow_updates","condition_wait_input_order"],"workflow_command_contracts":{"echo":{
+                "signals":[],"updates":["set"],"update_validators":[],"update_contracts":[{"name":"set",
+                    "parameters":[{"name":"value","type":"int","required":true,"variadic":false,
+                        "default_available":false,"allows_null":false}]}]
+            }},
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{registered}");
         let workflow = "ordered-update-evidence";
         let run = namespaces::start_scoped(&app, namespace, workflow).await;
         let initial = claim(&app, namespace).await;
@@ -357,6 +370,47 @@ async fn after_fire_only_a_successful_update_can_supply_receipt_evidence() {
         runtime.close().await;
         database.remove().await;
     }
+}
+
+#[tokio::test]
+async fn ordered_condition_history_stays_with_capable_workers_after_resolution() {
+    let namespace = "default";
+    let (database, runtime, app) = setup(namespace).await;
+    let legacy = "legacy-deadline-worker";
+    register(&app, legacy, json!(["echo"]), json!([])).await;
+    let mut command = anchored("receipt-order:0", 0, 0);
+    command["condition_wait_input_order"] = json!("durable_receipt_order");
+
+    let unmarked = namespaces::start_scoped(&app, namespace, "ordered-condition-claim-guard").await;
+    let old = poll(&app, legacy, "workflow").await;
+    let before = history(&app, namespace, &unmarked).await;
+    let (status, result) = finish(&app, namespace, &old, json!([command.clone()])).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["reason"], "condition_wait_input_order_not_supported");
+    assert_eq!(history(&app, namespace, &unmarked).await, before);
+    assert_eq!(finish(&app, namespace, &old, json!([{
+        "type":"complete_workflow","result":envelope(Payload::Boolean(true)),
+    }])).await.0, StatusCode::OK);
+
+    let marked = namespaces::start_scoped(&app, namespace, "ordered-condition-history-guard").await;
+    let initial = claim(&app, namespace).await;
+    assert_eq!(finish(&app, namespace, &initial, json!([command])).await.0, StatusCode::OK);
+    let fired = wait_for_fire(&app, namespace, &marked, 1).await;
+    assert_eq!(poll(&app, legacy, "workflow").await, Value::Null);
+    let wake = claim(&app, namespace).await;
+    let (status, result) = finish(&app, namespace, &wake, json!([{
+        "type":"resolve_condition_wait", "condition_wait_id":fired[0]["condition_wait_id"], "satisfied":false,
+    }, {"type":"start_timer","delay_seconds":0}])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    wait_for_fire(&app, namespace, &marked, 2).await;
+    assert_eq!(poll(&app, legacy, "workflow").await, Value::Null);
+    let wake = claim(&app, namespace).await;
+    assert_eq!(wake["run_id"], marked["run_id"]);
+    assert_eq!(finish(&app, namespace, &wake, json!([{
+        "type":"complete_workflow","result":envelope(Payload::Boolean(false)),
+    }])).await.0, StatusCode::OK);
+    runtime.close().await;
+    database.remove().await;
 }
 
 /// Several false wakes, each reopened after a delay (S→R latency), keep the

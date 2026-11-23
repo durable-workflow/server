@@ -43,6 +43,10 @@ pub(super) fn uses_condition_input_order(payload: &Value) -> bool {
     payload[CONDITION_INPUT_ORDER_FIELD] == DURABLE_RECEIPT_ORDER
 }
 
+pub(super) fn supports_condition_input_order(capabilities: &Value) -> bool {
+    capabilities.as_array().is_some_and(|flags| flags.iter().any(|flag| flag == CONDITION_INPUT_ORDER_FIELD))
+}
+
 pub(super) fn validate_condition_input_order(command: &Value) -> Result<()> {
     if command.get(CONDITION_INPUT_ORDER_FIELD).is_none() {
         return Ok(());
