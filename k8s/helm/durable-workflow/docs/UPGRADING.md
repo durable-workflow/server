@@ -69,6 +69,12 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.4.1 / Server 3.22.2 (native)
+
+Chart 5.4.1 selects [native Server 3.22.2](../../../../docs/releases/3.22.2.md).
+Upgrade from chart 5.4.0 with the usual Helm rollout. For an older
+installation, check the database preparation and schema guidance below.
+
 ### Chart 5.4.0 / Server 3.22.1 (native)
 
 Chart 5.4.0 selects [native Server 3.22.1](../../../../docs/releases/3.22.1.md).
