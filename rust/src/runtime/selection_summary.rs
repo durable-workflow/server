@@ -20,7 +20,15 @@ struct Member {
     kind: &'static str,
     identity: String,
     child_call_id: Option<String>,
+    condition: Option<ConditionMember>,
     terminal: Option<(String, String)>,
+}
+
+struct ConditionMember {
+    id: String,
+    sequence: i64,
+    occurrence: Value,
+    reopening: bool,
 }
 
 impl Member {
@@ -58,7 +66,11 @@ impl Group {
 
 impl SelectionHistory {
     pub(super) fn complete(&self) -> bool {
-        self.pending.is_none() && self.groups.values().all(Group::complete)
+        self.pending.is_none() && self.groups.values().all(|group| {
+            group.complete() && group.members.values().all(|member| {
+                member.condition.as_ref().is_none_or(|condition| !condition.reopening)
+            })
+        })
     }
 
     pub(super) fn apply(&mut self, id: &str, event: &str, payload: &Value) -> bool {
@@ -101,9 +113,9 @@ impl SelectionHistory {
             return false;
         };
         let index = entry["parallel_group_index"].as_u64().unwrap() as usize;
-        if payload["sequence"] != member_position(entry) {
+        let Some(sequence) = payload["sequence"].as_i64() else {
             return false;
-        }
+        };
         let child_call_id = if kind == "child" {
             let Some(call_id) = payload["child_call_id"].as_str().filter(|id| !id.is_empty()) else {
                 return false;
@@ -113,8 +125,22 @@ impl SelectionHistory {
             None
         };
         let group = self.groups.entry(group_id.clone()).or_default();
+        if event == "ConditionWaitOpened" && sequence > member_position(entry) {
+            let Some(member) = group.members.get_mut(&index) else { return false };
+            let Some(condition) = member.condition.as_mut() else { return false };
+            if !condition.reopening || member.terminal.is_some() || member.metadata != metadata
+                || condition.occurrence != payload["condition_wait_occurrence_id"]
+                || condition.sequence >= sequence || condition.id == identity
+            {
+                return false;
+            }
+            condition.id = identity.into();
+            condition.sequence = sequence;
+            condition.reopening = false;
+            return true;
+        }
         if matches!(event, "ActivityScheduled" | "TimerScheduled" | "ChildWorkflowScheduled" | "SignalWaitOpened" | "ConditionWaitOpened") {
-            if !group.accepts(entry, index) {
+            if sequence != member_position(entry) || !group.accepts(entry, index) {
                 return false;
             }
             group.members.insert(
@@ -124,6 +150,12 @@ impl SelectionHistory {
                     kind,
                     identity: identity.into(),
                     child_call_id,
+                    condition: (kind == "condition").then(|| ConditionMember {
+                        id: identity.into(),
+                        sequence,
+                        occurrence: payload["condition_wait_occurrence_id"].clone(),
+                        reopening: false,
+                    }),
                     terminal: None,
                 },
             );
@@ -135,13 +167,31 @@ impl SelectionHistory {
         let Some(member) = group.members.get_mut(&index) else {
             return false;
         };
-        if (member.child_call_id.is_none() && member.identity != identity)
-            || member.child_call_id != child_call_id
+        let correct_subject = if let Some(condition) = member.condition.as_ref() {
+            !condition.reopening
+                && condition.id == identity
+                && condition.sequence == sequence
+                && condition.occurrence == payload["condition_wait_occurrence_id"]
+        } else {
+            sequence == member_position(entry)
+                && (member.child_call_id.is_some() || member.identity == identity)
+        };
+        if !correct_subject || member.child_call_id != child_call_id
             || member.kind != kind
             || member.metadata != metadata
             || member.terminal.is_some()
         {
             return false;
+        }
+        if let Some(reopened) = payload.get("condition_wait_reopened") {
+            let Some(condition) = member.condition.as_mut() else { return false };
+            if event != "ConditionWaitSatisfied" || reopened != true
+                || condition.occurrence.as_str().is_none_or(str::is_empty)
+            {
+                return false;
+            }
+            condition.reopening = true;
+            return true;
         }
         if matches!(
             event,

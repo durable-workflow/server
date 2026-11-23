@@ -158,7 +158,11 @@ impl ChildSummaryHistory {
                 return false;
             }
             if handle.waiting {
-                self.consume_selected_result();
+                if self.active_selection().is_some_and(|prior| prior != (handle.sequence..handle.sequence + handle.size)) {
+                    self.supersede_selection_await();
+                } else {
+                    self.selected_result = None;
+                }
                 self.awaited_selection = Some(record.clone());
             } else {
                 let mut waiting = record.clone();

@@ -195,6 +195,9 @@ impl AllHistory {
     pub(super) fn apply(&mut self, event: &str, payload: &Value) -> bool {
         // A grouped condition's timeout timer belongs to its condition member:
         // only its firing resolves that member (Core `waitCompletedSuccessfully`).
+        if event.starts_with("Timer") && payload["timer_kind"] == "signal_timeout" {
+            return true;
+        }
         let condition_timer = event.starts_with("Timer") && payload["timer_kind"] == "condition_timeout";
         if condition_timer && event != "TimerFired" {
             return true;

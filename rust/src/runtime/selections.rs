@@ -4,6 +4,7 @@ use super::{Result, backend::Backend, memo_limits::COMMAND_BATCH_SIZE, refuse, s
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
+use std::collections::{BTreeMap, BTreeSet};
 
 const FIELDS: [&str; 11] = [
     "parallel_group_id",
@@ -46,6 +47,15 @@ pub(super) fn is_selection(value: &Value) -> bool {
 pub(super) fn member_position(entry: &Value) -> i64 {
     entry["parallel_group_base_sequence"].as_i64().unwrap()
         + entry["parallel_group_index"].as_i64().unwrap()
+}
+
+pub(super) fn reopened_condition(payload: &Value) -> bool {
+    payload["parallel_group_mode"] == "select"
+        && payload["selection_member_kind"] == "condition"
+        && matches!(
+            (payload["sequence"].as_i64(), payload["selection_member_base_sequence"].as_i64()),
+            (Some(physical), Some(logical)) if physical > logical
+        )
 }
 
 pub(super) fn member_identity(entry: &Value, operation_identity: &str) -> String {
@@ -235,11 +245,11 @@ pub(super) fn fields(command: &Value, ordinary: &[&str]) -> Result<()> {
     super::store::reject_fields(command, &allowed)
 }
 
-/// A complete group must arrive in one atomic authored batch. Other shapes
-/// remain refused rather than treating parallel metadata as ignorable options.
-pub(super) fn validate_batch(commands: &[Value]) -> Result<std::collections::BTreeSet<String>> {
-    let partial_occurrences = super::all_groups::validate_batch(commands)?;
-    let mut members = Vec::new();
+/// A new selection must arrive in one atomic batch. A partial batch may
+/// repeat a condition only after its occurrence matches the locked history.
+pub(super) fn validate_batch(commands: &[Value]) -> Result<BTreeSet<String>> {
+    let mut partial_occurrences = super::all_groups::validate_batch(commands)?;
+    let mut groups = BTreeMap::<String, Vec<(usize, Value)>>::new();
     for (offset, command) in commands.iter().enumerate() {
         if !present(command) {
             continue;
@@ -281,25 +291,41 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<std::collections::BTr
             }
             _ => return Err(unqualified()),
         };
-        members.push((offset, metadata(command, kind)?));
+        let leaf = metadata(command, kind)?;
+        let group = selection(&leaf).unwrap()["parallel_group_id"].as_str().unwrap();
+        groups.entry(group.to_owned()).or_default().push((offset, leaf));
     }
-    let Some((first_offset, first_leaf)) = members.first() else {
-        return Ok(partial_occurrences);
-    };
-    let first = selection(first_leaf).unwrap();
-    if first["parallel_group_size"] != members.len() {
-        return Err(unqualified());
-    }
-    let mut previous = None;
-    for (index, (offset, leaf)) in members.iter().enumerate() {
-        let entry = selection(leaf).unwrap();
-        if *offset != first_offset + index || !member_follows(previous, entry) {
+    let mut new_selection = false;
+    for members in groups.into_values() {
+        let (first_offset, first_leaf) = &members[0];
+        let first = selection(first_leaf).unwrap();
+        if first["parallel_group_size"] != members.len() {
+            for (offset, _) in members {
+                let command = &commands[offset];
+                let occurrence = command["condition_wait_occurrence_id"].as_str()
+                    .filter(|id| !id.is_empty() && command["type"] == "open_condition_wait")
+                    .ok_or_else(unqualified)?;
+                if !partial_occurrences.insert(occurrence.to_owned()) {
+                    return Err(unqualified());
+                }
+            }
+            continue;
+        }
+        if new_selection {
             return Err(unqualified());
         }
-        previous = Some(entry);
-    }
-    if previous.is_none_or(|entry| entry["selection_member_index"] != 1) {
-        return Err(unqualified());
+        new_selection = true;
+        let mut previous = None;
+        for (index, (offset, leaf)) in members.iter().enumerate() {
+            let entry = selection(leaf).unwrap();
+            if *offset != first_offset + index || !member_follows(previous, entry) {
+                return Err(unqualified());
+            }
+            previous = Some(entry);
+        }
+        if previous.is_none_or(|entry| entry["selection_member_index"] != 1) {
+            return Err(unqualified());
+        }
     }
     Ok(partial_occurrences)
 }
@@ -416,16 +442,7 @@ where
             all_completed &= status == "completed";
             failed |= child_status_failed(&status);
         }
-        let last = Self::query(
-            "SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1
-             AND event_type IN ('ChildWorkflowAwaited','SignalWaitOpened','ConditionWaitOpened') ORDER BY sequence DESC LIMIT 1",
-        ).bind(run_id).fetch_optional(&mut **tx).await?;
-        let previous = match last {
-            Some(last) if DB::string(&last, "event_type")? == "ChildWorkflowAwaited" => {
-                DB::document_row(&last, "payload")?["selection_handle"].clone()
-            }
-            _ => Value::Null,
-        };
+        let previous = Self::latest_child_selection_await(tx, run_id).await?;
         if previous == *handle {
             return Ok(());
         }
@@ -437,6 +454,59 @@ where
             }
         }
         Self::append(tx, run_id, "ChildWorkflowAwaited", json!({"selection_handle": handle}), Some(task_id), None).await
+    }
+
+    async fn latest_child_selection_await(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<Value> {
+        // A condition retry writes a new physical wait for an old member.
+        // Only a new logical wait supersedes the child-await marker.
+        let mut before = i64::MAX;
+        loop {
+            let page = Self::query(
+                "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1
+                 AND sequence<$2 AND event_type IN ('ChildWorkflowAwaited','SignalWaitOpened','ConditionWaitOpened')
+                 ORDER BY sequence DESC LIMIT 16",
+            ).bind(run_id).bind(before).fetch_all(&mut **tx).await?;
+            for event in &page {
+                let kind = DB::string(event, "event_type")?;
+                let payload = DB::document_row(event, "payload")?;
+                if kind == "ConditionWaitOpened" && reopened_condition(&payload) {
+                    before = DB::number(event, "sequence")?;
+                    continue;
+                }
+                return Ok(if kind == "ChildWorkflowAwaited" {
+                    payload["selection_handle"].clone()
+                } else {
+                    Value::Null
+                });
+            }
+            if page.len() < 16 {
+                return Ok(Value::Null);
+            }
+        }
+    }
+
+    async fn selection_condition_identity(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        entry: &Value,
+        completion: &Value,
+        current_id: &str,
+    ) -> Result<String> {
+        if !reopened_condition(completion) {
+            return Ok(current_id.into());
+        }
+        let mismatch = || refuse(StatusCode::CONFLICT, "selection_resolution_mismatch");
+        let occurrence = completion["condition_wait_occurrence_id"].as_str().ok_or_else(mismatch)?;
+        let waits = Self::waits(tx, run_id).await?;
+        let original = waits.conditions.iter().find(|wait| {
+            wait.sequence == Some(member_position(entry)) && wait.occurrence() == Some(occurrence)
+        }).ok_or_else(mismatch)?;
+        let opening = waits.condition_opening(&original.id).ok_or_else(mismatch)?;
+        let metadata = metadata(&opening.payload, "condition")?;
+        if !selection(&metadata).is_some_and(|original| same_member(original, entry)) {
+            return Err(mismatch());
+        }
+        Ok(original.id.clone())
     }
 
     pub(super) async fn resolve_selection(
@@ -463,7 +533,7 @@ where
         }
         // Called immediately after the member's actual terminal event under
         // the same transition lock; bind its physical durable history ID.
-        let event = Self::query("SELECT id,event_type FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
+        let event = Self::query("SELECT id,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_one(&mut **tx).await?;
         if DB::string(&event, "event_type")? != event_type {
             return Err(refuse(
@@ -471,12 +541,18 @@ where
                 "selection_resolution_mismatch",
             ));
         }
+        let identity = if kind == "condition" {
+            let payload = DB::document_row(&event, "payload")?;
+            Self::selection_condition_identity(tx, run_id, entry, &payload, identity).await?
+        } else {
+            member_identity(entry, identity)
+        };
         Self::append(tx, run_id, "SelectionResolved", json!({
             "selection_group_id":group_id,"selection_group_base_sequence":entry["parallel_group_base_sequence"],
             "selection_group_size":entry["parallel_group_size"],"member_key":entry["selection_member_key"],
             "member_index":entry["selection_member_index"],"member_base_sequence":entry["selection_member_base_sequence"],
             "member_size":entry["selection_member_size"],"operation_kind":operation_kind,
-            "operation_identity":member_identity(entry, identity),"outcome":outcome(event_type),
+            "operation_identity":identity,"outcome":outcome(event_type),
             "resolution_event_id":DB::string(&event,"id")?,"resolution_event_type":event_type,
         }), None, None).await?;
         Ok(true)

@@ -2169,12 +2169,24 @@ where
             };
             for condition in awakened {
                 let condition_opening = waits.condition_opening(&condition.id);
-                let satisfied = condition.satisfied(condition_opening, &payload);
-                Self::append(tx, run_id, "ConditionWaitSatisfied", satisfied.clone(), Some(task_id), None).await?;
+                let mut satisfied = condition.satisfied(condition_opening, &payload);
                 // A task that reopens the same occurrence claims no winner.
-                let reopened = condition.occurrence().is_some_and(|occurrence| commands.iter().any(|command| {
-                    command["type"] == "open_condition_wait" && command["condition_wait_occurrence_id"] == occurrence
-                }));
+                let selected = super::selections::is_selection(&satisfied);
+                let mut reopened = false;
+                if let Some(occurrence) = condition.occurrence() {
+                    for command in commands.iter().filter(|command| {
+                        command["type"] == "open_condition_wait" && command["condition_wait_occurrence_id"] == occurrence
+                    }) {
+                        if selected && command["parallel_group_path"] != satisfied["parallel_group_path"] {
+                            return Err(super::all_groups::invalid());
+                        }
+                        reopened = true;
+                    }
+                }
+                if reopened && selected {
+                    satisfied["condition_wait_reopened"] = json!(true);
+                }
+                Self::append(tx, run_id, "ConditionWaitSatisfied", satisfied, Some(task_id), None).await?;
                 if !reopened {
                     let group = condition_opening.map(|opening| super::activity_metadata::payload_for_path(&opening.payload)).unwrap_or_default();
                     if let Some(selected) =

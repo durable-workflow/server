@@ -446,6 +446,118 @@ async fn selected_child_group_wins_only_when_its_last_child_finishes() {
     database.remove().await;
 }
 
+#[tokio::test]
+async fn false_selected_condition_wake_reuses_the_member_and_then_can_win() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "condition-selection", json!(["echo"]), json!([])).await;
+    let started = start(&app, "selected-condition-reopen").await;
+    let task = poll(&app, "condition-selection", "workflow").await;
+    let mut initial = nested_child_selection(true);
+    let condition = &mut initial[2];
+    condition["type"] = json!("open_condition_wait");
+    condition.as_object_mut().unwrap().remove("signal_name");
+    condition["selection_member_kind"] = json!("condition");
+    condition["parallel_group_path"][0]["selection_member_kind"] = json!("condition");
+    condition["condition_wait_occurrence_id"] = json!("selection-condition:0");
+    condition["condition_key"] = json!("approval");
+    condition["condition_definition_fingerprint"] = json!("approval-v1");
+    condition["timeout_seconds"] = json!(240);
+    condition["deadline_policy"] = json!("occurrence");
+    condition["condition_wait_timeout_budget_seconds"] = json!(240);
+    let condition = condition.clone();
+    let history = || run_history(&app, &started["workflow_id"], &started["run_id"]);
+
+    let prefix = history().await;
+    assert_eq!(
+        finish_task(&app, &task, json!([condition.clone()])).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    );
+    assert_eq!(history().await, prefix, "a partial group cannot author its initial wait");
+    let (status, entry) = finish_task(&app, &task, initial).await;
+    assert_eq!(status, StatusCode::OK, "{entry}");
+
+    let (status, _) = request(
+        &app, "POST", "/api/workflows/selected-condition-reopen/signal/noise", json!([]),
+    ).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let false_wake = poll(&app, "condition-selection", "workflow").await;
+    let mut wrong = condition.clone();
+    wrong["condition_definition_fingerprint"] = json!("approval-v2");
+    let prefix = history().await;
+    assert_eq!(
+        finish_task(&app, &false_wake, json!([wrong])).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    );
+    assert_eq!(history().await, prefix, "the mismatched repeat changed history");
+    let mut ungrouped = condition.clone();
+    ungrouped.as_object_mut().unwrap().retain(|field, _| {
+        !field.starts_with("parallel_group_") && !field.starts_with("selection_member_")
+    });
+    assert_eq!(
+        finish_task(&app, &false_wake, json!([ungrouped])).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    );
+    assert_eq!(history().await, prefix, "the repeat without its group changed history");
+    let (status, result) = finish_task(&app, &false_wake, json!([condition])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let after_false = history().await;
+    let events = after_false.as_array().unwrap();
+    assert!(events.iter().all(|event| event["event_type"] != "SelectionResolved"));
+    let opened: Vec<_> = events.iter().filter(|event| event["event_type"] == "ConditionWaitOpened").collect();
+    assert_eq!(opened.len(), 2);
+    let original = &opened[0]["payload"];
+    let reopened = &opened[1]["payload"];
+    assert_eq!(reopened["parallel_group_path"], original["parallel_group_path"]);
+    assert_eq!(reopened["condition_wait_occurrence_id"], original["condition_wait_occurrence_id"]);
+    assert_ne!(reopened["condition_wait_id"], original["condition_wait_id"]);
+    assert_ne!(reopened["sequence"], original["sequence"]);
+    assert!(original["occurrence_deadline_at"].is_string());
+    assert_eq!(reopened["occurrence_deadline_at"], original["occurrence_deadline_at"]);
+    assert!(events.iter().any(|event| {
+        event["event_type"] == "TimerCancelled" && event["payload"]["condition_wait_id"] == original["condition_wait_id"]
+    }));
+    assert!(events.iter().any(|event| {
+        event["event_type"] == "ConditionWaitSatisfied" && event["payload"]["condition_wait_reopened"] == true
+    }));
+
+    let (status, _) = request(
+        &app, "POST", "/api/workflows/selected-condition-reopen/signal/approve", json!([]),
+    ).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let true_wake = poll(&app, "condition-selection", "workflow").await;
+    let path = format!("/api/worker/workflow-tasks/{}/fail", true_wake["task_id"].as_str().unwrap());
+    let (status, result) = request(&app, "POST", &path, json!({
+        "lease_owner": true_wake["lease_owner"],
+        "workflow_task_attempt": true_wake["workflow_task_attempt"],
+        "failure": {"type":"WorkflowTaskWaitingForHistory","message":"Replay with the true condition result."},
+    })).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let after_true = history().await;
+    let events = after_true.as_array().unwrap();
+    let resolved: Vec<_> = events.iter().filter(|event| event["event_type"] == "SelectionResolved").collect();
+    assert_eq!(resolved.len(), 1);
+    let winner = &resolved[0]["payload"];
+    assert_eq!(winner["operation_identity"], original["condition_wait_id"]);
+    assert_eq!(winner["member_base_sequence"], 3);
+    let satisfied = events.iter().rev().find(|event| event["event_type"] == "ConditionWaitSatisfied").unwrap();
+    assert_eq!(satisfied["payload"]["condition_wait_id"], reopened["condition_wait_id"]);
+    assert!(satisfied["payload"].get("condition_wait_reopened").is_none());
+    assert_eq!(winner["resolution_event_id"], database.selection_history_id(
+        started["run_id"].as_str().unwrap(), satisfied["sequence"].as_i64().unwrap(),
+    ).await);
+
+    let replay = poll(&app, "condition-selection", "workflow").await;
+    assert_eq!(replay["run_id"], started["run_id"]);
+    assert_eq!(finish_task(&app, &replay, json!([{
+        "type":"complete_workflow","result":envelope(Payload::Boolean(true)),
+    }])).await.0, StatusCode::OK);
+    runtime.close().await;
+    database.remove().await;
+}
+
 async fn debug(app: &Router, started: &Value) -> Value {
     let (status, value) = request(
         app,
