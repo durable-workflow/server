@@ -344,7 +344,15 @@ where
     pub(super) async fn rollouts(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str) -> Result<Vec<Rollout>> {
         let rows = Self::query("SELECT * FROM workflow_worker_build_id_rollouts WHERE namespace=$1 AND task_queue=$2 ORDER BY id")
             .bind(namespace).bind(task_queue).fetch_all(&mut **tx).await?;
-        rows.iter().map(Rollout::read::<DB>).collect()
+        let mut rollouts = Vec::with_capacity(rows.len());
+        // The SQL predicates use the scope index. Match routed names exactly
+        // so database collation does not choose a different scope.
+        for row in &rows {
+            if DB::string(row, "namespace")? == namespace && DB::string(row, "task_queue")? == task_queue {
+                rollouts.push(Rollout::read::<DB>(row)?);
+            }
+        }
+        Ok(rollouts)
     }
 
     async fn rollout(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, key: &str) -> Result<Option<Rollout>> {
@@ -366,11 +374,11 @@ where
         tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, workflow_type: &str,
     ) -> Result<Option<String>> {
         let rollouts = Self::rollouts(tx, namespace, task_queue).await?;
-        Ok(selected_rollout(&rollouts).and_then(|rollout| {
-            rollout.workflow_types.as_ref()?.as_array()?
-                .iter().any(|kind| kind.as_str() == Some(workflow_type))
-                .then(|| public(&rollout.key)).flatten()
-        }))
+        let qualified = selected_rollout(&rollouts).filter(|rollout| {
+            rollout.workflow_types.as_ref().and_then(Value::as_array)
+                .is_some_and(|types| types.iter().any(|kind| kind.as_str() == Some(workflow_type)))
+        });
+        Ok(qualified.and_then(|rollout| public(&rollout.key)))
     }
 
     /// `workerRegistrationStatus`: a registration on a draining build stays

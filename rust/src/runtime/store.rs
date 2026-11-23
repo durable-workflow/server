@@ -808,10 +808,13 @@ where
         stale_after: i64,
     ) -> Result<Vec<super::start_definition::CohortWorker>> {
         let cutoff = now() - chrono::Duration::seconds(stale_after.max(1));
-        let rows = Self::query("SELECT build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
+        let rows = Self::query("SELECT namespace,task_queue,build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
             .bind(namespace).bind(queue).bind(DB::bind_time(cutoff)).fetch_all(&mut **tx).await?;
         let mut workers = Vec::with_capacity(rows.len());
         for row in &rows {
+            if DB::string(row, "namespace")? != namespace || DB::string(row, "task_queue")? != queue {
+                continue;
+            }
             workers.push(super::start_definition::CohortWorker {
                 build_id: DB::optional_string(row, "build_id")?,
                 workflow_types: DB::optional_document_row(row, "supported_workflow_types")?.unwrap_or(Value::Null),
