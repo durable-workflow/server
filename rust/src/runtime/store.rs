@@ -6713,6 +6713,10 @@ fn capabilities_template() -> Value {
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
     value[super::children::CAPABILITY_EXPLICIT_ID] = json!(true);
     value[super::wait_timeouts::CONDITION_INPUT_ORDER_FIELD] = json!(super::wait_timeouts::DURABLE_RECEIPT_ORDER);
+    value["supported_workflow_task_commands"]
+        .as_array_mut()
+        .expect("commands")
+        .push(json!(super::wait_timeouts::RESOLVE_CONDITION_WAIT));
     value[super::continuation::CAPABILITY] = super::continuation::capability();
     // Gated off until installed acceptance (Server #1201).
     if let Some(advertised) = super::timeout_cleanup::advertisement() {

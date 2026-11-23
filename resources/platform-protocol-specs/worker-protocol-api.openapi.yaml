@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "67"
+  version: "68"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1874,6 +1874,13 @@ components:
       additionalProperties: true
       required: [supported_workflow_task_commands, workflow_task_poll_request_idempotency, workflow_memo_updates, message_streams, typed_search_attributes, condition_wait_occurrence_identity, update_validation_tasks, synchronous_update_validation, local_activities, sticky_execution]
       properties:
+        condition_wait_input_order:
+          type: string
+          const: durable_receipt_order
+          description: >
+            This Server can replay history marked for durable input ordering.
+            Workers that understand the marker register condition_wait_input_order.
+            A separate field on the workflow lease permits opening a new marked wait.
         condition_wait_occurrence_deadline:
           type: boolean
           description: >
@@ -2452,6 +2459,20 @@ components:
         workflow_task_attempt: { type: integer, minimum: 1 }
         lease_owner: { type: string, minLength: 1 }
         lease_expires_at: { type: string, format: date-time }
+        condition_wait_input_order_authoring:
+          type: boolean
+          const: true
+          description: >
+            This lease may author a new ordered condition wait. Omission keeps
+            existing authoring behavior and does not disable replay of marked
+            history. Retried polls for the same claim preserve this field.
+        condition_wait_pending_input_sequence:
+          type: [integer, "null"]
+          minimum: 1
+          description: >
+            For a marked run, the first accepted signal or update that has not
+            settled in the task snapshot. Null means all accepted inputs seen
+            by this claim have settled. Omission means no snapshot was supplied.
         sticky_worker_id:
           type: [string, "null"]
           description: Process identity holding this run's optional sticky affinity.
@@ -3685,6 +3706,37 @@ components:
                 description: >
                   The original authored timeout T of the occurrence, distinct from
                   timeout_seconds, which is the worker's remaining replay budget.
+              condition_wait_input_order:
+                type: string
+                const: durable_receipt_order
+                x-durable-workflow-server-capability: condition_wait_input_order
+                description: >
+                  Requires deadline_policy occurrence and permission on the
+                  original workflow claim. Its original timer bounds the
+                  eligible applied effects by receipt sequence.
+        - if:
+            properties:
+              type: { const: resolve_condition_wait }
+            required: [type]
+          then:
+            required: [condition_wait_id, satisfied]
+            x-durable-workflow-worker-capability: condition_wait_input_order
+            properties:
+              condition_wait_id: { type: string, minLength: 1, maxLength: 191 }
+              satisfied: { type: boolean }
+              input_receipt_sequence:
+                type: integer
+                minimum: 1
+                description: Receipt of the applied input that first satisfied the predicate.
+              competing_resolution_event_id:
+                type: string
+                minLength: 1
+                maxLength: 191
+                description: >
+                  With satisfied false, selects the exact competing terminal
+                  event identified by SelectionCandidateReady after evaluating
+                  the earlier eligible inputs. This leaves the condition wait
+                  itself unresolved.
         - if:
             properties:
               type: { const: record_local_activity }

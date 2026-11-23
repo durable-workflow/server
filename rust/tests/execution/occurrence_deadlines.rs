@@ -31,6 +31,15 @@ async fn claim(app: &Router, namespace: &str) -> Value {
     response.1["task"].clone()
 }
 
+async fn claim_with_request_id(app: &Router, request_id: &str) -> Value {
+    let (status, result) = request(app, "POST", "/api/worker/workflow-tasks/poll", json!({
+        "worker_id":"deadline-worker", "task_queue":"test", "timeout_seconds":5, "poll_request_id":request_id,
+    })).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert!(result["task"].is_object(), "{result}");
+    result["task"].clone()
+}
+
 async fn finish(app: &Router, namespace: &str, task: &Value, commands: Value) -> (StatusCode, Value) {
     namespaces::scoped(app, namespace, "POST",
         &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
@@ -98,8 +107,12 @@ async fn authoring_is_bound_to_the_claim_and_can_be_disabled_while_a_wait_replay
     let (database, runtime, enabled) = setup(namespace).await;
     let disabled = router(runtime.clone().with_ordered_condition_wait_authoring(false));
     let legacy = namespaces::start_scoped(&disabled, namespace, "legacy-while-upgrading").await;
-    let task = claim(&disabled, namespace).await;
+    let task = claim_with_request_id(&disabled, "legacy-authoring-claim").await;
     assert!(task.get("condition_wait_input_order_authoring").is_none());
+    let repeated = claim_with_request_id(&enabled, "legacy-authoring-claim").await;
+    assert_eq!(repeated["task_id"], task["task_id"]);
+    assert_eq!(repeated["workflow_task_attempt"], task["workflow_task_attempt"]);
+    assert!(repeated.get("condition_wait_input_order_authoring").is_none());
     let mut command = anchored("gate:0", 240, 240);
     command["condition_wait_input_order"] = json!("durable_receipt_order");
     let prefix = history(&disabled, namespace, &legacy).await;
@@ -111,8 +124,12 @@ async fn authoring_is_bound_to_the_claim_and_can_be_disabled_while_a_wait_replay
     assert_eq!(status, StatusCode::OK, "{result}");
 
     let run = namespaces::start_scoped(&enabled, namespace, "ordered-after-upgrade").await;
-    let task = claim(&enabled, namespace).await;
+    let task = claim_with_request_id(&enabled, "ordered-authoring-claim").await;
     assert_eq!(task["condition_wait_input_order_authoring"], true);
+    let repeated = claim_with_request_id(&disabled, "ordered-authoring-claim").await;
+    assert_eq!(repeated["task_id"], task["task_id"]);
+    assert_eq!(repeated["workflow_task_attempt"], task["workflow_task_attempt"]);
+    assert_eq!(repeated["condition_wait_input_order_authoring"], true);
     let mut command = anchored("gate:0", 0, 0);
     command["condition_wait_input_order"] = json!("durable_receipt_order");
     let (status, result) = finish(&disabled, namespace, &task, json!([command])).await;
