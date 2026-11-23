@@ -20,6 +20,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 /// commits.
 pub(super) const AWAIT_RESULT: &str = "result";
 pub(super) const AWAIT_STARTED: &str = "started";
+pub(super) const CAPABILITY_EXPLICIT_ID: &str = "child_workflow_explicit_id";
 
 /// A started child: its first workflow task, and the start turn payload a
 /// parent gets when it asked for one.
@@ -42,12 +43,30 @@ enum ChildParentResume {
     UpdateOnly,
 }
 
+fn requested_id(command: &Value) -> Result<Option<&str>> {
+    let Some(value) = command.get("workflow_id") else {
+        return Ok(None);
+    };
+    let identifier = value.as_str().filter(|identifier| {
+        identifier.len() <= super::start_request::WORKFLOW_ID_MAX_LENGTH
+            && super::start_request::workflow_id_pattern(identifier)
+    });
+    identifier.map(Some).ok_or_else(|| {
+        super::laravel_validation::failure_messages(vec![(
+            "commands.workflow_id".to_owned(),
+            vec!["The child workflow_id must be a non-empty URL-safe string of at most 128 characters.".to_owned()],
+        )])
+        .expect("one message")
+    })
+}
+
 pub(super) fn validate_child(command: &Value) -> Result<()> {
     super::selections::fields(
         command,
         &[
             "type",
             "workflow_type",
+            "workflow_id",
             "arguments",
             "queue",
             "parent_close_policy",
@@ -59,6 +78,7 @@ pub(super) fn validate_child(command: &Value) -> Result<()> {
             "await",
         ],
     )?;
+    requested_id(command)?;
     let parallel = super::selections::metadata(command, "child")?;
     // This slice qualifies result barriers. A committed-start handle inside
     // a barrier has a different wakeup contract and stays separately refused.
@@ -347,7 +367,8 @@ where
             })?;
         let arguments = envelope(command, "arguments")?;
         let policies = policies(command)?;
-        let child_instance = id();
+        let requested = requested_id(command)?;
+        let child_instance = requested.map_or_else(id, str::to_owned);
         let child_run = id();
         let call = id();
         // A child lives in its parent's namespace (ChildWorkflowNamespaceProjection).
@@ -374,8 +395,15 @@ where
             }
             Self::assert_timeout_cleanup_worker(tx, namespace.as_deref().unwrap_or("default"), &queue, stale_after).await?;
         }
-        Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,started_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)")
-            .bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await?;
+        let inserted = Self::query("INSERT INTO workflow_instances(id,namespace,workflow_type,workflow_class,current_run_id,run_count,started_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)")
+            .bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&child_run).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).execute(&mut **tx).await;
+        match inserted {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(error)) if requested.is_some() && error.is_unique_violation() => {
+                return Err(refuse(StatusCode::CONFLICT, "child_workflow_id_unavailable"));
+            }
+            Err(error) => return Err(error.into()),
+        }
         Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,namespace,workflow_type,workflow_class,run_number,status,payload_codec,arguments,queue,started_at,created_at,updated_at,last_progress_at,compatibility,run_timeout_seconds,execution_deadline_at,run_deadline_at) VALUES ($1,$2,$3,$4,$5,1,'pending','avro',$6,$7,$8,$9,$10,$11,$12,NULLIF($13,0),$14,$15)")
             .bind(&child_run).bind(&child_instance).bind(namespace.as_deref()).bind(workflow_type).bind(workflow_type).bind(&arguments).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at)).bind(compatibility.as_deref())
             // Timeouts are at least one second; zero binds "no timeout".
@@ -392,27 +420,30 @@ where
             started_at,
         )
         .await?;
-        Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at,retry_policy,timeout_policy) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16,$17,$18)")
+        Self::query("INSERT INTO workflow_child_calls(parent_workflow_run_id,parent_workflow_instance_id,sequence,child_workflow_type,child_workflow_class,resolved_child_instance_id,resolved_child_run_id,parent_close_policy,cancellation_propagation,queue,status,scheduled_at,started_at,arguments,metadata,created_at,updated_at,retry_policy,timeout_policy,requested_child_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,($9<>'abandon'),$10,'started',$11,$12,$13,$14,$15,$16,$17,$18,$19)")
             .bind(&parent_run).bind(&parent_instance).bind(sequence).bind(workflow_type).bind(workflow_type).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(&policies.cancellation).bind(&queue).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
             .bind(DB::document(&json!({"payload":arguments}))).bind(DB::document(&json!({"child_call_id":call,"attempt_count":1,"cancellation_policy":policies.cancellation}))).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
-            .bind(retry_policy.as_ref().map(DB::document)).bind(timeout_policy.as_ref().map(DB::document)).execute(&mut **tx).await?;
+            .bind(retry_policy.as_ref().map(DB::document)).bind(timeout_policy.as_ref().map(DB::document)).bind(requested).execute(&mut **tx).await?;
         Self::query("INSERT INTO workflow_links(id,link_type,sequence,parent_workflow_instance_id,parent_workflow_run_id,child_workflow_instance_id,child_workflow_run_id,is_primary_parent,parent_close_policy,created_at,updated_at,parallel_group_path) VALUES ($1,'child_workflow',$2,$3,$4,$5,$6,TRUE,$7,$8,$9,$10)")
             .bind(&call).bind(sequence).bind(&parent_instance).bind(&parent_run).bind(&child_instance).bind(&child_run).bind(&policies.parent_close).bind(DB::bind_time(started_at)).bind(DB::bind_time(started_at))
             .bind(parallel.get("parallel_group_path").map(DB::document)).execute(&mut **tx).await?;
         let mut scheduled = json!({"sequence":sequence,"workflow_link_id":call,"child_call_id":call,"child_workflow_instance_id":child_instance,"child_workflow_run_id":child_run,"child_workflow_class":workflow_type,"child_workflow_type":workflow_type,"parent_close_policy":policies.parent_close,"cancellation_policy":policies.cancellation,"retry_policy":retry_policy,"timeout_policy":timeout_policy});
         super::selections::merge(&mut scheduled, &parallel);
+        let mut started = scheduled.clone();
+        if let Some(identifier) = requested {
+            scheduled["requested_child_id"] = json!(identifier);
+        }
         Self::append(
             tx,
             &parent_run,
             "ChildWorkflowScheduled",
-            scheduled.clone(),
+            scheduled,
             Some(task_id),
             None,
         )
         .await?;
         let deadlines = json!({"execution_timeout_seconds":execution_timeout,"run_timeout_seconds":run_timeout,
             "execution_deadline_at":execution_deadline.map(iso8601),"run_deadline_at":run_deadline.map(iso8601)});
-        let mut started = scheduled;
         started["child_run_number"] = json!(1);
         for (field, value) in deadlines.as_object().expect("an object") {
             started[field] = value.clone();

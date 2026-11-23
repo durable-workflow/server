@@ -64,6 +64,7 @@ pub(super) fn capabilities() -> Value {
         "child_workflow_retry_policy",
         "child_workflow_timeouts",
         "child_workflow_start_turn",
+        super::children::CAPABILITY_EXPLICIT_ID,
         "condition_wait_idempotent_reopen",
         "condition_wait_occurrence_deadline",
         "update_outcome_reads",
@@ -244,6 +245,7 @@ mod tests {
         assert_eq!(caps["signal_with_start"], json!(true));
         assert_eq!(caps["update_outcome_reads"], json!(true));
         assert_eq!(caps["child_workflow_start_turn"], json!(true));
+        assert_eq!(caps["child_workflow_explicit_id"], json!(true));
         assert_eq!(caps["condition_wait_idempotent_reopen"], json!(true));
         assert_eq!(caps["condition_wait_occurrence_deadline"], json!(true));
         assert_eq!(caps["response_compression"], json!(["gzip", "deflate"]));
