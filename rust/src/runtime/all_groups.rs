@@ -55,6 +55,14 @@ fn entry(value: &Value, leaf: &str) -> Result<Value> {
 }
 
 pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
+    validate_metadata(value, kind, false)
+}
+
+pub(super) fn selected_child_metadata(value: &Value) -> Result<Value> {
+    validate_metadata(value, "child", true)
+}
+
+fn validate_metadata(value: &Value, kind: &str, selected_children: bool) -> Result<Value> {
     // A condition wait is a member as in Core's grouped condition wait
     // (Server #1142): kind `condition`, ids `parallel-calls:<base>:<size>`.
     if !matches!(kind, "activity" | "timer" | "child" | "condition") {
@@ -65,9 +73,12 @@ pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
         .as_array()
         .filter(|path| !path.is_empty())
         .ok_or_else(invalid)?;
-    // Child selections, nested barriers and mixed child groups have not been
-    // qualified. Keep their refusal independent of activity/timer paths.
-    if kind == "child" && (path.len() != 1 || top["parallel_group_kind"] != "child") {
+    // Only a child-only all barrier may be nested inside a selection.
+    // Standalone child barriers keep their existing single-level contract.
+    if kind == "child" && (top["parallel_group_kind"] != "child"
+        || (!selected_children && path.len() != 1)
+        || (selected_children && path.iter().any(|entry| entry["parallel_group_kind"] != "child")))
+    {
         return Err(invalid());
     }
     let path = path
@@ -113,8 +124,10 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<BTreeSet<String>> {
             Some("open_condition_wait") => "condition",
             _ => return Err(invalid()),
         };
-        let metadata = metadata(command, kind)?;
-        for entry in metadata["parallel_group_path"].as_array().unwrap() {
+        let metadata = super::selections::metadata(command, kind)?;
+        for entry in metadata["parallel_group_path"].as_array().unwrap().iter()
+            .filter(|entry| entry["parallel_group_mode"] != "select")
+        {
             let mut descriptor = entry.clone();
             let index = descriptor
                 .as_object_mut()
@@ -182,6 +195,9 @@ impl AllHistory {
     pub(super) fn apply(&mut self, event: &str, payload: &Value) -> bool {
         // A grouped condition's timeout timer belongs to its condition member:
         // only its firing resolves that member (Core `waitCompletedSuccessfully`).
+        if event.starts_with("Timer") && payload["timer_kind"] == "signal_timeout" {
+            return true;
+        }
         let condition_timer = event.starts_with("Timer") && payload["timer_kind"] == "condition_timeout";
         if condition_timer && event != "TimerFired" {
             return true;

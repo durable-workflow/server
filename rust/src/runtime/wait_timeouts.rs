@@ -220,6 +220,13 @@ where
         let waits = Self::waits(tx, run_id).await?;
         let mut chain: Vec<_> = waits.conditions.iter().filter(|wait| wait.occurrence() == Some(occurrence)).collect();
         chain.sort_by_key(|wait| wait.sequence.unwrap_or(i64::MAX));
+        if let Some(first) = chain.first()
+            && let Some(opening) = waits.condition_opening(&first.id)
+            && super::selections::is_selection(&opening.payload)
+            && opening.payload["parallel_group_path"] != command["parallel_group_path"]
+        {
+            return Err(super::all_groups::invalid());
+        }
         let mismatch = || refuse(StatusCode::CONFLICT, "condition_wait_occurrence_mismatch");
         let unavailable = || refuse(StatusCode::CONFLICT, "condition_wait_anchor_unavailable");
         let Some(budget) = budget else {

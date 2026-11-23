@@ -423,7 +423,12 @@ where
                 payload[key] = scheduled[key].clone();
             }
         }
-        let metadata = super::selections::metadata(&scheduled, "timer")?;
+        let kind = match scheduled["timer_kind"].as_str() {
+            Some("signal_timeout") => "signal",
+            Some("condition_timeout") => "condition",
+            _ => "timer",
+        };
+        let metadata = super::selections::metadata(&scheduled, kind)?;
         super::selections::merge(&mut payload, &metadata);
         Ok(payload)
     }
