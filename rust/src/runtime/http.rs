@@ -634,8 +634,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|v| !v.is_empty());
-    // Exercise the new completion contract before advertising it. Earlier
-    // requests and other worker endpoints keep the published protocol.
+    // The negotiated continuation contract is scoped to its task reports.
     let continuation_request = request.method() == Method::POST
         && path.strip_prefix("/api/worker/workflow-tasks/")
             .and_then(|path| path.split_once('/'))
@@ -767,9 +766,7 @@ async fn finish_answer(mut response: Response, worker: bool, header: &'static st
     if worker {
         response = worker_protocol_envelope(response).await;
     }
-    response
-        .headers_mut()
-        .insert(header, HeaderValue::from_static(version));
+    response.headers_mut().entry(header).or_insert(HeaderValue::from_static(version));
     response
 }
 
@@ -2043,7 +2040,7 @@ async fn register(
     Extension(runtime): Extension<Runtime>,
     headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>)> {
+) -> Result<Response> {
     let protocol = request_protocol(&headers)?;
     let mut body = super::worker_admission::normalize_registration(&body, protocol.trim())
         .map_err(worker_refusal)?;
@@ -2074,7 +2071,19 @@ async fn register(
     if grouped_condition_replay {
         response["server_capabilities"]["grouped_condition_waits"] = json!({"supported":true,"version":1});
     }
-    Ok((StatusCode::CREATED, Json(response)))
+    let target_build = super::continuations::target_build_registration(&response["capability_manifest"]);
+    if target_build {
+        response["protocol_version"] = json!(super::continuations::TARGET_BUILD_PROTOCOL_VERSION);
+        response["server_capabilities"][super::continuations::TARGET_BUILD_CAPABILITY] = json!(true);
+    }
+    let mut response = (StatusCode::CREATED, Json(response)).into_response();
+    if target_build {
+        response.headers_mut().insert(
+            "x-durable-workflow-protocol-version",
+            HeaderValue::from_static(super::continuations::TARGET_BUILD_PROTOCOL_VERSION),
+        );
+    }
+    Ok(response)
 }
 
 /// `WorkerProtocol::json` names the protocol and server capabilities on

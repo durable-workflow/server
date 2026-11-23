@@ -3636,6 +3636,9 @@ where
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
             .await
             .map_err(|error| Self::not_recorded(&task, &body, error))?;
+        if promoted_refusal {
+            Self::require_target_build_registration(&mut tx, &task, text(&body, "lease_owner")?).await?;
+        }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id)
             .await
@@ -4034,6 +4037,11 @@ where
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
             .await
             .map_err(|error| Self::not_recorded(&task, &body, error))?;
+        if super::continuations::target_build_protocol(protocol)
+            && commands.iter().any(|command| command["type"] == "continue_as_new")
+        {
+            Self::require_target_build_registration(&mut tx, &task, text(&body, "lease_owner")?).await?;
+        }
         // PHP admits cancellation scopes before it guards worker-session
         // commands, and guards both before validating streams.
         Self::cancellation_scope_admission(&mut tx, &task, &body, commands, protocol).await?;

@@ -1239,7 +1239,11 @@ fn worker_envelope_sweep(method: &str, path: &str, status: StatusCode, header: O
         let mut out = std::fs::OpenOptions::new().create(true).append(true).open(file).unwrap();
         out.write_all(format!("{record}\n").as_bytes()).unwrap();
     }
-    assert_eq!(header, Some("1.20"), "{method} {path}: worker protocol header");
+    let negotiated = path == "/api/worker/register"
+        && status == StatusCode::CREATED
+        && body["server_capabilities"]["continue_as_new_target_build"] == true;
+    let version = if negotiated { "1.21" } else { "1.20" };
+    assert_eq!(header, Some(version), "{method} {path}: worker protocol header");
     assert_eq!(members.get("protocol_version").and_then(Value::as_str), header,
         "{method} {path} {status}: body protocol_version must echo the header: {body}");
     assert!(members.get("server_capabilities").is_some_and(Value::is_object),

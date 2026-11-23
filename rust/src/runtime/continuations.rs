@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 pub(super) const TARGET_BUILD_PROTOCOL_MINOR: u8 = 21;
+pub(super) const TARGET_BUILD_PROTOCOL_VERSION: &str = "1.21";
+pub(super) const TARGET_BUILD_CAPABILITY: &str = "continue_as_new_target_build";
 pub(super) const PROMOTED_BUILD_UNAVAILABLE: &str = "promoted_build_unavailable";
 pub(super) const REFUSAL_FIELD: &str = "continue_as_new_refusal";
 
@@ -32,6 +34,11 @@ fn target_build(command: &Value) -> Result<Option<TargetBuild>> {
         Some(Some("promoted")) => Ok(Some(TargetBuild::Promoted)),
         Some(_) => Err(refuse_target("invalid_target_build", false)),
     }
+}
+
+pub(super) fn target_build_registration(manifest: &Value) -> bool {
+    let capability = &manifest[TARGET_BUILD_CAPABILITY];
+    capability["supported"] == true && capability["minimum_protocol_version"] == TARGET_BUILD_PROTOCOL_VERSION
 }
 
 pub(super) fn target_build_protocol(protocol: Option<&str>) -> bool {
@@ -114,6 +121,30 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// Check the registration of the lease owner under the same transition
+    /// lock as completion and failure. Replacing a registration releases its
+    /// leases before another incarnation can claim them.
+    pub(super) async fn require_target_build_registration(
+        tx: &mut Transaction<'_, DB>,
+        task: &DB::Row,
+        owner: &str,
+    ) -> Result<()> {
+        let worker = Self::query("SELECT capability_manifest FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND task_queue=$3")
+            .bind(DB::string(task, "namespace")?)
+            .bind(owner)
+            .bind(DB::string(task, "queue")?)
+            .fetch_optional(&mut **tx)
+            .await?;
+        if let Some(worker) = worker
+            && DB::optional_document_row(&worker, "capability_manifest")?
+                .as_ref()
+                .is_some_and(target_build_registration)
+        {
+            return Ok(());
+        }
+        Err(refuse_target("unsupported_target_build", false))
+    }
+
     /// The run's current unclaimed retry carries the last fenced refusal.
     /// Failed tasks retain their historic record, outside this observation.
     pub(super) async fn observed_continuation_refusal(&self, run: &str) -> Result<Value> {

@@ -2,6 +2,29 @@ use super::*;
 
 const CONTINUATION_PROTOCOL: &str = "1.21";
 
+fn target_build_manifest() -> Value {
+    json!({
+        "local_activities": {"supported": false, "minimum_protocol_version": "1.18"},
+        "worker_sessions": {"supported": false, "minimum_protocol_version": "1.18"},
+        "sticky_execution": {"supported": false, "minimum_protocol_version": "1.18"},
+        "continue_as_new_target_build": {"supported": true, "minimum_protocol_version": CONTINUATION_PROTOCOL},
+    })
+}
+
+pub(super) async fn register_target_worker(app: &Router, worker: &str, build: Option<&str>, kind: &str) -> Value {
+    let (status, body) = request_protocol(app, "POST", "/api/worker/register", json!({
+        "worker_id": worker, "task_queue": "test", "runtime": "php", "build_id": build,
+        "supported_workflow_types": [kind], "capability_manifest": target_build_manifest(),
+    }), "1.20").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["server_capabilities"]["continue_as_new_target_build"], true, "{body}");
+    assert_eq!(body["protocol_version"], CONTINUATION_PROTOCOL);
+    assert_eq!(body["worker_id"], worker);
+    assert_eq!(body["namespace"], "default");
+    assert_eq!(body["task_queue"], "test");
+    body
+}
+
 #[tokio::test]
 async fn continuation_inherits_committed_upserts_before_successor_commands() {
     let database = TestDatabase::new().await;
@@ -265,6 +288,7 @@ async fn explicit_continue_as_new_target_refuses_without_consuming_the_lease() {
             CONTINUATION_PROTOCOL,
         ),
         (vec![json!("inherited"), json!("promoted")], "unsupported_target_build", "1.20"),
+        (vec![json!("inherited"), json!("promoted")], "unsupported_target_build", CONTINUATION_PROTOCOL),
     ] {
         for target in targets {
             let commands = json!([{"type":"continue_as_new","target_build":target}]);
@@ -282,6 +306,13 @@ async fn explicit_continue_as_new_target_refuses_without_consuming_the_lease() {
         }
     }
 
+    let fail_path = completion_path.replace("/complete", "/fail");
+    let (status, response) = request_protocol(&app, "POST", &fail_path, json!({
+        "lease_owner": task["lease_owner"], "workflow_task_attempt": task["workflow_task_attempt"],
+        "failure": {"reason": "promoted_build_unavailable", "message": "The promoted build is unavailable."},
+    }), CONTINUATION_PROTOCOL).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+    assert_eq!(response["reason"], "unsupported_target_build");
     assert_eq!(request(&app, "GET", &history_path, Value::Null).await.1, history_before);
     let (_, runs) = request(&app, "GET", runs_path, Value::Null).await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
@@ -302,20 +333,44 @@ async fn explicit_continue_as_new_target_refuses_without_consuming_the_lease() {
 }
 
 #[tokio::test]
+async fn replacing_registration_retires_its_continuation_capability() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_target_worker(&app, "replaced-worker", None, "echo").await;
+    start(&app, "replaced-continuation").await;
+    let old = poll(&app, "replaced-worker", "workflow").await;
+    let path = format!("/api/worker/workflow-tasks/{}/complete", old["task_id"].as_str().unwrap());
+    let commands = json!([{"type":"continue_as_new","target_build":"inherited"}]);
+
+    // The same worker id registers using the previous protocol without the feature.
+    let (status, ack) = request(&app, "POST", "/api/worker/register", json!({
+        "worker_id":"replaced-worker", "task_queue":"test", "runtime":"php",
+        "supported_workflow_types":["echo"],
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{ack}");
+    assert_eq!(ack["protocol_version"], "1.20");
+    assert!(ack["server_capabilities"].get("continue_as_new_target_build").is_none());
+    let current = poll(&app, "replaced-worker", "workflow").await;
+    assert_eq!(old["task_id"], current["task_id"]);
+    let (status, stale) = request_protocol(&app, "POST", &path, completion(&old, commands.clone()), CONTINUATION_PROTOCOL).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+    assert_eq!(stale["reason"], "workflow_task_attempt_mismatch");
+    let (status, unsupported) = request_protocol(&app, "POST", &path, completion(&current, commands), CONTINUATION_PROTOCOL).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{unsupported}");
+    assert_eq!(unsupported["reason"], "unsupported_target_build");
+    assert_eq!(finish_task(&app, &current, json!([{"type":"continue_as_new"}])).await.0, StatusCode::OK);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     let build_ids = "/api/task-queues/test/build-ids";
-    let register_build = |app: Router, worker: &'static str, build: &'static str, kind: &'static str| async move {
-        let (status, body) = request(&app, "POST", "/api/worker/register", json!({
-            "worker_id":worker,"task_queue":"test","runtime":"php","build_id":build,
-            "supported_workflow_types":[kind],"supported_activity_types":[],
-        })).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        body
-    };
-    register_build(app.clone(), "worker-a", "build-a", "echo").await;
+    register_target_worker(&app, "worker-a", Some("build-a"), "echo").await;
     let original = start(&app, "migrating-chain").await;
     let first = poll(&app, "worker-a", "workflow").await;
     let inherited = start(&app, "inherited-chain").await;
@@ -331,15 +386,20 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
     assert_eq!(refused["retryable"], true);
     assert_eq!(refused["request_admitted"], false);
 
-    let worker_b = register_build(app.clone(), "worker-b", "build-b", "echo").await;
+    let worker_b = register_target_worker(&app, "worker-b", Some("build-b"), "echo").await;
     let (status, promotion) = request(&app, "POST", &format!("{build_ids}/promote"), json!({"build_id":"build-b"})).await;
     assert_eq!(status, StatusCode::OK, "{promotion}");
     assert_eq!(promotion["deployment"]["workflow_types"], json!(["echo"]));
     assert_eq!(super::worker_deregistration::deregister(&app, "worker-b", &worker_b).await.0, StatusCode::OK);
+    assert_eq!(request(&app, "POST", &format!("{build_ids}/drain"), json!({"build_id":"build-b"})).await.0, StatusCode::OK);
+    let (status, refused) = request_protocol(&app, "POST", &completion_path, promoted.clone(), CONTINUATION_PROTOCOL).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["reason"], "promoted_build_unavailable");
+    assert_eq!(request(&app, "POST", &format!("{build_ids}/resume"), json!({"build_id":"build-b"})).await.0, StatusCode::OK);
 
     // The newest promotion is selected for starts but serves a different
     // exact type. A continue-as-new may not silently choose an older cohort.
-    register_build(app.clone(), "worker-c", "build-c", "only-c").await;
+    register_target_worker(&app, "worker-c", Some("build-c"), "only-c").await;
     let (status, newest) = request(&app, "POST", &format!("{build_ids}/promote"), json!({"build_id":"build-c"})).await;
     assert_eq!(status, StatusCode::OK, "{newest}");
     assert_eq!(newest["new_start_selected"], true);
@@ -391,7 +451,7 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
     assert_eq!(duplicate["reason"], "already_completed");
     assert_eq!(run_history(&app, &original["workflow_id"], &original["run_id"]).await, closed);
     assert_eq!(run_history(&app, &original["workflow_id"], &successor["run_id"]).await, started);
-    register_build(app.clone(), "worker-b-again", "build-b", "echo").await;
+    register_target_worker(&app, "worker-b-again", Some("build-b"), "echo").await;
     let claimed = poll(&app, "worker-b-again", "workflow").await;
     assert_eq!(claimed["run_id"], successor["run_id"]);
     assert_eq!(claimed["compatibility"], "build-b");
@@ -405,7 +465,7 @@ async fn promoted_build_refusal_is_observed_only_until_the_fenced_retry() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
-    register(&app, "old-worker", json!(["echo"]), json!([])).await;
+    register_target_worker(&app, "old-worker", None, "echo").await;
     let original = start(&app, "retrying-continuation").await;
     let first = poll(&app, "old-worker", "workflow").await;
     let observe = |app: Router, run: Value| async move {
@@ -478,11 +538,7 @@ async fn promoted_continuation_serializes_with_retirement_of_the_old_build() {
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     for (worker, build) in [("old-worker", "old-build"), ("new-worker", "new-build")] {
-        let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
-            "worker_id":worker,"task_queue":"test","runtime":"php","build_id":build,
-            "supported_workflow_types":["echo"],"supported_activity_types":[],
-        })).await;
-        assert_eq!(status, StatusCode::CREATED, "{registered}");
+        register_target_worker(&app, worker, Some(build), "echo").await;
     }
     for build in ["old-build", "new-build"] {
         let (status, body) = request(&app, "POST", "/api/task-queues/test/build-ids/promote", json!({"build_id":build})).await;
