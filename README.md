@@ -30,13 +30,14 @@ For the 21 October 2026 critical PHP update, follow the
 [PHP runtime security notice](docs/security/php-runtime-2026-10-21.md) and verify
 the patched runtime in every deployed role.
 
-The published Compose stack starts the native Server with MySQL. Native is a
-single process: it creates its schema and the default namespace at startup and
-runs its own maintenance, so there is no Redis, queue worker or scheduler. The
-PHP 2.x stack remains available as
-[`docker-compose.php.yml`](docker-compose.php.yml) for installations that pin
-it; see the [native takeover runbook](docs/rust-server-upgrade-takeover.md) to
-move an existing PHP database to native.
+The published Compose stack starts the native Server with MySQL. One-shot
+services prepare the schema before Server starts. The administrator service
+applies only the staged checkpoint DDL when MySQL requires it. Server runs its
+API and maintenance loop with the scoped database account. The PHP 2.x stack
+remains available as [`docker-compose.php.yml`](docker-compose.php.yml) for
+installations that pin it. See the
+[native takeover runbook](docs/rust-server-upgrade-takeover.md) to move an
+existing PHP database to native.
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docker-compose.published.yml
