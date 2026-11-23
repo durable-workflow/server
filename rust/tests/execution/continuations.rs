@@ -533,6 +533,64 @@ async fn promoted_build_refusal_is_observed_only_until_the_fenced_retry() {
 }
 
 #[tokio::test]
+async fn terminated_run_preserves_unclaimed_promoted_build_refusal_without_retry() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_target_worker(&app, "old-worker", None, "echo").await;
+    let original = start(&app, "terminated-continuation").await;
+    let task = poll(&app, "old-worker", "workflow").await;
+    let task_path = format!("/api/worker/workflow-tasks/{}", task["task_id"].as_str().unwrap());
+    let (status, refused) = request_protocol(
+        &app,
+        "POST",
+        &format!("{task_path}/complete"),
+        completion(&task, json!([{"type":"continue_as_new","target_build":"promoted"}])),
+        CONTINUATION_PROTOCOL,
+    ).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["reason"], "promoted_build_unavailable");
+    let (status, failure) = request_protocol(
+        &app,
+        "POST",
+        &format!("{task_path}/fail"),
+        json!({
+            "lease_owner":task["lease_owner"],
+            "workflow_task_attempt":task["workflow_task_attempt"],
+            "failure":{"reason":"promoted_build_unavailable","message":"A promoted build is unavailable."},
+        }),
+        CONTINUATION_PROTOCOL,
+    ).await;
+    assert_eq!(status, StatusCode::OK, "{failure}");
+    assert!(failure["next_task_id"].is_string(), "{failure}");
+    let path = format!("/api/workflows/terminated-continuation/runs/{}", original["run_id"].as_str().unwrap());
+    let observation_path = format!("{path}/observation");
+    let (status, open) = request(&app, "GET", &observation_path, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{open}");
+    let retry = &open["continue_as_new_refusal"];
+    assert_eq!(retry["status"], "ready");
+    assert!(retry["available_at"].is_string(), "{retry}");
+
+    let (status, terminated) = request(&app, "POST", &format!("{path}/terminate"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{terminated}");
+    let (status, closed) = request(&app, "GET", &observation_path, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert_eq!(closed["status"], "terminated");
+    assert_eq!(closed["is_terminal"], true);
+    assert_eq!(closed["continue_as_new_refusal"], json!({
+        "task_id":failure["next_task_id"],
+        "status":"cancelled",
+        "available_at":null,
+        "workflow_task_attempt":task["workflow_task_attempt"],
+        "recorded_at":retry["recorded_at"],
+        "reason":"promoted_build_unavailable",
+    }));
+    assert!(closed["continue_as_new_build_transitions"]["to_successor"].is_null());
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn promoted_continuation_serializes_with_retirement_of_the_old_build() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();

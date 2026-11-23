@@ -127,11 +127,7 @@ where
         result["task_queue"] = result["queue"].clone();
         let is_terminal = terminal(&status);
         result["is_terminal"] = json!(is_terminal);
-        result["continue_as_new_refusal"] = if is_terminal {
-            Value::Null
-        } else {
-            self.observed_continuation_refusal(run_id).await?
-        };
+        result["continue_as_new_refusal"] = self.observed_continuation_refusal(run_id).await?;
         result["task_attention"] = if is_terminal {
             Value::Null
         } else {

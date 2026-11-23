@@ -145,29 +145,52 @@ where
         Err(refuse_target("unsupported_target_build", false))
     }
 
-    /// The run's current unclaimed retry carries the last fenced refusal.
-    /// Failed tasks retain their historic record, outside this observation.
+    /// The most recent workflow task is authoritative even when its claim
+    /// cleared the marker. Older failed rows can still carry the same refusal.
     pub(super) async fn observed_continuation_refusal(&self, run: &str) -> Result<Value> {
-        let Some(task) = Self::query("SELECT t.id,t.status,t.attempt_count,t.available_at,t.payload FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE r.id=$1 AND r.namespace=$2 AND r.status IN ('pending','running','waiting') AND t.namespace=$3 AND t.task_type='workflow' AND t.status IN ('ready','leased') ORDER BY t.created_at DESC,t.id DESC LIMIT 1")
+        let Some(task) = Self::query(
+            "SELECT t.id,t.status,t.attempt_count,t.available_at,t.payload,\
+             r.status AS run_status,r.execution_deadline_at,r.run_deadline_at \
+             FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id \
+             WHERE r.id=$1 AND r.namespace=$2 AND t.namespace=$3 AND t.task_type='workflow' \
+             ORDER BY t.created_at DESC,t.id DESC LIMIT 1",
+        )
             .bind(run).bind(self.namespace.as_ref()).bind(self.namespace.as_ref())
             .fetch_optional(&self.pool).await?
         else {
             return Ok(Value::Null);
         };
-        let payload = DB::document_row(&task, "payload")?;
+        let status = DB::string(&task, "status")?;
+        if !matches!(status.as_str(), "ready" | "failed" | "cancelled") {
+            return Ok(Value::Null);
+        }
+        let Some(payload) = DB::optional_document_row(&task, "payload")? else {
+            return Ok(Value::Null);
+        };
         let refusal = &payload[REFUSAL_FIELD];
         let attempt = DB::number(&task, "attempt_count")?;
-        let status = DB::string(&task, "status")?;
-        if status != "ready" || refusal["reason"] != PROMOTED_BUILD_UNAVAILABLE
+        if refusal["reason"] != PROMOTED_BUILD_UNAVAILABLE
             || refusal["workflow_task_attempt"].as_i64() != Some(attempt)
             || !refusal["recorded_at"].is_string()
         {
             return Ok(Value::Null);
         }
+        let available_at = if status == "ready"
+            && matches!(DB::string(&task, "run_status")?.as_str(), "pending" | "running" | "waiting")
+        {
+            let deadline = super::timeout_cleanup::earliest_hard_deadline(
+                DB::optional_instant(&task, "execution_deadline_at")?,
+                DB::optional_instant(&task, "run_deadline_at")?,
+            );
+            DB::optional_instant(&task, "available_at")?
+                .filter(|available| deadline.is_none_or(|(_, deadline)| *available < deadline))
+        } else {
+            None
+        };
         Ok(json!({
             "task_id": DB::string(&task, "id")?,
             "status": status,
-            "available_at": super::task_queues::json_time(DB::optional_instant(&task, "available_at")?),
+            "available_at": super::task_queues::json_time(available_at),
             "workflow_task_attempt": attempt,
             "recorded_at": refusal["recorded_at"],
             "reason": PROMOTED_BUILD_UNAVAILABLE,
