@@ -15,7 +15,7 @@ name: durable-workflow-server
 # release whose default names another image). Set DW_SERVER_IMAGE to run
 # any other native image, by tag or digest; pin a digest for production
 # change control.
-x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.26.0}
+x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.27.0}
 
 x-mysql-image: &mysql-image mysql:${MYSQL_VERSION:-8.0}
 x-server-database: &server-database
@@ -51,6 +51,7 @@ services:
       DW_OPERATOR_TOKEN: ${DW_OPERATOR_TOKEN:-}
       DW_ADMIN_TOKEN: ${DW_ADMIN_TOKEN:-}
       DW_HTTP_ACCESS_LOG: ${DW_HTTP_ACCESS_LOG:-false}
+      DW_ORDERED_CONDITION_WAIT_AUTHORING: ${DW_ORDERED_CONDITION_WAIT_AUTHORING:-0}
     volumes:
       - server_storage:/app/storage
     depends_on:
