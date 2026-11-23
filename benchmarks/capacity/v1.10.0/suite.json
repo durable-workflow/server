@@ -1,0 +1,31 @@
+{
+  "suite_version": "1.10.0",
+  "cell_id": "child-fan-out-1000",
+  "workload": {
+    "root_type": "capacity.v1_10.child_parent",
+    "leaf_type": "capacity.v1_10.child_leaf",
+    "root_queue": "capacity-v1-10-parent",
+    "leaf_queue": "capacity-v1-10-leaf",
+    "control_width": 10,
+    "capacity_width": 1000,
+    "control_leaf_processes": 2,
+    "capacity_leaf_processes": 8
+  },
+  "images": {
+    "baseline": "ghcr.io/durable-workflow/server@sha256:fd7cebfc51857d5fa567da6f595cbdc3baed814921882f1d00f3d0da0743a30a",
+    "mysql": "mysql@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902",
+    "php": "php:8.4-cli-bookworm@sha256:b3e907a1108629c562c4bb313ce3449e34d49991f6bb2487913f6146f47200fe",
+    "python": "python:3.14.4-slim-bookworm@sha256:fc74d22ffd0d5ac395a4b7bdda75a4539758862c49ebf3005647084631e63789",
+    "rust": "rust@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6"
+  },
+  "mysql": {
+    "statement_history_capacity": 800000,
+    "transaction_history_capacity": 100000,
+    "version": "8.4.13"
+  },
+  "sdk_versions": {
+    "php": "3.24.1",
+    "python": "2.22.0",
+    "rust": "durable-workflow-rust/4.22.0"
+  }
+}
