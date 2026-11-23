@@ -1247,6 +1247,17 @@ unexecuted cell.
 - `POST /api/worker/activity-tasks/{id}/fail` — Fail activity task
 - `POST /api/worker/activity-tasks/{id}/heartbeat` — Activity heartbeat
 
+Native Server accepts condition waits as members of an `all` group. Each
+condition resolves when its predicate succeeds or its timeout expires. A
+signal can reevaluate an open condition and reopen it at the same group
+position if its predicate is still false. The barrier releases after all
+members have resolved.
+
+Native Server returns `grouped_condition_waits` version 1 at registration to
+workers that declare `grouped_condition_wait_replay`. Upgrade every worker
+that can receive tasks for these workflows before authoring them. The
+registration capability does not restrict task delivery to those workers.
+
 Worker-fleet heartbeats accept optional `task_slots` (`workflow_available`,
 `activity_available`, `session_available`) and `process_metrics`
 (`cpu_percent`, `memory_bytes`, `process_uptime_seconds`, `process_id`,
