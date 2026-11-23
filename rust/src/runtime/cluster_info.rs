@@ -229,12 +229,12 @@ mod tests {
             "workflow_update_runtime_contract", "waterline_v1_projection", "embedded_v2_import"] {
             assert!(caps.get(name).is_some(), "{name}");
         }
-        // PHP's names plus native's child turn, occurrence-id reopen,
+        // PHP's names plus native's child turn, explicit child ID, occurrence-id reopen,
         // occurrence deadline, update outcome reads, task queue pauses and
         // command request keys, open-run version usage, guarded build
         // retirement, the Prometheus text scrape, signal-with-start,
         // signal-external and the task-attention workflow list filter.
-        assert_eq!(caps.as_object().unwrap().len(), 68);
+        assert_eq!(caps.as_object().unwrap().len(), 69);
         assert_eq!(caps[super::super::task_attention::VISIBILITY_FILTER_CAPABILITY], json!(true));
         assert_eq!(caps[super::super::external_signals::CAPABILITY], json!(true));
         assert_eq!(caps[super::super::version_usage::CAPABILITY], json!(true));
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(caps["signal_with_start"], json!(true));
         assert_eq!(caps["update_outcome_reads"], json!(true));
         assert_eq!(caps["child_workflow_start_turn"], json!(true));
-        assert_eq!(caps["child_workflow_explicit_id"], json!(true));
+        assert_eq!(caps[super::super::children::CAPABILITY_EXPLICIT_ID], json!(true));
         assert_eq!(caps["condition_wait_idempotent_reopen"], json!(true));
         assert_eq!(caps["condition_wait_occurrence_deadline"], json!(true));
         assert_eq!(caps["response_compression"], json!(["gzip", "deflate"]));
