@@ -808,10 +808,13 @@ where
         stale_after: i64,
     ) -> Result<Vec<super::start_definition::CohortWorker>> {
         let cutoff = now() - chrono::Duration::seconds(stale_after.max(1));
-        let rows = Self::query("SELECT build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
+        let rows = Self::query("SELECT namespace,task_queue,build_id,supported_workflow_types,workflow_definition_fingerprints,last_heartbeat_at FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND (last_heartbeat_at IS NULL OR last_heartbeat_at>=$3) AND (status IS NULL OR status='active')")
             .bind(namespace).bind(queue).bind(DB::bind_time(cutoff)).fetch_all(&mut **tx).await?;
         let mut workers = Vec::with_capacity(rows.len());
         for row in &rows {
+            if DB::string(row, "namespace")? != namespace || DB::string(row, "task_queue")? != queue {
+                continue;
+            }
             workers.push(super::start_definition::CohortWorker {
                 build_id: DB::optional_string(row, "build_id")?,
                 workflow_types: DB::optional_document_row(row, "supported_workflow_types")?.unwrap_or(Value::Null),
@@ -3157,6 +3160,7 @@ where
             if kind == "workflow"
                 && let Some(map) = task_payload.as_object_mut()
             {
+                map.remove(super::continuations::REFUSAL_FIELD);
                 match poll_request {
                     Some(request) => {
                         map.insert("_server_poll_request_id".into(), json!(request.id));
@@ -3599,12 +3603,14 @@ where
         // are distinct transitions. Other replay blockers remain explicit gates.
         let failure = workflow_task_failure_shape(&body)?;
         let message = failure["message"].as_str().unwrap_or_default();
+        let promoted_refusal = failure.get("reason").and_then(Value::as_str)
+            == Some(super::continuations::PROMOTED_BUILD_UNAVAILABLE);
         let kind = failure
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
-        let waiting = waiting_acknowledgement(&body["failure"]);
+        let waiting = !promoted_refusal && waiting_acknowledgement(&body["failure"]);
         let range_blocked = !waiting
             && (failure
                 .get("reason")
@@ -3618,8 +3624,8 @@ where
         // Published PHP records every replay-blocking failure the same way
         // (`workflowTaskFailureBlocksReplay`): the task stays failed with its
         // replay block, without a retry, until an operator repairs the run.
-        let range_blocked =
-            range_blocked || (!waiting && super::task_failures::blocks_replay(&body["failure"]));
+        let range_blocked = !promoted_refusal
+            && (range_blocked || (!waiting && super::task_failures::blocks_replay(&body["failure"])));
         // The task is read within the request's namespace, and its retry
         // copies the run's namespace.
         let mut tx = self.begin().await?;
@@ -3630,6 +3636,9 @@ where
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
             .await
             .map_err(|error| Self::not_recorded(&task, &body, error))?;
+        if promoted_refusal {
+            Self::require_target_build_registration(&mut tx, &task, text(&body, "lease_owner")?).await?;
+        }
         let run_id = DB::string(&task, "workflow_run_id")?;
         let run = Self::active_run(&mut tx, &run_id)
             .await
@@ -3671,6 +3680,13 @@ where
             }
             if let Some(sequence) = failure.get("sequence").and_then(Value::as_i64) {
                 payload["failure_sequence"] = json!(sequence);
+            }
+            if promoted_refusal {
+                payload[super::continuations::REFUSAL_FIELD] = json!({
+                    "reason": super::continuations::PROMOTED_BUILD_UNAVAILABLE,
+                    "workflow_task_attempt": DB::number(&task, "attempt_count")?,
+                    "recorded_at": super::cooperative::timestamp(now()),
+                });
             }
             if range_blocked {
                 payload["replay_blocked"] = json!(true);
@@ -3874,7 +3890,7 @@ where
                     }
                 }
                 "continue_as_new" => {
-                    super::continuations::validate(command)?;
+                    super::continuations::validate(command, protocol)?;
                 }
                 "schedule_activity" => {
                     super::selections::fields(
@@ -4021,6 +4037,11 @@ where
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
             .await
             .map_err(|error| Self::not_recorded(&task, &body, error))?;
+        if super::continuations::target_build_protocol(protocol)
+            && commands.iter().any(|command| command["type"] == "continue_as_new")
+        {
+            Self::require_target_build_registration(&mut tx, &task, text(&body, "lease_owner")?).await?;
+        }
         // PHP admits cancellation scopes before it guards worker-session
         // commands, and guards both before validating streams.
         Self::cancellation_scope_admission(&mut tx, &task, &body, commands, protocol).await?;
@@ -4197,6 +4218,10 @@ where
         }
         Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
         let grouped_condition_repeats = Self::checked_grouped_condition_repeats(&mut tx, &run_id, commands, &partial_occurrences).await?;
+        let continued_build = match commands.iter().find(|command| command["type"] == "continue_as_new") {
+            Some(command) => Some(self.continued_build(&mut tx, &run, command, protocol).await?),
+            None => None,
+        };
         // Server #962: a run that captured no update contract at start binds
         // the completing worker's, once, with this accepted completion.
         Self::bind_update_contract(&mut tx, &task).await?;
@@ -4239,7 +4264,8 @@ where
                 {
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
-                    created.push(self.continue_run(&mut tx, &run, &task, command, sequence).await?);
+                    let build = continued_build.as_ref().expect("resolved continue-as-new build");
+                    created.push(self.continue_run(&mut tx, &run, &task, command, sequence, build).await?);
                 }
             } else if command["type"] != "complete_workflow" {
                 self.apply_non_terminal(&mut tx, &apply, index, command, &mut sequence, &mut created)

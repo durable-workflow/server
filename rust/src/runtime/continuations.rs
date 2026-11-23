@@ -15,8 +15,55 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
-pub(super) fn validate(command: &Value) -> Result<()> {
-    reject_fields(command, &["type", "arguments", "workflow_type", "queue"])?;
+pub(super) const TARGET_BUILD_PROTOCOL_MINOR: u8 = 21;
+pub(super) const TARGET_BUILD_PROTOCOL_VERSION: &str = "1.21";
+pub(super) const TARGET_BUILD_CAPABILITY: &str = "continue_as_new_target_build";
+pub(super) const PROMOTED_BUILD_UNAVAILABLE: &str = "promoted_build_unavailable";
+pub(super) const REFUSAL_FIELD: &str = "continue_as_new_refusal";
+
+#[derive(Clone, Copy)]
+enum TargetBuild {
+    Inherited,
+    Promoted,
+}
+
+fn target_build(command: &Value) -> Result<Option<TargetBuild>> {
+    match command.get("target_build").map(Value::as_str) {
+        None => Ok(None),
+        Some(Some("inherited")) => Ok(Some(TargetBuild::Inherited)),
+        Some(Some("promoted")) => Ok(Some(TargetBuild::Promoted)),
+        Some(_) => Err(refuse_target("invalid_target_build", false)),
+    }
+}
+
+pub(super) fn target_build_registration(manifest: &Value) -> bool {
+    let capability = &manifest[TARGET_BUILD_CAPABILITY];
+    capability["supported"] == true && capability["minimum_protocol_version"] == TARGET_BUILD_PROTOCOL_VERSION
+}
+
+pub(super) fn target_build_protocol(protocol: Option<&str>) -> bool {
+    protocol.and_then(|version| version.trim().strip_prefix("1."))
+        .and_then(|minor| minor.parse::<u8>().ok())
+        .is_some_and(|minor| minor >= TARGET_BUILD_PROTOCOL_MINOR)
+}
+
+pub(super) fn refuse_target(reason: &'static str, retryable: bool) -> super::RuntimeError {
+    super::RuntimeError::Protocol {
+        status: if retryable { StatusCode::CONFLICT } else { StatusCode::UNPROCESSABLE_ENTITY },
+        response: json!({"reason": reason, "retryable": retryable, "request_admitted": false}),
+    }
+}
+
+pub(super) fn validate_target_build(command: &Value, protocol: Option<&str>) -> Result<()> {
+    if target_build(command)?.is_some() && !target_build_protocol(protocol) {
+        return Err(refuse_target("unsupported_target_build", false));
+    }
+    Ok(())
+}
+
+pub(super) fn validate(command: &Value, protocol: Option<&str>) -> Result<()> {
+    validate_target_build(command, protocol)?;
+    reject_fields(command, &["type", "arguments", "workflow_type", "queue", "target_build"])?;
     for field in ["workflow_type", "queue"] {
         if command.get(field).is_some_and(|value| !value.is_null()) {
             super::text(command, field)?;
@@ -34,6 +81,34 @@ pub(super) fn validate(command: &Value) -> Result<()> {
 /// A memo key, its stored value and its current portable value.
 pub(super) type InheritedMemo = (String, Value, Option<Value>);
 
+pub(super) struct ContinuedBuild {
+    compatibility: Option<String>,
+    transition: Option<Value>,
+}
+
+fn destination<DB: Backend>(run: &DB::Row, command: &Value, field: &str) -> Result<String> {
+    match command.get(field) {
+        Some(value) if !value.is_null() => Ok(super::text(command, field)?.to_owned()),
+        _ => DB::string(run, field),
+    }
+}
+
+fn observed_transition(started: &Value, linked_run: &str) -> Option<Value> {
+    let transition = started.get("build_transition")?;
+    if !matches!(transition["resolution"].as_str(), Some("inherited" | "promoted"))
+        || ["from_compatibility", "to_compatibility"].iter()
+            .any(|field| transition.get(field).is_none_or(|value| !value.is_null() && !value.is_string()))
+    {
+        return None;
+    }
+    Some(json!({
+        "run_id": linked_run,
+        "from_compatibility": transition["from_compatibility"],
+        "to_compatibility": transition["to_compatibility"],
+        "resolution": transition["resolution"],
+    }))
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -46,6 +121,105 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// Check the registration of the lease owner under the same transition
+    /// lock as completion and failure. Replacing a registration releases its
+    /// leases before another incarnation can claim them.
+    pub(super) async fn require_target_build_registration(
+        tx: &mut Transaction<'_, DB>,
+        task: &DB::Row,
+        owner: &str,
+    ) -> Result<()> {
+        let worker = Self::query("SELECT capability_manifest FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2 AND task_queue=$3")
+            .bind(DB::string(task, "namespace")?)
+            .bind(owner)
+            .bind(DB::string(task, "queue")?)
+            .fetch_optional(&mut **tx)
+            .await?;
+        if let Some(worker) = worker
+            && DB::optional_document_row(&worker, "capability_manifest")?
+                .as_ref()
+                .is_some_and(target_build_registration)
+        {
+            return Ok(());
+        }
+        Err(refuse_target("unsupported_target_build", false))
+    }
+
+    /// The most recent workflow task is authoritative even when its claim
+    /// cleared the marker. Older failed rows can still carry the same refusal.
+    pub(super) async fn observed_continuation_refusal(&self, run: &str) -> Result<Value> {
+        let Some(task) = Self::query(
+            "SELECT t.id,t.status,t.attempt_count,t.available_at,t.payload,\
+             r.status AS run_status,r.execution_deadline_at,r.run_deadline_at \
+             FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id \
+             WHERE r.id=$1 AND r.namespace=$2 AND t.namespace=$3 AND t.task_type='workflow' \
+             ORDER BY t.created_at DESC,t.id DESC LIMIT 1",
+        )
+            .bind(run).bind(self.namespace.as_ref()).bind(self.namespace.as_ref())
+            .fetch_optional(&self.pool).await?
+        else {
+            return Ok(Value::Null);
+        };
+        let status = DB::string(&task, "status")?;
+        if !matches!(status.as_str(), "ready" | "failed" | "cancelled") {
+            return Ok(Value::Null);
+        }
+        let Some(payload) = DB::optional_document_row(&task, "payload")? else {
+            return Ok(Value::Null);
+        };
+        let refusal = &payload[REFUSAL_FIELD];
+        let attempt = DB::number(&task, "attempt_count")?;
+        if refusal["reason"] != PROMOTED_BUILD_UNAVAILABLE
+            || refusal["workflow_task_attempt"].as_i64() != Some(attempt)
+            || !refusal["recorded_at"].is_string()
+        {
+            return Ok(Value::Null);
+        }
+        let available_at = if status == "ready"
+            && matches!(DB::string(&task, "run_status")?.as_str(), "pending" | "running" | "waiting")
+        {
+            let deadline = super::timeout_cleanup::earliest_hard_deadline(
+                DB::optional_instant(&task, "execution_deadline_at")?,
+                DB::optional_instant(&task, "run_deadline_at")?,
+            );
+            DB::optional_instant(&task, "available_at")?
+                .filter(|available| deadline.is_none_or(|(_, deadline)| *available < deadline))
+        } else {
+            None
+        };
+        Ok(json!({
+            "task_id": DB::string(&task, "id")?,
+            "status": status,
+            "available_at": super::task_queues::json_time(available_at),
+            "workflow_task_attempt": attempt,
+            "recorded_at": refusal["recorded_at"],
+            "reason": PROMOTED_BUILD_UNAVAILABLE,
+        }))
+    }
+
+    /// Read only the first event of an immediate continuation and its
+    /// successor. A continued run starts at sequence 1, even when its
+    /// predecessor had more events after closing.
+    pub(super) async fn observed_build_transitions(
+        &self, run: &str, started: Option<&Value>, continued: bool,
+    ) -> Result<Value> {
+        let from_predecessor = started.and_then(|started| {
+            let id = started["continued_from_run_id"].as_str().filter(|id| !id.is_empty())?;
+            observed_transition(started, id)
+        });
+        let mut to_successor = None;
+        if continued
+            && let Some(row) = Self::query("SELECT r.id,h.payload FROM workflow_links l JOIN workflow_runs r ON r.id=l.child_workflow_run_id JOIN workflow_history_events h ON h.workflow_run_id=r.id AND h.sequence=1 AND h.event_type='WorkflowStarted' WHERE l.parent_workflow_run_id=$1 AND r.namespace=$2 AND l.link_type='continue_as_new' LIMIT 1")
+                .bind(run).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+        {
+            let started = DB::document_row(&row, "payload")?;
+            if started["continued_from_run_id"].as_str() == Some(run) {
+                to_successor = observed_transition(&started, &DB::string(&row, "id")?);
+            }
+        }
+        Ok(json!({"from_predecessor":from_predecessor,"to_successor":to_successor}))
+    }
+
     /// `WorkflowController::runs`: every run in run-number order, as PHP's
     /// `formatRunListEntry` renders it. The current run is the highest
     /// numbered one.
@@ -151,6 +325,29 @@ where
         Ok(())
     }
 
+    pub(super) async fn continued_build(
+        &self, tx: &mut Transaction<'_, DB>, run: &DB::Row, command: &Value, protocol: Option<&str>,
+    ) -> Result<ContinuedBuild> {
+        let original = DB::optional_string(run, "compatibility")?;
+        let target = target_build(command)?.unwrap_or(TargetBuild::Inherited);
+        let (compatibility, resolution) = match target {
+            TargetBuild::Inherited => (original.clone(), "inherited"),
+            TargetBuild::Promoted => {
+                let queue = destination::<DB>(run, command, "queue")?;
+                let kind = destination::<DB>(run, command, "workflow_type")?;
+                let build = Self::promoted_build_for_type(tx, self.namespace.as_ref(), &queue, &kind)
+                    .await?.ok_or_else(|| refuse_target(PROMOTED_BUILD_UNAVAILABLE, true))?;
+                (Some(build), "promoted")
+            }
+        };
+        let transition = target_build_protocol(protocol).then(|| json!({
+            "from_compatibility": original.as_deref().filter(|value| !value.trim().is_empty()),
+            "to_compatibility": compatibility.as_deref().filter(|value| !value.trim().is_empty()),
+            "resolution": resolution,
+        }));
+        Ok(ContinuedBuild { compatibility, transition })
+    }
+
     pub(super) async fn continue_run(
         &self,
         tx: &mut Transaction<'_, DB>,
@@ -158,6 +355,7 @@ where
         task: &DB::Row,
         command: &Value,
         sequence: i64,
+        build: &ContinuedBuild,
     ) -> Result<String> {
         let old = DB::string(run, "id")?;
         let workflow = DB::string(run, "workflow_instance_id")?;
@@ -220,17 +418,11 @@ where
         };
         // `applyContinueAsNew`: the command may name a new workflow type and
         // queue. The type also becomes the run's and the instance's class.
-        let routed = |field: &str| -> Result<String> {
-            match command.get(field) {
-                Some(value) if !value.is_null() => Ok(super::text(command, field)?.to_owned()),
-                _ => DB::string(run, field),
-            }
-        };
-        let kind = routed("workflow_type")?;
+        let kind = destination::<DB>(run, command, "workflow_type")?;
         let class = kind.clone();
-        let queue = routed("queue")?;
-        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,connection,queue,business_key,visibility_labels,compatibility,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at) SELECT $1,workflow_instance_id,$2,$3,$4,'pending',payload_codec,$5,connection,$6,business_key,visibility_labels,compatibility,run_timeout_seconds,execution_deadline_at,$7,$8,$9,$10,namespace,$11 FROM workflow_runs WHERE id=$12")
-            .bind(&next).bind(&kind).bind(&class).bind(number).bind(&arguments).bind(&queue).bind(DB::optional_time(deadline))
+        let queue = destination::<DB>(run, command, "queue")?;
+        Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,workflow_type,workflow_class,run_number,status,payload_codec,arguments,connection,queue,business_key,visibility_labels,compatibility,run_timeout_seconds,execution_deadline_at,run_deadline_at,started_at,created_at,updated_at,namespace,last_progress_at) SELECT $1,workflow_instance_id,$2,$3,$4,'pending',payload_codec,$5,connection,$6,business_key,visibility_labels,$7,run_timeout_seconds,execution_deadline_at,$8,$9,$10,$11,namespace,$12 FROM workflow_runs WHERE id=$13")
+            .bind(&next).bind(&kind).bind(&class).bind(number).bind(&arguments).bind(&queue).bind(build.compatibility.as_deref()).bind(DB::optional_time(deadline))
             .bind(DB::bind_time(started)).bind(DB::bind_time(started))
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).bind(&old)
             .execute(&mut **tx).await?;
@@ -243,6 +435,9 @@ where
         let parent = Self::continue_child_links(tx, &old, &next, number, &class, &kind, started).await?;
         let mut successor_started = json!({"workflow_class":class,"workflow_type":kind,
             "workflow_instance_id":workflow,"workflow_run_id":next});
+        if let Some(transition) = &build.transition {
+            successor_started["build_transition"] = transition.clone();
+        }
         // Server #1201: the successor inherits the allowance; its execution
         // work deadline stays the original and its run clock is its own.
         if let Some(allowance) = Self::timeout_cleanup_allowance(tx, &old).await? {
@@ -271,8 +466,12 @@ where
         Self::settle_closing_open_work(tx, &old, &task_id, started).await?;
         Self::query("UPDATE workflow_runs SET status='completed',closed_reason='continued',closed_at=$1,last_progress_at=$2 WHERE id=$3")
             .bind(DB::bind_time(started)).bind(DB::bind_time(started)).bind(&old).execute(&mut **tx).await?;
-        Self::append(tx,&old,"WorkflowContinuedAsNew",json!({"sequence":sequence,"continued_to_run_id":next,
-            "continued_to_run_number":number,"workflow_link_id":link,"closed_reason":"continued","task":Self::task_snapshot(task)?}),Some(&task_id),None).await?;
+        let mut predecessor_closed = json!({"sequence":sequence,"continued_to_run_id":next,
+            "continued_to_run_number":number,"workflow_link_id":link,"closed_reason":"continued","task":Self::task_snapshot(task)?});
+        if let Some(transition) = &build.transition {
+            predecessor_closed["build_transition"] = transition.clone();
+        }
+        Self::append(tx,&old,"WorkflowContinuedAsNew",predecessor_closed,Some(&task_id),None).await?;
         // `PendingUpdateCloser::closeForTerminalRun`: updates already applied
         // but not completed stay with the predecessor and close there.
         Self::close_pending_updates(tx, &old, Some(task)).await?;
