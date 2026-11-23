@@ -2054,9 +2054,16 @@ async fn register(
         .filter(|flag| flag.as_str().is_some_and(|flag| !flag.is_empty()))
         .cloned()
         .collect();
+    let grouped_condition_replay = flags.iter().any(|flag| flag == "grouped_condition_wait_replay");
     body["capabilities"] = json!(flags);
     let registered = runtime.register(body, Some(protocol)).await.map_err(worker_refusal)?;
-    Ok((StatusCode::CREATED, Json(worker_response(registered))))
+    let mut response = worker_response(registered);
+    // Earlier SDKs recognize this server flag but cannot replay a physical
+    // reopen. Publish it only to workers that implement the replay contract.
+    if grouped_condition_replay {
+        response["server_capabilities"]["grouped_condition_waits"] = json!({"supported":true,"version":1});
+    }
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// `WorkerProtocol::json` names the protocol and server capabilities on

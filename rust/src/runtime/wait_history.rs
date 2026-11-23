@@ -40,6 +40,16 @@ pub(super) struct Opening {
     pub(super) payload: Value,
 }
 
+impl Opening {
+    pub(super) fn all_group_root(&self) -> Option<&str> {
+        let path = self.payload["parallel_group_path"].as_array()?;
+        if path.iter().any(super::selections::is_selection) {
+            return None;
+        }
+        path.first()?["parallel_group_id"].as_str()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConditionStatus {
     Open,
@@ -100,6 +110,10 @@ impl ConditionWait {
     /// `hasAdvanceableConditionWait` / `latestOpenConditionWait`.
     pub(super) fn advanceable(&self) -> bool {
         self.is_open() && self.fired_at.is_none()
+    }
+
+    pub(super) fn completed_successfully(&self) -> bool {
+        self.fired_at.is_some() || self.status == ConditionStatus::Resolved
     }
 
     pub(super) fn occurrence(&self) -> Option<&str> {
@@ -470,6 +484,47 @@ where
             ));
         }
         Ok(Waits::fold(events))
+    }
+
+    /// Prove that repeated group members refer to live waits at their
+    /// original authored positions before the completion consumes a signal.
+    pub(super) async fn checked_grouped_condition_repeats(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        commands: &[Value],
+        partial_occurrences: &std::collections::BTreeSet<String>,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        let grouped = || commands.iter().filter(|command| {
+            command["type"] == "open_condition_wait" && command.get("parallel_group_path").is_some()
+        });
+        let mut repeats = std::collections::BTreeSet::new();
+        if grouped().next().is_none() {
+            return Ok(repeats);
+        }
+        let waits = Self::waits(tx, run_id).await?;
+        for command in grouped() {
+            let Some(occurrence) = command["condition_wait_occurrence_id"].as_str() else { continue };
+            let Some(wait) = waits.conditions.iter().rev().find(|wait| wait.occurrence() == Some(occurrence)) else {
+                continue;
+            };
+            let opening = waits.condition_opening(&wait.id).ok_or_else(super::all_groups::invalid)?;
+            let group = super::selections::metadata(command, "condition")?;
+            let recorded_group = super::selections::metadata(&opening.payload, "condition")?;
+            let key = |name: &str| command[name].as_str().map(str::trim).filter(|value| !value.is_empty());
+            if !wait.advanceable()
+                || recorded_group != group
+                || wait.key() != key("condition_key")
+                || wait.fingerprint() != key("condition_definition_fingerprint")
+                || (wait.policy().is_none() && wait.timeout_seconds() != command["timeout_seconds"].as_i64())
+                || !repeats.insert(occurrence.to_owned())
+            {
+                return Err(super::all_groups::invalid());
+            }
+        }
+        if !partial_occurrences.is_subset(&repeats) {
+            return Err(super::all_groups::invalid());
+        }
+        Ok(repeats)
     }
 }
 

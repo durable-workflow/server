@@ -83,6 +83,8 @@ mod worker_incarnations;
 mod command_keys;
 #[path = "execution/timeout_cleanup.rs"]
 mod timeout_cleanup;
+#[path = "execution/grouped_condition_waits.rs"]
+mod grouped_condition_waits;
 #[path = "execution/storage_admission.rs"]
 mod storage_admission;
 #[path = "execution/worker_contracts.rs"]

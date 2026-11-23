@@ -71,7 +71,7 @@ fn string(value: &Value) -> Option<&str> {
         .filter(|v| !v.is_empty())
 }
 
-pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
+pub(super) fn validate_batch(commands: &[Value]) -> Result<std::collections::BTreeSet<String>> {
     // A second terminal command is the bridge's 409, after the ownership
     // checks (`Store::complete_workflow`).
     // PHP parseCommands removes terminal commands before group validation.
