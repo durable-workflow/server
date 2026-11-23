@@ -166,7 +166,10 @@ struct Group {
 struct Member {
     metadata: Value,
     kind: &'static str,
+    sequence: i64,
+    occurrence: Option<String>,
     terminal: bool,
+    reopenable: bool,
 }
 
 impl AllHistory {
@@ -226,15 +229,38 @@ impl AllHistory {
         let group_id = entry["parallel_group_id"].as_str().unwrap().to_owned();
         let index = entry["parallel_group_index"].as_u64().unwrap() as usize;
         let size = entry["parallel_group_size"].as_u64().unwrap() as usize;
-        if payload["sequence"].as_i64()
-            != Some(entry["parallel_group_base_sequence"].as_i64().unwrap() + index as i64)
-        {
+        let Some(sequence) = payload["sequence"].as_i64() else {
             return false;
-        }
+        };
         if matches!(
             event,
             "ActivityScheduled" | "TimerScheduled" | "ChildWorkflowScheduled" | "ConditionWaitOpened"
         ) {
+            let position = entry["parallel_group_base_sequence"].as_i64().unwrap() + index as i64;
+            let occurrence = payload["condition_wait_occurrence_id"].as_str()
+                .filter(|id| kind == "condition" && !id.is_empty());
+            if sequence != position {
+                let Some(occurrence) = occurrence.filter(|_| sequence > position) else { return false };
+                let Some(group) = self.groups.get_mut(&group_id) else { return false };
+                if group.size != size || group.members.contains_key(identity) {
+                    return false;
+                }
+                let Some(previous_id) = group.members.iter().find_map(|(id, member)| {
+                    (member.reopenable && member.sequence < sequence && member.metadata == *metadata
+                        && member.occurrence.as_deref() == Some(occurrence)).then(|| id.clone())
+                }) else { return false };
+                group.members.remove(&previous_id);
+                group.terminal_count -= 1;
+                group.members.insert(identity.into(), Member {
+                    metadata: metadata.clone(),
+                    kind,
+                    sequence,
+                    occurrence: Some(occurrence.to_owned()),
+                    terminal: false,
+                    reopenable: false,
+                });
+                return true;
+            }
             let group = self.groups.entry(group_id).or_insert_with(|| Group {
                 size,
                 indices: BTreeSet::new(),
@@ -252,7 +278,10 @@ impl AllHistory {
                 Member {
                     metadata: metadata.clone(),
                     kind,
+                    sequence,
+                    occurrence: occurrence.map(str::to_owned),
                     terminal: false,
+                    reopenable: false,
                 },
             );
             return true;
@@ -267,6 +296,7 @@ impl AllHistory {
             || member.terminal
             || member.metadata != *metadata
             || member.kind != kind
+            || member.sequence != sequence
         {
             return false;
         }
@@ -287,11 +317,50 @@ impl AllHistory {
                 | "ConditionWaitCancelled"
         ) {
             member.terminal = true;
+            member.reopenable = event == "ConditionWaitSatisfied" && member.occurrence.is_some();
             group.terminal_count += 1;
-            if group.terminal_count == size {
+            if group.terminal_count == size && !group.members.values().any(|member| member.reopenable) {
                 self.groups.remove(&group_id);
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grouped_replacement_keeps_the_completed_barriers_original_membership() {
+        let metadata = json!({"parallel_group_id":"parallel-calls:1:2","parallel_group_kind":"mixed",
+            "parallel_group_base_sequence":1,"parallel_group_size":2,"parallel_group_index":0});
+        let mut wait = metadata.clone();
+        wait["parallel_group_path"] = json!([metadata]);
+        wait["sequence"] = json!(1);
+        wait["condition_wait_id"] = json!("first");
+        wait["condition_wait_occurrence_id"] = json!("php:condition-wait:0");
+        let mut sibling = metadata.clone();
+        sibling["parallel_group_index"] = json!(1);
+        let mut timer = sibling.clone();
+        timer["parallel_group_path"] = json!([sibling]);
+        timer["sequence"] = json!(2);
+        timer["timer_id"] = json!("sibling");
+
+        let mut history = AllHistory::default();
+        assert!(history.apply("ConditionWaitOpened", &wait));
+        assert!(history.apply("TimerScheduled", &timer));
+        assert!(history.apply("TimerFired", &timer));
+        assert!(history.apply("ConditionWaitSatisfied", &wait));
+        let mut changed = wait.clone();
+        changed["sequence"] = json!(3);
+        changed["condition_wait_id"] = json!("replacement");
+        changed["condition_wait_occurrence_id"] = json!("different");
+        assert!(!history.apply("ConditionWaitOpened", &changed));
+
+        changed["condition_wait_occurrence_id"] = wait["condition_wait_occurrence_id"].clone();
+        assert!(history.apply("ConditionWaitOpened", &changed));
+        assert!(history.complete());
+        assert!(history.apply("ConditionWaitSatisfied", &changed));
     }
 }

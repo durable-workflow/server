@@ -42,6 +42,28 @@ async fn wait_for(app: &Router, started: &Value, done: impl Fn(&Value) -> bool) 
 }
 
 #[tokio::test]
+async fn only_replay_capable_workers_receive_grouped_condition_support() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (worker, capabilities, supported) in [
+        ("older-worker", json!([]), Value::Null),
+        ("replay-worker", json!(["grouped_condition_wait_replay"]), json!({"supported":true,"version":1})),
+    ] {
+        let (status, response) = request(&app, "POST", "/api/worker/register", json!({
+            "worker_id":worker,"runtime":"php","task_queue":"default","supported_workflow_types":["echo"],"capabilities":capabilities
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{}", response["reason"]);
+        assert_eq!(response["server_capabilities"]["grouped_condition_waits"], supported);
+    }
+    let (status, info) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{info}");
+    assert!(info["worker_protocol"]["server_capabilities"]["grouped_condition_waits"].is_null(), "{info}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn a_mixed_group_records_the_condition_member_and_waits_for_it() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
@@ -147,7 +169,7 @@ async fn a_false_wake_reopens_only_the_original_group_member() {
     let condition = member(json!({"type":"open_condition_wait","condition_key":"approval",
         "condition_definition_fingerprint":"approval-v1","condition_wait_occurrence_id":occurrence,
         "timeout_seconds":600}), slot.clone());
-    let timer = member(json!({"type":"start_timer","delay_seconds":2}), group("parallel-calls:1:2", "mixed", 1, 2, 1));
+    let timer = member(json!({"type":"start_timer","delay_seconds":5}), group("parallel-calls:1:2", "mixed", 1, 2, 1));
     let (status, body) = finish_task(&app, &task, json!([condition.clone(), timer])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
@@ -156,10 +178,13 @@ async fn a_false_wake_reopens_only_the_original_group_member() {
     let resumed = poll(&app, "grouped", "workflow").await;
     let mut different = condition.clone();
     different["condition_key"] = json!("different");
-    let before = table_counts(&database).await;
+    let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
     let (status, body) = finish_task(&app, &resumed, json!([different])).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(table_counts(&database).await, before, "an unrelated condition cannot replace the existing member");
+    let refused = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    for kind in ["ConditionWaitOpened", "ConditionWaitSatisfied", "ConditionWaitCancelled"] {
+        assert_eq!(events(&refused, kind), events(&before, kind), "the refused completion changed {kind}");
+    }
 
     let (status, body) = finish_task(&app, &resumed, json!([condition])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -173,6 +198,7 @@ async fn a_false_wake_reopens_only_the_original_group_member() {
     assert!(reopened["sequence"].as_i64().unwrap() > original["sequence"].as_i64().unwrap());
     assert_eq!(group_of(reopened), slot);
     assert_eq!(reopened["parallel_group_path"], original["parallel_group_path"]);
+    assert!(events(&history, "TimerFired").is_empty(), "observe the sibling firing after the wait reopens");
 
     wait_for(&app, &started, |history| events(history, "TimerFired").iter()
         .any(|event| event["payload"].get("timer_kind").is_none())).await;
