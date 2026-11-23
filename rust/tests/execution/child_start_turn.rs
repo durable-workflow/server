@@ -56,10 +56,13 @@ async fn a_started_child_gives_the_parent_a_fresh_turn_while_it_runs() {
     workers(&app).await;
     let started = start(&app, "turning").await;
     let first = poll(&app, "worker", "workflow").await;
-    let (status, body) = finish_task(&app, &first, json!([child(Some("started"))])).await;
+    let mut command = child(Some("started"));
+    command["workflow_id"] = json!("order:104-shipment_1");
+    let (status, body) = finish_task(&app, &first, json!([command.clone()])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["created_task_ids"].as_array().unwrap().len(), 2, "the child's task and the parent's turn: {body}");
     assert_eq!(body["server_capabilities"]["child_workflow_start_turn"], true, "{body}");
+    assert_eq!(body["server_capabilities"]["child_workflow_explicit_id"], true, "{body}");
 
     // The turn is a fresh claim on the parent, with the committed identity in
     // its history; the child has not run yet.
@@ -72,11 +75,13 @@ async fn a_started_child_gives_the_parent_a_fresh_turn_while_it_runs() {
     let call = run_started[0]["payload"]["child_call_id"].clone();
     let initial_run = run_started[0]["payload"]["child_workflow_run_id"].clone();
     assert_eq!(scheduled[0]["payload"]["child_call_id"], call);
+    assert_eq!(scheduled[0]["payload"]["requested_child_id"], "order:104-shipment_1");
+    assert_eq!(run_started[0]["payload"]["child_workflow_instance_id"], "order:104-shipment_1");
     assert!(events(&turn, "ChildRunCompleted").is_empty());
 
     // A duplicate of the original completion starts no second child and
     // creates no second turn.
-    let (status, duplicate) = finish_task(&app, &first, json!([child(Some("started"))])).await;
+    let (status, duplicate) = finish_task(&app, &first, json!([command])).await;
     assert_eq!((status, duplicate["recorded"].clone(), duplicate["reason"].clone()),
         (StatusCode::OK, json!(false), json!("already_completed")), "{duplicate}");
     assert_eq!((child_calls(&database, &started["run_id"]).await, parent_tasks(&database, &started["run_id"]).await), (1, 2));
@@ -94,6 +99,7 @@ async fn a_started_child_gives_the_parent_a_fresh_turn_while_it_runs() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let child_next = child_poll(&app).await;
     assert_ne!(child_next["run_id"], initial_run);
+    assert_eq!(child_next["workflow_id"], "order:104-shipment_1");
     let (status, body) = finish_task(&app, &child_next, json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let resumed = poll(&app, "worker", "workflow").await;
@@ -102,6 +108,45 @@ async fn a_started_child_gives_the_parent_a_fresh_turn_while_it_runs() {
     assert_eq!(completed.len(), 1, "{resumed}");
     assert_eq!(completed[0]["payload"]["child_call_id"], call);
     assert_eq!(events(&resumed, "ChildRunStarted")[0]["payload"]["child_workflow_run_id"], initial_run, "the initial run id is frozen");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn a_child_id_collision_rolls_back_the_entire_completion_and_preserves_the_lease() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    workers(&app).await;
+
+    start(&app, "already-reserved").await;
+    let holder = poll(&app, "worker", "workflow").await;
+    let (status, closed) = finish_task(&app, &holder, json!([{
+        "type":"complete_workflow","result":envelope(Payload::Long(7))
+    }])).await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+
+    let loser = start(&app, "losing-parent").await;
+    let parent = poll(&app, "worker", "workflow").await;
+    let mut first = child(None);
+    first["workflow_id"] = json!("reusable-after-rollback");
+    let mut second = child(None);
+    second["workflow_id"] = json!("already-reserved");
+    let (status, rejected) = finish_task(&app, &parent, json!([first.clone(), second.clone()])).await;
+    assert_eq!((status, &rejected["reason"]), (StatusCode::CONFLICT, &json!("child_workflow_id_unavailable")), "{rejected}");
+    assert_eq!(child_calls(&database, &loser["run_id"]).await, 0);
+    assert!(child_poll(&app).await.is_null());
+
+    for invalid in [json!(null), json!("an/id"), json!("x".repeat(129))] {
+        second["workflow_id"] = invalid;
+        let (status, rejected) = finish_task(&app, &parent, json!([second.clone()])).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{rejected}");
+    }
+
+    let (status, accepted) = finish_task(&app, &parent, json!([first])).await;
+    assert_eq!(status, StatusCode::OK, "{accepted}");
+    assert_eq!(child_calls(&database, &loser["run_id"]).await, 1);
+    assert_eq!(child_poll(&app).await["workflow_id"], "reusable-after-rollback");
     runtime.close().await;
     database.remove().await;
 }

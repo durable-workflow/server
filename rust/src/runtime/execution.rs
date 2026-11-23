@@ -2405,7 +2405,8 @@ async fn task_offer_worker_routes_preserve_signed_scope_and_definitive_refusals(
     let initial_horizon = read_horizon(&runtime).await;
     let app = super::router(runtime.clone());
     let worker = json!({"worker_id":"offer-worker","task_queue":"offer-queue","runtime":"php",
-        "supported_workflow_types":["fixture"],"supported_activity_types":[],"capabilities":["task_delivery_offers"],
+        "supported_workflow_types":["fixture"],"supported_activity_types":[],
+        "capabilities":["task_delivery_offers","grouped_condition_wait_replay"],
         "capability_manifest":{
             "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
             "local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
@@ -2414,6 +2415,7 @@ async fn task_offer_worker_routes_preserve_signed_scope_and_definitive_refusals(
     let (status, registered) = request(&app, "/api/worker/register", &worker, true, false).await;
     assert_eq!(status, StatusCode::CREATED, "registration refused: {:?}", registered["reason"]);
     assert_eq!(registered["server_capabilities"]["task_delivery"], super::task_offer_dispatch::descriptor());
+    assert_eq!(registered["server_capabilities"]["grouped_condition_waits"], json!({"supported":true,"version":1}));
     let input = crate::codec::ValueCodec::new().unwrap().encode(&crate::codec::Value::Array(Vec::new())).unwrap();
     for id in ["route-offer-one", "route-offer-two"] {
         runtime.in_namespace("offer-test").start(json!({"workflow_id":id,"workflow_type":"fixture",

@@ -5,11 +5,11 @@ type: application
 # The chart's own semver version. Bumped on every chart release; treated as
 # independent of the server image version (appVersion). Breaking-change rules
 # for this version live in docs/UPGRADING.md alongside the chart.
-version: 5.3.0
+version: 5.4.1
 # The immutable native Durable Workflow Server this chart release packages.
 # The onboarding default in values.yaml and appVersion are generated from the
 # checked-in source release record (helm_chart.app_version).
-appVersion: "3.17.1"
+appVersion: "3.22.2"
 kubeVersion: ">=1.27.0-0"
 home: https://durable-workflow.github.io/docs/2.0/deployment
 sources:
@@ -30,10 +30,10 @@ annotations:
   # exact commit that most recently changed the packaged chart.
   org.opencontainers.image.source: https://github.com/durable-workflow/server
   dev.durable-workflow.source-revision: "unreleased"
-  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.17.1"
+  dev.durable-workflow.image-reference: "docker.io/durableworkflow/server:3.22.2"
   artifacthub.io/license: MIT
   artifacthub.io/category: integration-delivery
   # Free-form changelog for the current chart release shown by Artifact Hub.
   artifacthub.io/changes: |
-    - kind: added
-      description: "PHP workloads mount their runtime files when a read-only root filesystem is enabled. Native read-only deployments and schema upgrades are covered by the chart smoke test."
+    - kind: changed
+      description: "Select native Server 3.22.2 with its Rust URL dependency fix."

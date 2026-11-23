@@ -323,6 +323,25 @@ and later) and always needs the explicit, backed-up `schema-upgrade` step
 above; startup never upgrades. Each minor release's notes say whether its
 schema changed.
 
+### Child summary checkpoints on MySQL and MariaDB
+
+The checkpoint migration installs triggers that invalidate a cached child-group
+summary when its underlying rows change. A read-only catalog function and view
+let `schema-check` verify the stored code from a SELECT-only role without
+granting permission to alter it. A binlogged server with
+`log_bin_trust_function_creators=OFF` may refuse creation of the stored code by the
+database-scoped application account. After
+`native_child_checkpoint_trigger_privilege_required`, keep the nodes stopped
+and run the same image with the same application `DB_*` settings and the
+`schema-checkpoint-ddl` command. Its SQL output selects the staged
+database and specifies the application account as the definer. An authorized
+database administrator applies those statements on the writer. Then rerun
+the original `schema-upgrade`, `schema-bootstrap`, or `upgrade-takeover`
+command with the application credentials. The command verifies all stored-code
+definitions and takes the database out of its staged state. The trigger
+definer requires access to the checkpoint table for as long as the triggers
+are installed.
+
 ## Workflow task lease loss
 
 Run descriptions, observations and lists expose `task_attention` when an

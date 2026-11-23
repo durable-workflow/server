@@ -8,8 +8,9 @@
 //!
 //! A snapshot is the routing revision (queue, build ID, workflow and
 //! activity types, definition fingerprints, command contracts and
-//! capabilities), the process identity a worker reports (host, process ID,
-//! process start), and the registration's update and heartbeat times. A
+//! capabilities and the parallel group policy descriptor), the process
+//! identity a worker reports (host, process ID, process start), and the
+//! registration's update and heartbeat times. A
 //! worker that reports its process is matched by that identity; one that
 //! does not, by those times, which PHP keeps in whole seconds, so a heartbeat
 //! ends its held poll. A registration that is not active or has not
@@ -38,7 +39,7 @@ macro_rules! fence_registration_sql {
         concat!("SELECT ", $fields, ",(SELECT dw_worker_registration_incarnations.token FROM dw_worker_registration_incarnations WHERE dw_worker_registration_incarnations.namespace=workflow_worker_registrations.namespace AND dw_worker_registration_incarnations.worker_id=workflow_worker_registrations.worker_id AND dw_worker_registration_incarnations.status='active' ORDER BY dw_worker_registration_incarnations.created_at DESC LIMIT 1) AS incarnation_token FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
     };
 }
-const FENCE_ROW: &str = fence_registration_sql!("status,task_queue,build_id,supported_workflow_types,workflow_definition_fingerprints,workflow_command_contracts,supported_activity_types,capabilities,process_metrics,updated_at,last_heartbeat_at");
+const FENCE_ROW: &str = fence_registration_sql!("status,task_queue,build_id,supported_workflow_types,workflow_definition_fingerprints,workflow_command_contracts,supported_activity_types,capabilities,capability_manifest,process_metrics,updated_at,last_heartbeat_at");
 // Only a claim's in-transaction check reads all registration columns. Idle
 // probes and admission keep their original narrower snapshot query.
 pub(super) const FENCE_REGISTRATION: &str = fence_registration_sql!("workflow_worker_registrations.*");
@@ -122,6 +123,9 @@ fn process_identity(metrics: Option<Value>) -> BTreeMap<&'static str, Value> {
 impl WorkerPollFence {
     /// The snapshot of a registration row read with `FENCE_ROW`.
     pub(super) fn snapshot<DB: Backend>(row: &DB::Row) -> Result<Self> {
+        let manifest = DB::optional_document_row(row, "capability_manifest")?;
+        let group_policies = manifest.as_ref()
+            .and_then(|manifest| manifest.get(super::worker_admission::PARALLEL_GROUP_POLICIES));
         let routing = json!({
             "task_queue": string_value(DB::optional_string(row, "task_queue")?),
             "build_id": string_value(DB::optional_string(row, "build_id")?),
@@ -130,6 +134,7 @@ impl WorkerPollFence {
             "workflow_command_contracts": array_value(DB::optional_document_row(row, "workflow_command_contracts")?),
             "supported_activity_types": string_list(DB::optional_document_row(row, "supported_activity_types")?),
             "capabilities": string_list(DB::optional_document_row(row, "capabilities")?),
+            "parallel_group_policies": group_policies,
         });
         Ok(Self {
             incarnation: DB::optional_string(row, "incarnation_token")?,

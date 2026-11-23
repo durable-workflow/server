@@ -127,6 +127,29 @@ async fn held_workflow_polls_end_when_the_registration_changes() {
 }
 
 #[tokio::test]
+async fn a_changed_group_policy_descriptor_leaves_the_next_task_for_the_replacement() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let worker = "fence-group-policy";
+    let mut body = registration(worker, Some("t0"));
+    body["capabilities"] = json!(["parallel_group_policies"]);
+    body["capability_manifest"] = json!({"parallel_group_policies": {
+        "supported": true, "version": 1, "policies": ["propagate"]
+    }});
+    let (status, registered) = request_protocol(&app, "POST", "/api/worker/register", body.clone(), "1.17").await;
+    assert_eq!(status, StatusCode::CREATED, "{}", registered["reason"]);
+    let poll = held(&app, worker, "workflow").await;
+
+    body["capability_manifest"]["parallel_group_policies"]["policies"] = json!(["propagate", "settle"]);
+    let (status, replaced) = request_protocol(&app, "POST", "/api/worker/register", body, "1.17").await;
+    assert_eq!(status, StatusCode::CREATED, "{}", replaced["reason"]);
+    assert_ne!(registered["registration_token"], replaced["registration_token"]);
+    start_on(&app, worker).await;
+    assert_eq!(outcome(&answer(poll).await, worker), stale());
+    assert_eq!(outcome(&poll_now(&app, worker, "workflow").await, worker), leased());
+}
+
+#[tokio::test]
 async fn held_activity_polls_end_when_the_registration_changes() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());

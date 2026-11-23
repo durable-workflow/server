@@ -5,18 +5,27 @@ name: durable-workflow-server
 #   curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docker-compose.published.yml
 #   docker compose -f docker-compose.published.yml up -d --wait
 #
-# Native is one process. It creates and checks its own schema at startup and
-# runs its maintenance (timers, repair, retention) in the same process, so
-# there is no bootstrap job, queue worker, scheduler or Redis. The PHP 2.x
-# server's Compose file is docker-compose.php.yml; to keep running PHP, use
-# that file (or pin a 2.x release of this one).
+# The Server runs the API and maintenance in one long-lived process.
+# Two one-shot services prepare the native schema and apply any staged
+# checkpoint DDL for the scoped Server account. Use docker-compose.php.yml
+# for the PHP 2.x Server.
 #
 # The default image is the native release this commit is tagged as: a final
 # release's commit moves it (verify-native-release-dispatch.sh refuses a
 # release whose default names another image). Set DW_SERVER_IMAGE to run
 # any other native image, by tag or digest; pin a digest for production
 # change control.
-x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.21.0}
+x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:3.23.0}
+
+x-mysql-image: &mysql-image mysql:${MYSQL_VERSION:-8.0}
+x-server-database: &server-database
+  DW_RUST_EXPERIMENTAL: "1"
+  DB_CONNECTION: mysql
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DB_DATABASE: ${DB_DATABASE:-durable_workflow}
+  DB_USERNAME: ${DB_USERNAME:-workflow}
+  DB_PASSWORD: ${DB_PASSWORD:-workflow}
 
 services:
   server:
@@ -28,16 +37,8 @@ services:
     ports:
       - "${SERVER_BIND_ADDRESS:-127.0.0.1}:${SERVER_PORT:-8080}:8080"
     environment:
-      # Release candidates refuse to start without this opt-in. The final
-      # 3.0.0 image does not need it.
-      DW_RUST_EXPERIMENTAL: "1"
+      <<: *server-database
       DW_SERVER_KEY: ${DW_SERVER_KEY:-}
-      DB_CONNECTION: mysql
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_DATABASE: ${DB_DATABASE:-durable_workflow}
-      DB_USERNAME: ${DB_USERNAME:-workflow}
-      DB_PASSWORD: ${DB_PASSWORD:-workflow}
       # Token auth. There is no default token: Compose refuses to start until
       # DW_AUTH_TOKEN is set. Native requires this shared token and accepts it
       # for every role (it refuses DW_AUTH_BACKWARD_COMPATIBLE=false), so use a
@@ -55,6 +56,8 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      schema-install:
+        condition: service_completed_successfully
     # The image has no curl; bash's /dev/tcp reads /api/ready.
     healthcheck:
       test:
@@ -71,8 +74,52 @@ services:
       start_period: 20s
     stop_grace_period: 30s
 
+  schema-plan:
+    image: *server-image
+    platform: ${DW_SERVER_PLATFORM:-}
+    environment: *server-database
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - schema_plan:/app/storage
+    entrypoint: [bash, -ec]
+    command:
+      - |
+        umask 077
+        plan=/app/storage/checkpoint.sql
+        errors=/app/storage/bootstrap.stderr
+        : > "$$plan"
+        if durable-workflow-server schema-bootstrap 2>"$$errors"; then
+          exit 0
+        fi
+        if grep -Fxq native_child_checkpoint_trigger_privilege_required "$$errors"; then
+          durable-workflow-server schema-checkpoint-ddl >"$$plan"
+        else
+          cat "$$errors" >&2
+          exit 1
+        fi
+
+  schema-install:
+    image: *mysql-image
+    user: "1000:1000"
+    network_mode: service:mysql
+    depends_on:
+      schema-plan:
+        condition: service_completed_successfully
+    environment:
+      MYSQL_PWD: ${DB_ROOT_PASSWORD:-root}
+    volumes:
+      - schema_plan:/plan:ro
+    entrypoint: [sh, -ec]
+    command:
+      - |
+        if [ -s /plan/checkpoint.sql ]; then
+          mysql --protocol=TCP --host=127.0.0.1 --user=root --batch < /plan/checkpoint.sql
+        fi
+
   mysql:
-    image: mysql:${MYSQL_VERSION:-8.0}
+    image: *mysql-image
     environment:
       MYSQL_DATABASE: ${DB_DATABASE:-durable_workflow}
       MYSQL_USER: ${DB_USERNAME:-workflow}
@@ -81,7 +128,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "--protocol=TCP", "-h", "127.0.0.1"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -89,3 +136,4 @@ services:
 volumes:
   mysql_data:
   server_storage:
+  schema_plan:

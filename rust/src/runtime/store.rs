@@ -2150,19 +2150,35 @@ where
             }
         }
         if let Some(condition) = condition {
-            let condition_opening = waits.condition_opening(&condition.id);
-            let satisfied = condition.satisfied(condition_opening, &payload);
-            Self::append(tx, run_id, "ConditionWaitSatisfied", satisfied.clone(), Some(task_id), None).await?;
-            // A task that reopens the same occurrence claims no winner.
-            let reopened = condition.occurrence().is_some_and(|occurrence| commands.iter().any(|command| {
-                command["type"] == "open_condition_wait" && command["condition_wait_occurrence_id"] == occurrence
-            }));
-            if !reopened {
-                let group = condition_opening.map(|opening| super::activity_metadata::payload_for_path(&opening.payload)).unwrap_or_default();
-                Self::claim_wait_selection(tx, run_id, &group, "condition", &condition.id, "ConditionWaitSatisfied").await?;
-            }
-            if let Some(sequence) = condition.sequence {
-                Self::cancel_wait_timeout(tx, run_id, &json!({"sequence":sequence,"condition_wait_id":condition.id}), task_id, now()).await?;
+            // On a full turn the worker reevaluates every condition in the
+            // reached all barrier. Still-false members supply replacement
+            // commands. A prefix checkpoint can observe just one member.
+            let group = if checkpoint { None } else {
+                waits.condition_opening(&condition.id).and_then(super::wait_history::Opening::all_group_root)
+            };
+            let awakened = if let Some(group) = group {
+                waits.conditions.iter().filter(|wait| {
+                    wait.advanceable()
+                        && waits.condition_opening(&wait.id).and_then(super::wait_history::Opening::all_group_root) == Some(group)
+                }).collect::<Vec<_>>()
+            } else {
+                vec![condition]
+            };
+            for condition in awakened {
+                let condition_opening = waits.condition_opening(&condition.id);
+                let satisfied = condition.satisfied(condition_opening, &payload);
+                Self::append(tx, run_id, "ConditionWaitSatisfied", satisfied.clone(), Some(task_id), None).await?;
+                // A task that reopens the same occurrence claims no winner.
+                let reopened = condition.occurrence().is_some_and(|occurrence| commands.iter().any(|command| {
+                    command["type"] == "open_condition_wait" && command["condition_wait_occurrence_id"] == occurrence
+                }));
+                if !reopened {
+                    let group = condition_opening.map(|opening| super::activity_metadata::payload_for_path(&opening.payload)).unwrap_or_default();
+                    Self::claim_wait_selection(tx, run_id, &group, "condition", &condition.id, "ConditionWaitSatisfied").await?;
+                }
+                if let Some(sequence) = condition.sequence {
+                    Self::cancel_wait_timeout(tx, run_id, &json!({"sequence":sequence,"condition_wait_id":condition.id}), task_id, now()).await?;
+                }
             }
         }
         Ok(())
@@ -3870,7 +3886,7 @@ where
             .as_array()
             .filter(|c| !c.is_empty())
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
-        super::workflow_failures::validate_batch(commands)?;
+        let partial_occurrences = super::workflow_failures::validate_batch(commands)?;
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
@@ -3975,7 +3991,8 @@ where
                     }
                 }
                 "open_condition_wait" => {
-                    reject_fields(
+                    // Server #1142: a condition wait may be an all() member.
+                    super::selections::fields(
                         command,
                         &[
                             "type",
@@ -4123,7 +4140,7 @@ where
             let (receipt_task, receipt_run, receipt_status) = &identity;
             let attempt = body["workflow_task_attempt"].clone();
             return self
-                .checkpoint_prefix(tx, task, &body, commands, checkpoint, transition_codec, &external, &local, &exceptions, limits, signal)
+                .checkpoint_prefix(tx, task, &body, commands, checkpoint, transition_codec, &external, &local, &exceptions, limits, signal, &partial_occurrences)
                 .await
                 .map(|answer| {
                     super::workflow_task_guard::not_recorded_answer(answer, receipt_task, &attempt, receipt_run, receipt_status)
@@ -4240,6 +4257,7 @@ where
             });
         }
         Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
+        let grouped_condition_repeats = Self::checked_grouped_condition_repeats(&mut tx, &run_id, commands, &partial_occurrences).await?;
         // Server #962: a run that captured no update contract at start binds
         // the completing worker's, once, with this accepted completion.
         Self::bind_update_contract(&mut tx, &task).await?;
@@ -4262,6 +4280,7 @@ where
             local: &local,
             exceptions: &exceptions,
             start_turn: &start_turn,
+            grouped_condition_repeats: &grouped_condition_repeats,
         };
         let order = (0..commands.len())
             .filter(|index| !is_terminal(&commands[*index]))
@@ -4436,7 +4455,7 @@ where
         sequence_ref: &mut i64,
         created: &mut Vec<String>,
     ) -> Result<()> {
-        let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn, codec } = *apply;
+        let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn, codec, grouped_condition_repeats } = *apply;
         if command["type"] != super::local_activities::COMMAND {
             Self::write_local_activities(tx).await?;
         }
@@ -4677,6 +4696,15 @@ where
             sequence += 1;
             let mut payload = command.clone();
             payload.as_object_mut().unwrap().remove("type");
+            // A replacement gets a new physical sequence and timeout row
+            // while its authored group position stays tied to the original.
+            let group = if direct { json!({}) } else { super::selections::metadata(command, "condition")? };
+            let repeat = command["condition_wait_occurrence_id"].as_str()
+                .is_some_and(|id| grouped_condition_repeats.contains(id));
+            if group.get("parallel_group_id").is_some() && !repeat {
+                super::selections::check_sequence(&group, sequence)?;
+            }
+            super::selections::replace_group(&mut payload, &group);
             // Match PHP's optional occurrence payload: retain authored
             // nonempty strings and omit null/empty legacy values.
             if !direct
@@ -5121,7 +5149,8 @@ where
                 .await?;
             let task_id = DB::string(&task, "id")?;
             let task_payload = DB::document_row(&task, "payload")?;
-            let metadata = super::selections::metadata(&task_payload, "timer")?;
+            let member = if task_payload.get("condition_wait_id").is_some() { "condition" } else { "timer" };
+            let metadata = super::selections::metadata(&task_payload, member)?;
             let mut payload = json!({"timer_id":timer_id,"sequence":DB::number(&timer,"sequence")?,"delay_seconds":DB::number(&timer,"delay_seconds")?,"fire_at":super::cancellation_scopes::iso(fire_at),"fired_at":fired_at});
             if task_payload.get("signal_wait_id").is_some() {
                 payload["timer_kind"] = json!("signal_timeout");
@@ -6381,6 +6410,8 @@ pub(super) struct Apply<'a, R> {
     pub(super) external: &'a super::external_resolution::PreparedCommands,
     pub(super) local: &'a std::collections::BTreeMap<usize, super::local_activities::Record>,
     pub(super) exceptions: &'a std::collections::BTreeMap<usize, String>,
+    /// Authored group members already present before this completion.
+    pub(super) grouped_condition_repeats: &'a std::collections::BTreeSet<String>,
     /// The first child this batch started with `await: "started"`, or its
     /// first signal-external command: the parent's turn (Server #966, #1134).
     pub(super) start_turn: &'a std::sync::Mutex<Option<Value>>,
@@ -6564,6 +6595,7 @@ fn capabilities_template() -> Value {
         "signal_external_workflow": true,
         "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
+    value[super::children::CAPABILITY_EXPLICIT_ID] = json!(true);
     value[super::continuation::CAPABILITY] = super::continuation::capability();
     // Gated off until installed acceptance (Server #1201).
     if let Some(advertised) = super::timeout_cleanup::advertisement() {

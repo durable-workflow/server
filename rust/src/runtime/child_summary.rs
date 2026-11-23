@@ -4,12 +4,55 @@ use super::{
     Result,
     active_summary::{ActiveSummary, SummaryWait},
     backend::Backend,
+    history_budget,
     store::Store,
-    transaction::Transaction,
+    transaction::{ChildSummaryChange, Transaction},
 };
 use serde_json::Value;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::collections::BTreeMap;
+
+macro_rules! checkpoint_proof {
+    ($writes:literal, $run_proof:literal) => {
+        concat!(
+            "SELECT s.open_wait_id,s.history_size_bytes,s.history_fan_out,g.group_id
+             FROM workflow_runs r JOIN workflow_instances i ON i.id=r.workflow_instance_id AND i.current_run_id=r.id
+             JOIN workflow_run_summaries s ON s.id=r.id AND s.workflow_instance_id=i.id AND s.namespace=r.namespace
+             JOIN dw_child_summary_checkpoints g ON g.run_id=r.id AND g.history_sequence=s.history_event_count
+             AND g.generation=g.verified_generation+", $writes, "
+             WHERE r.id=$1 AND s.history_event_count=$2 AND r.last_history_sequence=$3
+             AND r.status='waiting' AND s.status='waiting' AND r.import_source IS NULL AND r.details_pruned_at IS NULL
+             AND s.engine_source='v2' AND s.projection_schema_version=2 AND s.is_current_run=TRUE
+             AND s.wait_kind='child' AND s.liveness_state='waiting_for_child' AND s.next_task_id IS NULL
+             AND s.open_wait_id IS NOT NULL AND s.task_problem=FALSE AND s.repair_attention=FALSE
+             AND s.repair_blocked_reason='repair_not_needed'", $run_proof
+        )
+    };
+}
+
+const CHECKPOINT_PROOF: &str = checkpoint_proof!("4", "");
+
+// An UPDATE trigger on workflow_runs changes how MySQL-family engines
+// report LAST_INSERT_ID for ordinary history advancement. Compare the
+// source columns of the prior summary's run row in the same bounded join.
+const MYSQL_CHECKPOINT_PROOF: &str = checkpoint_proof!("3", "
+    AND s.run_number=r.run_number
+    AND BINARY s.class <=> BINARY r.workflow_class
+    AND BINARY s.workflow_type <=> BINARY r.workflow_type
+    AND BINARY s.compatibility <=> BINARY r.compatibility
+    AND BINARY s.business_key <=> BINARY COALESCE(r.business_key,i.business_key)
+    AND BINARY s.visibility_labels <=> BINARY COALESCE(r.visibility_labels,i.visibility_labels)
+    AND BINARY s.closed_reason <=> BINARY r.closed_reason
+    AND BINARY s.connection <=> BINARY r.connection
+    AND BINARY s.queue <=> BINARY r.queue
+    AND s.started_at <=> r.started_at
+    AND s.closed_at <=> r.closed_at
+    AND s.archived_at <=> r.archived_at
+    AND BINARY s.archive_command_id <=> BINARY r.archive_command_id
+    AND BINARY s.archive_reason <=> BINARY r.archive_reason
+    AND s.created_at <=> r.created_at
+    AND s.updated_at <=> COALESCE(r.closed_at,r.last_progress_at,r.updated_at)
+    AND s.sort_timestamp <=> COALESCE(r.started_at,r.created_at,r.updated_at)");
 
 #[derive(Default)]
 pub(super) struct ChildSummaryHistory {
@@ -33,6 +76,20 @@ struct ExpectedChild {
 }
 
 impl ChildSummaryHistory {
+    pub(super) fn checkpoint_group(&self) -> Option<&str> {
+        let first = self.calls.first_key_value()?.1;
+        let group = first.parallel["parallel_group_id"].as_str()?;
+        let size = self.calls.len();
+        (size > 1
+            && first.parallel["parallel_group_kind"] == "child"
+            && first.parallel["parallel_group_size"].as_u64() == Some(size as u64)
+            && self.calls.values().all(|child| {
+                child.parallel["parallel_group_id"] == group
+                    && matches!(child.status, "waiting" | "completed")
+            }))
+        .then_some(group)
+    }
+
     pub(super) fn apply(&mut self, event: &str, payload: &Value) -> bool {
         let Some(sequence) = payload["sequence"].as_i64().filter(|v| *v > 0) else {
             return false;
@@ -176,6 +233,127 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// The preceding summary was validated before this parent transition.
+    /// Use it only for an exact, single successful child close while the
+    /// parent remains parked. Status updates leave the wait order intact.
+    pub(super) async fn project_completed_barrier_member(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        change: &ChildSummaryChange,
+    ) -> Result<bool> {
+        let Some(sequence) = change.previous_sequence.checked_add(1) else {
+            return Ok(false);
+        };
+        let proof = if DB::NAME == "MySQL" { MYSQL_CHECKPOINT_PROOF } else { CHECKPOINT_PROOF };
+        let Some(previous) = Self::query(proof)
+        .bind(run_id)
+        .bind(change.previous_sequence)
+        .bind(sequence)
+        .fetch_optional(&mut **tx)
+        .await? else { return Ok(false); };
+        let events = Self::query(DB::SUMMARY_HISTORY_SQL).bind(run_id).bind(change.previous_sequence)
+            .fetch_all(&mut **tx).await?;
+        let [event] = events.as_slice() else { return Ok(false); };
+        if DB::string(event, "event_type")? != "ChildRunCompleted"
+            || DB::number(event, "sequence")? != sequence
+            || DB::string(event, "id")? != change.event_id
+        {
+            return Ok(false);
+        }
+        let raw = DB::string(event, "payload_json")?;
+        let payload: Value = serde_json::from_str(&raw)?;
+        if payload["parallel_group_id"] != DB::string(&previous, "group_id")? {
+            return Ok(false);
+        }
+        let Some(mut child) = ExpectedChild::identity(&payload) else { return Ok(false); };
+        let authored = payload["sequence"].as_i64().expect("validated child sequence");
+        child.started = true;
+        child.status = "completed";
+        let wait_id = format!("child:{}", child.id);
+        let resolved = Self::query("SELECT sequence,status,source_status,target_name,target_type,resume_source_kind,resume_source_id,history_authority,opened_at,resolved_at,deadline_at,history_unsupported_reason FROM workflow_run_waits WHERE workflow_run_id=$1 AND wait_id=$2 AND kind='child'")
+            .bind(run_id).bind(&wait_id).fetch_optional(&mut **tx).await?;
+        let Some(resolved) = resolved else { return Ok(false); };
+        if DB::optional_number(&resolved, "sequence")? != Some(authored)
+            || !Self::child_projection_matches(&resolved, &child)?
+        {
+            return Ok(false);
+        }
+
+        let previous_wait = DB::string(&previous, "open_wait_id")?;
+        let candidate_wait = if previous_wait == wait_id {
+            // The old summary had already established the first open child.
+            // This close cannot add or open a child before that sequence.
+            let next_call = Self::query("SELECT metadata FROM workflow_child_calls
+                WHERE parent_workflow_run_id=$1 AND status='started' AND sequence>$2 ORDER BY sequence LIMIT 1")
+                .bind(run_id).bind(authored).fetch_optional(&mut **tx).await?;
+            let Some(next_call) = next_call else { return Ok(false); };
+            let metadata = DB::document_row(&next_call, "metadata")?;
+            let Some(id) = metadata["child_call_id"].as_str().filter(|id| !id.is_empty()) else { return Ok(false); };
+            format!("child:{id}")
+        } else {
+            previous_wait
+        };
+        let next = Self::query("SELECT w.target_type,w.opened_at,w.resume_source_id,c.metadata AS call_metadata
+            FROM workflow_run_waits w JOIN workflow_child_calls c ON w.workflow_run_id=c.parent_workflow_run_id AND w.sequence=c.sequence
+            AND w.resume_source_id=c.resolved_child_run_id AND w.target_name=c.resolved_child_instance_id AND w.target_type=c.child_workflow_type
+            WHERE w.workflow_run_id=$1 AND w.wait_id=$2 AND w.kind='child' AND w.status='open' AND c.status='started'
+            AND w.source_status='waiting' AND w.resume_source_kind='child_workflow_run'
+            AND w.resolved_at IS NULL AND w.deadline_at IS NULL AND w.history_authority='typed_history'
+            AND w.history_unsupported_reason IS NULL LIMIT 2")
+            .bind(run_id).bind(&candidate_wait).fetch_all(&mut **tx).await?;
+        let [next] = next.as_slice() else { return Ok(false); };
+        let Some(opened_at) = DB::optional_instant(next, "opened_at")? else { return Ok(false); };
+        let label = DB::string(next, "target_type")?;
+        let next_run = DB::string(next, "resume_source_id")?;
+        let metadata = DB::document_row(next, "call_metadata")?;
+        if !metadata["child_call_id"].as_str().is_some_and(|id| candidate_wait == format!("child:{id}")) {
+            return Ok(false);
+        }
+        let bytes = DB::number(&previous, "history_size_bytes")?;
+        let fan_out = DB::number(&previous, "history_fan_out")?;
+        if bytes <= 0 || fan_out < payload["parallel_group_size"].as_i64().unwrap_or(i64::MAX) {
+            return Ok(false);
+        }
+        let added_bytes = history_budget::parsed_event_size("ChildRunCompleted", &raw, &payload)? as i64;
+        let Some(total_bytes) = bytes.checked_add(added_bytes) else { return Ok(false); };
+        let budget = tx.history_budget.summarize(sequence, total_bytes, fan_out);
+        let reason = format!("Waiting for child workflow {label}");
+        let result = Self::query("UPDATE workflow_run_summaries SET history_event_count=$1,history_size_bytes=$2,
+            history_budget_pressure=$3,continue_as_new_recommended=CASE WHEN $4=1 THEN TRUE ELSE FALSE END,
+            open_wait_id=$5,resume_source_id=$6,wait_started_at=$7,wait_reason=$8,liveness_reason=$9 WHERE id=$10 AND history_event_count=$11")
+            .bind(sequence).bind(budget.history_size_bytes).bind(budget.pressure).bind(i64::from(budget.continue_as_new_recommended))
+            .bind(&candidate_wait).bind(&next_run).bind(DB::bind_time(opened_at)).bind(&reason).bind(format!("{reason}."))
+            .bind(run_id).bind(change.previous_sequence).execute(&mut **tx).await?;
+        if DB::affected(result) != 1 {
+            return Ok(false);
+        }
+        Self::query("UPDATE dw_child_summary_checkpoints SET history_sequence=$1,verified_generation=generation WHERE run_id=$2")
+            .bind(sequence).bind(run_id).execute(&mut **tx).await?;
+        Ok(true)
+    }
+
+    pub(super) async fn verify_child_summary_checkpoint(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        group_id: &str,
+        sequence: i64,
+    ) -> Result<()> {
+        let sql = if DB::NAME == "MySQL" {
+            "INSERT INTO dw_child_summary_checkpoints(run_id,generation,verified_generation,history_sequence,group_id)
+             VALUES($1,0,0,$2,$3) ON DUPLICATE KEY UPDATE
+             verified_generation=dw_child_summary_checkpoints.generation,
+             history_sequence=VALUES(history_sequence),group_id=VALUES(group_id)"
+        } else {
+            "INSERT INTO dw_child_summary_checkpoints(run_id,generation,verified_generation,history_sequence,group_id)
+             VALUES($1,0,0,$2,$3) ON CONFLICT(run_id) DO UPDATE SET
+             verified_generation=dw_child_summary_checkpoints.generation,
+             history_sequence=excluded.history_sequence,group_id=excluded.group_id"
+        };
+        Self::query(sql)
+        .bind(run_id).bind(sequence).bind(group_id).execute(&mut **tx).await?;
+        Ok(())
+    }
+
     pub(super) async fn apply_child_summary(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -284,12 +462,11 @@ where
         Ok(true)
     }
 
-    fn child_wait_matches(row: &DB::Row, child: &ExpectedChild) -> Result<bool> {
+    fn child_projection_matches(row: &DB::Row, child: &ExpectedChild) -> Result<bool> {
         let matches = |column: &str, expected: &str| -> Result<bool> {
             Ok(DB::optional_string(row, column)?.as_deref() == Some(expected))
         };
         Ok(child.started
-            && matches("wait_id", &format!("child:{}", child.id))?
             && matches("status", child.wait_status())?
             && matches("source_status", child.status)?
             && matches("target_name", &child.instance)?
@@ -300,7 +477,15 @@ where
             && DB::optional_string(row, "history_unsupported_reason")?.is_none()
             && DB::optional_instant(row, "deadline_at")?.is_none()
             && DB::optional_instant(row, "opened_at")?.is_some()
-            && (DB::optional_instant(row, "resolved_at")?.is_some() == (child.status != "waiting"))
+            && (DB::optional_instant(row, "resolved_at")?.is_some() == (child.status != "waiting")))
+    }
+
+    fn child_wait_matches(row: &DB::Row, child: &ExpectedChild) -> Result<bool> {
+        let matches = |column: &str, expected: &str| -> Result<bool> {
+            Ok(DB::optional_string(row, column)?.as_deref() == Some(expected))
+        };
+        Ok(Self::child_projection_matches(row, child)?
+            && matches("wait_id", &format!("child:{}", child.id))?
             && matches(
                 "call_status",
                 if child.status == "waiting" {

@@ -328,6 +328,7 @@ async fn incomplete_nested_mixed_selected_and_started_groups_leave_the_original_
         "started",
         "scope",
         "sequence",
+        "explicit-policy",
     ] {
         let mut commands = children(2);
         match shape {
@@ -353,6 +354,11 @@ async fn incomplete_nested_mixed_selected_and_started_groups_leave_the_original_
             "select" => commands[0]["parallel_group_mode"] = json!("select"),
             "started" => commands[0]["await"] = json!("started"),
             "scope" => commands[0]["cancellation_scope_id"] = json!("unqualified-child-scope"),
+            "explicit-policy" => {
+                for command in commands.as_array_mut().unwrap() {
+                    command["parallel_group_path"][0]["parallel_group_policy"] = json!("propagate");
+                }
+            }
             "sequence" => {
                 for command in commands.as_array_mut().unwrap() {
                     command["parallel_group_base_sequence"] = json!(2);
@@ -514,6 +520,37 @@ async fn one_and_full_batch_child_barriers_have_bounded_wait_inventory() {
 }
 
 #[tokio::test]
+async fn stale_open_wait_does_not_hold_a_completed_child_barrier() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    workers(&app).await;
+    let run = start(&app, "stale-child-wait").await;
+    let initial = poll(&app, "parent-worker", "workflow").await;
+    let admitted = finish_task(&app, &initial, children(2)).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+
+    let first = child_poll(&app).await;
+    let closed = finish_task(&app, &first, done(1)).await;
+    assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+    assert_eq!(parent_tasks(&database, &run, "ready").await, 0);
+    database.execute("UPDATE workflow_run_waits SET status='open' WHERE kind='child' AND source_status='completed'").await;
+
+    let second = child_poll(&app).await;
+    let closed = finish_task(&app, &second, done(2)).await;
+    assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+    assert_eq!(parent_tasks(&database, &run, "ready").await, 1);
+    let resume = poll(&app, "parent-worker", "workflow").await;
+    assert_eq!(resume["run_id"], run["run_id"]);
+    let completed = finish_task(&app, &resume, done(3)).await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    assert!(poll(&app, "parent-worker", "workflow").await.is_null());
+
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn child_group_projection_failure_rolls_back_all_starts_and_original_lease() {
     let database = TestDatabase::new().await;
     let TestDatabase::Sqlite(_) = &database else {
@@ -562,4 +599,109 @@ async fn child_group_projection_failure_rolls_back_all_starts_and_original_lease
     observed(&app, &run, 2).await;
     runtime.close().await;
     database.remove().await;
+}
+
+#[tokio::test]
+async fn installed_child_checkpoint_guards_summary_reuse_after_reopen() {
+    for damage in [None, Some("checkpoint"), Some("wait"), Some("summary"), Some("run")] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        workers(&app).await;
+        let run = start(&app, "projection-generation-control").await;
+        let initial = poll(&app, "parent-worker", "workflow").await;
+        let admitted = finish_task(&app, &initial, children(3)).await;
+        assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+        let prefix = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+        let first_run = scheduled(&prefix)[0]["child_workflow_run_id"].clone();
+        let mut tasks = Vec::new();
+        for _ in 0..3 {
+            tasks.push(child_poll(&app).await);
+        }
+        let first = tasks.iter().find(|task| task["run_id"] == first_run).unwrap();
+        assert_eq!(observation(&app, &run).await["summary_state"], "observed");
+
+        assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM dw_child_summary_checkpoints").await, 1);
+        drop(app);
+        runtime.close().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+
+        let mysql = matches!(database, TestDatabase::MySql { .. });
+        let close_writes = if mysql { 4 } else { 5 };
+        let summary_bytes = if mysql {
+            "SELECT CAST(history_size_bytes AS SIGNED) FROM workflow_run_summaries WHERE workflow_type='echo'"
+        } else {
+            "SELECT history_size_bytes FROM workflow_run_summaries WHERE workflow_type='echo'"
+        };
+        let previous_bytes = task_retry::rows(&database, summary_bytes).await;
+        match damage {
+            Some("checkpoint") => database.execute("DELETE FROM dw_child_summary_checkpoints").await,
+            Some("wait") => database.execute("DELETE FROM workflow_run_waits WHERE kind='child' AND sequence=3").await,
+            Some("run") => database.execute("UPDATE workflow_runs SET business_key='changed-run' WHERE workflow_type='echo'").await,
+            Some("summary") => database.execute("UPDATE workflow_run_summaries SET history_size_bytes=history_size_bytes+1000000 WHERE workflow_type='echo'").await,
+            _ => {
+                let (create, drop) = match &database {
+                    TestDatabase::Sqlite(_) => (
+                        "CREATE TRIGGER reject_incremental_summary BEFORE UPDATE ON workflow_run_summaries WHEN NEW.workflow_type='echo' BEGIN SELECT RAISE(ABORT,'abort summary update'); END",
+                        "DROP TRIGGER reject_incremental_summary",
+                    ),
+                    TestDatabase::Postgres { .. } => {
+                        database.execute("CREATE FUNCTION reject_incremental_summary() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.workflow_type='echo' THEN RAISE EXCEPTION 'abort summary update'; END IF; RETURN NEW; END; $$").await;
+                        (
+                            "CREATE TRIGGER reject_incremental_summary BEFORE UPDATE ON workflow_run_summaries FOR EACH ROW EXECUTE FUNCTION reject_incremental_summary()",
+                            "DROP TRIGGER reject_incremental_summary ON workflow_run_summaries",
+                        )
+                    }
+                    TestDatabase::MySql { .. } => (
+                        "CREATE TRIGGER reject_incremental_summary BEFORE UPDATE ON workflow_run_summaries FOR EACH ROW BEGIN IF NEW.workflow_type='echo' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='abort summary update'; END IF; END",
+                        "DROP TRIGGER reject_incremental_summary",
+                    ),
+                };
+                database.execute(create).await;
+                let refused = finish_task(&app, first, done(1)).await;
+                assert_eq!(refused.0, StatusCode::SERVICE_UNAVAILABLE, "{}", refused.1);
+                assert_eq!(task_retry::rows(&database, "SELECT generation FROM dw_child_summary_checkpoints").await, 0);
+                assert_eq!(run_history(&app, &run["workflow_id"], &run["run_id"]).await, prefix);
+                database.execute(drop).await;
+            }
+        }
+        let closed = finish_task(&app, first, done(1)).await;
+        assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+        assert_eq!(parent_tasks(&database, &run, "ready").await, 0);
+        let generation = task_retry::rows(&database, "SELECT generation FROM dw_child_summary_checkpoints").await;
+        let verified = task_retry::rows(&database, "SELECT verified_generation FROM dw_child_summary_checkpoints").await;
+        let summary = observation(&app, &run).await;
+        match damage {
+            Some("checkpoint") => {
+                assert_eq!(generation, 0);
+                assert_eq!(verified, 0);
+                assert_eq!(summary["summary_state"], "observed");
+            }
+            Some("wait") => {
+                assert!(generation > close_writes);
+                assert_eq!(verified, 0);
+                assert_eq!(summary["summary_state"], "unavailable");
+            }
+            Some("summary") => {
+                assert!(generation > close_writes);
+                assert_eq!(verified, generation);
+                assert_eq!(summary["summary_state"], "observed");
+                let rebuilt = task_retry::rows(&database, summary_bytes).await;
+                assert!(rebuilt > previous_bytes && rebuilt < previous_bytes + 1000000);
+            }
+            Some("run") => {
+                assert_eq!(verified, generation);
+                assert_eq!(summary["summary_state"], "observed");
+                assert_eq!(task_retry::rows(&database, "SELECT COUNT(*) FROM workflow_run_summaries WHERE business_key='changed-run'").await, 1);
+            }
+            _ => {
+                assert_eq!(generation, close_writes);
+                assert_eq!(verified, generation);
+                assert_eq!(summary["summary_state"], "observed");
+            }
+        }
+        runtime.close().await;
+        database.remove().await;
+    }
 }

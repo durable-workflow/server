@@ -148,6 +148,14 @@ if [[ -n "${K8S_HELM_NATIVE_SMOKE_IMAGE_TAG:-}" ]]; then
   image_options=(--set-string "image.tag=${K8S_HELM_NATIVE_SMOKE_IMAGE_TAG}")
 fi
 
+native_image="$("${helm_bin}" template "${release}" "${chart_dir}" --namespace "${namespace}" \
+  -f "${values}" "${image_options[@]}" --show-only templates/native-server-deployment.yaml \
+  | awk '$1 == "image:" {gsub(/"/, "", $2); print $2}')"
+[[ -n "${native_image}" && "${native_image}" != *$'\n'* ]]
+
+KUBECTL="${kubectl_bin}" bash "${repo_root}/scripts/helm-chart-native-database-fixture.sh" \
+  "${namespace}" "${release}" "${native_image}"
+
 # 2. Install with no runtime value: a new install runs native.
 "${helm_bin}" install "${release}" "${chart_dir}" --namespace "${namespace}" \
   -f "${values}" "${image_options[@]}" --wait --timeout 5m

@@ -161,6 +161,7 @@ pub(super) fn native_relation(name: &str) -> bool {
             | "dw_task_queue_pauses"
             | "dw_command_intents"
             | "dw_child_supervisions"
+            | "dw_child_summary_checkpoints"
     )
 }
 

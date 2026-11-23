@@ -2039,16 +2039,12 @@ async fn register(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>)> {
     let protocol = request_protocol(&headers)?;
-    // Laravel trims every string and turns empty ones into null first.
-    let mut body = super::laravel_rules::normalize(&body);
-    super::worker_admission::admit(&body, Some(protocol.trim())).map_err(worker_refusal)?;
-    // PHP names an unnamed worker with a fresh ULID and stores the
-    // normalized capability manifest.
+    let mut body = super::worker_admission::normalize_registration(&body, protocol.trim())
+        .map_err(worker_refusal)?;
+    // PHP names an unnamed worker with a fresh ULID.
     if body["worker_id"].is_null() {
         body["worker_id"] = json!(ulid::Ulid::new().to_string());
     }
-    let manifest = super::worker_admission::manifest(&body);
-    body["capability_manifest"] = manifest;
     // Missing type lists are empty; capabilities keep their non-empty
     // strings (`nonEmptyStringArray`).
     for field in ["supported_workflow_types", "supported_activity_types"] {
@@ -2063,6 +2059,7 @@ async fn register(
         .filter(|flag| flag.as_str().is_some_and(|flag| !flag.is_empty()))
         .cloned()
         .collect();
+    let grouped_condition_replay = flags.iter().any(|flag| flag == "grouped_condition_wait_replay");
     body["capabilities"] = json!(flags);
     let negotiate = protocol.trim() == "1.20"
         && body["capabilities"].as_array().is_some_and(|flags| flags.iter().any(|flag| flag == "task_delivery_offers"));
@@ -2072,6 +2069,11 @@ async fn register(
         && let Some(descriptor) = runtime.task_delivery_descriptor()
     {
         response["server_capabilities"]["task_delivery"] = descriptor;
+    }
+    // Earlier SDKs recognize this server flag but cannot replay a physical
+    // reopen. Publish it only to workers that implement the replay contract.
+    if grouped_condition_replay {
+        response["server_capabilities"]["grouped_condition_waits"] = json!({"supported":true,"version":1});
     }
     Ok((StatusCode::CREATED, Json(response)))
 }

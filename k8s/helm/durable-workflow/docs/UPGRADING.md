@@ -69,6 +69,27 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.4.1 / Server 3.22.2 (native)
+
+Chart 5.4.1 selects [native Server 3.22.2](../../../../docs/releases/3.22.2.md).
+Upgrade from chart 5.4.0 with the usual Helm rollout. For an older
+installation, check the database preparation and schema guidance below.
+
+### Chart 5.4.0 / Server 3.22.1 (native)
+
+Chart 5.4.0 selects [native Server 3.22.1](../../../../docs/releases/3.22.1.md).
+Check the Server release notes for any schema boundaries between your
+installed version and 3.22.1. For an older schema, stop the Server replicas,
+disable autoscaling, back up the database, and follow the
+[schema upgrade procedure](../README.md#native-schema-upgrades). When the
+writer requires separate checkpoint DDL, keep the Server stopped until the
+database administrator applies it and the scoped upgrade command succeeds.
+To return to the earlier Server after the schema changes, restore its
+pre-upgrade database backup before starting it.
+
+For a new native install using a binlogged MySQL or MariaDB instance, follow
+the [database preparation procedure](../README.md#prepare-mysql-or-mariadb-with-binary-logging).
+
 ### Chart 5.3.0 / Server 3.17.1 (native)
 
 The PHP workloads now mount their runtime files when their read-only root

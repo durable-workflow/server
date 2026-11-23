@@ -2,7 +2,7 @@
 use super::{Result, backend::Backend, store::Store};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
@@ -27,8 +27,14 @@ impl RunTags {
 }
 
 pub(super) struct PollSavepoint {
-    summaries: BTreeSet<String>,
+    summaries: BTreeMap<String, Option<ChildSummaryChange>>,
     workflow_poll_replayed: Option<String>,
+}
+
+#[derive(Clone)]
+pub(super) struct ChildSummaryChange {
+    pub(super) previous_sequence: i64,
+    pub(super) event_id: String,
 }
 
 #[derive(Clone)]
@@ -46,7 +52,7 @@ pub(super) struct ClaimTarget {
 /// The database rollback and this restoration are one fallible operation.
 pub(super) struct ContinuationSavepoint {
     run_tags: BTreeMap<String, RunTags>,
-    summaries: BTreeSet<String>,
+    summaries: BTreeMap<String, Option<ChildSummaryChange>>,
     workflow_poll_replayed: Option<String>,
     history_budget: super::history_budget::Config,
     meter: Option<super::history_meter::Meter>,
@@ -58,7 +64,7 @@ pub(super) struct ContinuationSavepoint {
 pub(super) struct Transaction<'a, DB: Backend> {
     inner: sqlx::Transaction<'a, DB>,
     pub(super) run_tags: BTreeMap<String,RunTags>,
-    summaries: BTreeSet<String>,
+    summaries: BTreeMap<String, Option<ChildSummaryChange>>,
     pub(super) workflow_poll_replayed: Option<String>,
     pub(super) history_budget: super::history_budget::Config,
     /// A workflow task completion's history meter (Workflow #930).
@@ -85,7 +91,7 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
         Self {
             inner,
             run_tags: BTreeMap::new(),
-            summaries: BTreeSet::new(),
+            summaries: BTreeMap::new(),
             workflow_poll_replayed: None,
             history_budget,
             meter: None,
@@ -110,7 +116,17 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
     }
 
     pub(super) fn summary_changed(&mut self, run_id: &str) {
-        self.summaries.insert(run_id.to_owned());
+        self.summaries.insert(run_id.to_owned(), None);
+    }
+
+    pub(super) fn summary_is_unchanged(&self, run_id: &str) -> bool {
+        !self.summaries.contains_key(run_id)
+    }
+
+    /// A single successful child close changes the parent's history and one
+    /// wait's status. Any later change replaces this hint with a full refresh.
+    pub(super) fn summary_child_completed(&mut self, run_id: &str, change: ChildSummaryChange) {
+        self.summaries.insert(run_id.to_owned(), Some(change));
     }
 
     /// Rows the next statement will write, charged to a metered completion.
@@ -228,7 +244,12 @@ where
         }
         Store::<DB>::write_local_activities(&mut self).await?;
         let changed_runs = std::mem::take(&mut self.summaries);
-        for run_id in &changed_runs {
+        for (run_id, change) in &changed_runs {
+            if let Some(change) = change
+                && Store::<DB>::project_completed_barrier_member(&mut self, run_id, change).await?
+            {
+                continue;
+            }
             Store::<DB>::order_waits(&mut self, run_id).await?;
             Store::<DB>::project_run_summary(&mut self, run_id).await?;
         }
@@ -243,7 +264,7 @@ where
         }
         self.inner.commit().await?;
         if !changed_runs.is_empty() && let Some(wakes) = self.history_wakes {
-            wakes.committed(&changed_runs);
+            wakes.committed(changed_runs.keys());
         }
         Ok(())
     }

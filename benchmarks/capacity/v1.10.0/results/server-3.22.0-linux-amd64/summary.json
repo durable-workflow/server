@@ -1,0 +1,72 @@
+{
+  "suite_version": "1.10.0",
+  "server_version": "3.22.0",
+  "server_image": "ghcr.io/durable-workflow/server@sha256:8e28f878dac64943b0f4b02980bf546feaee2a487fcc431abf4533477ae9cc22",
+  "mysql_version": "8.4.13",
+  "mysql_image": "mysql@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902",
+  "architecture": "linux/amd64",
+  "leaf_processes": 8,
+  "measurement_scope": "One isolated Docker run per binding. The fixture used the documented staged DBA procedure to install the scoped checkpoint triggers.",
+  "runs": {
+    "php": {
+      "sdk_version": "3.24.1",
+      "adapter_image": "php:8.4-cli-bookworm@sha256:b3e907a1108629c562c4bb313ce3449e34d49991f6bb2487913f6146f47200fe",
+      "result": 500500,
+      "child_closes": 1000,
+      "parent_resumes": 1,
+      "client_wall_ms": 35211.26,
+      "fan_in_ms": 34229.0,
+      "last_child_to_resume_ms": 122.0,
+      "innodb_waits": 93,
+      "innodb_wait_ms": 13,
+      "median_rows_examined": {
+        "first_100": 90.5,
+        "middle_800": 90.0,
+        "last_99_before_wake": 51,
+        "wake": 10058
+      },
+      "max_intermediate_rows_examined": 105,
+      "samples": "php-closes.csv"
+    },
+    "python": {
+      "sdk_version": "2.22.0",
+      "adapter_image": "python:3.14.4-slim-bookworm@sha256:fc74d22ffd0d5ac395a4b7bdda75a4539758862c49ebf3005647084631e63789",
+      "result": 500500,
+      "child_closes": 1000,
+      "parent_resumes": 1,
+      "client_wall_ms": 35509.025,
+      "fan_in_ms": 34506.0,
+      "last_child_to_resume_ms": 150.0,
+      "innodb_waits": 112,
+      "innodb_wait_ms": 15,
+      "median_rows_examined": {
+        "first_100": 46.0,
+        "middle_800": 46.0,
+        "last_99_before_wake": 46,
+        "wake": 10054
+      },
+      "max_intermediate_rows_examined": 46,
+      "samples": "python-closes.csv"
+    },
+    "rust": {
+      "sdk_version": "durable-workflow-rust/4.22.0",
+      "adapter_image": "rust@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6",
+      "result": 500500,
+      "child_closes": 1000,
+      "parent_resumes": 1,
+      "client_wall_ms": 37142.213,
+      "fan_in_ms": 35851.0,
+      "last_child_to_resume_ms": 118.0,
+      "innodb_waits": 45,
+      "innodb_wait_ms": 18,
+      "median_rows_examined": {
+        "first_100": 46.0,
+        "middle_800": 46.0,
+        "last_99_before_wake": 46,
+        "wake": 10053
+      },
+      "max_intermediate_rows_examined": 46,
+      "samples": "rust-closes.csv"
+    }
+  }
+}

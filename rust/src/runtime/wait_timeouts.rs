@@ -313,6 +313,9 @@ where
             .as_object_mut()
             .unwrap()
             .extend(wait_fields(wait).as_object().unwrap().clone());
+        // A grouped condition's timeout carries its group (Server #1142).
+        let group = super::activity_metadata::payload_for_path(wait);
+        payload.as_object_mut().unwrap().extend(group.clone());
         Self::append(
             tx,
             &run_id,
@@ -348,6 +351,7 @@ where
         } else {
             let mut task_payload = wait_fields(wait);
             task_payload["timer_id"] = json!(timer_id);
+            task_payload.as_object_mut().unwrap().extend(group);
             let timer_task = Self::create_task(
                 tx,
                 &run_id,

@@ -93,8 +93,8 @@ pub(super) fn fields(command: &Value, ordinary: &[&str]) -> Result<()> {
 
 /// A complete group must arrive in one atomic authored batch. Other shapes
 /// remain refused rather than treating parallel metadata as ignorable options.
-pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
-    super::all_groups::validate_batch(commands)?;
+pub(super) fn validate_batch(commands: &[Value]) -> Result<std::collections::BTreeSet<String>> {
+    let partial_occurrences = super::all_groups::validate_batch(commands)?;
     let mut members = Vec::new();
     for (offset, command) in commands.iter().enumerate() {
         if !present(command) {
@@ -105,6 +105,7 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
                 Some("schedule_activity") => "activity",
                 Some("start_timer") => "timer",
                 Some("start_child_workflow") => "child",
+                Some("open_condition_wait") => "condition",
                 _ => return Err(unqualified()),
             };
             metadata(command, kind)?;
@@ -124,7 +125,7 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
         members.push((offset, kind, metadata(command, kind)?));
     }
     if members.is_empty() {
-        return Ok(());
+        return Ok(partial_occurrences);
     }
     if members.len() != 2 {
         return Err(unqualified());
@@ -140,7 +141,7 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
     {
         return Err(unqualified());
     }
-    Ok(())
+    Ok(partial_occurrences)
 }
 
 pub(super) fn check_sequence(metadata: &Value, sequence: i64) -> Result<()> {
@@ -165,6 +166,17 @@ pub(super) fn check_sequence(metadata: &Value, sequence: i64) -> Result<()> {
         return Err(refuse(StatusCode::CONFLICT, "selection_sequence_mismatch"));
     }
     Ok(())
+}
+
+/// Replaces a command's authored group fields in an event payload with their
+/// normalized metadata, so the record never keeps unvalidated group fields.
+pub(super) fn replace_group(payload: &mut Value, metadata: &Value) {
+    let object = payload.as_object_mut().expect("event object");
+    for field in FIELDS {
+        object.remove(field);
+    }
+    object.remove("parallel_group_path");
+    merge(payload, metadata);
 }
 
 pub(super) fn merge(payload: &mut Value, metadata: &Value) {
@@ -280,8 +292,8 @@ where
     }
 
     /// `groupCompletedSuccessfully` for each all-of group on a member's path:
-    /// Every member sequence has a fired timer, completed activity or completed
-    /// child call. A retried/continued child is still one original call.
+    /// Every authored member has completed. A retried child or a reopened
+    /// condition retains its original position in the barrier.
     pub(super) async fn all_groups_closed(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -290,6 +302,7 @@ where
         let Some(path) = metadata["parallel_group_path"].as_array() else {
             return Ok(true);
         };
+        let mut waits = None;
         for group in path {
             let (Some(base), Some(size)) = (
                 group["parallel_group_base_sequence"].as_i64(),
@@ -298,6 +311,28 @@ where
                 return Ok(true);
             };
             let last = base + size - 1;
+            if group["parallel_group_kind"] == "child" {
+                // Use the open-wait index to get a hint, then confirm the
+                // authored sequence and status against the authoritative call.
+                let pending = Self::query(
+                    "SELECT 1 FROM (
+                        SELECT workflow_run_id,sequence FROM workflow_run_waits
+                        WHERE workflow_run_id=$1 AND status='open' AND kind='child'
+                        ORDER BY position LIMIT 1
+                    ) w JOIN workflow_child_calls c
+                    ON c.parent_workflow_run_id=w.workflow_run_id AND c.sequence=w.sequence
+                    WHERE c.sequence>=$2 AND c.sequence<=$3
+                    AND c.status IN ('scheduled','started') LIMIT 1",
+                )
+                .bind(run_id)
+                .bind(base)
+                .bind(last)
+                .fetch_optional(&mut **tx)
+                .await?;
+                if pending.is_some() {
+                    return Ok(false);
+                }
+            }
             let mut closed = std::collections::BTreeSet::new();
             for (sql, done) in [
                 (
@@ -316,6 +351,26 @@ where
                 for row in Self::query(sql).bind(run_id).bind(base).bind(last).fetch_all(&mut **tx).await? {
                     if DB::string(&row, "status")? == done {
                         closed.insert(DB::number(&row, "sequence")?);
+                    }
+                }
+            }
+            if closed.len() < size as usize && matches!(group["parallel_group_kind"].as_str(), Some("condition" | "mixed")) {
+                if waits.is_none() {
+                    waits = Some(Self::waits(tx, run_id).await?);
+                }
+                let history = waits.as_ref().unwrap();
+                let mut positions = std::collections::BTreeSet::new();
+                for wait in history.conditions.iter().rev() {
+                    let Some(opening) = history.condition_opening(&wait.id) else { continue };
+                    let Some(member) = opening.payload["parallel_group_path"]
+                        .as_array()
+                        .and_then(|path| path.iter().find(|member| member["parallel_group_id"] == group["parallel_group_id"]))
+                    else { continue };
+                    if let Some(index) = member["parallel_group_index"].as_i64().filter(|index| (0..size).contains(index)) {
+                        let position = base + index;
+                        if positions.insert(position) && wait.completed_successfully() {
+                            closed.insert(position);
+                        }
                     }
                 }
             }
