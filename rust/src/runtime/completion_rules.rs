@@ -506,8 +506,8 @@ fn controller_scopes(commands: &[Value]) -> Vec<(String, Vec<String>)> {
                 add(at(field), format!("{field} is only supported for schedule_activity commands."));
             }
         }
-        if command.get("workflow_id").is_some() && kind != "start_child_workflow" {
-            add(at("workflow_id"), "workflow_id only applies to start_child_workflow.".into());
+        if command.get("workflow_id").is_some() && !matches!(kind, "start_child_workflow" | super::external_signals::COMMAND) {
+            add(at("workflow_id"), "workflow_id only applies to start_child_workflow and signal_external_workflow.".into());
         }
         // Native's child start turn (Server #966): `result`, the default, or
         // `started`.
