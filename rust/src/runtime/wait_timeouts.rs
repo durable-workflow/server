@@ -21,6 +21,7 @@ pub(super) struct ConditionDecision<'a> {
     wait_id: &'a str,
     satisfied: bool,
     receipt: Option<i64>,
+    competing_resolution_event_id: Option<&'a str>,
 }
 
 impl<'a> ConditionDecision<'a> {
@@ -33,10 +34,13 @@ impl<'a> ConditionDecision<'a> {
         let receipt = command.get("input_receipt_sequence")
             .map(|value| value.as_i64().filter(|value| *value > 0).ok_or_else(invalid))
             .transpose()?;
-        if !satisfied && receipt.is_some() {
+        let competing_resolution_event_id = command.get("competing_resolution_event_id")
+            .map(|value| value.as_str().filter(|id| !id.is_empty() && id.len() <= 191).ok_or_else(invalid))
+            .transpose()?;
+        if (!satisfied && receipt.is_some()) || (satisfied && competing_resolution_event_id.is_some()) {
             return Err(invalid());
         }
-        Ok(Self { wait_id, satisfied, receipt })
+        Ok(Self { wait_id, satisfied, receipt, competing_resolution_event_id })
     }
 }
 
@@ -231,13 +235,34 @@ where
             .filter(|opening| uses_condition_input_order(&opening.payload))
             .ok_or_else(mismatch)?;
         let timeout = wait.fired_at;
+        let candidate = Self::unresolved_selection_candidate(tx, run_id, &opening.payload).await?;
+        let competing_sequence = candidate.as_ref()
+            .map(|candidate| candidate["resolution_event_sequence"].as_i64().ok_or_else(mismatch))
+            .transpose()?;
+        let selection_boundary = timeout.into_iter().chain(competing_sequence).min();
+        if let Some(event_id) = decision.competing_resolution_event_id {
+            let mut candidate = candidate.filter(|value| value["resolution_event_id"] == event_id)
+                .ok_or_else(mismatch)?;
+            let boundary = competing_sequence.filter(|sequence| Some(*sequence) == selection_boundary)
+                .ok_or_else(mismatch)?;
+            Self::guard_condition_prefix(tx, run_id, boundary).await?;
+            candidate.as_object_mut().unwrap().remove("resolution_event_sequence");
+            Self::append(tx, run_id, "SelectionResolved", candidate, Some(task_id), None).await?;
+            let metadata = super::selections::selection(&opening.payload).ok_or_else(mismatch)?;
+            return Self::selection_resume(tx, run_id, queue, json!({
+                "resume_source_kind":"condition_outcome", "resume_source_id":wait.id,
+                "workflow_wait_kind":"condition", "open_wait_id":wait.id, "condition_wait_id":wait.id,
+                "workflow_event_type":"SelectionResolved", "workflow_sequence":wait.sequence,
+            }), metadata, true).await;
+        }
         if (!decision.satisfied && timeout.is_none())
             || (decision.satisfied && timeout.is_some() && decision.receipt.is_none())
+            || (!decision.satisfied && timeout != selection_boundary)
         {
             return Err(mismatch());
         }
         if let Some(receipt) = decision.receipt {
-            if timeout.is_some_and(|boundary| receipt >= boundary) {
+            if selection_boundary.is_some_and(|boundary| receipt >= boundary) {
                 return Err(mismatch());
             }
             // The received position is canonical even if the same task applied
@@ -257,10 +282,8 @@ where
             }
         }
         let prefix_end = if decision.satisfied { decision.receipt } else { timeout };
-        if let Some(boundary) = prefix_end
-            && Self::first_pending_condition_input(&mut **tx, run_id).await?.is_some_and(|pending| pending < boundary)
-        {
-            return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_pending"));
+        if let Some(boundary) = prefix_end {
+            Self::guard_condition_prefix(tx, run_id, boundary).await?;
         }
         let group = super::activity_metadata::payload_for_path(&opening.payload);
         let mut payload = wait_fields(&opening.payload);
@@ -289,6 +312,17 @@ where
             }), &winner, true).await;
         }
         Ok(None)
+    }
+
+    async fn guard_condition_prefix(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        boundary: i64,
+    ) -> Result<()> {
+        if Self::first_pending_condition_input(&mut **tx, run_id).await?.is_some_and(|pending| pending < boundary) {
+            return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_pending"));
+        }
+        Ok(())
     }
 
     /// A terminal run cannot fire its remaining wait timeouts. Settle their

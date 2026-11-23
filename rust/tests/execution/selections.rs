@@ -1,6 +1,79 @@
 use super::*;
 
 #[tokio::test]
+async fn ordered_selection_commits_the_exact_child_candidate_without_waiting_for_the_timer() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let worker = "ordered-selection-parent";
+    let (status, registration) = request(&app, "POST", "/api/worker/register", json!({
+        "worker_id":worker,"task_queue":"test","runtime":"rust",
+        "supported_workflow_types":["echo"],"supported_activity_types":[],
+        "capabilities":["condition_wait_input_order"],
+        "workflow_command_contracts":{"echo":{"signals":["approve"],"queries":[],"updates":[]}}
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{registration}");
+    register(&app, "selection-child-worker", json!(["selection-child"]), json!([])).await;
+    let started = start(&app, "ordered-selection-child-first").await;
+    let parent = poll(&app, worker, "workflow").await;
+    let condition = json!({
+        "type":"open_condition_wait", "condition_wait_occurrence_id":"approval:0",
+        "condition_key":"approval", "condition_definition_fingerprint":"approval-v1",
+        "timeout_seconds":240, "deadline_policy":"occurrence",
+        "condition_wait_timeout_budget_seconds":240, "condition_wait_input_order":"durable_receipt_order",
+    });
+    let child_command = child_and_signal_selection()[0].clone();
+    let commands = selection_pair(1, "mixed", [
+        (child_command, "child", "child"),
+        (condition, "approval", "condition"),
+    ]);
+    let (status, result) = finish_task(&app, &parent, commands).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let child = poll(&app, "selection-child-worker", "workflow").await;
+    let (status, result) = finish_task(&app, &child,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let history = || run_history(&app, &started["workflow_id"], &started["run_id"]);
+    let prefix = history().await;
+    let events = prefix.as_array().unwrap();
+    let event = |kind: &str| events.iter().find(|event| event["event_type"] == kind).unwrap();
+    let opened = &event("ConditionWaitOpened")["payload"];
+    let terminal = event("ChildRunCompleted");
+    let candidate = &event("SelectionCandidateReady")["payload"];
+    assert_eq!(candidate["resolution_event_sequence"], terminal["sequence"]);
+    let event_id = database.selection_history_id(
+        started["run_id"].as_str().unwrap(), terminal["sequence"].as_i64().unwrap(),
+    ).await;
+    assert_eq!(candidate["resolution_event_id"], event_id);
+    assert!(events.iter().all(|event| event["event_type"] != "SelectionResolved"));
+
+    let resumed = poll(&app, worker, "workflow").await;
+    let decide = |candidate_id: &str| json!([{
+        "type":"resolve_condition_wait", "condition_wait_id":opened["condition_wait_id"],
+        "satisfied":false, "competing_resolution_event_id":candidate_id,
+    }]);
+    let (status, result) = finish_task(&app, &resumed, decide("unrelated-event")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["reason"], "condition_wait_outcome_mismatch");
+    assert_eq!(history().await, prefix);
+
+    let (status, result) = finish_task(&app, &resumed, decide(&event_id)).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let done = history().await;
+    let resolved = done.as_array().unwrap();
+    let winner = resolved.iter().find(|event| event["event_type"] == "SelectionResolved").unwrap();
+    assert_eq!(winner["payload"]["operation_identity"], child["run_id"]);
+    assert_eq!(winner["payload"]["resolution_event_id"], event_id);
+    assert!(resolved.iter().all(|event| !matches!(event["event_type"].as_str(),
+        Some("TimerFired" | "ConditionWaitTimedOut" | "ConditionWaitSatisfied"))));
+    let replay = poll(&app, worker, "workflow").await;
+    assert_eq!(replay["run_id"], started["run_id"], "{replay}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn cancellation_retains_original_timer_selection_metadata_across_reopen() {
     let database = TestDatabase::new().await;
     let first = database.open().await.unwrap();

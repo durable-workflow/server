@@ -4057,7 +4057,7 @@ where
                     super::external_signals::validate(command)?;
                 }
                 super::wait_timeouts::RESOLVE_CONDITION_WAIT => {
-                    reject_fields(command, &["type", "condition_wait_id", "satisfied", "input_receipt_sequence"])?;
+                    reject_fields(command, &["type", "condition_wait_id", "satisfied", "input_receipt_sequence", "competing_resolution_event_id"])?;
                     super::wait_timeouts::ConditionDecision::parse(command)?;
                 }
                 "open_signal_wait" => {
