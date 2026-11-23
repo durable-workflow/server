@@ -471,6 +471,54 @@ async fn promoted_build_refusal_is_observed_only_until_the_fenced_retry() {
 }
 
 #[tokio::test]
+async fn promoted_continuation_serializes_with_retirement_of_the_old_build() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (worker, build) in [("old-worker", "old-build"), ("new-worker", "new-build")] {
+        let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
+            "worker_id":worker,"task_queue":"test","runtime":"php","build_id":build,
+            "supported_workflow_types":["echo"],"supported_activity_types":[],
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{registered}");
+    }
+    for build in ["old-build", "new-build"] {
+        let (status, body) = request(&app, "POST", "/api/task-queues/test/build-ids/promote", json!({"build_id":build})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if build == "old-build" {
+            start(&app, "retiring-chain").await;
+        }
+    }
+    let task = poll(&app, "old-worker", "workflow").await;
+    assert_eq!(task["compatibility"], "old-build");
+    let other = database.open().await.unwrap();
+    let retirement = router(other.clone());
+    let retire_path = "/api/deployments/default/test@old-build/retire";
+    let complete_path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let (continued, retired) = tokio::join!(
+        request_protocol(&app, "POST", &complete_path,
+            completion(&task, json!([{"type":"continue_as_new","target_build":"promoted"}])), WORKER_PROTOCOL_VERSION),
+        request(&retirement, "POST", retire_path, Value::Null),
+    );
+    assert_eq!(continued.0, StatusCode::OK, "{}", continued.1);
+    let retired = if retired.0 == StatusCode::CONFLICT {
+        assert_eq!(retired.1["reason"], "live_dependencies");
+        assert_eq!(retired.1["counts"]["open_runs"], 1);
+        request(&retirement, "POST", retire_path, Value::Null).await
+    } else {
+        retired
+    };
+    assert_eq!(retired.0, StatusCode::OK, "{}", retired.1);
+    assert_eq!(retired.1["outcome"], "retired");
+    let next = poll(&app, "new-worker", "workflow").await;
+    assert_eq!(next["compatibility"], "new-build");
+    assert_eq!(next["task_id"], continued.1["created_task_ids"][0]);
+    other.close().await;
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn failed_continuation_history_append_rolls_back_run_link_pointer_and_memo() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
