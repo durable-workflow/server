@@ -368,14 +368,14 @@ fn whole(value: &mut Value) {
 
 /// Validates the completion as PHP's transport rules do, then normalizes its
 /// integer fields.
-pub(super) fn checked(body: Value) -> Result<Value> {
+pub(super) fn checked(body: Value, protocol: Option<&str>) -> Result<Value> {
     // This enum is exact on the wire. Check it before TrimStrings can make
     // an authored value like "promoted " look valid.
     if let Some(commands) = body["commands"].as_array() {
         for command in commands.iter().filter(|command| {
             command["type"].as_str().is_some_and(|kind| kind.trim() == "continue_as_new")
         }) {
-            super::continuations::reject_inactive_target_build(command)?;
+            super::continuations::validate_target_build(command, protocol)?;
         }
     }
     // Laravel's TrimStrings and ConvertEmptyStringsToNull run first.
@@ -924,7 +924,7 @@ mod tests {
     use serde_json::json;
 
     fn refusal(body: Value) -> Value {
-        match checked(body) {
+        match checked(body, None) {
             Err(super::super::RuntimeError::Protocol { response, .. }) => response,
             other => panic!("{other:?}"),
         }
@@ -972,8 +972,8 @@ mod tests {
             json!(["The commands.0.workflow_stream.max_pending_items field must not be greater than 10000."]));
         assert_eq!(refusal(stream("retention_seconds", 2_592_001))["errors"]["commands.0.workflow_stream.retention_seconds"],
             json!(["The commands.0.workflow_stream.retention_seconds field must not be greater than 2592000."]));
-        assert!(checked(stream("max_pending_items", 10_000)).is_ok());
-        assert!(checked(stream("retention_seconds", 2_592_000)).is_ok());
+        assert!(checked(stream("max_pending_items", 10_000), None).is_ok());
+        assert!(checked(stream("retention_seconds", 2_592_000), None).is_ok());
     }
 
     /// Server #607: a name a command writes is bounded by its column, in
@@ -988,7 +988,7 @@ mod tests {
             assert_eq!(refusal(command(most + 1))["errors"][format!("commands.0.{field}")],
                 json!([format!("The commands.0.{field} field must not be greater than {most} characters.")]), "{kind} {field}");
             // The bound counts characters, as the columns do, not bytes.
-            assert!(checked(command(most)).is_ok(), "{kind} {field} at {most}");
+            assert!(checked(command(most), None).is_ok(), "{kind} {field} at {most}");
         }
         // A child's type and queue are also stored on its varchar(191) call row.
         for field in ["workflow_type", "queue"] {
@@ -1009,7 +1009,7 @@ mod tests {
             let command = |length: usize| base(json!([{"type": kind, field: "é".repeat(length)}]));
             assert_eq!(refusal(command(256))["errors"][format!("commands.0.{field}")],
                 json!([format!("The commands.0.{field} field must not be greater than 255 characters.")]), "{kind} {field}");
-            assert!(checked(command(255)).is_ok(), "{kind} {field} at 255");
+            assert!(checked(command(255), None).is_ok(), "{kind} {field} at 255");
         }
         let failure = |length: usize| json!({"type": "fail_workflow", "message": "m", "exception": {"class": "é".repeat(length)}});
         let error = format!("{:?}", normalizer_checks(1, &failure(256)).unwrap_err());
@@ -1023,7 +1023,7 @@ mod tests {
     fn digit_strings_become_integers_once_the_rules_pass() {
         let body = checked(json!({"lease_owner":"w","workflow_task_attempt":"2","commands":[{"type":"start_timer","delay_seconds":"7"},
             {"type":"schedule_activity","heartbeat_timeout":"10","retry_policy":{"max_attempts":"3","backoff_seconds":["1",2]},
-                "worker_session":{"ttl_seconds":"30"}},{"type":"start_timer","delay_seconds":5.0}],"unknown":1})).unwrap();
+                "worker_session":{"ttl_seconds":"30"}},{"type":"start_timer","delay_seconds":5.0}],"unknown":1}), None).unwrap();
         assert_eq!(body["workflow_task_attempt"], 2);
         assert_eq!(body["commands"][0]["delay_seconds"], 7);
         assert_eq!(body["commands"][1]["heartbeat_timeout"], 10);

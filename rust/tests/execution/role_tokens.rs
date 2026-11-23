@@ -99,7 +99,7 @@ async fn configured_roles_precede_protocol_namespace_and_preserve_original_peer(
         assert!(body.get("namespace").is_none());
         assert!(body.get("requested_version").is_none());
         if worker {
-            assert_eq!(headers["x-durable-workflow-protocol-version"], "1.20");
+            assert_eq!(headers["x-durable-workflow-protocol-version"], super::WORKER_PROTOCOL_VERSION);
             assert!(body["server_capabilities"].is_object());
         } else {
             assert_eq!(headers["x-durable-workflow-control-plane-version"], "2");

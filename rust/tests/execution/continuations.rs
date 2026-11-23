@@ -255,21 +255,23 @@ async fn explicit_continue_as_new_target_refuses_without_consuming_the_lease() {
     );
     let history_before = request(&app, "GET", &history_path, Value::Null).await.1;
 
-    for (targets, reason) in [
+    for (targets, reason, protocol) in [
         (
             vec![Value::Null, json!(true), json!(false), json!(0), json!(1), json!([]), json!({}),
                 json!(""), json!("Promoted"), json!("latest"), json!("promoted ")],
             "invalid_target_build",
+            WORKER_PROTOCOL_VERSION,
         ),
-        (vec![json!("inherited"), json!("promoted")], "unsupported_target_build"),
+        (vec![json!("inherited"), json!("promoted")], "unsupported_target_build", "1.20"),
     ] {
         for target in targets {
             let commands = json!([{"type":"continue_as_new","target_build":target}]);
-            let (status, response) = request(
+            let (status, response) = request_protocol(
                 &app,
                 "POST",
                 &completion_path,
                 completion(&task, commands),
+                protocol,
             ).await;
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
             assert_eq!(response["reason"], reason, "{target}");
@@ -293,6 +295,105 @@ async fn explicit_continue_as_new_target_refuses_without_consuming_the_lease() {
     assert_eq!(status, StatusCode::OK, "{response}");
     let (_, runs) = request(&app, "GET", runs_path, Value::Null).await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 2);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let build_ids = "/api/task-queues/test/build-ids";
+    let register_build = |app: Router, worker: &'static str, build: &'static str, kind: &'static str| async move {
+        let (status, body) = request_protocol(&app, "POST", "/api/worker/register", json!({
+            "worker_id":worker,"task_queue":"test","runtime":"php","build_id":build,
+            "supported_workflow_types":[kind],"supported_activity_types":[],
+        }), WORKER_PROTOCOL_VERSION).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        body
+    };
+    register_build(app.clone(), "worker-a", "build-a", "echo").await;
+    let original = start(&app, "migrating-chain").await;
+    let first = poll(&app, "worker-a", "workflow").await;
+    let inherited = start(&app, "inherited-chain").await;
+    let inherited_task = poll(&app, "worker-a", "workflow").await;
+    assert_eq!(first["workflow_id"], "migrating-chain");
+    assert_eq!(inherited_task["workflow_id"], "inherited-chain");
+    let original_history = run_history(&app, &original["workflow_id"], &original["run_id"]).await;
+    let completion_path = format!("/api/worker/workflow-tasks/{}/complete", first["task_id"].as_str().unwrap());
+    let promoted = completion(&first, json!([{"type":"continue_as_new","target_build":"promoted"}]));
+    let (status, refused) = request_protocol(&app, "POST", &completion_path, promoted.clone(), WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["reason"], "promoted_build_unavailable");
+    assert_eq!(refused["retryable"], true);
+    assert_eq!(refused["request_admitted"], false);
+
+    let worker_b = register_build(app.clone(), "worker-b", "build-b", "echo").await;
+    let (status, promotion) = request(&app, "POST", &format!("{build_ids}/promote"), json!({"build_id":"build-b"})).await;
+    assert_eq!(status, StatusCode::OK, "{promotion}");
+    assert_eq!(promotion["deployment"]["workflow_types"], json!(["echo"]));
+    assert_eq!(super::worker_deregistration::deregister(&app, "worker-b", &worker_b).await.0, StatusCode::OK);
+
+    // The newest promotion is selected for starts but serves a different
+    // exact type. A continue-as-new may not silently choose an older cohort.
+    register_build(app.clone(), "worker-c", "build-c", "only-c").await;
+    let (status, newest) = request(&app, "POST", &format!("{build_ids}/promote"), json!({"build_id":"build-c"})).await;
+    assert_eq!(status, StatusCode::OK, "{newest}");
+    assert_eq!(newest["new_start_selected"], true);
+    assert_eq!(newest["deployment"]["workflow_types"], json!(["only-c"]));
+    let (status, refused) = request_protocol(&app, "POST", &completion_path, promoted.clone(), WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["reason"], "promoted_build_unavailable");
+    assert_eq!(run_history(&app, &original["workflow_id"], &original["run_id"]).await, original_history);
+    let (status, runs) = request(&app, "GET", "/api/workflows/migrating-chain/runs", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{runs}");
+    assert_eq!(runs["run_count"], 1);
+    assert_eq!(runs["runs"][0]["run_id"], original["run_id"]);
+    assert_eq!(runs["runs"][0]["is_current_run"], true);
+    assert_eq!(request(&app, "POST", &format!("{build_ids}/drain"), json!({"build_id":"build-c"})).await.0, StatusCode::OK);
+
+    runtime.close().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (status, committed) = request_protocol(&app, "POST", &completion_path, promoted.clone(), WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::OK, "{committed}");
+    assert_eq!(committed["recorded"], true);
+    let (status, successor) = request(&app, "GET", "/api/workflows/migrating-chain", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{successor}");
+    assert_eq!(successor["compatibility"], "build-b");
+    let closed = run_history(&app, &original["workflow_id"], &original["run_id"]).await;
+    let started = run_history(&app, &original["workflow_id"], &successor["run_id"]).await;
+    let transition = json!({"from_compatibility":"build-a","to_compatibility":"build-b","resolution":"promoted"});
+    assert_eq!(closed.as_array().unwrap().last().unwrap()["payload"]["build_transition"], transition);
+    assert_eq!(started[0]["event_type"], "WorkflowStarted");
+    assert_eq!(started[0]["payload"]["build_transition"], transition);
+
+    let inherited_path = format!("/api/worker/workflow-tasks/{}/complete", inherited_task["task_id"].as_str().unwrap());
+    let (status, body) = request_protocol(&app, "POST", &inherited_path,
+        completion(&inherited_task, json!([{"type":"continue_as_new"}])), WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let next_a = poll(&app, "worker-a", "workflow").await;
+    assert_eq!(next_a["workflow_id"], inherited["workflow_id"]);
+    assert_eq!(next_a["compatibility"], "build-a");
+    let inherited_history = run_history(&app, &inherited["workflow_id"], &next_a["run_id"]).await;
+    assert_eq!(inherited_history[0]["payload"]["build_transition"],
+        json!({"from_compatibility":"build-a","to_compatibility":"build-a","resolution":"inherited"}));
+    assert!(poll(&app, "worker-a", "workflow").await.is_null());
+
+    let (status, resumed) = request(&app, "POST", &format!("{build_ids}/resume"), json!({"build_id":"build-c"})).await;
+    assert_eq!(status, StatusCode::OK, "{resumed}");
+    assert_eq!(resumed["new_start_selected"], true);
+    let (status, duplicate) = request_protocol(&app, "POST", &completion_path, promoted, WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::OK, "{duplicate}");
+    assert_eq!(duplicate["reason"], "already_completed");
+    assert_eq!(run_history(&app, &original["workflow_id"], &original["run_id"]).await, closed);
+    assert_eq!(run_history(&app, &original["workflow_id"], &successor["run_id"]).await, started);
+    register_build(app.clone(), "worker-b-again", "build-b", "echo").await;
+    let claimed = poll(&app, "worker-b-again", "workflow").await;
+    assert_eq!(claimed["run_id"], successor["run_id"]);
+    assert_eq!(claimed["compatibility"], "build-b");
+    assert_eq!(claimed["task_id"], committed["created_task_ids"][0]);
     runtime.close().await;
     database.remove().await;
 }

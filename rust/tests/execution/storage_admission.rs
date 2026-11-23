@@ -91,7 +91,7 @@ async fn draining_keeps_leased_work_alive_and_refuses_new_work() {
     assert_refused(&polled, "storage_pressure", "draining");
     assert_eq!((polled.2["task"].clone(), polled.2["claim_admitted"].clone(), polled.2["poll_request_id"].clone(),
         polled.2["retry_same_poll_request_id"].clone()), (Value::Null, json!(false), json!("poll-1"), json!(true)), "{}", polled.2);
-    assert_eq!(polled.2["protocol_version"], "1.20", "worker envelope: {}", polled.2);
+    assert_eq!(polled.2["protocol_version"], super::WORKER_PROTOCOL_VERSION, "worker envelope: {}", polled.2);
     assert_eq!(table_counts(&database).await, before, "a refusal writes nothing");
     // Reads stay open.
     assert_eq!(raw(&app, "GET", "/api/workflows/pressured", Value::Null).await.0, StatusCode::OK);

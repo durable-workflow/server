@@ -167,7 +167,7 @@ async fn real_shutdown_lock_pressure_preserves_original_leases_and_retries_same_
     assert_eq!(failed.2["outcome"], "unknown");
     assert_eq!(failed.2["retryable"], true);
     assert_eq!(failed.2["retry_after_seconds"], 1);
-    assert_eq!(failed.2["protocol_version"], "1.20");
+    assert_eq!(failed.2["protocol_version"], super::WORKER_PROTOCOL_VERSION);
     // Keep the independent writer held while checking the unchanged full reads.
     for (root, (path, view, history)) in [&first, &second].into_iter().zip(&protected) {
         assert_eq!(request(&app, "GET", path, Value::Null).await.1, *view);

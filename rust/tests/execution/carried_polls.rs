@@ -14,7 +14,7 @@ fn assert_granted(result: &Value) -> &Value {
     let expected: std::collections::BTreeSet<_> = vectors["answer_contract"]["keys"].as_array().unwrap().iter().map(|key| key.as_str().unwrap()).collect();
     assert_eq!(keys, expected);
     assert_eq!(answer["poll_status"], "leased");
-    assert_eq!(answer["protocol_version"], "1.20");
+    assert_eq!(answer["protocol_version"], super::WORKER_PROTOCOL_VERSION);
     assert!(answer["server_capabilities"].is_object());
     assert!(chrono::DateTime::parse_from_rfc3339(answer["server_time"].as_str().unwrap()).is_ok());
     answer

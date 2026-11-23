@@ -3874,7 +3874,7 @@ where
                     }
                 }
                 "continue_as_new" => {
-                    super::continuations::validate(command)?;
+                    super::continuations::validate(command, protocol)?;
                 }
                 "schedule_activity" => {
                     super::selections::fields(
@@ -4197,6 +4197,10 @@ where
         }
         Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
         let grouped_condition_repeats = Self::checked_grouped_condition_repeats(&mut tx, &run_id, commands, &partial_occurrences).await?;
+        let continued_build = match commands.iter().find(|command| command["type"] == "continue_as_new") {
+            Some(command) => Some(self.continued_build(&mut tx, &run, command, protocol).await?),
+            None => None,
+        };
         // Server #962: a run that captured no update contract at start binds
         // the completing worker's, once, with this accepted completion.
         Self::bind_update_contract(&mut tx, &task).await?;
@@ -4239,7 +4243,8 @@ where
                 {
                     Self::query("UPDATE workflow_runs SET status='waiting' WHERE id=$1").bind(&run_id).execute(&mut *tx).await?;
                 } else {
-                    created.push(self.continue_run(&mut tx, &run, &task, command, sequence).await?);
+                    let build = continued_build.as_ref().expect("resolved continue-as-new build");
+                    created.push(self.continue_run(&mut tx, &run, &task, command, sequence, build).await?);
                 }
             } else if command["type"] != "complete_workflow" {
                 self.apply_non_terminal(&mut tx, &apply, index, command, &mut sequence, &mut created)

@@ -640,7 +640,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
                 major == "1"
                     && !minor.is_empty()
                     && minor.bytes().all(|c| c.is_ascii_digit())
-                    && minor.parse::<u8>().is_ok_and(|n| n <= 20)
+                    && minor.parse::<u8>().is_ok_and(|n| n <= 21)
             })
         })
     } else {
@@ -2717,7 +2717,7 @@ fn completion_checks(task_id: &str, headers: &HeaderMap, body: Value) -> Result<
     // PHP validates the message-stream fields first, then its transport
     // rules, before every guard, ownership included.
     super::message_streams::check_completion_fields(&body).map_err(worker_refusal)?;
-    let body = super::completion_rules::checked(body).map_err(worker_refusal)?;
+    let body = super::completion_rules::checked(body, Some(request_protocol(headers)?)).map_err(worker_refusal)?;
     if body["commands"].as_array().is_some_and(|commands| {
         commands
             .iter()
@@ -3429,7 +3429,10 @@ mod worker_envelope_tests {
     fn explicit_null_members_are_set_where_they_stand() {
         // PHP's `??=` assigns to a null member and keeps its position.
         let completed = complete(r#"{"a":1.10,"protocol_version":null,"b":"x"}"#).unwrap();
-        assert!(completed.starts_with(r#"{"a":1.10,"protocol_version":"1.20","b":"x","server_capabilities":{"#), "{completed}");
+        assert!(completed.starts_with(&format!(
+            r#"{{"a":1.10,"protocol_version":"{}","b":"x","server_capabilities":{{"#,
+            super::super::WORKER_PROTOCOL_VERSION
+        )), "{completed}");
         let body: Value = serde_json::from_str(&completed).unwrap();
         assert_eq!(body["server_capabilities"], capabilities());
         let completed = complete(r#"{"server_capabilities":null,"protocol_version":"1.7"}"#).unwrap();
@@ -3438,7 +3441,10 @@ mod worker_envelope_tests {
         assert_eq!(body["protocol_version"], "1.7");
         // Raw values, including big numbers, keep their bytes on this path too.
         let completed = complete(r#"{ "big" : 123456789012345678901234567890, "protocol_version" : null }"#).unwrap();
-        assert!(completed.starts_with(r#"{"big":123456789012345678901234567890,"protocol_version":"1.20","#), "{completed}");
+        assert!(completed.starts_with(&format!(
+            r#"{{"big":123456789012345678901234567890,"protocol_version":"{}","#,
+            super::super::WORKER_PROTOCOL_VERSION
+        )), "{completed}");
         // A non-null value, even a falsy one, is never replaced.
         for value in [r#""""#, "false", "0", "{}", "[]"] {
             let body = format!(r#"{{"protocol_version":{value},"server_capabilities":{value}}}"#);

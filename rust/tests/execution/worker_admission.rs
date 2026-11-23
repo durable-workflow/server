@@ -32,7 +32,7 @@ async fn the_manifest_is_required_from_protocol_1_18() {
     assert_eq!(body["reason"], "validation_failed");
     assert_eq!(body["errors"]["capability_manifest"], json!(["The capability manifest field is required."]), "{body}");
     // `WorkerProtocol::json` names the protocol on refusals too.
-    assert_eq!(body["protocol_version"], "1.20");
+    assert_eq!(body["protocol_version"], super::WORKER_PROTOCOL_VERSION);
     assert!(body["server_capabilities"].is_object(), "{body}");
 
     let (status, body) = register_at(&app, "1.17", json!({})).await;
@@ -105,7 +105,7 @@ async fn capability_guards_refuse_like_php() {
                 register_at(&app, version, json!({"capabilities": capabilities, "capability_manifest": manifest})).await;
             assert_eq!(status, StatusCode::CONFLICT, "{body}");
             assert_eq!(body["registered"], false, "{body}");
-            assert_eq!(body["protocol_version"], "1.20", "{body}");
+            assert_eq!(body["protocol_version"], super::WORKER_PROTOCOL_VERSION, "{body}");
             body
         }
     };

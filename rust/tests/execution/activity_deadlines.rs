@@ -223,7 +223,7 @@ async fn every_authored_deadline_fences_outcomes_and_resolves_once() {
                     // PHP 2.11.8's heartbeat answers (ActivityTaskController
                     // lines 865 and 903) set no protocol_version, so
                     // WorkerProtocol::json supplies the server's (server#1001).
-                    assert_eq!(status.1["protocol_version"], "1.20");
+                    assert_eq!(status.1["protocol_version"], super::WORKER_PROTOCOL_VERSION);
                 }
             }
         }

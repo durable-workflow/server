@@ -95,8 +95,8 @@ async fn admission_authentication_precedes_protocol_and_namespace_in_both_planes
             assert!(body.get("namespace").is_none());
             assert!(body.get("supported_version").is_none());
             if worker {
-                assert_eq!(headers["x-durable-workflow-protocol-version"], "1.20");
-                assert_eq!(body["protocol_version"], "1.20");
+                assert_eq!(headers["x-durable-workflow-protocol-version"], super::WORKER_PROTOCOL_VERSION);
+                assert_eq!(body["protocol_version"], super::WORKER_PROTOCOL_VERSION);
                 assert!(body["server_capabilities"].is_object());
                 assert!(body.get("control_plane").is_none());
             } else {

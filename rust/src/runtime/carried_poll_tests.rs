@@ -27,7 +27,7 @@ fn assert_granted(result: &Value) -> &Value {
     assert_eq!(result.as_object().unwrap().len(), 2);
     let answer = &result["answer"];
     assert_eq!(answer["poll_status"], "leased");
-    assert_eq!(answer["protocol_version"], "1.20");
+    assert_eq!(answer["protocol_version"], super::WORKER_PROTOCOL_VERSION);
     assert!(answer["server_capabilities"].is_object());
     assert!(chrono::DateTime::parse_from_rfc3339(answer["server_time"].as_str().unwrap()).is_ok());
     answer

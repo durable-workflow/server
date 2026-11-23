@@ -35,7 +35,7 @@ async fn renew(app: &Router, activity: &Value, body: Value) -> (StatusCode, Valu
 
 fn without_protocol(mut body: Value) -> Value {
     let map = body.as_object_mut().unwrap();
-    assert_eq!(map.remove("protocol_version"), Some(json!("1.20")));
+    assert_eq!(map.remove("protocol_version"), Some(json!(super::WORKER_PROTOCOL_VERSION)));
     assert_eq!(map.remove("server_capabilities").unwrap()["activity_lease_renewal"], true);
     body
 }
