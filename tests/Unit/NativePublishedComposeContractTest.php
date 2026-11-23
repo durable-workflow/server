@@ -7,8 +7,8 @@ use Symfony\Component\Yaml\Yaml;
 
 /**
  * From 3.0.0 the published Compose file runs the native server (Server #325):
- * one process with MySQL, no PHP bootstrap, worker, scheduler or Redis. The
- * PHP 2.x stack stays in docker-compose.php.yml.
+ * one long-lived process with MySQL, plus two one-shot schema services.
+ * The PHP 2.x stack stays in docker-compose.php.yml.
  */
 class NativePublishedComposeContractTest extends TestCase
 {
@@ -20,12 +20,44 @@ class NativePublishedComposeContractTest extends TestCase
         $this->repoRoot = dirname(__DIR__, 2);
     }
 
-    public function test_published_compose_runs_only_the_native_server_and_mysql(): void
+    public function test_published_compose_runs_the_native_server_and_mysql_after_schema_setup(): void
     {
         $compose = Yaml::parse($this->read('docker-compose.published.yml'));
+        $services = $compose['services'];
+        $server = $services['server'];
+        $plan = $services['schema-plan'];
+        $install = $services['schema-install'];
 
-        $this->assertSame(['server', 'mysql'], array_keys($compose['services']));
-        $this->assertSame(['mysql_data', 'server_storage'], array_keys($compose['volumes']));
+        $this->assertSame(['server', 'schema-plan', 'schema-install', 'mysql'], array_keys($services));
+        $this->assertSame(['mysql_data', 'server_storage', 'schema_plan'], array_keys($compose['volumes']));
+        $this->assertSame('service_healthy', $plan['depends_on']['mysql']['condition']);
+        $this->assertSame('service_completed_successfully', $install['depends_on']['schema-plan']['condition']);
+        $this->assertSame('service_completed_successfully', $server['depends_on']['schema-install']['condition']);
+        $this->assertSame($server['image'], $plan['image']);
+        $this->assertSame($services['mysql']['image'], $install['image']);
+        foreach ([$plan, $install] as $step) {
+            $this->assertSame('no', $step['restart'] ?? 'no');
+            $this->assertArrayNotHasKey('ports', $step);
+        }
+    }
+
+    public function test_schema_install_keeps_the_database_admin_credential_outside_the_native_image(): void
+    {
+        $services = Yaml::parse($this->read('docker-compose.published.yml'))['services'];
+        $plan = $services['schema-plan'];
+        $install = $services['schema-install'];
+
+        foreach ([$services['server'], $plan] as $native) {
+            $this->assertArrayNotHasKey('MYSQL_PWD', $native['environment']);
+            $this->assertArrayNotHasKey('MYSQL_ROOT_PASSWORD', $native['environment']);
+            $this->assertSame($services['mysql']['environment']['MYSQL_USER'], $native['environment']['DB_USERNAME']);
+            $this->assertSame($services['mysql']['environment']['MYSQL_PASSWORD'], $native['environment']['DB_PASSWORD']);
+        }
+        $this->assertSame('service:mysql', $install['network_mode']);
+        $this->assertSame('1000:1000', $install['user']);
+        $this->assertSame(['schema_plan:/app/storage'], $plan['volumes']);
+        $this->assertSame(['schema_plan:/plan:ro'], $install['volumes']);
+        $this->assertSame($services['mysql']['environment']['MYSQL_ROOT_PASSWORD'], $install['environment']['MYSQL_PWD']);
     }
 
     public function test_default_image_is_a_native_image_pinned_by_digest_or_exact_release(): void
