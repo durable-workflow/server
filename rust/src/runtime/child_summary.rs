@@ -5,12 +5,13 @@ use super::{
     active_summary::{ActiveSummary, SummaryWait},
     backend::Backend,
     history_budget,
+    selections::{ChildSelectionAwait, child_status_failed, is_selection},
     store::Store,
     transaction::{ChildSummaryChange, Transaction},
 };
 use serde_json::Value;
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Range};
 
 macro_rules! checkpoint_proof {
     ($writes:literal, $run_proof:literal) => {
@@ -57,7 +58,9 @@ const MYSQL_CHECKPOINT_PROOF: &str = checkpoint_proof!("3", "
 #[derive(Default)]
 pub(super) struct ChildSummaryHistory {
     calls: BTreeMap<i64, ExpectedChild>,
-    awaited_selection: Option<i64>,
+    awaited_selection: Option<Value>,
+    selected_result: Option<Range<i64>>,
+    resolved_children: Vec<i64>,
     resumed_selections: std::collections::BTreeSet<i64>,
 }
 
@@ -79,11 +82,53 @@ struct ExpectedChild {
 
 impl ChildSummaryHistory {
     pub(super) fn supersede_selection_await(&mut self) {
-        if let Some(sequence) = self.awaited_selection.take()
-            && self.calls.get(&sequence).is_some_and(|call| call.status != "waiting")
+        self.consume_selected_result();
+        if let Some(record) = self.awaited_selection.take()
+            && let Some(handle) = ChildSelectionAwait::parse(&record)
+            && self.selection_resolved(&handle)
         {
-            self.resumed_selections.insert(sequence);
+            self.resumed_selections.extend(handle.sequence..handle.sequence + handle.size);
         }
+    }
+
+    fn consume_selected_result(&mut self) {
+        if let Some(range) = self.selected_result.take() {
+            self.resumed_selections.extend(range);
+        }
+    }
+
+    // A validated child winner also authorizes a wake before replay reaches
+    // an explicit handle await. Its losing signal or condition may stay open.
+    pub(super) fn selection_winner(&mut self, payload: &Value) {
+        if matches!(payload["operation_kind"].as_str(), Some("child" | "group")) {
+            let base = payload["member_base_sequence"].as_i64().unwrap();
+            let size = payload["member_size"].as_i64().unwrap();
+            self.selected_result = Some(base..base + size);
+        }
+    }
+
+    fn active_selection(&self) -> Option<Range<i64>> {
+        self.awaited_selection.as_ref()
+            .and_then(ChildSelectionAwait::parse)
+            .map(|handle| handle.sequence..handle.sequence + handle.size)
+            .or_else(|| self.selected_result.clone())
+    }
+
+    fn selection_resolution(&self, range: Range<i64>) -> Option<i64> {
+        let mut completed = 0;
+        let mut last = None;
+        for &sequence in self.resolved_children.iter().filter(|sequence| range.contains(sequence)) {
+            if child_status_failed(self.calls[&sequence].status) {
+                return Some(sequence);
+            }
+            completed += 1;
+            last = Some(sequence);
+        }
+        if completed == range.end - range.start { last } else { None }
+    }
+
+    fn selection_resolved(&self, handle: &ChildSelectionAwait<'_>) -> bool {
+        self.selection_resolution(handle.sequence..handle.sequence + handle.size).is_some()
     }
 
     pub(super) fn checkpoint_group(&self) -> Option<&str> {
@@ -92,6 +137,7 @@ impl ChildSummaryHistory {
         let size = self.calls.len();
         (size > 1
             && first.parallel["parallel_group_kind"] == "child"
+            && !is_selection(&first.parallel)
             && first.parallel["parallel_group_size"].as_u64() == Some(size as u64)
             && self.calls.values().all(|child| {
                 child.parallel["parallel_group_id"] == group
@@ -102,19 +148,26 @@ impl ChildSummaryHistory {
 
     pub(super) fn apply(&mut self, event: &str, payload: &Value) -> bool {
         if event == "ChildWorkflowAwaited" && payload.get("selection_handle").is_some() {
-            let Some(handle) = super::selections::ChildSelectionAwait::parse(&payload["selection_handle"]) else {
+            let record = &payload["selection_handle"];
+            let Some(handle) = ChildSelectionAwait::parse(record) else {
                 return false;
             };
-            if !self.calls.get(&handle.sequence).is_some_and(|call| handle.matches(&call.run, &call.parallel)) {
+            if !(handle.sequence..handle.sequence + handle.size).all(|sequence| {
+                self.calls.get(&sequence).is_some_and(|call| handle.matches(&call.run, &call.parallel))
+            }) {
                 return false;
             }
             if handle.waiting {
-                self.awaited_selection = Some(handle.sequence);
-            } else if self.awaited_selection == Some(handle.sequence) {
-                self.awaited_selection = None;
-                self.resumed_selections.insert(handle.sequence);
+                self.consume_selected_result();
+                self.awaited_selection = Some(record.clone());
             } else {
-                return false;
+                let mut waiting = record.clone();
+                waiting["status"] = serde_json::json!("waiting");
+                if self.awaited_selection.as_ref() != Some(&waiting) || !self.selection_resolved(&handle) {
+                    return false;
+                }
+                self.awaited_selection = None;
+                self.resumed_selections.extend(handle.sequence..handle.sequence + handle.size);
             }
             return true;
         }
@@ -194,6 +247,7 @@ impl ChildSummaryHistory {
                     return false;
                 }
                 previous.status = status;
+                self.resolved_children.push(sequence);
             }
             _ => return false,
         }
@@ -435,7 +489,7 @@ where
         let selection_await = if summary.wait.as_ref()
             .is_none_or(|wait| matches!(wait.kind, "workflow-task" | "signal" | "condition"))
         {
-            history.awaited_selection
+            history.active_selection()
         } else {
             None
         };
@@ -450,27 +504,38 @@ where
         {
             return Ok(false);
         }
-        let selected_child = if let Some(sequence) = selection_await {
-            let Some(row) = rows.iter().find(|row| DB::optional_number(row, "sequence").ok().flatten() == Some(sequence)) else {
+        let selected;
+        let applicable = if let Some(range) = &selection_await {
+            selected = rows.iter().copied().filter(|row| {
+                DB::optional_number(row, "sequence").ok().flatten()
+                    .is_some_and(|sequence| range.contains(&sequence))
+            }).collect::<Vec<_>>();
+            if selected.len() != (range.end - range.start) as usize {
                 return Ok(false);
-            };
-            Some(row)
+            }
+            selected.as_slice()
         } else {
-            None
+            rows.as_slice()
         };
-        let applicable = selected_child.map_or(rows.as_slice(), std::slice::from_ref);
         let open = if summary.task_id.is_none() {
             applicable.iter()
                 .find(|row| DB::string(row, "status").is_ok_and(|status| status == "open"))
         } else {
             None
         };
-        let pending = applicable.iter().find(|row| {
-            DB::string(row, "source_status").is_ok_and(|status| {
-                matches!(status.as_str(), "cancelled" | "terminated" | "failed")
-                    || (status == "completed" && open.is_none())
+        let pending = if let Some(range) = selection_await {
+            history.selection_resolution(range).and_then(|sequence| {
+                applicable.iter().find(|row| {
+                    DB::optional_number(row, "sequence").ok().flatten() == Some(sequence)
+                })
             })
-        });
+        } else {
+            applicable.iter().find(|row| {
+                DB::string(row, "source_status").is_ok_and(|status| {
+                    child_status_failed(&status) || (status == "completed" && open.is_none())
+                })
+            })
+        };
         // PHP retains resolved-child problem evidence while the parent task is
         // ready or leased. That evidence does not change task liveness priority.
         summary.problem |= pending.is_some();

@@ -1,4 +1,5 @@
 //! Bind native mixed selections to their typed members and physical winner event.
+use super::selections::{member_follows, member_identity, member_position, selection};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -22,9 +23,42 @@ struct Member {
     terminal: Option<(String, String)>,
 }
 
+impl Member {
+    fn entry(&self) -> &Value {
+        selection(&self.metadata).expect("selection member metadata")
+    }
+
+    fn completed(&self) -> bool {
+        self.terminal.as_ref().is_some_and(|(_, event)| event == "ChildRunCompleted")
+    }
+}
+
+impl Group {
+    fn complete(&self) -> bool {
+        self.members.last_key_value().is_some_and(|(_, member)| {
+            member.entry()["parallel_group_size"] == self.members.len()
+                && member.entry()["selection_member_index"] == 1
+        })
+    }
+
+    fn accepts(&self, entry: &Value, index: usize) -> bool {
+        !self.resolved && index == self.members.len()
+            && member_follows(self.members.last_key_value().map(|(_, member)| member.entry()), entry)
+    }
+
+    fn child_group_completed(&self, entry: &Value) -> bool {
+        let base = entry["selection_member_base_sequence"].as_i64().unwrap()
+            - entry["parallel_group_base_sequence"].as_i64().unwrap();
+        let size = entry["selection_member_size"].as_i64().unwrap();
+        (base..base + size).all(|index| {
+            self.members.get(&(index as usize)).is_some_and(Member::completed)
+        })
+    }
+}
+
 impl SelectionHistory {
     pub(super) fn complete(&self) -> bool {
-        self.pending.is_none() && self.groups.values().all(|group| group.members.len() == 2)
+        self.pending.is_none() && self.groups.values().all(Group::complete)
     }
 
     pub(super) fn apply(&mut self, id: &str, event: &str, payload: &Value) -> bool {
@@ -59,21 +93,15 @@ impl SelectionHistory {
         let Ok(metadata) = super::selections::metadata(payload, kind) else {
             return false;
         };
-        if !super::selections::is_selection(&metadata) {
-            return true;
-        }
-        let Some(group_id) = metadata["parallel_group_id"].as_str() else {
+        let Some(entry) = selection(&metadata) else {
             return true;
         };
-        let group_id = group_id.to_owned();
-        let (Some(identity), Some(index)) = (
-            payload[identity_key].as_str(),
-            metadata["parallel_group_index"].as_u64(),
-        ) else {
+        let group_id = entry["parallel_group_id"].as_str().unwrap().to_owned();
+        let Some(identity) = payload[identity_key].as_str().filter(|id| !id.is_empty()) else {
             return false;
         };
-        if identity.is_empty() || payload["sequence"] != metadata["selection_member_base_sequence"]
-        {
+        let index = entry["parallel_group_index"].as_u64().unwrap() as usize;
+        if payload["sequence"] != member_position(entry) {
             return false;
         }
         let child_call_id = if kind == "child" {
@@ -85,19 +113,8 @@ impl SelectionHistory {
             None
         };
         let group = self.groups.entry(group_id.clone()).or_default();
-        let index = index as usize;
         if matches!(event, "ActivityScheduled" | "TimerScheduled" | "ChildWorkflowScheduled" | "SignalWaitOpened" | "ConditionWaitOpened") {
-            if group.resolved
-                || group.members.contains_key(&index)
-                || group.members.values().any(|member| {
-                    member.metadata["selection_member_key"]
-                            == metadata["selection_member_key"]
-                        || super::selections::pair_kind(member.kind, kind).is_none_or(|group_kind| {
-                            metadata["parallel_group_kind"] != group_kind
-                                || member.metadata["parallel_group_kind"] != group_kind
-                        })
-                })
-            {
+            if !group.accepts(entry, index) {
                 return false;
             }
             group.members.insert(
@@ -111,6 +128,9 @@ impl SelectionHistory {
                 },
             );
             return true;
+        }
+        if !group.complete() {
+            return false;
         }
         let Some(member) = group.members.get_mut(&index) else {
             return false;
@@ -147,7 +167,11 @@ impl SelectionHistory {
                 ) {
                     return false;
                 }
-                self.pending = Some((group_id.clone(), index));
+                if entry["selection_member_kind"] != "group"
+                    || event != "ChildRunCompleted" || group.child_group_completed(entry)
+                {
+                    self.pending = Some((group_id.clone(), index));
+                }
             } else if group
                 .members
                 .values()
@@ -172,18 +196,18 @@ impl SelectionHistory {
         let Some((event_id, event_type)) = &member.terminal else {
             return false;
         };
-        let metadata = &member.metadata;
-        if group.members.len() != 2
+        let entry = member.entry();
+        if !group.complete()
             || group.resolved
             || payload["selection_group_id"] != group_id
-            || payload["selection_group_base_sequence"] != metadata["parallel_group_base_sequence"]
-            || payload["selection_group_size"] != 2
-            || payload["member_key"] != metadata["selection_member_key"]
-            || payload["member_index"] != index
-            || payload["member_base_sequence"] != metadata["selection_member_base_sequence"]
-            || payload["member_size"] != 1
-            || payload["operation_kind"] != member.kind
-            || payload["operation_identity"] != member.identity
+            || payload["selection_group_base_sequence"] != entry["parallel_group_base_sequence"]
+            || payload["selection_group_size"] != entry["parallel_group_size"]
+            || payload["member_key"] != entry["selection_member_key"]
+            || payload["member_index"] != entry["selection_member_index"]
+            || payload["member_base_sequence"] != entry["selection_member_base_sequence"]
+            || payload["member_size"] != entry["selection_member_size"]
+            || payload["operation_kind"] != entry["selection_member_kind"]
+            || payload["operation_identity"] != member_identity(entry, &member.identity)
             || payload["resolution_event_id"] != *event_id
             || payload["resolution_event_type"] != *event_type
             || payload["outcome"] != super::selections::outcome(event_type)

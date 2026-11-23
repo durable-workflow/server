@@ -692,6 +692,7 @@ where
         super::selections::merge(&mut payload, &parallel);
         let previous_sequence = if event_type == "ChildRunCompleted"
             && parallel["parallel_group_kind"] == "child"
+            && !super::selections::is_selection(&parallel)
             && payload["child_run_number"] == 1
             && DB::string(&parent, "status")? == "waiting"
             && tx.summary_is_unchanged(&parent_run)
@@ -701,6 +702,17 @@ where
             None
         };
         let event_id = Self::append_returning(tx, &parent_run, event_type, payload, None, None).await?;
+        // Record the outcome even while the all barrier remains closed. The
+        // last successful member observes every committed call under the same
+        // parent transition lock; any failed member wakes the parent at once.
+        if matches!(resolution, ChildResolution::Completed(_))
+            && !Self::all_groups_closed(tx, &parent_run, &parallel).await?
+        {
+            if let Some(previous_sequence) = previous_sequence {
+                tx.summary_child_completed(&parent_run, ChildSummaryChange { previous_sequence, event_id });
+            }
+            return Ok(());
+        }
         if super::selections::is_selection(&parallel) {
             let first_child_run = if link_id == call_id {
                 child_run.clone()
@@ -712,18 +724,6 @@ where
                 DB::string(&first, "child_workflow_run_id")?
             };
             Self::resolve_selection(tx, &parent_run, &parallel, "child", &first_child_run, event_type).await?;
-        }
-        // Record the outcome even while the all barrier remains closed. The
-        // last successful member observes every committed call under the same
-        // parent transition lock; any failed member wakes the parent at once.
-        if !super::selections::is_selection(&parallel)
-            && matches!(resolution, ChildResolution::Completed(_))
-            && !Self::all_groups_closed(tx, &parent_run, &parallel).await?
-        {
-            if let Some(previous_sequence) = previous_sequence {
-                tx.summary_child_completed(&parent_run, ChildSummaryChange { previous_sequence, event_id });
-            }
-            return Ok(());
         }
         let parent_resume = Self::child_parent_resume(tx, &parent).await?;
         let (task_id, task_status) = match parent_resume {

@@ -1,6 +1,6 @@
 //! Bounded two-member selection, with a durable first committed winner.
 use super::transaction::Transaction;
-use super::{Result, backend::Backend, refuse, store::Store};
+use super::{Result, backend::Backend, memo_limits::COMMAND_BATCH_SIZE, refuse, store::Store};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
@@ -31,12 +31,74 @@ fn present(value: &Value) -> bool {
         || FIELDS.iter().any(|field| value.get(*field).is_some())
 }
 
+pub(super) fn selection(value: &Value) -> Option<&Value> {
+    if value["parallel_group_mode"] == "select" {
+        return Some(value);
+    }
+    value["parallel_group_path"].as_array()?.first()
+        .filter(|entry| entry["parallel_group_mode"] == "select")
+}
+
 pub(super) fn is_selection(value: &Value) -> bool {
-    value["parallel_group_mode"] == "select"
+    selection(value).is_some()
+}
+
+pub(super) fn member_position(entry: &Value) -> i64 {
+    entry["parallel_group_base_sequence"].as_i64().unwrap()
+        + entry["parallel_group_index"].as_i64().unwrap()
+}
+
+pub(super) fn member_identity(entry: &Value, operation_identity: &str) -> String {
+    if entry["selection_member_kind"] == "group" {
+        format!(
+            "group:{}:{}",
+            entry["selection_member_base_sequence"], entry["selection_member_size"]
+        )
+    } else {
+        operation_identity.to_owned()
+    }
+}
+
+fn same_member(first: &Value, second: &Value) -> bool {
+    FIELDS.iter().filter(|field| **field != "parallel_group_index")
+        .all(|field| first[*field] == second[*field])
+}
+
+pub(super) fn member_follows(previous: Option<&Value>, entry: &Value) -> bool {
+    let Some(previous) = previous else {
+        return entry["parallel_group_index"] == 0 && entry["selection_member_index"] == 0;
+    };
+    let position = member_position(entry);
+    if previous["parallel_group_id"] != entry["parallel_group_id"]
+        || member_position(previous) + 1 != position
+    {
+        return false;
+    }
+    let end = |member: &Value| {
+        member["selection_member_base_sequence"].as_i64().unwrap()
+            + member["selection_member_size"].as_i64().unwrap()
+    };
+    if position < end(previous) {
+        return same_member(previous, entry);
+    }
+    let selection_end = entry["parallel_group_base_sequence"].as_i64().unwrap()
+        + entry["parallel_group_size"].as_i64().unwrap();
+    previous["selection_member_index"] == 0
+        && entry["selection_member_index"] == 1
+        && previous["selection_member_key"] != entry["selection_member_key"]
+        && end(previous) == position
+        && end(entry) == selection_end
+        && pair_kind(
+            previous["selection_member_kind"].as_str().unwrap(),
+            entry["selection_member_kind"].as_str().unwrap(),
+        ).is_some_and(|kind| {
+            previous["parallel_group_kind"] == kind && entry["parallel_group_kind"] == kind
+        })
 }
 
 pub(super) struct ChildSelectionAwait<'a> {
     pub sequence: i64,
+    pub size: i64,
     operation_identity: &'a str,
     group: &'a str,
     pub waiting: bool,
@@ -44,11 +106,14 @@ pub(super) struct ChildSelectionAwait<'a> {
 
 impl<'a> ChildSelectionAwait<'a> {
     pub(super) fn parse(handle: &'a Value) -> Option<Self> {
-        if handle.as_object()?.len() != 6 || handle["member_size"] != 1 {
+        if handle.as_object()?.len() != 6 {
             return None;
         }
         let sequence = handle["member_base_sequence"].as_i64().filter(|sequence| *sequence > 0)?;
-        handle["await_position"].as_i64().filter(|position| *position > sequence)?;
+        let size = handle["member_size"].as_i64()
+            .filter(|size| (1..COMMAND_BATCH_SIZE).contains(size))?;
+        let end = sequence.checked_add(size)?;
+        handle["await_position"].as_i64().filter(|position| *position >= end)?;
         let operation_identity = handle["operation_identity"].as_str()
             .filter(|identity| !identity.is_empty() && identity.len() <= 191)?;
         let group = handle["selection_group_id"].as_str().filter(|group| !group.is_empty() && group.len() <= 191)?;
@@ -57,23 +122,29 @@ impl<'a> ChildSelectionAwait<'a> {
             "resumed" => false,
             _ => return None,
         };
-        Some(Self { sequence, operation_identity, group, waiting })
+        Some(Self { sequence, size, operation_identity, group, waiting })
     }
 
     pub(super) fn matches(&self, identity: &str, metadata: &Value) -> bool {
-        self.operation_identity == identity
-            && is_selection(metadata)
-            && metadata["parallel_group_id"] == self.group
-            && metadata["selection_member_kind"] == "child"
-            && metadata["selection_member_base_sequence"] == self.sequence
-            && metadata["selection_member_size"] == 1
+        selection(metadata).is_some_and(|entry| {
+            matches!(entry["selection_member_kind"].as_str(), Some("child" | "group"))
+                && entry["parallel_group_id"] == self.group
+                && entry["selection_member_base_sequence"] == self.sequence
+                && entry["selection_member_size"] == self.size
+                && member_identity(entry, identity) == self.operation_identity
+        })
     }
 }
 
-pub(super) fn pair_kind(first: &str, second: &str) -> Option<&'static str> {
+pub(super) fn child_status_failed(status: &str) -> bool {
+    matches!(status, "failed" | "cancelled" | "terminated")
+}
+
+fn pair_kind(first: &str, second: &str) -> Option<&'static str> {
     match (first, second) {
         ("activity", "timer") | ("timer", "activity") | ("child", "signal") | ("signal", "child")
-        | ("child", "condition") | ("condition", "child") => Some("mixed"),
+        | ("child" | "group", "condition") | ("condition", "child" | "group")
+        | ("group", "signal") | ("signal", "group") => Some("mixed"),
         ("signal", "signal") => Some("signal"),
         _ => None,
     }
@@ -83,50 +154,78 @@ pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
     if !present(value) {
         return Ok(json!({}));
     }
-    if !is_selection(value) {
+    let Some(entry) = selection(value) else {
         return super::all_groups::metadata(value, kind);
+    };
+    let path = value["parallel_group_path"].as_array().ok_or_else(unqualified)?;
+    let outer = selection_entry(entry, kind)?;
+    if path.first() != Some(&outer) {
+        return Err(unqualified());
     }
-    let base = value["parallel_group_base_sequence"]
-        .as_i64()
-        .filter(|base| *base > 0)
-        .ok_or_else(unqualified)?;
-    let index = value["parallel_group_index"]
-        .as_i64()
-        .filter(|index| (0..2).contains(index))
-        .ok_or_else(unqualified)?;
-    let member_base = base.checked_add(index).ok_or_else(unqualified)?;
+    if outer["selection_member_kind"] != "group" {
+        if path.len() != 1 || value["parallel_group_mode"] != "select" {
+            return Err(unqualified());
+        }
+        let mut leaf = outer;
+        leaf["parallel_group_path"] = Value::Array(path.clone());
+        return Ok(leaf);
+    }
+    if path.len() < 2 || value["parallel_group_mode"] == "select"
+        || value["parallel_group_kind"] != "child"
+        || FIELDS[6..].iter().any(|field| value.get(*field).is_some())
+    {
+        return Err(unqualified());
+    }
+    let mut suffix = value.clone();
+    suffix["parallel_group_path"] = json!(&path[1..]);
+    let mut leaf = super::all_groups::selected_child_metadata(&suffix)?;
+    let inner = &leaf["parallel_group_path"][0];
+    if inner["parallel_group_base_sequence"] != outer["selection_member_base_sequence"]
+        || inner["parallel_group_size"] != outer["selection_member_size"]
+        || member_position(inner) != member_position(&outer)
+    {
+        return Err(unqualified());
+    }
+    leaf["parallel_group_path"].as_array_mut().unwrap().insert(0, outer);
+    Ok(leaf)
+}
+
+fn selection_entry(value: &Value, kind: &str) -> Result<Value> {
+    let base = value["parallel_group_base_sequence"].as_i64()
+        .filter(|base| *base > 0).ok_or_else(unqualified)?;
+    let size = value["parallel_group_size"].as_i64()
+        .filter(|size| (2..=COMMAND_BATCH_SIZE).contains(size)).ok_or_else(unqualified)?;
+    let end = base.checked_add(size).ok_or_else(unqualified)?;
+    let index = value["parallel_group_index"].as_i64()
+        .filter(|index| (0..size).contains(index)).ok_or_else(unqualified)?;
+    let member_base = value["selection_member_base_sequence"].as_i64()
+        .filter(|position| (base..end).contains(position)).ok_or_else(unqualified)?;
+    let member_size = value["selection_member_size"].as_i64()
+        .filter(|size| (1..=end - member_base).contains(size)).ok_or_else(unqualified)?;
     let key = &value["selection_member_key"];
+    let member_kind = &value["selection_member_kind"];
+    let group = member_kind == "group";
     if !matches!(kind, "activity" | "timer" | "child" | "signal" | "condition")
-        || value["parallel_group_id"] != format!("select-calls:{base}:2")
+        || value["parallel_group_id"] != format!("select-calls:{base}:{size}")
         || (value["parallel_group_kind"] != "mixed"
             && !(kind == "signal" && value["parallel_group_kind"] == "signal"))
-        || value["parallel_group_mode"] != "select"
-        || value["parallel_group_size"] != 2
-        || value["selection_member_index"] != index
-        || value["selection_member_base_sequence"] != member_base
-        || value["selection_member_size"] != 1
-        || value["selection_member_kind"] != kind
+        || !matches!(value["selection_member_index"].as_i64(), Some(0 | 1))
+        || !(member_base..member_base + member_size).contains(&(base + index))
+        || (group && kind != "child")
+        || (!group && (member_kind != kind || member_size != 1))
         || !(key.as_str().is_some_and(|key| !key.is_empty())
             || key.as_i64().is_some_and(|key| key >= 0))
     {
         return Err(unqualified());
     }
-    let mut leaf = serde_json::Map::new();
+    let mut entry = serde_json::Map::new();
     for field in FIELDS {
-        leaf.insert(
+        entry.insert(
             field.to_owned(),
             value.get(field).cloned().ok_or_else(unqualified)?,
         );
     }
-    let path = value["parallel_group_path"]
-        .as_array()
-        .filter(|path| path.len() == 1)
-        .ok_or_else(unqualified)?;
-    if path[0] != Value::Object(leaf.clone()) {
-        return Err(unqualified());
-    }
-    leaf.insert("parallel_group_path".into(), Value::Array(path.clone()));
-    Ok(Value::Object(leaf))
+    Ok(Value::Object(entry))
 }
 
 pub(super) fn fields(command: &Value, ordinary: &[&str]) -> Result<()> {
@@ -182,50 +281,41 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<std::collections::BTr
             }
             _ => return Err(unqualified()),
         };
-        members.push((offset, kind, metadata(command, kind)?));
+        members.push((offset, metadata(command, kind)?));
     }
-    if members.is_empty() {
+    let Some((first_offset, first_leaf)) = members.first() else {
         return Ok(partial_occurrences);
-    }
-    if members.len() != 2 {
+    };
+    let first = selection(first_leaf).unwrap();
+    if first["parallel_group_size"] != members.len() {
         return Err(unqualified());
     }
-    let (first_offset, first_kind, first) = &members[0];
-    let (second_offset, second_kind, second) = &members[1];
-    let group_kind = pair_kind(first_kind, second_kind).ok_or_else(unqualified)?;
-    if *second_offset != *first_offset + 1
-        || first["parallel_group_index"] != 0
-        || second["parallel_group_index"] != 1
-        || first["parallel_group_kind"] != group_kind
-        || second["parallel_group_kind"] != group_kind
-        || first["parallel_group_id"] != second["parallel_group_id"]
-        || first["selection_member_key"] == second["selection_member_key"]
-    {
+    let mut previous = None;
+    for (index, (offset, leaf)) in members.iter().enumerate() {
+        let entry = selection(leaf).unwrap();
+        if *offset != first_offset + index || !member_follows(previous, entry) {
+            return Err(unqualified());
+        }
+        previous = Some(entry);
+    }
+    if previous.is_none_or(|entry| entry["selection_member_index"] != 1) {
         return Err(unqualified());
     }
     Ok(partial_occurrences)
 }
 
 pub(super) fn check_sequence(metadata: &Value, sequence: i64) -> Result<()> {
-    if metadata.get("parallel_group_id").is_some() && !is_selection(metadata) {
-        return if metadata["parallel_group_path"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|entry| {
-                entry["parallel_group_base_sequence"].as_i64().unwrap()
-                    + entry["parallel_group_index"].as_i64().unwrap()
-                    == sequence
-            }) {
+    if let Some(entry) = selection(metadata) {
+        return if member_position(entry) == sequence {
             Ok(())
         } else {
-            Err(refuse(StatusCode::CONFLICT, "parallel_sequence_mismatch"))
+            Err(refuse(StatusCode::CONFLICT, "selection_sequence_mismatch"))
         };
     }
-    if metadata.get("parallel_group_id").is_some()
-        && metadata["selection_member_base_sequence"] != sequence
+    if let Some(path) = metadata["parallel_group_path"].as_array()
+        && path.iter().any(|entry| member_position(entry) != sequence)
     {
-        return Err(refuse(StatusCode::CONFLICT, "selection_sequence_mismatch"));
+        return Err(refuse(StatusCode::CONFLICT, "parallel_sequence_mismatch"));
     }
     Ok(())
 }
@@ -297,20 +387,34 @@ where
     ) -> Result<()> {
         let invalid = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_child_selection_await");
         let authored = ChildSelectionAwait::parse(handle).ok_or_else(invalid)?;
+        // In a retry chain the original link continues to name the handle.
+        // Read one original link per authored child within the bounded span.
         let original = Self::query(
-            "SELECT l.id,l.child_workflow_run_id,l.parallel_group_path,c.metadata,c.status AS call_status FROM workflow_links l
-             JOIN workflow_child_calls c ON c.parent_workflow_run_id=l.parent_workflow_run_id AND c.sequence=l.sequence
-             WHERE l.parent_workflow_run_id=$1 AND l.child_workflow_run_id=$2 AND l.sequence=$3
-             AND l.link_type='child_workflow' LIMIT 2",
+            "SELECT l.id,l.sequence,l.child_workflow_run_id,l.parallel_group_path,c.metadata,c.status AS call_status
+             FROM workflow_child_calls c
+             JOIN workflow_links l ON c.parent_workflow_run_id=l.parent_workflow_run_id AND c.sequence=l.sequence
+             JOIN workflow_runs r ON r.id=l.child_workflow_run_id AND r.run_number=1
+             WHERE c.parent_workflow_run_id=$1 AND c.sequence>=$2 AND c.sequence<$3
+             AND l.link_type='child_workflow' ORDER BY l.sequence LIMIT $4",
         )
-        .bind(run_id).bind(authored.operation_identity).bind(authored.sequence)
+        .bind(run_id).bind(authored.sequence).bind(authored.sequence + authored.size).bind(authored.size + 1)
         .fetch_all(&mut **tx).await?;
-        let [original] = original.as_slice() else { return Err(invalid()); };
-        let metadata = child_metadata(DB::optional_document_row(original, "parallel_group_path")?)?;
-        if DB::document_row(original, "metadata")?["child_call_id"] != DB::string(original, "id")?
-            || !authored.matches(&DB::string(original, "child_workflow_run_id")?, &metadata)
-        {
+        if original.len() as i64 != authored.size {
             return Err(invalid());
+        }
+        let mut all_completed = true;
+        let mut failed = false;
+        for (offset, row) in original.iter().enumerate() {
+            let metadata = child_metadata(DB::optional_document_row(row, "parallel_group_path")?)?;
+            if DB::number(row, "sequence")? != authored.sequence + offset as i64
+                || DB::document_row(row, "metadata")?["child_call_id"] != DB::string(row, "id")?
+                || !authored.matches(&DB::string(row, "child_workflow_run_id")?, &metadata)
+            {
+                return Err(invalid());
+            }
+            let status = DB::string(row, "call_status")?;
+            all_completed &= status == "completed";
+            failed |= child_status_failed(&status);
         }
         let last = Self::query(
             "SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1
@@ -328,10 +432,7 @@ where
         if !authored.waiting {
             let mut waiting = handle.clone();
             waiting["status"] = json!("waiting");
-            if previous != waiting
-                || !matches!(DB::string(original, "call_status")?.as_str(),
-                    "completed" | "cancelled" | "terminated" | "failed")
-            {
+            if previous != waiting || !(all_completed || failed) {
                 return Err(invalid());
             }
         }
@@ -346,12 +447,11 @@ where
         identity: &str,
         event_type: &str,
     ) -> Result<bool> {
-        if !is_selection(metadata) {
-            return Ok(false);
-        }
-        let Some(group_id) = metadata["parallel_group_id"].as_str() else {
+        let Some(entry) = selection(metadata) else {
             return Ok(false);
         };
+        let group_id = entry["parallel_group_id"].as_str().unwrap();
+        let operation_kind = if entry["selection_member_kind"] == "group" { "group" } else { kind };
         if Self::query(DB::SELECTION_RESOLUTION_SQL)
             .bind(run_id)
             .bind(group_id)
@@ -372,10 +472,11 @@ where
             ));
         }
         Self::append(tx, run_id, "SelectionResolved", json!({
-            "selection_group_id":group_id,"selection_group_base_sequence":metadata["parallel_group_base_sequence"],
-            "selection_group_size":metadata["parallel_group_size"],"member_key":metadata["selection_member_key"],
-            "member_index":metadata["selection_member_index"],"member_base_sequence":metadata["selection_member_base_sequence"],
-            "member_size":1,"operation_kind":kind,"operation_identity":identity,"outcome":outcome(event_type),
+            "selection_group_id":group_id,"selection_group_base_sequence":entry["parallel_group_base_sequence"],
+            "selection_group_size":entry["parallel_group_size"],"member_key":entry["selection_member_key"],
+            "member_index":entry["selection_member_index"],"member_base_sequence":entry["selection_member_base_sequence"],
+            "member_size":entry["selection_member_size"],"operation_kind":operation_kind,
+            "operation_identity":member_identity(entry, identity),"outcome":outcome(event_type),
             "resolution_event_id":DB::string(&event,"id")?,"resolution_event_type":event_type,
         }), None, None).await?;
         Ok(true)
@@ -422,7 +523,7 @@ where
             return Ok(true);
         };
         let mut waits = None;
-        for group in path {
+        for group in path.iter().filter(|group| group["parallel_group_mode"] != "select") {
             let (Some(base), Some(size)) = (
                 group["parallel_group_base_sequence"].as_i64(),
                 group["parallel_group_size"].as_i64(),

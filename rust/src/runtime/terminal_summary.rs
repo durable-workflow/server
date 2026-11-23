@@ -477,8 +477,12 @@ impl SummaryHistory {
                 self.children.supersede_selection_await();
             }
             self.active_history_supported &= self.barriers.apply(kind, &payload);
-            self.active_history_supported &= self.selections.apply(id, kind, &payload);
+            let supported_selection = self.selections.apply(id, kind, &payload);
+            self.active_history_supported &= supported_selection;
             let supported = if kind == "SelectionResolved" {
+                if supported_selection {
+                    self.children.selection_winner(&payload);
+                }
                 true
             } else if matches!(kind, "TimerScheduled" | "TimerFired" | "TimerCancelled") {
                 if matches!(
