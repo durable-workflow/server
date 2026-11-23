@@ -13,7 +13,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::collections::BTreeSet;
 
 pub(super) const CONDITION_INPUT_ORDER_FIELD: &str = "condition_wait_input_order";
-const DURABLE_RECEIPT_ORDER: &str = "durable_receipt_order";
+pub(super) const DURABLE_RECEIPT_ORDER: &str = "durable_receipt_order";
 pub(super) const RESOLVE_CONDITION_WAIT: &str = "resolve_condition_wait";
 pub(super) const PENDING_CONDITION_INPUT: &str = "condition_wait_pending_input_sequence";
 
@@ -219,9 +219,10 @@ where
     pub(super) async fn record_ordered_condition_decision(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
+        queue: &str,
         task_id: &str,
         decision: ConditionDecision<'_>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let mismatch = || refuse(StatusCode::CONFLICT, "condition_wait_outcome_mismatch");
         let waits = Self::waits(tx, run_id).await?;
         let wait = waits.conditions.iter().find(|wait| wait.id == decision.wait_id && wait.is_open())
@@ -275,12 +276,19 @@ where
         }
         let event = if decision.satisfied { "ConditionWaitSatisfied" } else { "ConditionWaitTimedOut" };
         Self::append(tx, run_id, event, payload, Some(task_id), None).await?;
-        Self::claim_wait_selection(tx, run_id, &group, "condition", &wait.id, event).await?;
+        let winner = Self::claim_wait_selection(tx, run_id, &group, "condition", &wait.id, event).await?;
         if timeout.is_none() {
             Self::cancel_wait_timeout(tx, run_id,
                 &json!({"sequence":sequence,"condition_wait_id":wait.id}), task_id, now()).await?;
         }
-        Ok(())
+        if let Some(winner) = winner {
+            return Self::selection_resume(tx, run_id, queue, json!({
+                "workflow_wait_kind":"condition","open_wait_id":wait.id,
+                "condition_wait_id":wait.id,"resume_source_kind":"condition_outcome",
+                "resume_source_id":wait.id,"workflow_event_type":event,"workflow_sequence":sequence,
+            }), &winner, true).await;
+        }
+        Ok(None)
     }
 
     /// A terminal run cannot fire its remaining wait timeouts. Settle their

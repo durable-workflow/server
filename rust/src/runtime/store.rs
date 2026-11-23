@@ -4532,7 +4532,9 @@ where
             Self::apply_update(tx, &run, &task, command, sequence).await?;
         } else if command["type"] == super::wait_timeouts::RESOLVE_CONDITION_WAIT {
             let decision = super::wait_timeouts::ConditionDecision::parse(command)?;
-            Self::record_ordered_condition_decision(tx, run_id, task_id, decision).await?;
+            if let Some(next) = Self::record_ordered_condition_decision(tx, run_id, &DB::string(run, "queue")?, task_id, decision).await? {
+                created.push(next);
+            }
         } else if command["type"] == "start_child_workflow" {
             Self::guard_pending(tx, &run_id, super::memo_limits::Pending::Children, &limits, task_id, attempt).await?;
             sequence += 1;
@@ -6671,6 +6673,7 @@ fn capabilities_template() -> Value {
         "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
     value[super::children::CAPABILITY_EXPLICIT_ID] = json!(true);
+    value[super::wait_timeouts::CONDITION_INPUT_ORDER_FIELD] = json!(super::wait_timeouts::DURABLE_RECEIPT_ORDER);
     value[super::continuation::CAPABILITY] = super::continuation::capability();
     // Gated off until installed acceptance (Server #1201).
     if let Some(advertised) = super::timeout_cleanup::advertisement() {
