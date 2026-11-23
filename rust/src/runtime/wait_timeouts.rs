@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 pub(super) const CONDITION_INPUT_ORDER_FIELD: &str = "condition_wait_input_order";
 const DURABLE_RECEIPT_ORDER: &str = "durable_receipt_order";
 pub(super) const RESOLVE_CONDITION_WAIT: &str = "resolve_condition_wait";
+pub(super) const PENDING_CONDITION_INPUT: &str = "condition_wait_pending_input_sequence";
 
 pub(super) struct ConditionDecision<'a> {
     wait_id: &'a str,
@@ -160,6 +161,61 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn first_pending_condition_input(
+        connection: &mut DB::Connection,
+        run_id: &str,
+    ) -> Result<Option<i64>> {
+        let pending = Self::query(
+            "SELECT received.sequence FROM workflow_history_events received
+             JOIN workflow_commands command ON command.id=received.workflow_command_id
+               AND command.resolved_workflow_run_id=received.workflow_run_id
+             WHERE received.workflow_run_id=$1
+               AND received.event_type IN ('SignalReceived','UpdateAccepted')
+               AND command.status='accepted' AND command.applied_at IS NULL
+             ORDER BY received.sequence LIMIT 1",
+        ).bind(run_id).fetch_optional(connection).await?;
+        pending.map(|row| DB::number(&row, "sequence")).transpose()
+    }
+
+    /// An input task can settle the last accepted input without evaluating
+    /// the workflow. Give the still-open predicate a turn over that committed
+    /// history when no existing workflow task will see it.
+    pub(super) async fn enqueue_condition_evaluation(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        task_id: &str,
+    ) -> Result<Option<String>> {
+        if Self::query(DB::ORDERED_CONDITION_HISTORY).bind(run_id).fetch_optional(&mut **tx).await?.is_none() {
+            return Ok(None);
+        }
+        let source = Self::query(
+            "SELECT e.id,e.event_type FROM workflow_history_events e
+             JOIN workflow_runs r ON r.id=e.workflow_run_id
+             WHERE e.workflow_run_id=$1 AND e.workflow_task_id=$2
+               AND e.event_type IN ('SignalApplied','UpdateCompleted','MessageCursorAdvanced')
+               AND r.status IN ('pending','running','waiting')
+               AND NOT EXISTS (SELECT 1 FROM workflow_tasks pending
+                   WHERE pending.workflow_run_id=r.id AND pending.task_type='workflow'
+                     AND pending.status IN ('ready','leased'))
+             ORDER BY e.sequence DESC LIMIT 1",
+        ).bind(run_id).bind(task_id).fetch_optional(&mut **tx).await?;
+        let Some(source) = source else { return Ok(None); };
+        let waits = Self::waits(tx, run_id).await?;
+        let Some((wait, opening)) = waits.conditions.iter().filter(|wait| wait.is_open())
+            .filter_map(|wait| waits.condition_opening(&wait.id).map(|opening| (wait, opening)))
+            .find(|(_, opening)| uses_condition_input_order(&opening.payload))
+        else { return Ok(None); };
+        let mut payload = wait_fields(&opening.payload);
+        payload["workflow_wait_kind"] = json!("condition");
+        payload["open_wait_id"] = json!(wait.id);
+        payload["resume_source_kind"] = json!("condition_input");
+        payload["resume_source_id"] = json!(DB::string(&source, "id")?);
+        payload["workflow_event_type"] = json!(DB::string(&source, "event_type")?);
+        payload["workflow_sequence"] = json!(wait.sequence);
+        Self::create_task(tx, run_id, queue, "workflow", payload).await.map(Some)
+    }
+
     pub(super) async fn record_ordered_condition_decision(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -200,18 +256,10 @@ where
             }
         }
         let prefix_end = if decision.satisfied { decision.receipt } else { timeout };
-        if let Some(boundary) = prefix_end {
-            let pending = Self::query(
-                "SELECT 1 FROM workflow_history_events received
-                 JOIN workflow_commands command ON command.id=received.workflow_command_id
-                   AND command.resolved_workflow_run_id=received.workflow_run_id
-                 WHERE received.workflow_run_id=$1 AND received.sequence<$2
-                   AND received.event_type IN ('SignalReceived','UpdateAccepted')
-                   AND command.status='accepted' AND command.applied_at IS NULL LIMIT 1",
-            ).bind(run_id).bind(boundary).fetch_optional(&mut **tx).await?;
-            if pending.is_some() {
-                return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_pending"));
-            }
+        if let Some(boundary) = prefix_end
+            && Self::first_pending_condition_input(&mut **tx, run_id).await?.is_some_and(|pending| pending < boundary)
+        {
+            return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_pending"));
         }
         let group = super::activity_metadata::payload_for_path(&opening.payload);
         let mut payload = wait_fields(&opening.payload);

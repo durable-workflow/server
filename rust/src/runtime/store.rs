@@ -3392,6 +3392,13 @@ where
                 // expected to hit its cache gets only the events after the
                 // boundary it reported with its previous completion of the run.
                 let capabilities = DB::optional_document_row(&worker, "capabilities")?;
+                if capabilities.as_ref().is_some_and(super::wait_timeouts::supports_condition_input_order)
+                    && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(&run_id).fetch_optional(&mut **tx).await?.is_some()
+                {
+                    claim[super::wait_timeouts::PENDING_CONDITION_INPUT] = json!(
+                        Self::first_pending_condition_input(&mut **tx, &run_id).await?
+                    );
+                }
                 let suffix_worker = super::sticky_execution::takes_suffixes(capabilities.as_ref())
                     && super::sticky_execution::registration_supports(capabilities.as_ref(),
                         DB::optional_document_row(&worker, "capability_manifest")?.as_ref(), "sticky_execution");
@@ -3821,6 +3828,9 @@ where
             .await?;
         // PHP releases the run and schedules its next message together.
         Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?, false).await?;
+        if payload["resume_source_kind"] == "workflow_signal" {
+            Self::enqueue_condition_evaluation(&mut tx, &run_id, &DB::string(&run, "queue")?, task_id).await?;
+        }
         let next = Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' ORDER BY created_at DESC,id DESC LIMIT 1")
             .bind(&run_id)
             .fetch_optional(&mut *tx)
@@ -4422,6 +4432,12 @@ where
         let start_turn = start_turn.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(turn) = start_turn
             && let Some(next) = Self::child_start_turn(&mut tx, &run_id, task_id, &DB::string(&run, "queue")?, turn).await?
+        {
+            created.push(next);
+        }
+        if (task_payload["resume_source_kind"] == "workflow_signal"
+            || commands.iter().any(|command| matches!(command["type"].as_str(), Some("complete_update" | "fail_update"))))
+            && let Some(next) = Self::enqueue_condition_evaluation(&mut tx, &run_id, &DB::string(&run, "queue")?, task_id).await?
         {
             created.push(next);
         }

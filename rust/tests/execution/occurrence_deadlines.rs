@@ -199,6 +199,38 @@ async fn applying_a_signal_does_not_settle_a_condition_with_receipt_order() {
 }
 
 #[tokio::test]
+async fn acknowledging_the_last_signal_wakes_the_ordered_predicate() {
+    let namespace = "default";
+    let (database, runtime, app) = setup(namespace).await;
+    let run = namespaces::start_scoped(&app, namespace, "ordered-signal-recheck").await;
+    let initial = claim(&app, namespace).await;
+    let mut command = anchored("receipt-order:0", 60, 60);
+    command["condition_wait_input_order"] = json!("durable_receipt_order");
+    assert_eq!(finish(&app, namespace, &initial, json!([command])).await.0, StatusCode::OK);
+    signal(&app, namespace, &run).await;
+    let task = claim_input(&app, namespace, "workflow_signal").await;
+    let events = history(&app, namespace, &run).await;
+    let receipt = &events.iter().find(|e| e["event_type"] == "SignalReceived").unwrap()["sequence"];
+    assert_eq!(task["condition_wait_pending_input_sequence"], *receipt);
+    await_next_input(&app, namespace, &task).await;
+    let task = claim(&app, namespace).await;
+    assert_eq!(task["resume_source_kind"], "condition_input");
+    assert_eq!(task.get("condition_wait_pending_input_sequence"), Some(&Value::Null));
+    let (status, result) = finish(&app, namespace, &task, json!([{
+        "type":"resolve_condition_wait", "condition_wait_id":task["condition_wait_id"],
+        "satisfied":true, "input_receipt_sequence":receipt,
+    }])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let events = history(&app, namespace, &run).await;
+    assert_eq!(payloads(&events, "SignalApplied").len(), 1);
+    assert_eq!(payloads(&events, "ConditionWaitSatisfied").len(), 1);
+    assert_eq!(payloads(&events, "TimerCancelled").len(), 1);
+    assert_eq!(poll(&app, "deadline-worker", "workflow").await, Value::Null);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn an_ordered_timeout_waits_for_early_input_and_excludes_late_receipts() {
     for early in [true, false] {
         let namespace = "default";
@@ -303,7 +335,7 @@ async fn unhandled_signal_receipts_cannot_strand_an_ordered_timeout() {
 
 #[tokio::test]
 async fn after_fire_only_a_successful_update_can_supply_receipt_evidence() {
-    for succeeds in [true, false] {
+    for (succeeds, resolves_same_turn) in [(true, true), (true, false), (false, true)] {
         let namespace = "default";
         let database = TestDatabase::new().await;
         let runtime = database.open().await.unwrap();
@@ -336,12 +368,26 @@ async fn after_fire_only_a_successful_update_can_supply_receipt_evidence() {
         let receipt = &event("UpdateAccepted")["sequence"];
         let fire = &event("TimerFired")["sequence"];
         assert!(receipt.as_i64() < fire.as_i64());
+        assert_eq!(task["condition_wait_pending_input_sequence"], *receipt);
         let chosen = json!({"type":"resolve_condition_wait", "condition_wait_id":wait,
             "satisfied":true, "input_receipt_sequence":receipt});
         if succeeds {
             let completed = json!({"type":"complete_update", "update_id":update["update_id"],
                 "result":envelope(Payload::Long(1))});
-            let (status, result) = finish(&app, namespace, &task, json!([completed, chosen])).await;
+            let (status, result) = if resolves_same_turn {
+                finish(&app, namespace, &task, json!([completed, chosen])).await
+            } else {
+                let timer = claim(&app, namespace).await;
+                assert_eq!(timer["resume_source_kind"], "timer");
+                assert_eq!(timer["condition_wait_pending_input_sequence"], *receipt);
+                await_next_input(&app, namespace, &timer).await;
+                let (status, result) = finish(&app, namespace, &task, json!([completed])).await;
+                assert_eq!(status, StatusCode::OK, "{result}");
+                let evaluation = claim(&app, namespace).await;
+                assert_eq!(evaluation["resume_source_kind"], "condition_input");
+                assert_eq!(evaluation.get("condition_wait_pending_input_sequence"), Some(&Value::Null));
+                finish(&app, namespace, &evaluation, json!([chosen])).await
+            };
             assert_eq!(status, StatusCode::OK, "{result}");
             let events = history(&app, namespace, &run).await;
             let applied = events.iter().find(|event| event["event_type"] == "UpdateApplied").unwrap();
