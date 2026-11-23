@@ -170,7 +170,9 @@ where
             .filter(|opening| uses_condition_input_order(&opening.payload))
             .ok_or_else(mismatch)?;
         let timeout = wait.fired_at;
-        if !decision.satisfied && timeout.is_none() {
+        if (!decision.satisfied && timeout.is_none())
+            || (decision.satisfied && timeout.is_some() && decision.receipt.is_none())
+        {
             return Err(mismatch());
         }
         if let Some(receipt) = decision.receipt {
