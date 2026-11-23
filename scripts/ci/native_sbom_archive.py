@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+import os
+from pathlib import Path
 import re
+import stat
 import tarfile
 import time
-from typing import BinaryIO
+from typing import BinaryIO, Callable, TypeVar
 
 from native_sbom_policy import Refusal, is_digest, parse, require
 
@@ -24,6 +27,8 @@ BLOB = re.compile(r"blobs/sha256/[0-9a-f]{64}\Z")
 MANIFEST_TYPE = "application/vnd.oci.image.manifest.v1+json"
 CONFIG_TYPE = "application/vnd.oci.image.config.v1+json"
 LAYER_TYPE = "application/vnd.oci.image.layer.v1.tar"
+EXPORT_NAME = "input.oci.tar"
+ConsumerResult = TypeVar("ConsumerResult")
 
 
 class ArchiveReader:
@@ -146,9 +151,8 @@ def oci_archive_identity(stream: BinaryIO, expected_config: str, platform: str,
                          seconds: float = 30) -> dict:
     """Check a sealed seekable input against an independently smoked config.
 
-    The future caller must own/seal the regular file and retain/recheck its
-    original identity through scanning. Passing an arbitrary expected digest
-    does not authenticate a smoke, provider, registry or publication subject.
+    Use consume_owned_oci_export for on-disk custody. The expected config
+    digest and platform come from the caller's independent smoke observation.
     """
     require(is_digest(expected_config) and platform in ("linux/amd64", "linux/arm64")
             and type(seconds) in (int, float) and 0 < seconds <= 30, "sbom_archive_inputs")
@@ -192,6 +196,86 @@ def oci_archive_identity(stream: BinaryIO, expected_config: str, platform: str,
             "image_config_digest": expected_config, "platform": platform,
             "archive_manifest_digest": "sha256:" + table[manifest_name]["sha256"],
             "layer_count": len(manifest["layers"])}
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _check_export_path(directory: Path, directory_fd: int, directory_identity: tuple[int, ...],
+                       archive_identity: tuple[int, ...]) -> None:
+    try:
+        named_directory = directory.stat(follow_symlinks=False)
+        named_archive = os.stat(EXPORT_NAME, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError:
+        raise Refusal("sbom_export_path") from None
+    require(_file_identity(named_directory) == directory_identity, "sbom_export_directory_changed")
+    require(_file_identity(named_archive) == archive_identity, "sbom_export_file_changed")
+
+
+def consume_owned_oci_export(directory: Path, expected_config: str, platform: str,
+                            consume: Callable[[Path], ConsumerResult]) -> tuple[dict, ConsumerResult]:
+    """Use the reviewed OCI export while retaining its original descriptor.
+
+    The producer creates a fresh private output directory and finishes before
+    this call. The trusted caller supplies a bounded synchronous consumer that
+    mounts the returned path read-only and waits for its reader to exit.
+    """
+    require(directory.is_absolute(), "sbom_export_directory")
+    try:
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise Refusal("sbom_export_directory") from None
+    try:
+        try:
+            directory_info = os.fstat(directory_fd)
+            require(directory_info.st_uid == os.geteuid() and stat.S_IMODE(directory_info.st_mode) == 0o700,
+                    "sbom_export_directory")
+            directory_identity = _file_identity(directory_info)
+            info = os.stat(EXPORT_NAME, dir_fd=directory_fd, follow_symlinks=False)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                    and info.st_nlink == 1 and not info.st_mode & 0o022
+                    and 0 < info.st_size <= ARCHIVE_LIMIT, "sbom_export_file")
+            fd = os.open(EXPORT_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+        except OSError:
+            raise Refusal("sbom_export_open") from None
+
+        # Reread the descriptor after consumption without reusing cached bytes.
+        with os.fdopen(fd, "rb", buffering=0) as stream:
+            try:
+                original = _file_identity(os.fstat(fd))
+                require(original == _file_identity(info), "sbom_export_file_changed")
+                _check_export_path(directory, directory_fd, directory_identity, original)
+
+                # The private directory controls host access. The confined
+                # consumer receives a read-only bind mount as a different UID.
+                os.fchmod(fd, 0o444)
+                sealed = _file_identity(os.fstat(fd))
+                receipt = oci_archive_identity(stream, expected_config, platform)
+                require(receipt["archive_bytes"] == info.st_size and _file_identity(os.fstat(fd)) == sealed,
+                        "sbom_export_file_changed")
+                _check_export_path(directory, directory_fd, directory_identity, sealed)
+            except OSError:
+                raise Refusal("sbom_export_read") from None
+
+            result = consume(directory / EXPORT_NAME)
+
+            try:
+                _check_export_path(directory, directory_fd, directory_identity, sealed)
+                stream.seek(0)
+                reader = ArchiveReader(stream, 30)
+                while reader.read(65536):
+                    pass
+                require(reader.count == receipt["archive_bytes"]
+                        and reader.digest.hexdigest() == receipt["archive_sha256"]
+                        and _file_identity(os.fstat(fd)) == sealed, "sbom_export_file_changed")
+                _check_export_path(directory, directory_fd, directory_identity, sealed)
+            except OSError:
+                raise Refusal("sbom_export_read") from None
+            return receipt, result
+    finally:
+        os.close(directory_fd)
 
 
 if __name__ == "__main__":

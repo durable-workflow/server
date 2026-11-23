@@ -202,3 +202,10 @@ supplies no source, registry, smoke or timestamp authority. Unknown annotations,
 image-name/ref hints, malformed dates and explicit wrong platforms refuse.
 This supports the proposed unnamed OCI side output from the same build without
 relaxing blob/graph/layer integrity or claiming actual producer qualification.
+
+`consume_owned_oci_export` checks the file in the producer's private directory,
+sets read-only permissions, and retains the open descriptor throughout a
+synchronous consumer call. It verifies directory and file identity around
+that call and recomputes the complete archive hash before returning the result.
+The caller still owns exporter custody before the call, a read-only bind
+mount, scanner confinement and terminal resource cleanup.

@@ -3,9 +3,12 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 import tarfile
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -187,6 +190,108 @@ class SbomArchiveTest(unittest.TestCase):
 
         with self.assertRaisesRegex(A.Refusal, "archive_changed"):
             A.oci_archive_identity(ChangedInput(archive(files)), config, "linux/amd64")
+
+
+class SbomExportCustodyTest(unittest.TestCase):
+    def setUp(self):
+        scratch = Path(self.enterContext(TemporaryDirectory()))
+        self.directory = scratch / "native-sbom"
+        self.directory.mkdir(mode=0o700)
+        self.path = self.directory / A.EXPORT_NAME
+        files, self.config = fixture()
+        self.raw = archive(files)
+        self.path.write_bytes(self.raw)
+
+    def test_consumer_receives_readonly_original_and_receipt_binds_its_bytes(self):
+        initial_inode = self.path.stat().st_ino
+
+        def consume(path):
+            self.assertEqual(path, self.path)
+            info = path.stat()
+            self.assertEqual(info.st_ino, initial_inode)
+            self.assertEqual(stat.S_IMODE(info.st_mode), 0o444)
+            return path.read_bytes()
+
+        receipt, consumed = A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", consume)
+        self.assertEqual(consumed, self.raw)
+        self.assertEqual(receipt["archive_bytes"], len(self.raw))
+        self.assertEqual(receipt["archive_sha256"], digest(self.raw)[7:])
+
+    def test_invalid_oci_export_never_reaches_consumer(self):
+        with self.assertRaisesRegex(A.Refusal, "archive_smoked_config"):
+            A.consume_owned_oci_export(self.directory, "sha256:" + "0" * 64, "linux/amd64", self.fail)
+
+    def test_nonprivate_or_redirected_directory_never_reaches_consumer(self):
+        self.directory.chmod(0o755)
+        with self.assertRaisesRegex(A.Refusal, "export_directory"):
+            A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", self.fail)
+        self.directory.chmod(0o700)
+        linked = self.directory.with_name("linked")
+        linked.symlink_to(self.directory, target_is_directory=True)
+        with self.assertRaisesRegex(A.Refusal, "export_directory"):
+            A.consume_owned_oci_export(linked, self.config, "linux/amd64", self.fail)
+
+    def test_symlink_hardlink_fifo_and_oversized_file_never_reach_consumer(self):
+        outside = self.directory.with_name("original")
+        self.path.rename(outside)
+        for create in (
+            lambda: self.path.symlink_to(outside),
+            lambda: os.link(outside, self.path),
+            lambda: os.mkfifo(self.path),
+        ):
+            create()
+            with self.assertRaisesRegex(A.Refusal, "export_file"):
+                A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", self.fail)
+            self.path.unlink()
+        outside.rename(self.path)
+        with patch.object(A, "ARCHIVE_LIMIT", len(self.raw) - 1), self.assertRaisesRegex(A.Refusal, "export_file"):
+            A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", self.fail)
+
+    def test_replaced_file_with_identical_bytes_refuses_result(self):
+        def replace(path):
+            self.path.rename(self.directory.with_name("original"))
+            path.write_bytes(self.raw)
+
+        with self.assertRaisesRegex(A.Refusal, "export_directory_changed|export_file_changed"):
+            A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", replace)
+
+    def test_replaced_directory_refuses_even_if_its_file_has_identical_bytes(self):
+        def replace(path):
+            self.directory.rename(self.directory.with_name("original-directory"))
+            self.directory.mkdir(mode=0o700)
+            path.write_bytes(self.raw)
+
+        with self.assertRaisesRegex(A.Refusal, "export_directory_changed"):
+            A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", replace)
+
+    def test_modified_file_at_same_path_and_length_refuses_result(self):
+        full_identity = A._file_identity
+
+        def without_change_time(info):
+            return full_identity(info)[:-1]
+
+        def rewrite(path):
+            info = path.stat()
+            path.chmod(0o644)
+            path.write_bytes(b"!" + self.raw[1:])
+            path.chmod(0o444)
+            os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+
+        # The second read must detect changed bytes even when the reported
+        # size and timestamps match the original.
+        with patch.object(A, "_file_identity", without_change_time):
+            with self.assertRaisesRegex(A.Refusal, "export_file_changed"):
+                A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", rewrite)
+
+    def test_consumer_failure_is_preserved(self):
+        failure = OSError("synthetic scanner failure")
+
+        def fail(_):
+            raise failure
+
+        with self.assertRaises(OSError) as caught:
+            A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", fail)
+        self.assertIs(caught.exception, failure)
 
 
 if __name__ == "__main__":
