@@ -49,15 +49,7 @@ esac
 adapter_image=$(jq -er --arg binding "$binding_language" '.images[$binding]' "$profile")
 sdk_version=$(jq -er --arg binding "$binding_language" '.sdk_versions[$binding]' "$profile")
 mkdir -- "$probe"
-base="general-capacity-child-$binding_language-$width-$(openssl rand -hex 4)"
-reader_version=$(docker run --rm --name "$base-reader-version" --init --pull never --network none \
-    --cpus=1 --memory=160m --pids-limit=64 \
-    --mount "type=bind,source=$mysqlbinlog,target=/fixture/mysqlbinlog,readonly" \
-    --entrypoint /fixture/mysqlbinlog "$mysql_image" --version)
-if [[ "$reader_version" != *" Ver $mysql_version "* ]]; then
-    printf 'Expected the MySQL %s binlog reader.\n' "$mysql_version" >&2
-    exit 2
-fi
+base="general-capacity-child-$binding_language-$width-$(openssl rand -hex 8)"
 network="$base-net"
 database="$base-db"
 server="$base-server"
@@ -73,27 +65,55 @@ jq -n --arg version "$(jq -r '.suite_version' "$profile")" --arg binding "$bindi
     --argjson leaf_processes "$workers" \
     '{suite_version:$version,binding:$binding,server_image:$server,mysql_image:$mysql,adapter_image:$adapter,
       architecture:$architecture,width:$width,leaf_processes:$leaf_processes}' > "$probe/identity.json"
-components=()
 docker network create --internal "$network" >/dev/null
 cleanup() {
-    for component in "${components[@]}"; do
-        if [[ -n $(docker ps -a --filter "name=^/${component}$" --format '{{.Names}}') ]]; then
+    local status=$?
+    local attempt component remaining
+    local cleaned=false
+    local -a owned
+    trap - EXIT
+    if remaining=$(docker ps -a --filter "name=^/$base-" --format '{{.Names}}') && [[ -n "$remaining" ]]; then
+        mapfile -t owned <<< "$remaining"
+        for component in "${owned[@]}"; do
             docker logs "$component" > "$probe/$component.log" 2>&1 || true
-        fi
-    done
-    if (( ${#components[@]} )); then
-        docker stop -t 5 "${components[@]}" >/dev/null 2>&1 || true
+        done
+        docker stop -t 5 "${owned[@]}" >/dev/null 2>&1 || true
     fi
-    docker network rm "$network" >/dev/null 2>&1 || true
+    # Docker can report a stopped container before completing its --rm removal.
+    for ((attempt = 0; attempt < 20; attempt++)); do
+        if remaining=$(docker ps -a --filter "name=^/$base-" --format '{{.Names}}') && [[ -z "$remaining" ]]; then
+            cleaned=true
+            break
+        fi
+        sleep 0.25
+    done
+    if [[ "$cleaned" == false ]]; then
+        printf 'Could not verify removal of containers for %s.\n' "$base" >&2
+        if (( status == 0 )); then status=1; fi
+    fi
+    if ! docker network rm "$network" >/dev/null; then
+        printf 'Could not remove the network for %s.\n' "$base" >&2
+        if (( status == 0 )); then status=1; fi
+    fi
+    exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+reader_version=$(docker run --rm --name "$base-reader-version" --init --pull never --network none \
+    --cpus=1 --memory=160m --pids-limit=64 \
+    --mount "type=bind,source=$mysqlbinlog,target=/fixture/mysqlbinlog,readonly" \
+    --entrypoint /fixture/mysqlbinlog "$mysql_image" --version)
+if [[ "$reader_version" != *" Ver $mysql_version "* ]]; then
+    printf 'Expected the MySQL %s binlog reader.\n' "$mysql_version" >&2
+    exit 2
+fi
 docker run --rm -d --name "$database" --init --pull never --network "$network" --cpus=3 --memory=5g --pids-limit=210 \
     --env MYSQL_ROOT_PASSWORD --env MYSQL_PASSWORD --env MYSQL_USER=capacity_worker --env MYSQL_DATABASE=fanout_fixture \
     --tmpfs /var/lib/mysql:rw,nosuid,nodev,size=860m,mode=1777 "$mysql_image" \
     --performance-schema=ON --performance-schema-events-transactions-history-long-size="$transaction_capacity" \
     --performance-schema-events-statements-history-long-size="$statement_capacity" --innodb-buffer-pool-size=192M \
     --innodb-redo-log-capacity=96M --gtid-mode=ON --enforce-gtid-consistency=ON --binlog-row-image=MINIMAL >/dev/null
-components+=("$database")
 mysql() {
     docker exec -i "$database" sh -ec 'export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; exec mysql -uroot -NBr "$@"' mysql "$@"
 }
@@ -125,7 +145,6 @@ else
 fi
 docker run --rm -d --name "$server" --init --pull never --network "$network" --cpus=4 --memory=3g --pids-limit=240 \
     "${native_env[@]}" "$server_image" > /dev/null
-components+=("$server")
 adapter_args=(--rm --init --pull never --network "$network" --cpus=0.65 --memory=384m --pids-limit=72 --cap-drop=all --security-opt no-new-privileges
     "${adapter_mounts[@]}"
     --env DURABLE_WORKFLOW_RUNTIME_URL --env DURABLE_WORKFLOW_TOKEN --env PYTHONPATH=/benchmark/vendor --entrypoint "$adapter_entrypoint")
@@ -140,11 +159,9 @@ done
 [[ "$native_ready" == true ]]
 worker_nodes=("$base-parent")
 docker run -d --name "$base-parent" "${adapter_args[@]}" "$adapter_image" "${adapter_program[@]}" parent > /dev/null
-components+=("$base-parent")
 for worker in $(seq 1 "$workers"); do
     name="$base-leaf-$worker"
     docker run -d --name "$name" "${adapter_args[@]}" "$adapter_image" "${adapter_program[@]}" leaf > /dev/null
-    components+=("$name")
     worker_nodes+=("$name")
 done
 for attempt in $(seq 1 55); do
