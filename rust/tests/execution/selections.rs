@@ -558,6 +558,89 @@ async fn false_selected_condition_wake_reuses_the_member_and_then_can_win() {
     database.remove().await;
 }
 
+#[tokio::test]
+async fn ordered_selected_condition_keeps_the_timeout_boundary_without_claiming_a_winner() {
+    for marked in [false, true] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        let worker = "ordered-condition-worker";
+        register(&app, worker, json!(["echo"]), json!([])).await;
+        let workflow = "ordered-condition-selection";
+        let started = start(&app, workflow).await;
+        let task = poll(&app, worker, "workflow").await;
+        let mut commands = nested_child_selection(true);
+        let condition = &mut commands[2];
+        condition["type"] = json!("open_condition_wait");
+        condition.as_object_mut().unwrap().remove("signal_name");
+        condition["selection_member_kind"] = json!("condition");
+        condition["parallel_group_path"][0]["selection_member_kind"] = json!("condition");
+        condition["condition_wait_occurrence_id"] = json!("approval:0");
+        condition["condition_key"] = json!("approval");
+        condition["condition_definition_fingerprint"] = json!("approval-v1");
+        condition["timeout_seconds"] = json!(2);
+        condition["deadline_policy"] = json!("occurrence");
+        condition["condition_wait_timeout_budget_seconds"] = json!(2);
+        if marked {
+            condition["condition_wait_input_order"] = json!("durable_receipt_order");
+        }
+
+        let history = || run_history(&app, &started["workflow_id"], &started["run_id"]);
+        let prefix = history().await;
+        let mut invalid = commands.clone();
+        invalid[2]["condition_wait_input_order"] = json!("unsupported");
+        let (status, result) = finish_task(&app, &task, invalid).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{result}");
+        assert_eq!(result["reason"], "invalid_condition_wait_input_order");
+        assert_eq!(history().await, prefix);
+        let (status, result) = finish_task(&app, &task, commands).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+
+        let (status, signal) = request(
+            &app,
+            "POST",
+            &format!("/api/workflows/{workflow}/signal/approve"),
+            json!([]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{signal}");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let events = loop {
+            let observed = history().await;
+            if observed.as_array().unwrap().iter().any(|event| event["event_type"] == "TimerFired") {
+                break observed;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "condition timer did not fire");
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        };
+        let events = events.as_array().unwrap();
+        let event = |kind: &str| events.iter().find(|event| event["event_type"] == kind).unwrap();
+        let opened = &event("ConditionWaitOpened")["payload"];
+        let scheduled = &event("TimerScheduled")["payload"];
+        let fired = event("TimerFired");
+        assert!(event("SignalReceived")["sequence"].as_i64() < fired["sequence"].as_i64());
+        assert_eq!(scheduled["condition_wait_id"], opened["condition_wait_id"]);
+        assert_eq!(fired["payload"]["condition_wait_id"], opened["condition_wait_id"]);
+        assert_eq!(fired["payload"]["timer_id"], scheduled["timer_id"]);
+        assert_eq!(scheduled["fire_at"], opened["occurrence_deadline_at"]);
+        for payload in [opened, scheduled, &fired["payload"]] {
+            assert_eq!(payload.get("condition_wait_input_order").and_then(Value::as_str),
+                marked.then_some("durable_receipt_order"));
+        }
+        let winner = events.iter().find(|event| event["event_type"] == "SelectionResolved");
+        if marked {
+            assert!(winner.is_none());
+        } else {
+            assert_eq!(winner.unwrap()["payload"]["resolution_event_type"], "TimerFired");
+        }
+        assert!(events.iter().all(|event| event["event_type"] != "SignalApplied"));
+        let resumed = poll(&app, worker, "workflow").await;
+        assert_eq!(resumed["run_id"], started["run_id"]);
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
 async fn debug(app: &Router, started: &Value) -> Value {
     let (status, value) = request(
         app,

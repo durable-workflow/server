@@ -2169,6 +2169,13 @@ where
             };
             for condition in awakened {
                 let condition_opening = waits.condition_opening(&condition.id);
+                if condition_opening.is_some_and(|opening| {
+                    super::wait_timeouts::uses_condition_input_order(&opening.payload)
+                }) {
+                    // The signal's application is input evidence. For a
+                    // marked condition it does not settle the predicate.
+                    continue;
+                }
                 let mut satisfied = condition.satisfied(condition_opening, &payload);
                 // A task that reopens the same occurrence claims no winner.
                 let selected = super::selections::is_selection(&satisfied);
@@ -3998,6 +4005,7 @@ where
                             "timeout_seconds",
                             "deadline_policy",
                             "condition_wait_timeout_budget_seconds",
+                            super::wait_timeouts::CONDITION_INPUT_ORDER_FIELD,
                         ],
                     )?;
                     if command
@@ -4010,6 +4018,7 @@ where
                     // definition fingerprint are optional strings, of any form.
                     super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?;
                     super::wait_timeouts::occurrence_deadline(command)?;
+                    super::wait_timeouts::validate_condition_input_order(command)?;
                 }
                 super::external_signals::COMMAND => {
                     super::external_signals::validate(command)?;
@@ -5205,6 +5214,7 @@ where
                 .bind(&task_id)
                 .execute(&mut *tx)
                 .await?;
+            let evaluates_receipt_prefix = super::wait_timeouts::uses_condition_input_order(&payload);
             Self::append(
                 &mut tx,
                 &run_id,
@@ -5214,15 +5224,19 @@ where
                 None,
             )
             .await?;
-            Self::resolve_selection(
-                &mut tx,
-                &run_id,
-                &metadata,
-                member,
-                operation_id,
-                "TimerFired",
-            )
-            .await?;
+            // The timer supplies the ordered-input boundary. A marked
+            // condition's outcome is decided separately from its timer fire.
+            if !evaluates_receipt_prefix {
+                Self::resolve_selection(
+                    &mut tx,
+                    &run_id,
+                    &metadata,
+                    member,
+                    operation_id,
+                    "TimerFired",
+                )
+                .await?;
+            }
             Self::query("UPDATE workflow_run_timers SET status='fired',fired_at=$1 WHERE id=$2")
                 .bind(DB::bind_time(fired_at))
                 .bind(&timer_id)
@@ -5238,7 +5252,7 @@ where
                 &DB::string(&timer, "queue")?,
                 resume,
                 &metadata,
-                true,
+                !evaluates_receipt_prefix,
             )
             .await?;
         }

@@ -120,6 +120,63 @@ async fn the_cluster_advertises_the_occurrence_deadline() {
     database.remove().await;
 }
 
+#[tokio::test]
+async fn a_condition_occurrence_cannot_change_its_input_order_policy() {
+    for marked in [false, true] {
+        let namespace = "default";
+        let (database, runtime, app) = setup(namespace).await;
+        let run = namespaces::start_scoped(&app, namespace, "per-occurrence-input-order").await;
+        let opening = claim(&app, namespace).await;
+        let mut command = anchored("receipt-order:0", 60, 60);
+        if marked {
+            command["condition_wait_input_order"] = json!("durable_receipt_order");
+        }
+        assert_eq!(
+            finish(&app, namespace, &opening, json!([command.clone()])).await.0,
+            StatusCode::OK,
+        );
+
+        signal(&app, namespace, &run).await;
+        let wake = claim(&app, namespace).await;
+        if marked {
+            command.as_object_mut().unwrap().remove("condition_wait_input_order");
+        } else {
+            command["condition_wait_input_order"] = json!("durable_receipt_order");
+        }
+        let before = history(&app, namespace, &run).await;
+        let (status, result) = finish(&app, namespace, &wake, json!([command])).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{result}");
+        assert_eq!(result["reason"], "condition_wait_occurrence_mismatch");
+        assert_eq!(history(&app, namespace, &run).await, before);
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+#[tokio::test]
+async fn applying_a_signal_does_not_settle_a_condition_with_receipt_order() {
+    let namespace = "default";
+    let (database, runtime, app) = setup(namespace).await;
+    let run = namespaces::start_scoped(&app, namespace, "ordered-predicate-wake").await;
+    let initial = claim(&app, namespace).await;
+    let mut command = anchored("receipt-order:0", 60, 60);
+    command["condition_wait_input_order"] = json!("durable_receipt_order");
+    let (status, result) = finish(&app, namespace, &initial, json!([command.clone()])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    signal(&app, namespace, &run).await;
+    let wake = claim(&app, namespace).await;
+    let (status, result) = finish(&app, namespace, &wake, json!([command])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let events = history(&app, namespace, &run).await;
+    assert_eq!(payloads(&events, "SignalApplied").len(), 1);
+    assert_eq!(payloads(&events, "ConditionWaitOpened").len(), 1);
+    assert!(payloads(&events, "ConditionWaitSatisfied").is_empty());
+    assert!(payloads(&events, "TimerCancelled").is_empty());
+    runtime.close().await;
+    database.remove().await;
+}
+
 /// Several false wakes, each reopened after a delay (S→R latency), keep the
 /// exact same A for the reopened wait's deadline and timer, while
 /// `timeout_seconds`/`delay_seconds` keep the authored remaining budget.

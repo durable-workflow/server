@@ -12,6 +12,23 @@ use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::collections::BTreeSet;
 
+pub(super) const CONDITION_INPUT_ORDER_FIELD: &str = "condition_wait_input_order";
+const DURABLE_RECEIPT_ORDER: &str = "durable_receipt_order";
+
+pub(super) fn uses_condition_input_order(payload: &Value) -> bool {
+    payload[CONDITION_INPUT_ORDER_FIELD] == DURABLE_RECEIPT_ORDER
+}
+
+pub(super) fn validate_condition_input_order(command: &Value) -> Result<()> {
+    if command.get(CONDITION_INPUT_ORDER_FIELD).is_none() {
+        return Ok(());
+    }
+    if uses_condition_input_order(command) && command["deadline_policy"] == "occurrence" {
+        return Ok(());
+    }
+    Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_condition_wait_input_order"))
+}
+
 pub(super) fn timeout(command: &Value) -> Result<Option<(i64, DateTime<Utc>)>> {
     timeout_for(command, "invalid_signal_timeout")
 }
@@ -79,6 +96,7 @@ pub(super) fn wait_fields(wait: &Value) -> Value {
         "condition_wait_occurrence_id",
         "condition_key",
         "condition_definition_fingerprint",
+        CONDITION_INPUT_ORDER_FIELD,
         "signal_wait_id",
         "signal_name",
     ] {
@@ -228,6 +246,13 @@ where
             return Err(super::all_groups::invalid());
         }
         let mismatch = || refuse(StatusCode::CONFLICT, "condition_wait_occurrence_mismatch");
+        if chain.iter().any(|wait| {
+            waits.condition_opening(&wait.id).is_some_and(|opening| {
+                opening.payload[CONDITION_INPUT_ORDER_FIELD] != command[CONDITION_INPUT_ORDER_FIELD]
+            })
+        }) {
+            return Err(mismatch());
+        }
         let unavailable = || refuse(StatusCode::CONFLICT, "condition_wait_anchor_unavailable");
         let Some(budget) = budget else {
             // Omitting the policy on an anchored chain is a mismatch.
