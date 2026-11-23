@@ -308,10 +308,10 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
     let app = router(runtime.clone());
     let build_ids = "/api/task-queues/test/build-ids";
     let register_build = |app: Router, worker: &'static str, build: &'static str, kind: &'static str| async move {
-        let (status, body) = request_protocol(&app, "POST", "/api/worker/register", json!({
+        let (status, body) = request(&app, "POST", "/api/worker/register", json!({
             "worker_id":worker,"task_queue":"test","runtime":"php","build_id":build,
             "supported_workflow_types":[kind],"supported_activity_types":[],
-        }), CONTINUATION_PROTOCOL).await;
+        })).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         body
     };

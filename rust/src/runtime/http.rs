@@ -634,15 +634,24 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|v| !v.is_empty());
+    // Exercise the new completion contract before advertising it. Earlier
+    // requests and other worker endpoints keep the published protocol.
+    let continuation_request = request.method() == Method::POST
+        && path.strip_prefix("/api/worker/workflow-tasks/")
+            .and_then(|path| path.split_once('/'))
+            .is_some_and(|(task, operation)| !task.is_empty() && matches!(operation, "complete" | "fail"));
+    let maximum_worker_minor = if continuation_request {
+        super::continuations::TARGET_BUILD_PROTOCOL_MINOR
+    } else {
+        20
+    };
     let compatible = if worker {
         requested.is_some_and(|v| {
             v.split_once('.').is_some_and(|(major, minor)| {
                 major == "1"
                     && !minor.is_empty()
                     && minor.bytes().all(|c| c.is_ascii_digit())
-                    // The new protocol can be exercised before it is
-                    // advertised. Existing workers keep the published envelope.
-                    && minor.parse::<u8>().is_ok_and(|n| n <= super::continuations::TARGET_BUILD_PROTOCOL_MINOR)
+                    && minor.parse::<u8>().is_ok_and(|n| n <= maximum_worker_minor)
             })
         })
     } else {
