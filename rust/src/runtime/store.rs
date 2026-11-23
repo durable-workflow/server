@@ -2149,19 +2149,35 @@ where
             }
         }
         if let Some(condition) = condition {
-            let condition_opening = waits.condition_opening(&condition.id);
-            let satisfied = condition.satisfied(condition_opening, &payload);
-            Self::append(tx, run_id, "ConditionWaitSatisfied", satisfied.clone(), Some(task_id), None).await?;
-            // A task that reopens the same occurrence claims no winner.
-            let reopened = condition.occurrence().is_some_and(|occurrence| commands.iter().any(|command| {
-                command["type"] == "open_condition_wait" && command["condition_wait_occurrence_id"] == occurrence
-            }));
-            if !reopened {
-                let group = condition_opening.map(|opening| super::activity_metadata::payload_for_path(&opening.payload)).unwrap_or_default();
-                Self::claim_wait_selection(tx, run_id, &group, "condition", &condition.id, "ConditionWaitSatisfied").await?;
-            }
-            if let Some(sequence) = condition.sequence {
-                Self::cancel_wait_timeout(tx, run_id, &json!({"sequence":sequence,"condition_wait_id":condition.id}), task_id, now()).await?;
+            // On a full turn the worker reevaluates every condition in the
+            // reached all barrier. Still-false members supply replacement
+            // commands. A prefix checkpoint can observe just one member.
+            let group = if checkpoint { None } else {
+                waits.condition_opening(&condition.id).and_then(super::wait_history::Opening::all_group_root)
+            };
+            let awakened = if let Some(group) = group {
+                waits.conditions.iter().filter(|wait| {
+                    wait.advanceable()
+                        && waits.condition_opening(&wait.id).and_then(super::wait_history::Opening::all_group_root) == Some(group)
+                }).collect::<Vec<_>>()
+            } else {
+                vec![condition]
+            };
+            for condition in awakened {
+                let condition_opening = waits.condition_opening(&condition.id);
+                let satisfied = condition.satisfied(condition_opening, &payload);
+                Self::append(tx, run_id, "ConditionWaitSatisfied", satisfied.clone(), Some(task_id), None).await?;
+                // A task that reopens the same occurrence claims no winner.
+                let reopened = condition.occurrence().is_some_and(|occurrence| commands.iter().any(|command| {
+                    command["type"] == "open_condition_wait" && command["condition_wait_occurrence_id"] == occurrence
+                }));
+                if !reopened {
+                    let group = condition_opening.map(|opening| super::activity_metadata::payload_for_path(&opening.payload)).unwrap_or_default();
+                    Self::claim_wait_selection(tx, run_id, &group, "condition", &condition.id, "ConditionWaitSatisfied").await?;
+                }
+                if let Some(sequence) = condition.sequence {
+                    Self::cancel_wait_timeout(tx, run_id, &json!({"sequence":sequence,"condition_wait_id":condition.id}), task_id, now()).await?;
+                }
             }
         }
         Ok(())

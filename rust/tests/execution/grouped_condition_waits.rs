@@ -211,3 +211,40 @@ async fn a_false_wake_reopens_only_the_original_group_member() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn a_group_signal_settles_the_approved_member_without_leaving_its_timer_open() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "grouped", json!(["echo"]), json!([])).await;
+    let started = start(&app, "grouped-approvals").await;
+    let task = poll(&app, "grouped", "workflow").await;
+    let condition = |key: &str, index| member(json!({"type":"open_condition_wait","condition_key":key,
+        "condition_wait_occurrence_id":format!("php:condition-wait:{index}"), "timeout_seconds":600}),
+        group("parallel-calls:1:3", "mixed", 1, 3, index));
+    let right = condition("right", 1);
+    let timer = member(json!({"type":"start_timer","delay_seconds":600}), group("parallel-calls:1:3", "mixed", 1, 3, 2));
+    let (status, body) = finish_task(&app, &task, json!([condition("left", 0), right.clone(), timer])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = request(&app, "POST", "/api/workflows/grouped-approvals/signal/approve-left", json!([])).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let turn = poll(&app, "grouped", "workflow").await;
+    let (status, body) = finish_task(&app, &turn, json!([right])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let opens = events(&history, "ConditionWaitOpened");
+    assert_eq!(opens.len(), 3);
+    assert_eq!(opens[2]["payload"]["condition_key"], "right");
+    assert_ne!(opens[1]["payload"]["condition_wait_id"], opens[2]["payload"]["condition_wait_id"]);
+    assert_eq!(opens[1]["payload"]["parallel_group_path"], opens[2]["payload"]["parallel_group_path"]);
+    let settled = events(&history, "ConditionWaitSatisfied");
+    assert_eq!(settled.len(), 2);
+    assert_eq!(settled[0]["payload"]["condition_wait_id"], opens[0]["payload"]["condition_wait_id"]);
+    let cancelled = events(&history, "TimerCancelled");
+    assert_eq!(cancelled.iter().filter(|event| event["payload"]["timer_kind"] == "condition_timeout").count(), 2);
+    runtime.close().await;
+    database.remove().await;
+}

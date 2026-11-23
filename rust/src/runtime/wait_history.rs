@@ -40,6 +40,16 @@ pub(super) struct Opening {
     pub(super) payload: Value,
 }
 
+impl Opening {
+    pub(super) fn all_group_root(&self) -> Option<&str> {
+        let path = self.payload["parallel_group_path"].as_array()?;
+        if path.iter().any(super::selections::is_selection) {
+            return None;
+        }
+        path.first()?["parallel_group_id"].as_str()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConditionStatus {
     Open,
