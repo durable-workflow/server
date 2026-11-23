@@ -180,6 +180,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
     pub(super) history_budget: super::history_budget::Config,
+    pub(super) ordered_condition_wait_authoring: bool,
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
     pub(super) workflow_task_lost_lease_attention_threshold: i64,
@@ -362,6 +363,10 @@ where
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
+            ordered_condition_wait_authoring: matches!(
+                std::env::var("DW_ORDERED_CONDITION_WAIT_AUTHORING").as_deref(),
+                Ok("1" | "true")
+            ),
             workflow_task_lease_seconds: 60,
             workflow_task_lost_lease_attention_threshold: std::env::var("DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD")
                 .ok()
@@ -398,6 +403,7 @@ where
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
+            ordered_condition_wait_authoring: self.ordered_condition_wait_authoring,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
             workflow_task_lost_lease_attention_threshold: self.workflow_task_lost_lease_attention_threshold,
             activity_task_lease_seconds: self.activity_task_lease_seconds,
@@ -420,6 +426,13 @@ where
             test_continuation_gate: self.test_continuation_gate.clone(),
         }
     }
+
+    pub(super) fn with_ordered_condition_wait_authoring(&self, enabled: bool) -> Self {
+        let mut store = self.in_namespace(&self.namespace);
+        store.ordered_condition_wait_authoring = enabled;
+        store
+    }
+
     pub(super) async fn database_live(&self) -> bool {
         Self::query("SELECT 1").execute(&self.pool).await.is_ok()
     }
@@ -1815,8 +1828,20 @@ where
         else {
             return Ok(None);
         };
-        let started = DB::document_row(&started, "payload")?;
-        if super::run_observation::command_contract(Some(&started))["source"] != "durable_history" {
+        let mut started = DB::document_row(&started, "payload")?;
+        let mut durable = super::run_observation::command_contract(Some(&started))["source"] == "durable_history";
+        // An ordered condition can be the first task of a run started before
+        // its worker registered. Its accepted completion already binds the
+        // worker's command declaration for the run. Use that same declaration
+        // to distinguish a handled signal from an input without a handler.
+        if !durable
+            && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(run_id).fetch_optional(&mut **tx).await?.is_some()
+        {
+            let bound = Self::bound_contract(&mut **tx, run_id).await?;
+            started = super::update_contracts::effective(&started, bound.as_ref());
+            durable = super::run_observation::command_contract(Some(&started))["source"] == "durable_history";
+        }
+        if !durable {
             return Ok(None);
         }
         Ok(Some(
@@ -1842,11 +1867,13 @@ where
     fn signal_can_advance(
         waits: &super::wait_history::Waits,
         declared: Option<&[String]>,
+        signal_id: &str,
         name: &str,
         signal_wait_id: Option<&str>,
         include_received: bool,
     ) -> bool {
         waits.advanceable_condition()
+            || waits.ordered_condition_can_consume(signal_id)
             || signal_wait_id.is_some_and(|signal_wait_id| waits.signal_advanceable(name, signal_wait_id, include_received))
             || declared.is_some_and(|names| names.iter().any(|declared| declared == name))
     }
@@ -1896,6 +1923,7 @@ where
             if !Self::signal_can_advance(
                 &waits,
                 declared.as_deref(),
+                &DB::string(&signal, "id")?,
                 &DB::string(&signal, "signal_name")?,
                 DB::optional_string(&signal, "signal_wait_id")?.as_deref(),
                 include_received,
@@ -2055,7 +2083,8 @@ where
         // `recordSatisfiedConditionWaitForSignalResume` then satisfies the
         // latest open condition wait whose timeout has not fired.
         let condition = waits.latest_open_condition();
-        if !applies && condition.is_none() {
+        let ordered_input = waits.ordered_condition_can_consume(signal_id);
+        if !applies && condition.is_none() && !ordered_input {
             // Core leaves the signal received and completes the task. Native
             // refuses such a completion, unless Core's own history explains
             // it: the signal names a wait the run has had, or a condition wait
@@ -2070,12 +2099,12 @@ where
             let reason = if waits.any_current() { "signal_wait_mismatch" } else { "signal_wait_not_open" };
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
-        // An undeclared signal without a wait of its own is consumed by the
-        // condition wait at that wait's sequence, without `SignalApplied`
-        // (`markConditionWaitSignalConsumed`).
+        // A signal without a declared handler or named wait is consumed
+        // without `SignalApplied`. A marked condition can also consume that
+        // input after its timer fired so it cannot block the eligible prefix.
         let record_sequence = if applies { sequence } else { condition.and_then(|wait| wait.sequence) };
         let mut winner = None;
-        if applies || record_sequence.is_some() {
+        if applies || record_sequence.is_some() || ordered_input {
             // Arguments stored by reference were resolved before this
             // transaction, for exactly this reference (Server #979).
             let stored = DB::string(&signal, "arguments")?;
@@ -2169,6 +2198,13 @@ where
             };
             for condition in awakened {
                 let condition_opening = waits.condition_opening(&condition.id);
+                if condition_opening.is_some_and(|opening| {
+                    super::wait_timeouts::uses_condition_input_order(&opening.payload)
+                }) {
+                    // The signal's application is input evidence. For a
+                    // marked condition it does not settle the predicate.
+                    continue;
+                }
                 let mut satisfied = condition.satisfied(condition_opening, &payload);
                 // A task that reopens the same occurrence claims no winner.
                 let selected = super::selections::is_selection(&satisfied);
@@ -2208,7 +2244,7 @@ where
     /// Native serves a selection directly over its waits; one nested in
     /// another group, or with a member wider than one sequence, stays an
     /// explicit unqualified shape rather than a silent divergence.
-    async fn claim_wait_selection(
+    pub(super) async fn claim_wait_selection(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         group: &serde_json::Map<String, Value>,
@@ -2793,6 +2829,13 @@ where
                 return Ok(false);
             }
         }
+        // A worker must understand these outcomes for the rest of the run,
+        // including replay after its marked condition has already resolved.
+        if !supports(super::wait_timeouts::CONDITION_INPUT_ORDER_FIELD)
+            && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(run_id).fetch_optional(&mut *connection).await?.is_some()
+        {
+            return Ok(false);
+        }
         Ok(true)
     }
 
@@ -3198,6 +3241,14 @@ where
                     "updated_at":DB::instant(&worker,"updated_at")?,"last_heartbeat_at":DB::instant(&worker,"last_heartbeat_at")?,
                     "task_id":task_id,"run_id":run_id,"lease_owner":worker_id,"attempt":attempt});
             }
+            let allow_ordered_condition_open = kind == "workflow"
+                && self.ordered_condition_wait_authoring
+                && super::wait_timeouts::supports_condition_input_order(
+                    &task_payload[super::cooperative::CLAIM_KEY]["capabilities"],
+                );
+            if allow_ordered_condition_open {
+                task_payload[super::cooperative::CLAIM_KEY][super::wait_timeouts::CONDITION_INPUT_AUTHORING] = json!(true);
+            }
             // `claimStatus`: a workflow claim records the replay its worker
             // should expect from the run's sticky affinity (Server #1017).
             let (sticky_worker, sticky_until, sticky_mode) = if kind == "workflow" {
@@ -3303,6 +3354,9 @@ where
                 }
             } else {
                 claim["workflow_task_attempt"] = json!(attempt);
+                if allow_ordered_condition_open {
+                    claim[super::wait_timeouts::CONDITION_INPUT_AUTHORING] = json!(true);
+                }
                 claim["arguments"] = wire(&DB::string(&run, "arguments")?);
                 if let Some(update_id) = task_payload["workflow_update_id"].as_str() {
                     claim["workflow_update_id"] = json!(update_id);
@@ -3374,6 +3428,13 @@ where
                 // expected to hit its cache gets only the events after the
                 // boundary it reported with its previous completion of the run.
                 let capabilities = DB::optional_document_row(&worker, "capabilities")?;
+                if capabilities.as_ref().is_some_and(super::wait_timeouts::supports_condition_input_order)
+                    && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(&run_id).fetch_optional(&mut **tx).await?.is_some()
+                {
+                    claim[super::wait_timeouts::PENDING_CONDITION_INPUT] = json!(
+                        Self::first_pending_condition_input(&mut **tx, &run_id).await?
+                    );
+                }
                 let suffix_worker = super::sticky_execution::takes_suffixes(capabilities.as_ref())
                     && super::sticky_execution::registration_supports(capabilities.as_ref(),
                         DB::optional_document_row(&worker, "capability_manifest")?.as_ref(), "sticky_execution");
@@ -3803,6 +3864,9 @@ where
             .await?;
         // PHP releases the run and schedules its next message together.
         Self::enqueue_next_message(&mut tx, &run_id, &DB::string(&run, "queue")?, false).await?;
+        if payload["resume_source_kind"] == "workflow_signal" {
+            Self::enqueue_condition_evaluation(&mut tx, &run_id, &DB::string(&run, "queue")?, task_id).await?;
+        }
         let next = Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='ready' ORDER BY created_at DESC,id DESC LIMIT 1")
             .bind(&run_id)
             .fetch_optional(&mut *tx)
@@ -3998,6 +4062,7 @@ where
                             "timeout_seconds",
                             "deadline_policy",
                             "condition_wait_timeout_budget_seconds",
+                            super::wait_timeouts::CONDITION_INPUT_ORDER_FIELD,
                         ],
                     )?;
                     if command
@@ -4010,9 +4075,14 @@ where
                     // definition fingerprint are optional strings, of any form.
                     super::wait_timeouts::timeout_for(command, "invalid_condition_timeout")?;
                     super::wait_timeouts::occurrence_deadline(command)?;
+                    super::wait_timeouts::validate_condition_input_order(command)?;
                 }
                 super::external_signals::COMMAND => {
                     super::external_signals::validate(command)?;
+                }
+                super::wait_timeouts::RESOLVE_CONDITION_WAIT => {
+                    reject_fields(command, &["type", "condition_wait_id", "satisfied", "input_receipt_sequence", "competing_resolution_event_id"])?;
+                    super::wait_timeouts::ConditionDecision::parse(command)?;
                 }
                 "open_signal_wait" => {
                     super::selections::fields(command, &["type", "signal_name", "timeout_seconds"])?;
@@ -4401,6 +4471,12 @@ where
         {
             created.push(next);
         }
+        if (task_payload["resume_source_kind"] == "workflow_signal"
+            || commands.iter().any(|command| matches!(command["type"].as_str(), Some("complete_update" | "fail_update"))))
+            && let Some(next) = Self::enqueue_condition_evaluation(&mut tx, &run_id, &DB::string(&run, "queue")?, task_id).await?
+        {
+            created.push(next);
+        }
         Self::record_completion(&mut tx, task_id, &json!({COMPLETION_RECEIPT: {COMPLETION_REQUEST_DIGEST: completion_request_digest(&body), "created_task_ids": created}})).await?;
         // PHP's executor leaves every run a completed task did not close
         // waiting, even when the task recorded only markers or side effects.
@@ -4468,6 +4544,17 @@ where
         created: &mut Vec<String>,
     ) -> Result<()> {
         let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn, codec, grouped_condition_repeats } = *apply;
+        let ordered_open = super::wait_timeouts::uses_condition_input_order(command);
+        if ordered_open || command["type"] == super::wait_timeouts::RESOLVE_CONDITION_WAIT {
+            let payload = DB::document_row(task, "payload")?;
+            let claim = &payload[super::cooperative::CLAIM_KEY];
+            if !super::wait_timeouts::supports_condition_input_order(&claim["capabilities"]) {
+                return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_order_not_supported"));
+            }
+            if ordered_open && claim[super::wait_timeouts::CONDITION_INPUT_AUTHORING] != true {
+                return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_order_authoring_disabled"));
+            }
+        }
         if command["type"] != super::local_activities::COMMAND {
             Self::write_local_activities(tx).await?;
         }
@@ -4482,6 +4569,11 @@ where
             // does not count update events toward the next turn's sequence.
             sequence += 1;
             Self::apply_update(tx, &run, &task, command, sequence).await?;
+        } else if command["type"] == super::wait_timeouts::RESOLVE_CONDITION_WAIT {
+            let decision = super::wait_timeouts::ConditionDecision::parse(command)?;
+            if let Some(next) = Self::record_ordered_condition_decision(tx, run_id, &DB::string(run, "queue")?, task_id, decision).await? {
+                created.push(next);
+            }
         } else if command["type"] == "start_child_workflow" {
             Self::guard_pending(tx, &run_id, super::memo_limits::Pending::Children, &limits, task_id, attempt).await?;
             sequence += 1;
@@ -5205,6 +5297,7 @@ where
                 .bind(&task_id)
                 .execute(&mut *tx)
                 .await?;
+            let evaluates_receipt_prefix = super::wait_timeouts::uses_condition_input_order(&payload);
             Self::append(
                 &mut tx,
                 &run_id,
@@ -5214,15 +5307,19 @@ where
                 None,
             )
             .await?;
-            Self::resolve_selection(
-                &mut tx,
-                &run_id,
-                &metadata,
-                member,
-                operation_id,
-                "TimerFired",
-            )
-            .await?;
+            // The timer supplies the ordered-input boundary. A marked
+            // condition's outcome is decided separately from its timer fire.
+            if !evaluates_receipt_prefix {
+                Self::resolve_selection(
+                    &mut tx,
+                    &run_id,
+                    &metadata,
+                    member,
+                    operation_id,
+                    "TimerFired",
+                )
+                .await?;
+            }
             Self::query("UPDATE workflow_run_timers SET status='fired',fired_at=$1 WHERE id=$2")
                 .bind(DB::bind_time(fired_at))
                 .bind(&timer_id)
@@ -5238,7 +5335,7 @@ where
                 &DB::string(&timer, "queue")?,
                 resume,
                 &metadata,
-                true,
+                !evaluates_receipt_prefix,
             )
             .await?;
         }
@@ -6615,6 +6712,11 @@ fn capabilities_template() -> Value {
         "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
     value[super::children::CAPABILITY_EXPLICIT_ID] = json!(true);
+    value[super::wait_timeouts::CONDITION_INPUT_ORDER_FIELD] = json!(super::wait_timeouts::DURABLE_RECEIPT_ORDER);
+    value["supported_workflow_task_commands"]
+        .as_array_mut()
+        .expect("commands")
+        .push(json!(super::wait_timeouts::RESOLVE_CONDITION_WAIT));
     value[super::continuation::CAPABILITY] = super::continuation::capability();
     // Gated off until installed acceptance (Server #1201).
     if let Some(advertised) = super::timeout_cleanup::advertisement() {

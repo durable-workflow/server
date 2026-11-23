@@ -504,7 +504,8 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
 fn native_only(name: &str) -> bool {
     matches!(
         name,
-        "DW_BIND_ADDRESS" | "DW_ENV" | "DW_RUST_EXPERIMENTAL" | "DW_RUST_MAINTENANCE_LOOP" | "DW_UPGRADE_BACKUP_FINGERPRINT"
+        "DW_BIND_ADDRESS" | "DW_ENV" | "DW_RUST_EXPERIMENTAL" | "DW_RUST_MAINTENANCE_LOOP"
+            | "DW_ORDERED_CONDITION_WAIT_AUTHORING" | "DW_UPGRADE_BACKUP_FINGERPRINT"
     )
         || ["DW_RUST_UPGRADE_QUEUE_", "DW_SCHEMA_TEST_", "DW_TAKEOVER_TEST_", "DW_TEST_"]
             .iter()
@@ -827,6 +828,7 @@ mod tests {
             ("DW_ENV_AUDIT_STRICT", "1"),
             ("DW_RUST_EXPERIMENTAL", "1"),
             ("DW_RUST_MAINTENANCE_LOOP", "1"),
+            ("DW_ORDERED_CONDITION_WAIT_AUTHORING", "1"),
             ("DW_BIND_ADDRESS", "0.0.0.0:8080"),
         ];
         let report = audit(&environment(&shipped));

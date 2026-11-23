@@ -306,6 +306,11 @@ where
             Self::query("UPDATE workflow_run_waits SET status='resolved',source_status='satisfied',summary='Condition satisfied.',resume_source_kind='external_input',resume_source_id=NULL,resolved_at=$1,updated_at=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='condition' AND status='open'")
                 .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(run_id).bind(wait_id)
                 .execute(&mut **tx).await?;
+        } else if event_type == "ConditionWaitTimedOut" && super::wait_timeouts::uses_condition_input_order(payload) {
+            let wait_id = super::text(payload, "condition_wait_id")?;
+            Self::query("UPDATE workflow_run_waits SET status='resolved',source_status='timed_out',summary='Condition timed out.',resolved_at=$1,updated_at=$2 WHERE workflow_run_id=$3 AND wait_id=$4 AND kind='condition' AND status='open'")
+                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(run_id).bind(wait_id)
+                .execute(&mut **tx).await?;
         } else if payload["timer_kind"] == "condition_timeout"
             && matches!(
                 event_type,

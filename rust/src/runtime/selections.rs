@@ -533,7 +533,7 @@ where
         }
         // Called immediately after the member's actual terminal event under
         // the same transition lock; bind its physical durable history ID.
-        let event = Self::query("SELECT id,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
+        let event = Self::query("SELECT id,sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 ORDER BY sequence DESC LIMIT 1")
             .bind(run_id).fetch_one(&mut **tx).await?;
         if DB::string(&event, "event_type")? != event_type {
             return Err(refuse(
@@ -547,15 +547,64 @@ where
         } else {
             member_identity(entry, identity)
         };
-        Self::append(tx, run_id, "SelectionResolved", json!({
+        let mut resolution = json!({
             "selection_group_id":group_id,"selection_group_base_sequence":entry["parallel_group_base_sequence"],
             "selection_group_size":entry["parallel_group_size"],"member_key":entry["selection_member_key"],
             "member_index":entry["selection_member_index"],"member_base_sequence":entry["selection_member_base_sequence"],
             "member_size":entry["selection_member_size"],"operation_kind":operation_kind,
             "operation_identity":identity,"outcome":outcome(event_type),
             "resolution_event_id":DB::string(&event,"id")?,"resolution_event_type":event_type,
-        }), None, None).await?;
+        });
+        if kind == "child"
+            && Self::ordered_selection_has_open_condition(tx, run_id, group_id).await?
+        {
+            if Self::query(DB::SELECTION_CANDIDATE_SQL).bind(run_id).bind(group_id)
+                .fetch_optional(&mut **tx).await?.is_none()
+            {
+                // The child terminal is authoritative. The winner waits for
+                // the parent's predicate over inputs received before it.
+                resolution["resolution_event_sequence"] = json!(DB::number(&event, "sequence")?);
+                Self::append(tx, run_id, "SelectionCandidateReady", resolution, None, None).await?;
+            }
+            return Ok(false);
+        }
+        Self::append(tx, run_id, "SelectionResolved", resolution, None, None).await?;
         Ok(true)
+    }
+
+    async fn ordered_selection_has_open_condition(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        group_id: &str,
+    ) -> Result<bool> {
+        if Self::query(DB::ORDERED_CONDITION_HISTORY)
+            .bind(run_id).fetch_optional(&mut **tx).await?.is_none()
+        {
+            return Ok(false);
+        }
+        let waits = Self::waits(tx, run_id).await?;
+        Ok(waits.conditions.iter().filter(|wait| wait.is_open())
+            .filter_map(|wait| waits.condition_opening(&wait.id))
+            .any(|opening| super::wait_timeouts::uses_condition_input_order(&opening.payload)
+                && selection(&opening.payload).is_some_and(|entry| entry["parallel_group_id"] == group_id)))
+    }
+
+    pub(super) async fn unresolved_selection_candidate(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        opening: &Value,
+    ) -> Result<Option<Value>> {
+        let Some(group_id) = selection(opening).and_then(|entry| entry["parallel_group_id"].as_str()) else {
+            return Ok(None);
+        };
+        if Self::query(DB::SELECTION_RESOLUTION_SQL)
+            .bind(run_id).bind(group_id).fetch_optional(&mut **tx).await?.is_some()
+        {
+            return Ok(None);
+        }
+        let candidate = Self::query(DB::SELECTION_CANDIDATE_SQL)
+            .bind(run_id).bind(group_id).fetch_optional(&mut **tx).await?;
+        candidate.map(|row| DB::document_row(&row, "payload")).transpose()
     }
 
     /// Wakes the workflow after a member's close, or returns `None` when

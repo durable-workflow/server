@@ -831,8 +831,10 @@ const READS: &[(&str, &[&str])] = &[
     ("upsert_search_attributes", &["attributes", "attribute_types"]),
     ("upsert_memo", &["entries"]),
     ("open_condition_wait", &["condition_key", "condition_definition_fingerprint", "condition_wait_occurrence_id", "timeout_seconds",
-        "deadline_policy", "condition_wait_timeout_budget_seconds"]),
+        "deadline_policy", "condition_wait_timeout_budget_seconds",
+        super::wait_timeouts::CONDITION_INPUT_ORDER_FIELD]),
     ("open_signal_wait", &["signal_name", "timeout_seconds"]),
+    (super::wait_timeouts::RESOLVE_CONDITION_WAIT, &["condition_wait_id", "satisfied", "input_receipt_sequence", "competing_resolution_event_id"]),
 ];
 
 /// `parallelMetadataValidationRules`' fields, read for the leaf commands.

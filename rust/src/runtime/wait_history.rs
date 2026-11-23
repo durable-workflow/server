@@ -430,6 +430,18 @@ impl Waits {
         self.conditions.iter().any(ConditionWait::advanceable)
     }
 
+    /// An ordered condition can still consume a signal received before its
+    /// timer, even after the timer has fired. Later signals use normal routing.
+    pub(super) fn ordered_condition_can_consume(&self, signal_id: &str) -> bool {
+        let Some(receipt) = self.received_at(signal_id) else { return false; };
+        self.conditions.iter().any(|wait| {
+            wait.is_open() && wait.fired_at.is_none_or(|fire| receipt < fire)
+                && self.condition_opening(&wait.id).is_some_and(|opening| {
+                    super::wait_timeouts::uses_condition_input_order(&opening.payload)
+                })
+        })
+    }
+
     /// `latestOpenConditionWait`: the open condition wait with the highest
     /// sequence whose timeout has not fired.
     pub(super) fn latest_open_condition(&self) -> Option<&ConditionWait> {

@@ -132,6 +132,7 @@ pub(super) trait Backend: Database {
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled' AND payload->>'timer_id'=$2 ORDER BY sequence DESC LIMIT 1";
     /// The history sequence of a signal's `SignalReceived` event.
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SignalReceived' AND payload->>'signal_id'=$2 ORDER BY sequence LIMIT 1";
+    const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ConditionWaitOpened' AND payload->>'condition_wait_input_order'='durable_receipt_order' LIMIT 1";
     // PostgreSQL compares text case-sensitively.
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
@@ -140,6 +141,7 @@ pub(super) trait Backend: Database {
         "substr(c.payload,1,23)='dw-external-payload:v1:'"
     );
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND payload->>'selection_group_id'=$2 ORDER BY sequence LIMIT 1";
+    const SELECTION_CANDIDATE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionCandidateReady' AND payload->>'selection_group_id'=$2 ORDER BY sequence LIMIT 1";
     // Frozen run command/task repair counters use each backend's actual width.
     const REPAIR_COUNTER_MAX: i64 = i32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=$1 AND namespace=$2 AND task_type='workflow' AND status='failed' AND payload->>'replay_blocked'='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
@@ -350,6 +352,7 @@ WHERE r.status IN ('pending','running','waiting')
 ORDER BY t.available_order,t.id LIMIT 100
 "#;
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionResolved' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
+    const SELECTION_CANDIDATE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SelectionCandidateReady' AND json_extract(payload,'$.selection_group_id')=$2 ORDER BY sequence LIMIT 1";
     const STREAM_ITEM_REFERENCES: &str = concat!("SELECT COUNT(*) FROM workflow_durable_stream_items WHERE stream_id=$1 AND (payload_reference IS NOT NULL OR ", super::retention::reference!("payload"), ")");
     const STREAM_REFERENCES: &str = PLAIN_STREAM_REFERENCES;
     const RUN_STREAM_REFERENCES: &str = concat!(
@@ -374,6 +377,7 @@ ORDER BY t.available_order,t.id LIMIT 100
     const TIMER_TASK_SQL: &str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='timer' AND status='ready' AND json_extract(payload,'$.timer_id')=$2 AND namespace=$3";
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled' AND json_extract(payload,'$.timer_id')=$2 ORDER BY sequence DESC LIMIT 1";
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SignalReceived' AND json_extract(payload,'$.signal_id')=$2 ORDER BY sequence LIMIT 1";
+    const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ConditionWaitOpened' AND json_extract(payload,'$.condition_wait_input_order')='durable_receipt_order' LIMIT 1";
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
         "substr(s.arguments,1,30) COLLATE BINARY='dw-native-external-payload-v1:'",
@@ -679,6 +683,7 @@ impl Backend for MySql {
     const MEMO_INHERIT_INSERT: &str = "INSERT INTO workflow_memos(workflow_run_id,workflow_instance_id,`key`,value,upserted_at_sequence,inherited_from_parent,created_at,updated_at,portable_value,portable_value_sequence) VALUES ($1,$2,$3,$4,1,true,$5,$6,$7,1)";
     const MEMO_READ: &str = "SELECT `key`,value,portable_value,portable_value_sequence,upserted_at_sequence FROM workflow_memos WHERE workflow_run_id=$1 ORDER BY `key`,id LIMIT 101";
     const SELECTION_RESOLUTION_SQL: &str = "SELECT id,payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionResolved' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
+    const SELECTION_CANDIDATE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SelectionCandidateReady' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.selection_group_id'))=? ORDER BY sequence LIMIT 1";
     const BRIDGE_COMMAND: &str = "SELECT workflow_run_id,resolved_workflow_run_id FROM workflow_commands WHERE workflow_instance_id=? AND command_type=? AND status='accepted' AND BINARY JSON_UNQUOTE(JSON_EXTRACT(context,'$.server.metadata.adapter'))=BINARY ? AND BINARY JSON_UNQUOTE(JSON_EXTRACT(context,'$.server.metadata.action'))=BINARY ? AND BINARY JSON_UNQUOTE(JSON_EXTRACT(context,'$.server.metadata.idempotency_key'))=BINARY ? AND BINARY JSON_UNQUOTE(JSON_EXTRACT(context,CONCAT('$.server.metadata.',?)))=BINARY ? AND (request_id IS NULL OR BINARY request_id=BINARY ?) ORDER BY accepted_at DESC,command_sequence DESC LIMIT 1";
     const REPAIR_COUNTER_MAX: i64 = u32::MAX as i64;
     const RANGE_REPAIR_TASK_SQL: &str = "SELECT * FROM workflow_tasks WHERE workflow_run_id=? AND namespace=? AND task_type='workflow' AND status='failed' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.replay_blocked'))='true' ORDER BY CASE WHEN available_at IS NULL THEN 1 ELSE 0 END,available_at,created_at,id LIMIT 1";
@@ -712,6 +717,7 @@ impl Backend for MySql {
     const TIMER_TASK_SQL: &str = "SELECT id,payload FROM workflow_tasks WHERE workflow_run_id=? AND task_type='timer' AND status='ready' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? AND BINARY namespace=BINARY ?";
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='TimerScheduled' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? ORDER BY sequence DESC LIMIT 1";
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SignalReceived' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.signal_id'))=? ORDER BY sequence LIMIT 1";
+    const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=? AND event_type='ConditionWaitOpened' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.condition_wait_input_order'))='durable_receipt_order' LIMIT 1";
     // The payload column's collation ignores case; compare bytes.
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
@@ -736,6 +742,7 @@ impl Backend for MySql {
             || sql == Self::SIGNAL_RECEIVED_SEQUENCE_SQL
             || sql == Self::RANGE_REPAIR_TASK_SQL
             || sql == Self::SELECTION_RESOLUTION_SQL
+            || sql == Self::SELECTION_CANDIDATE_SQL
             || sql == Self::BRIDGE_COMMAND
             || sql == Self::ACTIVITY_OPEN_TASK_SQL
             || sql == Self::LOCAL_ACTIVITY_EXECUTIONS
