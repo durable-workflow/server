@@ -172,6 +172,7 @@ store_methods! {
         exceptions: &std::collections::BTreeMap<usize, String>,
         limits: super::memo_limits::StructuralLimits,
         signal: Option<&super::signal_payloads::ResolvedSignal>,
+        partial_occurrences: &std::collections::BTreeSet<String>,
     ) -> Result<Value> {
         let task_id = DB::string(&task, "id")?;
         // Server: the claim must be the cooperative claim it issued.
@@ -266,6 +267,7 @@ store_methods! {
             }
             other => other?,
         }
+        let grouped_condition_repeats = Self::checked_grouped_condition_repeats(&mut tx, &run_id, commands, partial_occurrences).await?;
         // Metered like a completion (Workflow #930).
         tx.meter = Some(super::history_meter::Meter::new(&limits, &task_id, &body["workflow_task_attempt"]));
         // Core answers its own refusals as a refused checkpoint.
@@ -302,6 +304,7 @@ store_methods! {
             local,
             exceptions,
             start_turn: &start_turn,
+            grouped_condition_repeats: &grouped_condition_repeats,
         };
         let mut created = Vec::new();
         for (index, command) in commands.iter().enumerate() {

@@ -3809,7 +3809,7 @@ where
             .as_array()
             .filter(|c| !c.is_empty())
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_commands"))?;
-        super::workflow_failures::validate_batch(commands)?;
+        let partial_occurrences = super::workflow_failures::validate_batch(commands)?;
         // Validate the entire batch before mutation. Unknown commands and
         // options cannot be silently accepted as unsupported durable effects.
         for (index, command) in commands.iter().enumerate() {
@@ -4063,7 +4063,7 @@ where
             let (receipt_task, receipt_run, receipt_status) = &identity;
             let attempt = body["workflow_task_attempt"].clone();
             return self
-                .checkpoint_prefix(tx, task, &body, commands, checkpoint, transition_codec, &external, &local, &exceptions, limits, signal)
+                .checkpoint_prefix(tx, task, &body, commands, checkpoint, transition_codec, &external, &local, &exceptions, limits, signal, &partial_occurrences)
                 .await
                 .map(|answer| {
                     super::workflow_task_guard::not_recorded_answer(answer, receipt_task, &attempt, receipt_run, receipt_status)
@@ -4180,6 +4180,7 @@ where
             });
         }
         Self::validate_update_commands(&mut tx, &run_id, &task, commands).await?;
+        let grouped_condition_repeats = Self::checked_grouped_condition_repeats(&mut tx, &run_id, commands, &partial_occurrences).await?;
         // Server #962: a run that captured no update contract at start binds
         // the completing worker's, once, with this accepted completion.
         Self::bind_update_contract(&mut tx, &task).await?;
@@ -4202,6 +4203,7 @@ where
             local: &local,
             exceptions: &exceptions,
             start_turn: &start_turn,
+            grouped_condition_repeats: &grouped_condition_repeats,
         };
         let order = (0..commands.len())
             .filter(|index| !is_terminal(&commands[*index]))
@@ -4376,7 +4378,7 @@ where
         sequence_ref: &mut i64,
         created: &mut Vec<String>,
     ) -> Result<()> {
-        let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn, codec } = *apply;
+        let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn, codec, grouped_condition_repeats } = *apply;
         if command["type"] != super::local_activities::COMMAND {
             Self::write_local_activities(tx).await?;
         }
@@ -4617,15 +4619,12 @@ where
             sequence += 1;
             let mut payload = command.clone();
             payload.as_object_mut().unwrap().remove("type");
-            // Server #1142: a grouped condition wait records its normalized
-            // group (Core `payloadForPath`) at its member's own sequence. A
-            // grouped physical reopen keeps the original position under a new
-            // sequence; that is not qualified on native yet.
+            // A replacement gets a new physical sequence and timeout row
+            // while its authored group position stays tied to the original.
             let group = if direct { json!({}) } else { super::selections::metadata(command, "condition")? };
-            if group.get("parallel_group_id").is_some() {
-                if matches!(anchor, super::wait_timeouts::OccurrenceAnchor::Reopen(_)) {
-                    return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "development_parallel_group_unqualified"));
-                }
+            let repeat = command["condition_wait_occurrence_id"].as_str()
+                .is_some_and(|id| grouped_condition_repeats.contains(id));
+            if group.get("parallel_group_id").is_some() && !repeat {
                 super::selections::check_sequence(&group, sequence)?;
             }
             super::selections::replace_group(&mut payload, &group);
@@ -6334,6 +6333,8 @@ pub(super) struct Apply<'a, R> {
     pub(super) external: &'a super::external_resolution::PreparedCommands,
     pub(super) local: &'a std::collections::BTreeMap<usize, super::local_activities::Record>,
     pub(super) exceptions: &'a std::collections::BTreeMap<usize, String>,
+    /// Authored group members already present before this completion.
+    pub(super) grouped_condition_repeats: &'a std::collections::BTreeSet<String>,
     /// The first child this batch started with `await: "started"`, or its
     /// first signal-external command: the parent's turn (Server #966, #1134).
     pub(super) start_turn: &'a std::sync::Mutex<Option<Value>>,

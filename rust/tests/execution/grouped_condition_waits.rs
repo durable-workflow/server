@@ -1,8 +1,8 @@
 //! Server #1142: a condition wait is an all() member, as Core's grouped
 //! condition wait. The opening, its timeout timer and its satisfaction carry
 //! the group; the member closes when satisfied or timed out; the barrier
-//! wakes the workflow only when every member has closed. A grouped physical
-//! reopen is not qualified yet and is refused.
+//! wakes the workflow only when every member has closed. A false signal wake
+//! replaces the physical wait at its original authored group position.
 use super::*;
 
 fn group(id: &str, kind: &str, base: i64, size: i64, index: i64) -> Value {
@@ -114,7 +114,7 @@ async fn unqualified_grouped_condition_shapes_are_refused_unwritten() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
     register(&app, "grouped", json!(["echo"]), json!([])).await;
-    let started = start(&app, "grouped-refusals").await;
+    start(&app, "grouped-refusals").await;
     let task = poll(&app, "grouped", "workflow").await;
     let condition = |entry: Value| member(json!({"type":"open_condition_wait","condition_key":"x",
         "condition_wait_occurrence_id":"php:condition-wait:0","timeout_seconds":600}), entry);
@@ -132,16 +132,56 @@ async fn unqualified_grouped_condition_shapes_are_refused_unwritten() {
     }
     assert_eq!(table_counts(&database).await, before, "a refusal writes nothing");
 
-    // A grouped physical reopen of the occurrence is refused for now.
-    let (status, body) = finish_task(&app, &task, json!([condition(group("parallel-calls:1:2", "mixed", 1, 2, 0)), timer])).await;
+}
+
+#[tokio::test]
+async fn a_false_wake_reopens_only_the_original_group_member() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "grouped", json!(["echo"]), json!([])).await;
+    let started = start(&app, "grouped-reopen").await;
+    let task = poll(&app, "grouped", "workflow").await;
+    let slot = group("parallel-calls:1:2", "mixed", 1, 2, 0);
+    let occurrence = "php:condition-wait:0";
+    let condition = member(json!({"type":"open_condition_wait","condition_key":"approval",
+        "condition_definition_fingerprint":"approval-v1","condition_wait_occurrence_id":occurrence,
+        "timeout_seconds":600}), slot.clone());
+    let timer = member(json!({"type":"start_timer","delay_seconds":2}), group("parallel-calls:1:2", "mixed", 1, 2, 1));
+    let (status, body) = finish_task(&app, &task, json!([condition.clone(), timer])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = request(&app, "POST", "/api/workflows/grouped-refusals/signal/wake", json!([])).await;
+
+    let (status, body) = request(&app, "POST", "/api/workflows/grouped-reopen/signal/false-wake", json!([])).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let resumed = poll(&app, "grouped", "workflow").await;
+    let mut different = condition.clone();
+    different["condition_key"] = json!("different");
     let before = table_counts(&database).await;
-    let (status, body) = finish_task(&app, &resumed, json!([condition(group("parallel-calls:1:2", "mixed", 1, 2, 0))])).await;
+    let (status, body) = finish_task(&app, &resumed, json!([different])).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(body["reason"], "development_parallel_group_unqualified", "{body}");
-    assert_eq!(table_counts(&database).await, before, "the refused reopen writes nothing");
-    let _ = started;
+    assert_eq!(table_counts(&database).await, before, "an unrelated condition cannot replace the existing member");
+
+    let (status, body) = finish_task(&app, &resumed, json!([condition])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let opened = events(&history, "ConditionWaitOpened");
+    assert_eq!(opened.len(), 2, "{history}");
+    let original = &opened[0]["payload"];
+    let reopened = &opened[1]["payload"];
+    assert_ne!(original["condition_wait_id"], reopened["condition_wait_id"]);
+    assert_eq!(reopened["condition_wait_occurrence_id"], occurrence);
+    assert!(reopened["sequence"].as_i64().unwrap() > original["sequence"].as_i64().unwrap());
+    assert_eq!(group_of(reopened), slot);
+    assert_eq!(reopened["parallel_group_path"], original["parallel_group_path"]);
+
+    wait_for(&app, &started, |history| events(history, "TimerFired").iter()
+        .any(|event| event["payload"].get("timer_kind").is_none())).await;
+    assert!(poll(&app, "grouped", "workflow").await.is_null(), "the still-open replacement holds the barrier");
+    let (status, body) = request(&app, "POST", "/api/workflows/grouped-reopen/signal/approve", json!([])).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let completion = poll(&app, "grouped", "workflow").await;
+    let (status, body) = finish_task(&app, &completion, json!([{"type":"complete_workflow","result":envelope(Payload::Boolean(true))}])).await;
+    assert_eq!((status, &body["run_status"]), (StatusCode::OK, &json!("completed")), "{body}");
+    runtime.close().await;
+    database.remove().await;
 }

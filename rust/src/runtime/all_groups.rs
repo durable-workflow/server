@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn invalid() -> super::RuntimeError {
+pub(super) fn invalid() -> super::RuntimeError {
     refuse(
         StatusCode::UNPROCESSABLE_ENTITY,
         "development_parallel_group_unqualified",
@@ -95,8 +95,10 @@ pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
     Ok(result)
 }
 
-/// Every group in a path must have all its leaves in this atomic batch.
-pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
+/// A new group must have all its leaves in this atomic batch. A partial
+/// group may contain only condition occurrences from a previously admitted
+/// group; the completion verifies those occurrences against locked history.
+pub(super) fn validate_batch(commands: &[Value]) -> Result<BTreeSet<String>> {
     let mut groups = BTreeMap::<String, (Value, BTreeMap<i64, usize>)>::new();
     for (offset, command) in commands.iter().enumerate() {
         if command.get("parallel_group_path").is_none()
@@ -133,12 +135,20 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
             }
         }
     }
+    let mut partial_occurrences = BTreeSet::new();
     for (descriptor, members) in groups.values() {
         if members.len() != descriptor["parallel_group_size"].as_u64().unwrap() as usize {
-            return Err(invalid());
+            for offset in members.values() {
+                let command = &commands[*offset];
+                let occurrence = command["condition_wait_occurrence_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty() && command["type"] == "open_condition_wait")
+                    .ok_or_else(invalid)?;
+                partial_occurrences.insert(occurrence.to_owned());
+            }
         }
     }
-    Ok(())
+    Ok(partial_occurrences)
 }
 
 #[derive(Default)]
