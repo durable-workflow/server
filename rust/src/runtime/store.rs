@@ -1815,8 +1815,20 @@ where
         else {
             return Ok(None);
         };
-        let started = DB::document_row(&started, "payload")?;
-        if super::run_observation::command_contract(Some(&started))["source"] != "durable_history" {
+        let mut started = DB::document_row(&started, "payload")?;
+        let mut durable = super::run_observation::command_contract(Some(&started))["source"] == "durable_history";
+        // An ordered condition can be the first task of a run started before
+        // its worker registered. Its accepted completion already binds the
+        // worker's command declaration for the run. Use that same declaration
+        // to distinguish a handled signal from an input without a handler.
+        if !durable
+            && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(run_id).fetch_optional(&mut **tx).await?.is_some()
+        {
+            let bound = Self::bound_contract(&mut **tx, run_id).await?;
+            started = super::update_contracts::effective(&started, bound.as_ref());
+            durable = super::run_observation::command_contract(Some(&started))["source"] == "durable_history";
+        }
+        if !durable {
             return Ok(None);
         }
         Ok(Some(

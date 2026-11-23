@@ -201,8 +201,14 @@ async fn applying_a_signal_does_not_settle_a_condition_with_receipt_order() {
 #[tokio::test]
 async fn acknowledging_the_last_signal_wakes_the_ordered_predicate() {
     let namespace = "default";
-    let (database, runtime, app) = setup(namespace).await;
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
     let run = namespaces::start_scoped(&app, namespace, "ordered-signal-recheck").await;
+    let events = history(&app, namespace, &run).await;
+    let started = &payloads(&events, "WorkflowStarted")[0];
+    assert!(started.get("declared_signals").is_none());
+    author(&app, namespace, "deadline-worker").await;
     let initial = claim(&app, namespace).await;
     let mut command = anchored("receipt-order:0", 60, 60);
     command["condition_wait_input_order"] = json!("durable_receipt_order");
