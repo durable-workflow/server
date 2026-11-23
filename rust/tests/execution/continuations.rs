@@ -399,6 +399,78 @@ async fn continue_as_new_records_the_promoted_build_from_durable_type_evidence()
 }
 
 #[tokio::test]
+async fn promoted_build_refusal_is_observed_only_until_the_fenced_retry() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "old-worker", json!(["echo"]), json!([])).await;
+    let original = start(&app, "retrying-continuation").await;
+    let first = poll(&app, "old-worker", "workflow").await;
+    let observe = |app: Router, run: Value| async move {
+        let path = format!("/api/workflows/retrying-continuation/runs/{}/observation", run.as_str().unwrap());
+        let (status, body) = request(&app, "GET", &path, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.get("continue_as_new_refusal").is_some(), "{body}");
+        body
+    };
+    let original_run = original["run_id"].clone();
+    let completion_path = |task: &Value| format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let command = json!([{"type":"continue_as_new","target_build":"promoted"}]);
+    let (status, refusal) = request_protocol(&app, "POST", &completion_path(&first),
+        completion(&first, command.clone()), WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    assert_eq!(refusal["reason"], "promoted_build_unavailable");
+    assert!(observe(app.clone(), original_run.clone()).await["continue_as_new_refusal"].is_null());
+    let failure_path = format!("/api/worker/workflow-tasks/{}/fail", first["task_id"].as_str().unwrap());
+    let failure = json!({"lease_owner":first["lease_owner"],"workflow_task_attempt":first["workflow_task_attempt"],
+        "failure":{"reason":"promoted_build_unavailable","message":"The promoted build does not serve this type."}});
+
+    let (status, unsupported) = request_protocol(&app, "POST", &failure_path, failure.clone(), "1.20").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{unsupported}");
+    assert_eq!(unsupported["reason"], "unsupported_target_build");
+    let (status, accepted) = request_protocol(&app, "POST", &failure_path, failure.clone(), WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::OK, "{accepted}");
+    let waiting = observe(app.clone(), original_run.clone()).await;
+    let retry = &waiting["continue_as_new_refusal"];
+    assert_eq!(retry["reason"], "promoted_build_unavailable");
+    assert_eq!(retry["task_id"], accepted["next_task_id"]);
+    assert_eq!(retry["status"], "ready");
+    assert_eq!(retry["workflow_task_attempt"], first["workflow_task_attempt"]);
+    assert!(retry["recorded_at"].is_string() && retry["available_at"].is_string(), "{retry}");
+    assert_eq!(waiting["is_terminal"], false);
+
+    let current = poll(&app, "old-worker", "workflow").await;
+    assert_eq!(current["task_id"], accepted["next_task_id"]);
+    assert_eq!(current["workflow_task_attempt"], first["workflow_task_attempt"].as_i64().unwrap() + 1);
+    let (status, stale) = request_protocol(&app, "POST", &failure_path, failure, WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+    assert!(observe(app.clone(), original_run.clone()).await["continue_as_new_refusal"].is_null());
+
+    let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
+        "worker_id":"new-worker","task_queue":"test","runtime":"php","build_id":"new-build",
+        "supported_workflow_types":["echo"],"supported_activity_types":[],
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    let (status, promoted) = request(&app, "POST", "/api/task-queues/test/build-ids/promote", json!({"build_id":"new-build"})).await;
+    assert_eq!(status, StatusCode::OK, "{promoted}");
+    let (status, committed) = request_protocol(&app, "POST", &completion_path(&current),
+        completion(&current, command), WORKER_PROTOCOL_VERSION).await;
+    assert_eq!(status, StatusCode::OK, "{committed}");
+    let (_, runs) = request(&app, "GET", "/api/workflows/retrying-continuation/runs", Value::Null).await;
+    let successor = runs["runs"][1]["run_id"].clone();
+    let closed = observe(app.clone(), original_run.clone()).await;
+    let started = observe(app.clone(), successor.clone()).await;
+    assert_eq!(closed["is_terminal"], true);
+    assert!(closed["continue_as_new_refusal"].is_null());
+    assert_eq!(closed["continue_as_new_build_transitions"]["to_successor"],
+        json!({"run_id":successor,"from_compatibility":null,"to_compatibility":"new-build","resolution":"promoted"}));
+    assert_eq!(started["continue_as_new_build_transitions"]["from_predecessor"],
+        json!({"run_id":original_run,"from_compatibility":null,"to_compatibility":"new-build","resolution":"promoted"}));
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn failed_continuation_history_append_rolls_back_run_link_pointer_and_memo() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();

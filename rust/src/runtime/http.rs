@@ -2814,8 +2814,14 @@ fn memo_protocol(headers: &HeaderMap) -> Result<()> {
 async fn fail_workflow_task(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    if body["failure"]["reason"] == super::continuations::PROMOTED_BUILD_UNAVAILABLE
+        && !super::continuations::target_build_protocol(Some(request_protocol(&headers)?))
+    {
+        return Err(worker_refusal(super::continuations::refuse_target("unsupported_target_build", false)));
+    }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
         .fail_workflow_task(&task_id, body)

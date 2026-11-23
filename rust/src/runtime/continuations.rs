@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
 const TARGET_BUILD_PROTOCOL_MINOR: u8 = 21;
+pub(super) const PROMOTED_BUILD_UNAVAILABLE: &str = "promoted_build_unavailable";
+pub(super) const REFUSAL_FIELD: &str = "continue_as_new_refusal";
 
 #[derive(Clone, Copy)]
 enum TargetBuild {
@@ -32,13 +34,13 @@ fn target_build(command: &Value) -> Result<Option<TargetBuild>> {
     }
 }
 
-fn target_build_protocol(protocol: Option<&str>) -> bool {
+pub(super) fn target_build_protocol(protocol: Option<&str>) -> bool {
     protocol.and_then(|version| version.trim().strip_prefix("1."))
         .and_then(|minor| minor.parse::<u8>().ok())
         .is_some_and(|minor| minor >= TARGET_BUILD_PROTOCOL_MINOR)
 }
 
-fn refuse_target(reason: &'static str, retryable: bool) -> super::RuntimeError {
+pub(super) fn refuse_target(reason: &'static str, retryable: bool) -> super::RuntimeError {
     super::RuntimeError::Protocol {
         status: if retryable { StatusCode::CONFLICT } else { StatusCode::UNPROCESSABLE_ENTITY },
         response: json!({"reason": reason, "retryable": retryable, "request_admitted": false}),
@@ -84,6 +86,22 @@ fn destination<DB: Backend>(run: &DB::Row, command: &Value, field: &str) -> Resu
     }
 }
 
+fn observed_transition(started: &Value, linked_run: &str) -> Option<Value> {
+    let transition = started.get("build_transition")?;
+    if !matches!(transition["resolution"].as_str(), Some("inherited" | "promoted"))
+        || ["from_compatibility", "to_compatibility"].iter()
+            .any(|field| transition.get(field).is_none_or(|value| !value.is_null() && !value.is_string()))
+    {
+        return None;
+    }
+    Some(json!({
+        "run_id": linked_run,
+        "from_compatibility": transition["from_compatibility"],
+        "to_compatibility": transition["to_compatibility"],
+        "resolution": transition["resolution"],
+    }))
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -96,6 +114,58 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// The run's current unclaimed retry carries the last fenced refusal.
+    /// Failed tasks retain their historic record, outside this observation.
+    pub(super) async fn observed_continuation_refusal(&self, run: &str) -> Result<Value> {
+        let Some(task) = Self::query("SELECT t.id,t.status,t.attempt_count,t.available_at,t.payload FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE r.id=$1 AND r.namespace=$2 AND r.status IN ('pending','running','waiting') AND t.namespace=$3 AND t.task_type='workflow' AND t.status IN ('ready','leased') ORDER BY t.created_at DESC,t.id DESC LIMIT 1")
+            .bind(run).bind(self.namespace.as_ref()).bind(self.namespace.as_ref())
+            .fetch_optional(&self.pool).await?
+        else {
+            return Ok(Value::Null);
+        };
+        let payload = DB::document_row(&task, "payload")?;
+        let refusal = &payload[REFUSAL_FIELD];
+        let attempt = DB::number(&task, "attempt_count")?;
+        let status = DB::string(&task, "status")?;
+        if status != "ready" || refusal["reason"] != PROMOTED_BUILD_UNAVAILABLE
+            || refusal["workflow_task_attempt"].as_i64() != Some(attempt)
+            || !refusal["recorded_at"].is_string()
+        {
+            return Ok(Value::Null);
+        }
+        Ok(json!({
+            "task_id": DB::string(&task, "id")?,
+            "status": status,
+            "available_at": super::task_queues::json_time(DB::optional_instant(&task, "available_at")?),
+            "workflow_task_attempt": attempt,
+            "recorded_at": refusal["recorded_at"],
+            "reason": PROMOTED_BUILD_UNAVAILABLE,
+        }))
+    }
+
+    /// Read only the first event of an immediate continuation and its
+    /// successor. A continued run starts at sequence 1, even when its
+    /// predecessor had more events after closing.
+    pub(super) async fn observed_build_transitions(
+        &self, run: &str, started: Option<&Value>, continued: bool,
+    ) -> Result<Value> {
+        let from_predecessor = started.and_then(|started| {
+            let id = started["continued_from_run_id"].as_str().filter(|id| !id.is_empty())?;
+            observed_transition(started, id)
+        });
+        let mut to_successor = None;
+        if continued
+            && let Some(row) = Self::query("SELECT r.id,h.payload FROM workflow_links l JOIN workflow_runs r ON r.id=l.child_workflow_run_id JOIN workflow_history_events h ON h.workflow_run_id=r.id AND h.sequence=1 AND h.event_type='WorkflowStarted' WHERE l.parent_workflow_run_id=$1 AND r.namespace=$2 AND l.link_type='continue_as_new' LIMIT 1")
+                .bind(run).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+        {
+            let started = DB::document_row(&row, "payload")?;
+            if started["continued_from_run_id"].as_str() == Some(run) {
+                to_successor = observed_transition(&started, &DB::string(&row, "id")?);
+            }
+        }
+        Ok(json!({"from_predecessor":from_predecessor,"to_successor":to_successor}))
+    }
+
     /// `WorkflowController::runs`: every run in run-number order, as PHP's
     /// `formatRunListEntry` renders it. The current run is the highest
     /// numbered one.
@@ -212,7 +282,7 @@ where
                 let queue = destination::<DB>(run, command, "queue")?;
                 let kind = destination::<DB>(run, command, "workflow_type")?;
                 let build = Self::promoted_build_for_type(tx, self.namespace.as_ref(), &queue, &kind)
-                    .await?.ok_or_else(|| refuse_target("promoted_build_unavailable", true))?;
+                    .await?.ok_or_else(|| refuse_target(PROMOTED_BUILD_UNAVAILABLE, true))?;
                 (Some(build), "promoted")
             }
         };

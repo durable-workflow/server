@@ -3157,6 +3157,7 @@ where
             if kind == "workflow"
                 && let Some(map) = task_payload.as_object_mut()
             {
+                map.remove(super::continuations::REFUSAL_FIELD);
                 match poll_request {
                     Some(request) => {
                         map.insert("_server_poll_request_id".into(), json!(request.id));
@@ -3599,12 +3600,14 @@ where
         // are distinct transitions. Other replay blockers remain explicit gates.
         let failure = workflow_task_failure_shape(&body)?;
         let message = failure["message"].as_str().unwrap_or_default();
+        let promoted_refusal = failure.get("reason").and_then(Value::as_str)
+            == Some(super::continuations::PROMOTED_BUILD_UNAVAILABLE);
         let kind = failure
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\0' | '\x0b'));
-        let waiting = waiting_acknowledgement(&body["failure"]);
+        let waiting = !promoted_refusal && waiting_acknowledgement(&body["failure"]);
         let range_blocked = !waiting
             && (failure
                 .get("reason")
@@ -3618,8 +3621,8 @@ where
         // Published PHP records every replay-blocking failure the same way
         // (`workflowTaskFailureBlocksReplay`): the task stays failed with its
         // replay block, without a retry, until an operator repairs the run.
-        let range_blocked =
-            range_blocked || (!waiting && super::task_failures::blocks_replay(&body["failure"]));
+        let range_blocked = !promoted_refusal
+            && (range_blocked || (!waiting && super::task_failures::blocks_replay(&body["failure"])));
         // The task is read within the request's namespace, and its retry
         // copies the run's namespace.
         let mut tx = self.begin().await?;
@@ -3671,6 +3674,13 @@ where
             }
             if let Some(sequence) = failure.get("sequence").and_then(Value::as_i64) {
                 payload["failure_sequence"] = json!(sequence);
+            }
+            if promoted_refusal {
+                payload[super::continuations::REFUSAL_FIELD] = json!({
+                    "reason": super::continuations::PROMOTED_BUILD_UNAVAILABLE,
+                    "workflow_task_attempt": DB::number(&task, "attempt_count")?,
+                    "recorded_at": super::cooperative::timestamp(now()),
+                });
             }
             if range_blocked {
                 payload["replay_blocked"] = json!(true);
