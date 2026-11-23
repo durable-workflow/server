@@ -342,6 +342,27 @@ definitions and takes the database out of its staged state. The trigger
 definer requires access to the checkpoint table for as long as the triggers
 are installed.
 
+## Rolling out durable input ordering for timed waits
+
+Leave `DW_ORDERED_CONDITION_WAIT_AUTHORING` unset while replacing Server
+processes. This lets the new Server and older versions share an existing
+database before any workflow opens a wait using the new ordering. Deploy
+compatible SDK workers before enabling authoring.
+
+Enable `DW_ORDERED_CONDITION_WAIT_AUTHORING=1` only after every Server that
+can process the database uses a release that understands ordered waits.
+Include maintenance processes and instances eligible to return after
+failover. The setting only allows new workflow leases to open ordered
+waits. Compatible Servers continue to process marked history and
+compatible workers continue to replay it with authoring disabled.
+
+To stop opening new ordered waits, remove the setting from every Server
+and let previously admitted workflow leases settle or expire. Once a
+database contains marked history, any Server that may process that
+database must understand the marker. Rolling back past the compatible
+version requires a pre-activation database restore under the normal data
+recovery process.
+
 ## Workflow task lease loss
 
 Run descriptions, observations and lists expose `task_attention` when an

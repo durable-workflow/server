@@ -13,6 +13,7 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::collections::BTreeSet;
 
 pub(super) const CONDITION_INPUT_ORDER_FIELD: &str = "condition_wait_input_order";
+pub(super) const CONDITION_INPUT_AUTHORING: &str = "condition_wait_input_order_authoring";
 pub(super) const DURABLE_RECEIPT_ORDER: &str = "durable_receipt_order";
 pub(super) const RESOLVE_CONDITION_WAIT: &str = "resolve_condition_wait";
 pub(super) const PENDING_CONDITION_INPUT: &str = "condition_wait_pending_input_sequence";

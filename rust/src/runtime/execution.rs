@@ -222,6 +222,17 @@ impl Runtime {
         self.structural = limits;
         self
     }
+    /// Allow new ordered waits on workflow tasks claimed by this runtime.
+    /// Existing marked waits remain replayable with the setting disabled.
+    pub fn with_ordered_condition_wait_authoring(mut self, enabled: bool) -> Self {
+        let storage = match &*self.storage {
+            Storage::Sqlite(store) => Storage::Sqlite(store.with_ordered_condition_wait_authoring(enabled)),
+            Storage::Postgres(store) => Storage::Postgres(store.with_ordered_condition_wait_authoring(enabled)),
+            Storage::MySql(store) => Storage::MySql(store.with_ordered_condition_wait_authoring(enabled)),
+        };
+        self.storage = Arc::new(storage);
+        self
+    }
     /// The configured history page sizes (DW_HISTORY_PAGE_SIZE_DEFAULT and _MAX).
     pub(super) fn history_pages(&self) -> super::history_pages::HistoryPages {
         super::history_pages::HistoryPages {

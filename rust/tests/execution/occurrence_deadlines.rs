@@ -82,7 +82,7 @@ fn instant(value: &Value) -> chrono::DateTime<chrono::FixedOffset> {
 
 async fn setup(namespace: &str) -> (TestDatabase, Runtime, Router) {
     let database = TestDatabase::new().await;
-    let runtime = database.open().await.unwrap();
+    let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
     let app = router(runtime.clone());
     if namespace != "default" {
         namespaces::create(&app, namespace).await;
@@ -90,6 +90,45 @@ async fn setup(namespace: &str) -> (TestDatabase, Runtime, Router) {
     let registered = author(&app, namespace, "deadline-worker").await;
     assert_eq!(registered["server_capabilities"]["condition_wait_occurrence_deadline"], true);
     (database, runtime, app)
+}
+
+#[tokio::test]
+async fn authoring_is_bound_to_the_claim_and_can_be_disabled_while_a_wait_replays() {
+    let namespace = "default";
+    let (database, runtime, enabled) = setup(namespace).await;
+    let disabled = router(runtime.clone().with_ordered_condition_wait_authoring(false));
+    let legacy = namespaces::start_scoped(&disabled, namespace, "legacy-while-upgrading").await;
+    let task = claim(&disabled, namespace).await;
+    assert!(task.get("condition_wait_input_order_authoring").is_none());
+    let mut command = anchored("gate:0", 240, 240);
+    command["condition_wait_input_order"] = json!("durable_receipt_order");
+    let prefix = history(&disabled, namespace, &legacy).await;
+    let (status, result) = finish(&enabled, namespace, &task, json!([command])).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["reason"], "condition_wait_input_order_authoring_disabled");
+    assert_eq!(history(&disabled, namespace, &legacy).await, prefix);
+    let (status, result) = finish(&disabled, namespace, &task, json!([anchored("gate:0", 240, 240)])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let run = namespaces::start_scoped(&enabled, namespace, "ordered-after-upgrade").await;
+    let task = claim(&enabled, namespace).await;
+    assert_eq!(task["condition_wait_input_order_authoring"], true);
+    let mut command = anchored("gate:0", 0, 0);
+    command["condition_wait_input_order"] = json!("durable_receipt_order");
+    let (status, result) = finish(&disabled, namespace, &task, json!([command])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let fired = wait_for_fire(&disabled, namespace, &run, 1).await;
+    let replay = claim(&disabled, namespace).await;
+    assert!(replay.get("condition_wait_input_order_authoring").is_none());
+    assert_eq!(replay.get("condition_wait_pending_input_sequence"), Some(&Value::Null));
+    let (status, result) = finish(&disabled, namespace, &replay, json!([{
+        "type":"resolve_condition_wait","condition_wait_id":fired[0]["condition_wait_id"],"satisfied":false,
+    }])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let events = history(&disabled, namespace, &run).await;
+    assert_eq!(payloads(&events, "ConditionWaitTimedOut").len(), 1);
+    runtime.close().await;
+    database.remove().await;
 }
 
 /// Open the first anchored wait of `occurrence`, returning the run and A.
@@ -202,7 +241,7 @@ async fn applying_a_signal_does_not_settle_a_condition_with_receipt_order() {
 async fn acknowledging_the_last_signal_wakes_the_ordered_predicate() {
     let namespace = "default";
     let database = TestDatabase::new().await;
-    let runtime = database.open().await.unwrap();
+    let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
     let app = router(runtime.clone());
     let run = namespaces::start_scoped(&app, namespace, "ordered-signal-recheck").await;
     let events = history(&app, namespace, &run).await;
@@ -308,7 +347,7 @@ async fn an_ordered_timeout_waits_for_early_input_and_excludes_late_receipts() {
 async fn unhandled_signal_receipts_cannot_strand_an_ordered_timeout() {
     let namespace = "default";
     let database = TestDatabase::new().await;
-    let runtime = database.open().await.unwrap();
+    let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
     let app = router(runtime.clone());
     let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
         "worker_id":"deadline-worker","task_queue":"test","runtime":"php",
@@ -344,7 +383,7 @@ async fn after_fire_only_a_successful_update_can_supply_receipt_evidence() {
     for (succeeds, resolves_same_turn) in [(true, true), (true, false), (false, true)] {
         let namespace = "default";
         let database = TestDatabase::new().await;
-        let runtime = database.open().await.unwrap();
+        let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
         let app = router(runtime.clone());
         let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
             "worker_id":"deadline-worker","task_queue":"test","runtime":"php","supported_workflow_types":["echo"],

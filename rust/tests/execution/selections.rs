@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn ordered_selection_commits_the_exact_child_candidate_without_waiting_for_the_timer() {
     let database = TestDatabase::new().await;
-    let runtime = database.open().await.unwrap();
+    let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
     let app = router(runtime.clone());
     let worker = "ordered-selection-parent";
     let (status, registration) = request(&app, "POST", "/api/worker/register", json!({
@@ -635,7 +635,7 @@ async fn false_selected_condition_wake_reuses_the_member_and_then_can_win() {
 async fn ordered_selected_condition_keeps_the_timeout_boundary_without_claiming_a_winner() {
     for marked in [false, true] {
         let database = TestDatabase::new().await;
-        let runtime = database.open().await.unwrap();
+        let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
         let app = router(runtime.clone());
         let worker = "ordered-condition-worker";
         let (status, registered) = request(&app, "POST", "/api/worker/register", json!({

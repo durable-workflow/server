@@ -180,6 +180,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
     pub(super) history_budget: super::history_budget::Config,
+    pub(super) ordered_condition_wait_authoring: bool,
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
     pub(super) workflow_task_lost_lease_attention_threshold: i64,
@@ -362,6 +363,10 @@ where
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
+            ordered_condition_wait_authoring: matches!(
+                std::env::var("DW_ORDERED_CONDITION_WAIT_AUTHORING").as_deref(),
+                Ok("1" | "true")
+            ),
             workflow_task_lease_seconds: 60,
             workflow_task_lost_lease_attention_threshold: std::env::var("DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD")
                 .ok()
@@ -398,6 +403,7 @@ where
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
+            ordered_condition_wait_authoring: self.ordered_condition_wait_authoring,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
             workflow_task_lost_lease_attention_threshold: self.workflow_task_lost_lease_attention_threshold,
             activity_task_lease_seconds: self.activity_task_lease_seconds,
@@ -420,6 +426,13 @@ where
             test_continuation_gate: self.test_continuation_gate.clone(),
         }
     }
+
+    pub(super) fn with_ordered_condition_wait_authoring(&self, enabled: bool) -> Self {
+        let mut store = self.in_namespace(&self.namespace);
+        store.ordered_condition_wait_authoring = enabled;
+        store
+    }
+
     pub(super) async fn database_live(&self) -> bool {
         Self::query("SELECT 1").execute(&self.pool).await.is_ok()
     }
@@ -3228,6 +3241,14 @@ where
                     "updated_at":DB::instant(&worker,"updated_at")?,"last_heartbeat_at":DB::instant(&worker,"last_heartbeat_at")?,
                     "task_id":task_id,"run_id":run_id,"lease_owner":worker_id,"attempt":attempt});
             }
+            let allow_ordered_condition_open = kind == "workflow"
+                && self.ordered_condition_wait_authoring
+                && super::wait_timeouts::supports_condition_input_order(
+                    &task_payload[super::cooperative::CLAIM_KEY]["capabilities"],
+                );
+            if allow_ordered_condition_open {
+                task_payload[super::cooperative::CLAIM_KEY][super::wait_timeouts::CONDITION_INPUT_AUTHORING] = json!(true);
+            }
             // `claimStatus`: a workflow claim records the replay its worker
             // should expect from the run's sticky affinity (Server #1017).
             let (sticky_worker, sticky_until, sticky_mode) = if kind == "workflow" {
@@ -3333,6 +3354,9 @@ where
                 }
             } else {
                 claim["workflow_task_attempt"] = json!(attempt);
+                if allow_ordered_condition_open {
+                    claim[super::wait_timeouts::CONDITION_INPUT_AUTHORING] = json!(true);
+                }
                 claim["arguments"] = wire(&DB::string(&run, "arguments")?);
                 if let Some(update_id) = task_payload["workflow_update_id"].as_str() {
                     claim["workflow_update_id"] = json!(update_id);
@@ -4520,13 +4544,16 @@ where
         created: &mut Vec<String>,
     ) -> Result<()> {
         let Apply { run, task, task_id, run_id, attempt, limits, external, local, exceptions, start_turn, codec, grouped_condition_repeats } = *apply;
-        if (super::wait_timeouts::uses_condition_input_order(command)
-            || command["type"] == super::wait_timeouts::RESOLVE_CONDITION_WAIT)
-            && !super::wait_timeouts::supports_condition_input_order(
-                &DB::document_row(task, "payload")?[super::cooperative::CLAIM_KEY]["capabilities"],
-            )
-        {
-            return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_order_not_supported"));
+        let ordered_open = super::wait_timeouts::uses_condition_input_order(command);
+        if ordered_open || command["type"] == super::wait_timeouts::RESOLVE_CONDITION_WAIT {
+            let payload = DB::document_row(task, "payload")?;
+            let claim = &payload[super::cooperative::CLAIM_KEY];
+            if !super::wait_timeouts::supports_condition_input_order(&claim["capabilities"]) {
+                return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_order_not_supported"));
+            }
+            if ordered_open && claim[super::wait_timeouts::CONDITION_INPUT_AUTHORING] != true {
+                return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_order_authoring_disabled"));
+            }
         }
         if command["type"] != super::local_activities::COMMAND {
             Self::write_local_activities(tx).await?;
