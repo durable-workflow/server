@@ -197,9 +197,14 @@ class ResourceCommands:
         if operation == "ls":
             if self.fail_list:
                 raise E.Refusal("fake_api_unavailable")
-            if resource == "volume" and "--filter" in argv and (
-                    type(self.volume_owner) is not dict or self.volume_owner.get(Q.COMPOSE_OWNER) != SCOPE):
-                return b""
+            if resource == "volume":
+                if len(argv) == 4:
+                    raise AssertionError("cleanup must not list unrelated volumes")
+                if argv[-1].startswith("label=") and (
+                        type(self.volume_owner) is not dict or self.volume_owner.get(Q.COMPOSE_OWNER) != SCOPE):
+                    return b""
+                if argv[-1].startswith("name="):
+                    assert argv[-1] == "name=^" + VOLUME + "$", argv
             return ("\n".join(sorted(getattr(self, resource + "s"))) +
                     ("\n" if getattr(self, resource + "s") else "")).encode()
         if operation == "inspect":

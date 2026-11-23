@@ -26,6 +26,7 @@ OWNER = "dev.durable-workflow.qualification.scope"
 COMPOSE_OWNER = "com.docker.compose.project"
 LABEL_FILTER = "label="
 OBJECT_ID = r"[0-9a-f]{64}"
+SBOM_SCOPE = re.compile(r"(?:dw|general)-native-sbom-[a-z0-9][a-z0-9-]{0,94}")
 VOLUME_NAME = r"[A-Za-z0-9_.-]+"
 CLEANUP_KEYS = {"api_ok", "verified_absent", "container_count", "network_count", "volume_count"}
 ROOT = Path.cwd().resolve()
@@ -260,13 +261,13 @@ def lines(commands: Commands, args: list[str], expression: str) -> set[str]:
 
 
 def owned_networks(commands: Commands, role: str, scope: str) -> tuple[set[str], set[str]]:
-    selector = LABEL_FILTER + COMPOSE_OWNER + "=" + scope if role == "compose" else "name=^" + scope + "$"
+    owner = COMPOSE_OWNER if role == "compose" else OWNER
+    selector = "name=^" + scope + "$" if role == "corpus" else LABEL_FILTER + owner + "=" + scope
     networks = lines(commands, ["network", "ls", "-q", "--no-trunc", "--filter", selector], OBJECT_ID)
     attached = set()
     for identity in networks:
         data = inspect(commands, "network", identity)
         labels = data.get("Labels")
-        owner = COMPOSE_OWNER if role == "compose" else OWNER
         require(data.get("Id") == identity and type(labels) is dict and labels.get(owner) == scope
                 and type(data.get("Containers")) is dict, "cleanup_network_ownership")
         if role == "corpus":
@@ -312,7 +313,7 @@ def owned_inventory(commands: Commands, role: str, scope: str) -> tuple[set[str]
                     and data["Labels"].get(owner) == scope, "cleanup_volume_owner")
     # Discovering a prefix or attached resource never grants ownership. Validate
     # the complete candidate set, including mounts, before the first removal.
-    for identity in containers:
+    for identity in sorted(containers):
         data = inspect(commands, "container", identity)
         require(data.get("Id") == identity and type(data.get("Config")) is dict
                 and type(data.get("Mounts")) is list, "cleanup_container_identity")
@@ -323,21 +324,33 @@ def owned_inventory(commands: Commands, role: str, scope: str) -> tuple[set[str]
     return containers, networks, volumes
 
 
+def remaining_volumes(commands: Commands, volumes: set[str]) -> set[str]:
+    if not volumes:
+        return set()
+    args = ["volume", "ls", "-q"]
+    for name in sorted(volumes):
+        args += ["--filter", "name=^" + re.escape(name) + "$"]
+    remaining = lines(commands, args, VOLUME_NAME)
+    require(remaining <= volumes, "cleanup_volume_inventory")
+    return remaining
+
+
 def cleanup(commands: Commands, role: str, scope: str) -> dict[str, Any]:
-    require(role in ("corpus", "compose") and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,150}", scope),
+    require(role in ("corpus", "compose", "sbom") and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,150}", scope),
             "cleanup_scope")
+    require(role != "sbom" or SBOM_SCOPE.fullmatch(scope), "cleanup_sbom_scope")
     containers, networks, volumes = owned_inventory(commands, role, scope)
     if containers:
         commands.run(["docker", "container", "rm", "-f", "-v", *sorted(containers)])
     if networks:
         commands.run(["docker", "network", "rm", *sorted(networks)])
-    # rm -v can already remove anonymous volumes. A successful list distinguishes
-    # absence from unavailable Docker; never reinterpret an inspect failure as 404.
-    remaining = lines(commands, ["volume", "ls", "-q"], VOLUME_NAME) & volumes
+    # rm -v can already remove anonymous volumes. List the exact previously
+    # owned names so unrelated volumes cannot exhaust the cleanup read bound.
+    remaining = remaining_volumes(commands, volumes)
     if remaining:
         commands.run(["docker", "volume", "rm", *sorted(remaining)])
     after_containers, after_networks, after_volumes = owned_inventory(commands, role, scope)
-    after_volumes |= lines(commands, ["volume", "ls", "-q"], VOLUME_NAME) & volumes
+    after_volumes |= remaining_volumes(commands, volumes)
     require(not after_containers and not after_networks and not after_volumes, "cleanup_not_absent")
     return {"api_ok": True, "verified_absent": True, "container_count": 0,
             "network_count": 0, "volume_count": 0}
