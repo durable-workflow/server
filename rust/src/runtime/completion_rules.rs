@@ -506,6 +506,9 @@ fn controller_scopes(commands: &[Value]) -> Vec<(String, Vec<String>)> {
                 add(at(field), format!("{field} is only supported for schedule_activity commands."));
             }
         }
+        if command.get("workflow_id").is_some() && !matches!(kind, "start_child_workflow" | super::external_signals::COMMAND) {
+            add(at("workflow_id"), "workflow_id only applies to start_child_workflow and signal_external_workflow.".into());
+        }
         // Native's child start turn (Server #966): `result`, the default, or
         // `started`.
         if kind == "start_child_workflow"
@@ -809,7 +812,7 @@ const READS: &[(&str, &[&str])] = &[
         "start_to_close_timeout", "schedule_to_start_timeout", "schedule_to_close_timeout", "heartbeat_timeout",
         "cancellation_policy", "worker_session"]),
     ("start_timer", &["delay_seconds", "cancellation_cleanup"]),
-    ("start_child_workflow", &["workflow_type", "arguments", "payload_codec", "connection", "queue", "retry_policy",
+    ("start_child_workflow", &["workflow_type", "workflow_id", "arguments", "payload_codec", "connection", "queue", "retry_policy",
         "execution_timeout_seconds", "run_timeout_seconds", "timeout_cleanup_seconds", "parent_close_policy", "cancellation_policy", "await"]),
     ("continue_as_new", &["arguments", "payload_codec", "workflow_type", "queue"]),
     ("complete_update", &["update_id", "result", "payload_codec"]),

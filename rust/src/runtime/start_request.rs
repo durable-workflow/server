@@ -22,7 +22,9 @@ pub(super) struct StartRequest {
     pub(super) fairness_weight: i64,
 }
 
-fn workflow_id_pattern(text: &str) -> bool {
+pub(super) const WORKFLOW_ID_MAX_LENGTH: usize = 128;
+
+pub(super) fn workflow_id_pattern(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
@@ -33,7 +35,7 @@ fn fairness_key_pattern(text: &str) -> bool {
 use Rule::{Array, In, Integer, Max, Min, Nullable, Pattern, Required};
 
 const RULES: &[(&str, &[Rule])] = &[
-    ("workflow_id", &[Nullable, Rule::String, Max(128), Pattern(workflow_id_pattern)]),
+    ("workflow_id", &[Nullable, Rule::String, Max(WORKFLOW_ID_MAX_LENGTH as i64), Pattern(workflow_id_pattern)]),
     ("workflow_type", &[Required, Rule::String, Max(255)]),
     ("task_queue", &[Nullable, Rule::String, Max(255)]),
     ("input", &[Nullable, Array]),

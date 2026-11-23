@@ -6503,6 +6503,7 @@ fn capabilities_template() -> Value {
         "signal_external_workflow": true,
         "condition_wait_occurrence_deadline": true,
         "workflow_task_completion_activity_poll": true, "activity_completion_workflow_poll": true, "workflow_task_completion_workflow_poll": true});
+    value[super::children::CAPABILITY_EXPLICIT_ID] = json!(true);
     value[super::continuation::CAPABILITY] = super::continuation::capability();
     // Gated off until installed acceptance (Server #1201).
     if let Some(advertised) = super::timeout_cleanup::advertisement() {
