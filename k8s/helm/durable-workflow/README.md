@@ -42,7 +42,7 @@ knobs that would break those guarantees are flagged in `values.yaml`.
 | --- | --- |
 | Kubernetes ≥ 1.27 | Older versions are not validated; the chart uses `policy/v1` PDB and `autoscaling/v2` HPA. |
 | Helm ≥ 3.10 | Required for OCI install and the `lookup` builtin. |
-| External MySQL/MariaDB/PostgreSQL | The chart does not bundle a database. Native creates its schema in an empty database on first start. The database itself must already exist. |
+| External MySQL/MariaDB/PostgreSQL | Create the database before installing the chart. The native Server can initialize an empty database if its database account can create the required schema. |
 | External Redis (or compatible) | PHP mode only. Required for the PHP multi-node correctness contract. Native does not use Redis. |
 | Inbound TLS / ingress | Provided by your platform. The chart can render an `Ingress` but does not terminate TLS itself. |
 
@@ -52,6 +52,24 @@ The chart will refuse to render until you point it at an external database
 (and, in PHP mode, Redis) — that is intentional, not a bug. Native mode also
 refuses to render without a shared `DW_AUTH_TOKEN`, as the native Server
 refuses to start without one.
+
+### Prepare MySQL or MariaDB with binary logging
+
+On a binlogged MySQL or MariaDB writer, a database-scoped account can need an
+administrator to install the native child-summary checkpoint triggers. Prepare
+the database before starting the Helm release:
+
+1. Run the chart's selected native Server image as a one-off process with
+   the chart's application `DB_*` settings and the `schema-bootstrap` command.
+2. If it returns `native_child_checkpoint_trigger_privilege_required`, run
+   `schema-checkpoint-ddl` with that same image and account. Have a database
+   administrator apply the resulting SQL to the writer.
+3. Rerun `schema-bootstrap` with the application account. Install the chart
+   after it succeeds. Keep the administrator credentials in the database
+   administration process.
+
+See the [Server checkpoint setup guide](../../../rust/README.md#child-summary-checkpoints-on-mysql-and-mariadb)
+for the original account and stored-code requirements.
 
 ### From the OCI registry (recommended for production)
 
@@ -77,7 +95,7 @@ helm install durable-workflow ./k8s/helm/durable-workflow \
 
 ```yaml
 image:
-  tag: "3.17.1"
+  tag: "3.22.1"
   # Pin a digest in production:
   # digest: "sha256:abc123..."
 
@@ -337,6 +355,11 @@ the image's `schema-upgrade` command, which requires every native Server
 stopped and a database backup first. Use the in-cluster hook with
 `helm upgrade`, or the manual path with GitOps or any other client that
 renders without the cluster.
+
+If the MySQL or MariaDB writer requires separate administrator DDL, use the
+manual path so you can apply the staged checkpoint SQL while every Server is
+stopped. Use `schema-upgrade` for the existing database in place of the
+`schema-bootstrap` command in the fresh-install procedure above.
 
 ### With helm upgrade
 
