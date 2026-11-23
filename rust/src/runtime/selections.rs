@@ -105,6 +105,7 @@ pub(super) fn validate_batch(commands: &[Value]) -> Result<()> {
                 Some("schedule_activity") => "activity",
                 Some("start_timer") => "timer",
                 Some("start_child_workflow") => "child",
+                Some("open_condition_wait") => "condition",
                 _ => return Err(unqualified()),
             };
             metadata(command, kind)?;
@@ -165,6 +166,17 @@ pub(super) fn check_sequence(metadata: &Value, sequence: i64) -> Result<()> {
         return Err(refuse(StatusCode::CONFLICT, "selection_sequence_mismatch"));
     }
     Ok(())
+}
+
+/// Replaces a command's authored group fields in an event payload with their
+/// normalized metadata, so the record never keeps unvalidated group fields.
+pub(super) fn replace_group(payload: &mut Value, metadata: &Value) {
+    let object = payload.as_object_mut().expect("event object");
+    for field in FIELDS {
+        object.remove(field);
+    }
+    object.remove("parallel_group_path");
+    merge(payload, metadata);
 }
 
 pub(super) fn merge(payload: &mut Value, metadata: &Value) {
@@ -339,6 +351,16 @@ where
                     if DB::string(&row, "status")? == done {
                         closed.insert(DB::number(&row, "sequence")?);
                     }
+                }
+            }
+            // A grouped condition member closes when it is satisfied or
+            // times out (Core `waitCompletedSuccessfully`); a fired timeout
+            // timer is counted above at the condition's sequence.
+            for row in Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ConditionWaitSatisfied','ConditionWaitTimedOut')")
+                .bind(run_id).fetch_all(&mut **tx).await?
+            {
+                if let Some(sequence) = DB::document_row(&row, "payload")?["sequence"].as_i64() {
+                    closed.insert(sequence);
                 }
             }
             if (base..=last).any(|sequence| !closed.contains(&sequence)) {
