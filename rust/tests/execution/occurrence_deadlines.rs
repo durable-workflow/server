@@ -36,6 +36,26 @@ async fn finish(app: &Router, namespace: &str, task: &Value, commands: Value) ->
         completion(task, commands)).await
 }
 
+async fn await_next_input(app: &Router, namespace: &str, task: &Value) {
+    let (status, result) = namespaces::scoped(app, namespace, "POST",
+        &format!("/api/worker/workflow-tasks/{}/fail", task["task_id"].as_str().unwrap()),
+        json!({"lease_owner":task["lease_owner"],"workflow_task_attempt":task["workflow_task_attempt"],
+            "failure":{"type":"WorkflowTaskWaitingForHistory","message":"Waiting for the next accepted input."}}),
+    ).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["outcome"], "waiting_for_history");
+}
+
+async fn claim_signal_input(app: &Router, namespace: &str) -> Value {
+    let mut task = claim(app, namespace).await;
+    if task["resume_source_kind"] == "timer" {
+        await_next_input(app, namespace, &task).await;
+        task = claim(app, namespace).await;
+    }
+    assert_eq!(task["resume_source_kind"], "workflow_signal");
+    task
+}
+
 async fn history(app: &Router, namespace: &str, run: &Value) -> Vec<Value> {
     let response = namespaces::scoped(app, namespace, "GET",
         &format!("/api/workflows/{}/runs/{}/history", run["workflow_id"].as_str().unwrap(), run["run_id"].as_str().unwrap()),
@@ -173,6 +193,99 @@ async fn applying_a_signal_does_not_settle_a_condition_with_receipt_order() {
     assert_eq!(payloads(&events, "ConditionWaitOpened").len(), 1);
     assert!(payloads(&events, "ConditionWaitSatisfied").is_empty());
     assert!(payloads(&events, "TimerCancelled").is_empty());
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn an_ordered_timeout_waits_for_early_input_and_excludes_late_receipts() {
+    for early in [true, false] {
+        let namespace = "default";
+        let (database, runtime, app) = setup(namespace).await;
+        let run = namespaces::start_scoped(&app, namespace, "ordered-receipt-boundary").await;
+        let initial = claim(&app, namespace).await;
+        let mut command = anchored("receipt-order:0", 2, 2);
+        command["condition_wait_input_order"] = json!("durable_receipt_order");
+        let (status, result) = finish(&app, namespace, &initial, json!([command])).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        if early {
+            signal(&app, namespace, &run).await;
+            signal(&app, namespace, &run).await;
+        }
+        wait_for_fire(&app, namespace, &run, 1).await;
+        if !early {
+            signal(&app, namespace, &run).await;
+        }
+
+        let prefix = history(&app, namespace, &run).await;
+        let event = |kind: &str| prefix.iter().find(|event| event["event_type"] == kind).unwrap();
+        let wait = &event("ConditionWaitOpened")["payload"]["condition_wait_id"];
+        let receipt = &event("SignalReceived")["sequence"];
+        let timer = &event("TimerFired")["sequence"];
+        assert_eq!(receipt.as_i64() < timer.as_i64(), early);
+        let wake = if early { claim_signal_input(&app, namespace).await } else { claim(&app, namespace).await };
+        let timeout = json!([{"type":"resolve_condition_wait","condition_wait_id":wait,"satisfied":false}]);
+        let decision = json!([{
+            "type":"resolve_condition_wait", "condition_wait_id":wait, "satisfied":true,
+            "input_receipt_sequence":receipt,
+        }]);
+        if early {
+            let (status, result) = finish(&app, namespace, &wake, timeout).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{result}");
+            assert_eq!(result["reason"], "condition_wait_input_pending");
+            assert_eq!(history(&app, namespace, &run).await, prefix);
+            await_next_input(&app, namespace, &wake).await;
+            let second = claim_signal_input(&app, namespace).await;
+            let (status, result) = finish(&app, namespace, &second, decision).await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+            let history = history(&app, namespace, &run).await;
+            assert_eq!(payloads(&history, "SignalApplied").len(), 2);
+            let result = payloads(&history, "ConditionWaitSatisfied");
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0]["input_receipt_sequence"], *receipt);
+        } else {
+            let (status, result) = finish(&app, namespace, &wake, decision).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{result}");
+            assert_eq!(result["reason"], "condition_wait_outcome_mismatch");
+            assert_eq!(history(&app, namespace, &run).await, prefix);
+            let (status, result) = finish(&app, namespace, &wake, timeout).await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+            let result = payloads(&history(&app, namespace, &run).await, "ConditionWaitTimedOut");
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0]["timer_fired_sequence"], *timer);
+        }
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+#[tokio::test]
+async fn unhandled_signal_receipts_cannot_strand_an_ordered_timeout() {
+    let namespace = "default";
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "deadline-worker", json!(["echo"]), json!([])).await;
+    let run = namespaces::start_scoped(&app, namespace, "ordered-receipt-without-handler").await;
+    let initial = claim(&app, namespace).await;
+    let mut command = anchored("receipt-order:0", 2, 2);
+    command["condition_wait_input_order"] = json!("durable_receipt_order");
+    assert_eq!(finish(&app, namespace, &initial, json!([command])).await.0, StatusCode::OK);
+    signal(&app, namespace, &run).await;
+    signal(&app, namespace, &run).await;
+    wait_for_fire(&app, namespace, &run, 1).await;
+    let first = claim_signal_input(&app, namespace).await;
+    await_next_input(&app, namespace, &first).await;
+    let second = claim_signal_input(&app, namespace).await;
+    let events = history(&app, namespace, &run).await;
+    let wait = &payloads(&events, "ConditionWaitOpened")[0]["condition_wait_id"];
+    let (status, result) = finish(&app, namespace, &second, json!([{
+        "type":"resolve_condition_wait", "condition_wait_id":wait, "satisfied":false,
+    }])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let events = history(&app, namespace, &run).await;
+    assert!(payloads(&events, "SignalApplied").is_empty());
+    assert_eq!(payloads(&events, "ConditionWaitTimedOut").len(), 1);
     runtime.close().await;
     database.remove().await;
 }

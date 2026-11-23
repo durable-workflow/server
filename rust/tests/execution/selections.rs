@@ -565,7 +565,12 @@ async fn ordered_selected_condition_keeps_the_timeout_boundary_without_claiming_
         let runtime = database.open().await.unwrap();
         let app = router(runtime.clone());
         let worker = "ordered-condition-worker";
-        register(&app, worker, json!(["echo"]), json!([])).await;
+        let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
+            "worker_id":worker,"task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":[],
+            "workflow_command_contracts":{"echo":{"signals":["approve"],"queries":[],"updates":[]}}
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{registered}");
         let workflow = "ordered-condition-selection";
         let started = start(&app, workflow).await;
         let task = poll(&app, worker, "workflow").await;
@@ -636,6 +641,32 @@ async fn ordered_selected_condition_keeps_the_timeout_boundary_without_claiming_
         assert!(events.iter().all(|event| event["event_type"] != "SignalApplied"));
         let resumed = poll(&app, worker, "workflow").await;
         assert_eq!(resumed["run_id"], started["run_id"]);
+        if marked {
+            let decision = |receipt: &Value| json!([{
+                "type":"resolve_condition_wait", "condition_wait_id":opened["condition_wait_id"],
+                "satisfied":true, "input_receipt_sequence":receipt,
+            }]);
+            let prefix = history().await;
+            let (status, result) = finish_task(&app, &resumed, decision(&fired["sequence"])).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{result}");
+            assert_eq!(result["reason"], "condition_wait_outcome_mismatch");
+            assert_eq!(history().await, prefix);
+            let receipt = &event("SignalReceived")["sequence"];
+            let (status, result) = finish_task(&app, &resumed, decision(receipt)).await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+            let resolved = history().await;
+            let resolved = resolved.as_array().unwrap();
+            let resolved_event = |kind: &str| resolved.iter().find(|event| event["event_type"] == kind).unwrap();
+            let applied = resolved_event("SignalApplied");
+            let satisfied = resolved_event("ConditionWaitSatisfied");
+            let selected = resolved_event("SelectionResolved");
+            assert!(applied["sequence"].as_i64() < satisfied["sequence"].as_i64());
+            assert!(satisfied["sequence"].as_i64() < selected["sequence"].as_i64());
+            assert_eq!(satisfied["payload"]["input_receipt_sequence"], *receipt);
+            assert_eq!(satisfied["payload"]["timer_fired_sequence"], fired["sequence"]);
+            assert_eq!(selected["payload"]["resolution_event_type"], "ConditionWaitSatisfied");
+            assert_eq!(selected["payload"]["operation_identity"], opened["condition_wait_id"]);
+        }
         runtime.close().await;
         database.remove().await;
     }

@@ -14,6 +14,30 @@ use std::collections::BTreeSet;
 
 pub(super) const CONDITION_INPUT_ORDER_FIELD: &str = "condition_wait_input_order";
 const DURABLE_RECEIPT_ORDER: &str = "durable_receipt_order";
+pub(super) const RESOLVE_CONDITION_WAIT: &str = "resolve_condition_wait";
+
+pub(super) struct ConditionDecision<'a> {
+    wait_id: &'a str,
+    satisfied: bool,
+    receipt: Option<i64>,
+}
+
+impl<'a> ConditionDecision<'a> {
+    pub(super) fn parse(command: &'a Value) -> Result<Self> {
+        let invalid = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_condition_wait_outcome");
+        let wait_id = command["condition_wait_id"].as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 191)
+            .ok_or_else(invalid)?;
+        let satisfied = command["satisfied"].as_bool().ok_or_else(invalid)?;
+        let receipt = command.get("input_receipt_sequence")
+            .map(|value| value.as_i64().filter(|value| *value > 0).ok_or_else(invalid))
+            .transpose()?;
+        if !satisfied && receipt.is_some() {
+            return Err(invalid());
+        }
+        Ok(Self { wait_id, satisfied, receipt })
+    }
+}
 
 pub(super) fn uses_condition_input_order(payload: &Value) -> bool {
     payload[CONDITION_INPUT_ORDER_FIELD] == DURABLE_RECEIPT_ORDER
@@ -132,6 +156,79 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn record_ordered_condition_decision(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        task_id: &str,
+        decision: ConditionDecision<'_>,
+    ) -> Result<()> {
+        let mismatch = || refuse(StatusCode::CONFLICT, "condition_wait_outcome_mismatch");
+        let waits = Self::waits(tx, run_id).await?;
+        let wait = waits.conditions.iter().find(|wait| wait.id == decision.wait_id && wait.is_open())
+            .ok_or_else(mismatch)?;
+        let opening = waits.condition_opening(&wait.id)
+            .filter(|opening| uses_condition_input_order(&opening.payload))
+            .ok_or_else(mismatch)?;
+        let timeout = wait.fired_at;
+        if !decision.satisfied && timeout.is_none() {
+            return Err(mismatch());
+        }
+        if let Some(receipt) = decision.receipt {
+            if timeout.is_some_and(|boundary| receipt >= boundary) {
+                return Err(mismatch());
+            }
+            // The received position is canonical even if the same task applied
+            // the signal or ran the update after the timer. Failed updates have
+            // no UpdateApplied event.
+            let evidence = Self::query(
+                "SELECT 1 FROM workflow_history_events received
+                 JOIN workflow_history_events applied
+                   ON applied.workflow_run_id=received.workflow_run_id
+                   AND applied.workflow_command_id=received.workflow_command_id
+                 WHERE received.workflow_run_id=$1 AND received.sequence=$2
+                   AND ((received.event_type='SignalReceived' AND applied.event_type='SignalApplied')
+                     OR (received.event_type='UpdateAccepted' AND applied.event_type='UpdateApplied')) LIMIT 1",
+            ).bind(run_id).bind(receipt).fetch_optional(&mut **tx).await?;
+            if evidence.is_none() {
+                return Err(mismatch());
+            }
+        }
+        let prefix_end = if decision.satisfied { decision.receipt } else { timeout };
+        if let Some(boundary) = prefix_end {
+            let pending = Self::query(
+                "SELECT 1 FROM workflow_history_events received
+                 JOIN workflow_commands command ON command.id=received.workflow_command_id
+                   AND command.resolved_workflow_run_id=received.workflow_run_id
+                 WHERE received.workflow_run_id=$1 AND received.sequence<$2
+                   AND received.event_type IN ('SignalReceived','UpdateAccepted')
+                   AND command.status='accepted' AND command.applied_at IS NULL LIMIT 1",
+            ).bind(run_id).bind(boundary).fetch_optional(&mut **tx).await?;
+            if pending.is_some() {
+                return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_pending"));
+            }
+        }
+        let group = super::activity_metadata::payload_for_path(&opening.payload);
+        let mut payload = wait_fields(&opening.payload);
+        payload.as_object_mut().unwrap().extend(group.clone());
+        let sequence = wait.sequence.ok_or_else(mismatch)?;
+        payload["sequence"] = json!(sequence);
+        if let Some(receipt) = decision.receipt {
+            payload["input_receipt_sequence"] = json!(receipt);
+        }
+        if let Some(fire) = timeout {
+            payload["timer_fired_sequence"] = json!(fire);
+            payload["timer_id"] = json!(wait.timer_id().ok_or_else(mismatch)?);
+        }
+        let event = if decision.satisfied { "ConditionWaitSatisfied" } else { "ConditionWaitTimedOut" };
+        Self::append(tx, run_id, event, payload, Some(task_id), None).await?;
+        Self::claim_wait_selection(tx, run_id, &group, "condition", &wait.id, event).await?;
+        if timeout.is_none() {
+            Self::cancel_wait_timeout(tx, run_id,
+                &json!({"sequence":sequence,"condition_wait_id":wait.id}), task_id, now()).await?;
+        }
+        Ok(())
+    }
+
     /// A terminal run cannot fire its remaining wait timeouts. Settle their
     /// physical rows without adding the cancellation events that published PHP
     /// omits for ordinary completion, failure and continuation. Authored timers

@@ -1842,11 +1842,13 @@ where
     fn signal_can_advance(
         waits: &super::wait_history::Waits,
         declared: Option<&[String]>,
+        signal_id: &str,
         name: &str,
         signal_wait_id: Option<&str>,
         include_received: bool,
     ) -> bool {
         waits.advanceable_condition()
+            || waits.ordered_condition_can_consume(signal_id)
             || signal_wait_id.is_some_and(|signal_wait_id| waits.signal_advanceable(name, signal_wait_id, include_received))
             || declared.is_some_and(|names| names.iter().any(|declared| declared == name))
     }
@@ -1896,6 +1898,7 @@ where
             if !Self::signal_can_advance(
                 &waits,
                 declared.as_deref(),
+                &DB::string(&signal, "id")?,
                 &DB::string(&signal, "signal_name")?,
                 DB::optional_string(&signal, "signal_wait_id")?.as_deref(),
                 include_received,
@@ -2055,7 +2058,8 @@ where
         // `recordSatisfiedConditionWaitForSignalResume` then satisfies the
         // latest open condition wait whose timeout has not fired.
         let condition = waits.latest_open_condition();
-        if !applies && condition.is_none() {
+        let ordered_input = waits.ordered_condition_can_consume(signal_id);
+        if !applies && condition.is_none() && !ordered_input {
             // Core leaves the signal received and completes the task. Native
             // refuses such a completion, unless Core's own history explains
             // it: the signal names a wait the run has had, or a condition wait
@@ -2070,12 +2074,12 @@ where
             let reason = if waits.any_current() { "signal_wait_mismatch" } else { "signal_wait_not_open" };
             return Err(refuse(StatusCode::CONFLICT, reason));
         }
-        // An undeclared signal without a wait of its own is consumed by the
-        // condition wait at that wait's sequence, without `SignalApplied`
-        // (`markConditionWaitSignalConsumed`).
+        // A signal without a declared handler or named wait is consumed
+        // without `SignalApplied`. A marked condition can also consume that
+        // input after its timer fired so it cannot block the eligible prefix.
         let record_sequence = if applies { sequence } else { condition.and_then(|wait| wait.sequence) };
         let mut winner = None;
-        if applies || record_sequence.is_some() {
+        if applies || record_sequence.is_some() || ordered_input {
             // Arguments stored by reference were resolved before this
             // transaction, for exactly this reference (Server #979).
             let stored = DB::string(&signal, "arguments")?;
@@ -2215,7 +2219,7 @@ where
     /// Native serves a selection directly over its waits; one nested in
     /// another group, or with a member wider than one sequence, stays an
     /// explicit unqualified shape rather than a silent divergence.
-    async fn claim_wait_selection(
+    pub(super) async fn claim_wait_selection(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         group: &serde_json::Map<String, Value>,
@@ -4023,6 +4027,10 @@ where
                 super::external_signals::COMMAND => {
                     super::external_signals::validate(command)?;
                 }
+                super::wait_timeouts::RESOLVE_CONDITION_WAIT => {
+                    reject_fields(command, &["type", "condition_wait_id", "satisfied", "input_receipt_sequence"])?;
+                    super::wait_timeouts::ConditionDecision::parse(command)?;
+                }
                 "open_signal_wait" => {
                     super::selections::fields(command, &["type", "signal_name", "timeout_seconds"])?;
                     text(command, "signal_name")?;
@@ -4491,6 +4499,9 @@ where
             // does not count update events toward the next turn's sequence.
             sequence += 1;
             Self::apply_update(tx, &run, &task, command, sequence).await?;
+        } else if command["type"] == super::wait_timeouts::RESOLVE_CONDITION_WAIT {
+            let decision = super::wait_timeouts::ConditionDecision::parse(command)?;
+            Self::record_ordered_condition_decision(tx, run_id, task_id, decision).await?;
         } else if command["type"] == "start_child_workflow" {
             Self::guard_pending(tx, &run_id, super::memo_limits::Pending::Children, &limits, task_id, attempt).await?;
             sequence += 1;
