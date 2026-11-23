@@ -209,7 +209,8 @@ class SbomExportCustodyTest(unittest.TestCase):
             self.assertEqual(path, self.path)
             info = path.stat()
             self.assertEqual(info.st_ino, initial_inode)
-            self.assertEqual(stat.S_IMODE(info.st_mode), 0o444)
+            self.assertEqual(stat.S_IMODE(info.st_mode), stat.S_IRUSR)
+            self.assertEqual(info.st_uid, os.geteuid())
             return path.read_bytes()
 
         receipt, consumed = A.consume_owned_oci_export(self.directory, self.config, "linux/amd64", consume)
@@ -274,7 +275,7 @@ class SbomExportCustodyTest(unittest.TestCase):
             info = path.stat()
             path.chmod(0o644)
             path.write_bytes(b"!" + self.raw[1:])
-            path.chmod(0o444)
+            path.chmod(stat.S_IRUSR)
             os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
 
         # The second read must detect changed bytes even when the reported

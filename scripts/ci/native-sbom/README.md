@@ -207,5 +207,6 @@ relaxing blob/graph/layer integrity or claiming actual producer qualification.
 sets read-only permissions, and retains the open descriptor throughout a
 synchronous consumer call. It verifies directory and file identity around
 that call and recomputes the complete archive hash before returning the result.
-The caller still owns exporter custody before the call, a read-only bind
-mount, scanner confinement and terminal resource cleanup.
+The caller runs the scanner as the archive's nonroot owner and gives it a
+read-only bind mount. Exporter custody before the call, scanner confinement
+and terminal resource cleanup stay with the caller.

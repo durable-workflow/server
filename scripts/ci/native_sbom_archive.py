@@ -220,7 +220,8 @@ def consume_owned_oci_export(directory: Path, expected_config: str, platform: st
 
     The producer creates a fresh private output directory and finishes before
     this call. The trusted caller supplies a bounded synchronous consumer that
-    mounts the returned path read-only and waits for its reader to exit.
+    mounts the returned path read-only, uses its nonroot owner UID, and waits
+    for its reader to exit.
     """
     require(directory.is_absolute(), "sbom_export_directory")
     try:
@@ -248,9 +249,8 @@ def consume_owned_oci_export(directory: Path, expected_config: str, platform: st
                 require(original == _file_identity(info), "sbom_export_file_changed")
                 _check_export_path(directory, directory_fd, directory_identity, original)
 
-                # The private directory controls host access. The confined
-                # consumer receives a read-only bind mount as a different UID.
-                os.fchmod(fd, 0o444)
+                # The scanner can read the bind mount as the nonroot owner.
+                os.fchmod(fd, stat.S_IRUSR)
                 sealed = _file_identity(os.fstat(fd))
                 receipt = oci_archive_identity(stream, expected_config, platform)
                 require(receipt["archive_bytes"] == info.st_size and _file_identity(os.fstat(fd)) == sealed,
@@ -265,10 +265,9 @@ def consume_owned_oci_export(directory: Path, expected_config: str, platform: st
                 _check_export_path(directory, directory_fd, directory_identity, sealed)
                 stream.seek(0)
                 reader = ArchiveReader(stream, 30)
-                while reader.read(65536):
-                    pass
-                require(reader.count == receipt["archive_bytes"]
-                        and reader.digest.hexdigest() == receipt["archive_sha256"]
+                while reader.count < receipt["archive_bytes"]:
+                    reader.exact(min(65536, receipt["archive_bytes"] - reader.count))
+                require(not reader.read(1) and reader.digest.hexdigest() == receipt["archive_sha256"]
                         and _file_identity(os.fstat(fd)) == sealed, "sbom_export_file_changed")
                 _check_export_path(directory, directory_fd, directory_identity, sealed)
             except OSError:
