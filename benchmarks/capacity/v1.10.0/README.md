@@ -38,6 +38,10 @@ To compare releases, supply an exact Server image digest as the fourth
 argument. Run one workload at a time and use a separate output directory for
 each binding and arm.
 
+On versions with child-summary checkpoints, the runner applies the documented
+staged DDL using the administrator of its disposable database. The scoped
+application account then verifies the schema. Binary logging stays enabled.
+
 ## Evidence
 
 - `identity.json` records the suite, exact images, host architecture, binding,
@@ -65,3 +69,8 @@ cell. These measurements supplement the
 [Server 3.21.0 baseline](results/server-3.21.0-linux-amd64/summary.json) keeps
 the three pilot runs and their separate per-close CSV files. The traces
 establish the workload and collector checks on the published baseline.
+
+[Server 3.22.0 comparison](results/server-3.22.0-linux-amd64/summary.json)
+uses the same workload and SDK pins. The staged bootstrap preserved MySQL's
+binary logging. Each arm includes all 1,000 close samples and one parent
+resume. Compare the final wake separately from intermediate closes.

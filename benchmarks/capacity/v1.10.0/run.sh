@@ -109,8 +109,20 @@ SQL
 native_env=(--env DW_RUST_EXPERIMENTAL=1 --env DB_CONNECTION=mysql --env DB_HOST="$database" --env DB_PORT=3306
     --env DB_DATABASE=fanout_fixture --env DB_USERNAME=capacity_worker --env DB_PASSWORD
     --env DW_AUTH_TOKEN --env DW_HTTP_ACCESS_LOG=false)
-docker run --rm --name "$base-bootstrap" --init --pull never --network "$network" --cpus=2 --memory=2g --pids-limit=152 \
-    "${native_env[@]}" "$server_image" schema-bootstrap > "$probe/bootstrap.log" 2>&1
+native_schema() {
+    local command=$1
+    docker run --rm --name "$base-$command" --init --pull never --network "$network" \
+        --cpus=2 --memory=2g --pids-limit=152 "${native_env[@]}" "$server_image" "$command"
+}
+if native_schema schema-bootstrap > "$probe/bootstrap.json" 2> "$probe/bootstrap.log"; then
+    :
+elif grep -Fxq native_child_checkpoint_trigger_privilege_required "$probe/bootstrap.log"; then
+    native_schema schema-checkpoint-ddl | mysql
+    native_schema schema-bootstrap > "$probe/bootstrap-resumed.json"
+else
+    printf 'Native schema bootstrap failed. See %s.\n' "$probe/bootstrap.log" >&2
+    exit 1
+fi
 docker run --rm -d --name "$server" --init --pull never --network "$network" --cpus=4 --memory=3g --pids-limit=240 \
     "${native_env[@]}" "$server_image" > /dev/null
 components+=("$server")
