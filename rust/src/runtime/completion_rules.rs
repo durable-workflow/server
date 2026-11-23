@@ -369,6 +369,15 @@ fn whole(value: &mut Value) {
 /// Validates the completion as PHP's transport rules do, then normalizes its
 /// integer fields.
 pub(super) fn checked(body: Value) -> Result<Value> {
+    // This enum is exact on the wire. Check it before TrimStrings can make
+    // an authored value like "promoted " look valid.
+    if let Some(commands) = body["commands"].as_array() {
+        for command in commands.iter().filter(|command| {
+            command["type"].as_str().is_some_and(|kind| kind.trim() == "continue_as_new")
+        }) {
+            super::continuations::reject_inactive_target_build(command)?;
+        }
+    }
     // Laravel's TrimStrings and ConvertEmptyStringsToNull run first.
     let mut body = super::start_request::normalized(body);
     let mut found = Vec::new();
@@ -814,7 +823,7 @@ const READS: &[(&str, &[&str])] = &[
     ("start_timer", &["delay_seconds", "cancellation_cleanup"]),
     ("start_child_workflow", &["workflow_type", "workflow_id", "arguments", "payload_codec", "connection", "queue", "retry_policy",
         "execution_timeout_seconds", "run_timeout_seconds", "timeout_cleanup_seconds", "parent_close_policy", "cancellation_policy", "await"]),
-    ("continue_as_new", &["arguments", "payload_codec", "workflow_type", "queue"]),
+    ("continue_as_new", &["arguments", "payload_codec", "workflow_type", "queue", "target_build"]),
     ("complete_update", &["update_id", "result", "payload_codec"]),
     ("fail_update", &["update_id", "message", "exception_class", "exception_type", "non_retryable"]),
     ("record_side_effect", &["result", "payload_codec"]),

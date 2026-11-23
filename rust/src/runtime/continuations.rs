@@ -15,7 +15,22 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
+pub(super) fn reject_inactive_target_build(command: &Value) -> Result<()> {
+    let Some(target) = command.get("target_build") else {
+        return Ok(());
+    };
+    let reason = match target.as_str() {
+        Some("inherited" | "promoted") => "unsupported_target_build",
+        _ => "invalid_target_build",
+    };
+    Err(super::RuntimeError::Protocol {
+        status: StatusCode::UNPROCESSABLE_ENTITY,
+        response: json!({"reason": reason, "retryable": false, "request_admitted": false}),
+    })
+}
+
 pub(super) fn validate(command: &Value) -> Result<()> {
+    reject_inactive_target_build(command)?;
     reject_fields(command, &["type", "arguments", "workflow_type", "queue"])?;
     for field in ["workflow_type", "queue"] {
         if command.get(field).is_some_and(|value| !value.is_null()) {

@@ -237,6 +237,67 @@ async fn malformed_or_unsupported_continuation_refuses_without_a_successor() {
 }
 
 #[tokio::test]
+async fn explicit_continue_as_new_target_refuses_without_consuming_the_lease() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "continuation-worker", json!(["echo"]), json!([])).await;
+    let original = start(&app, "continuation-target-build").await;
+    let task = poll(&app, "continuation-worker", "workflow").await;
+    let completion_path = format!(
+        "/api/worker/workflow-tasks/{}/complete",
+        task["task_id"].as_str().unwrap()
+    );
+    let runs_path = "/api/workflows/continuation-target-build/runs";
+    let history_path = format!(
+        "/api/workflows/continuation-target-build/runs/{}/history",
+        original["run_id"].as_str().unwrap()
+    );
+    let history_before = request(&app, "GET", &history_path, Value::Null).await.1;
+
+    for (targets, reason) in [
+        (
+            vec![Value::Null, json!(true), json!(false), json!(0), json!(1), json!([]), json!({}),
+                json!(""), json!("Promoted"), json!("latest"), json!("promoted ")],
+            "invalid_target_build",
+        ),
+        (vec![json!("inherited"), json!("promoted")], "unsupported_target_build"),
+    ] {
+        for target in targets {
+            let commands = json!([{"type":"continue_as_new","target_build":target}]);
+            let (status, response) = request(
+                &app,
+                "POST",
+                &completion_path,
+                completion(&task, commands),
+            ).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+            assert_eq!(response["reason"], reason, "{target}");
+            assert_eq!(response["retryable"], false);
+            assert_eq!(response["request_admitted"], false);
+        }
+    }
+
+    assert_eq!(request(&app, "GET", &history_path, Value::Null).await.1, history_before);
+    let (_, runs) = request(&app, "GET", runs_path, Value::Null).await;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(runs["runs"][0]["run_id"], original["run_id"]);
+    assert_eq!(runs["runs"][0]["is_current_run"], true);
+
+    let (status, response) = request(
+        &app,
+        "POST",
+        &completion_path,
+        completion(&task, json!([{"type":"continue_as_new"}])),
+    ).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let (_, runs) = request(&app, "GET", runs_path, Value::Null).await;
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 2);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn failed_continuation_history_append_rolls_back_run_link_pointer_and_memo() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
