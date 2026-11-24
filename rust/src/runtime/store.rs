@@ -24,6 +24,7 @@ pub(super) struct TaskEligibility<Row> {
     pub(super) activity: Option<Row>,
     pub(super) activity_queue: String,
     cancellation: Option<Value>,
+    definition: Option<(Option<String>, &'static str)>,
     pub(super) session: Option<super::worker_sessions::CommandSession>,
     pub(super) type_name: String,
 }
@@ -2839,6 +2840,37 @@ where
         Ok(true)
     }
 
+    fn execution_offer_digest(
+        task: &DB::Row, run: &DB::Row, payload: &Value, eligibility: &TaskEligibility<DB::Row>,
+        timeout_cleanup: Option<(&'static str, DateTime<Utc>, DateTime<Utc>)>,
+    ) -> Result<[u8; 32]> {
+        let activity = eligibility.activity.as_ref().map(|row| -> Result<Value> {
+            Ok(json!([
+                DB::string(row, "id")?, DB::string(row, "status")?, DB::number(row, "attempt_count")?,
+                DB::optional_string(row, "current_attempt_id")?, DB::optional_string(row, "connection")?,
+                DB::optional_instant(row, "schedule_deadline_at")?, DB::optional_instant(row, "close_deadline_at")?,
+                DB::optional_instant(row, "schedule_to_close_deadline_at")?, DB::optional_instant(row, "heartbeat_deadline_at")?,
+                DB::optional_document_row(row, "activity_options")?
+            ]))
+        }).transpose()?;
+        super::task_offer_seal::authority_digest("execution_eligibility", &(
+            (
+                DB::string(task, "id")?, DB::string(task, "task_type")?, DB::string(task, "status")?,
+                DB::number(task, "attempt_count")?, DB::optional_string(task, "compatibility")?,
+                DB::optional_instant(task, "available_at")?, DB::optional_string(task, "lease_owner")?,
+                DB::optional_instant(task, "lease_expires_at")?, payload,
+            ),
+            (
+                DB::string(run, "id")?, DB::string(run, "status")?, DB::optional_string(run, "compatibility")?,
+                DB::number(run, "last_history_sequence")?, DB::number(run, "message_cursor_position")?,
+                DB::optional_instant(run, "execution_deadline_at")?, DB::optional_instant(run, "run_deadline_at")?,
+                DB::optional_string(run, "sticky_worker_id")?, DB::optional_instant(run, "sticky_until")?,
+            ),
+            &eligibility.cancellation, &eligibility.definition, &eligibility.type_name, &eligibility.activity_queue, activity,
+            timeout_cleanup,
+        ))
+    }
+
     /// Observe a workflow or activity candidate from one read-only snapshot.
     /// The observed attempt is checked again under the acceptance transition.
     pub(super) async fn peek_execution_offer(
@@ -2890,8 +2922,14 @@ where
             if observed_attempt.checked_add(1).is_none() {
                 continue;
             }
+            let timeout = if kind == "workflow" {
+                Self::timeout_cleanup_due(&mut read, &run, at).await?
+            } else {
+                None
+            };
+            let eligibility_digest = Some(Self::execution_offer_digest(&task, &run, &payload, &eligibility, timeout)?);
             read.commit().await?;
-            return Ok(Some(ClaimTarget { task_id, kind, observed_attempt: Some(observed_attempt) }));
+            return Ok(Some(ClaimTarget { task_id, kind, observed_attempt: Some(observed_attempt), eligibility_digest }));
         }
         read.commit().await?;
         Ok(None)
@@ -2930,15 +2968,19 @@ where
         }
         // `matchesRecordedWorkflowDefinition`: a run pinned to its recorded
         // definition goes to a worker that has it, while one is live.
-        if kind == "workflow" {
+        let definition = if kind == "workflow" {
             let required = DB::optional_string(task, "compatibility")?
                 .map(|build| build.trim().to_owned())
                 .filter(|build| !build.is_empty());
             let context = Self::definition_context(connection, run, Some(queue), required, None).await?;
-            if !self.definition_allows(connection, run, worker, &context).await?.0 {
+            let (allowed, decision) = self.definition_allows(connection, run, worker, &context).await?;
+            if !allowed {
                 return Ok(None);
             }
-        }
+            Some((context.recorded, decision))
+        } else {
+            None
+        };
         if kind == "workflow"
             && let Some(update_id) = task_payload["workflow_update_id"].as_str()
         {
@@ -3009,7 +3051,7 @@ where
                 return Ok(None);
             }
         }
-        Ok(Some(TaskEligibility { activity, activity_queue, cancellation, session, type_name }))
+        Ok(Some(TaskEligibility { activity, activity_queue, cancellation, definition, session, type_name }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3173,20 +3215,39 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+            let claim_time = now();
+            let mut verified = None;
+            if let Some(expected) = tx.claim_only.as_ref().and_then(|target| target.eligibility_digest) {
+                let Some(eligibility) = self.task_eligibility(
+                    &mut **tx, &task, &task_payload, &run, &worker, &types, kind, queue, protocol_version,
+                ).await? else { return Ok(None); };
+                let timeout = if kind == "workflow" {
+                    Self::timeout_cleanup_due(tx, &run, claim_time).await?
+                } else {
+                    None
+                };
+                if Self::execution_offer_digest(&task, &run, &task_payload, &eligibility, timeout)? != expected {
+                    return Ok(None);
+                }
+                verified = Some(eligibility);
+            }
             // Server #1201: a workflow claim past the work deadline enters
             // timeout cleanup first, so this claim carries the interruption.
-            if kind == "workflow" && self.enter_timeout_cleanup(tx, &run, now()).await? {
+            if kind == "workflow" && self.enter_timeout_cleanup(tx, &run, claim_time).await? {
                 run = Self::query("SELECT * FROM workflow_runs WHERE id=$1").bind(&run_id).fetch_one(&mut **tx).await?;
+                verified = None;
             }
             tx.remember_run_tags(&run_id,&run);
-            let Some(TaskEligibility { activity, activity_queue, cancellation, session, type_name }) = self
-                .task_eligibility(
-                    &mut **tx, &task, &task_payload, &run, &worker, &types, kind, queue, protocol_version,
-                )
-                .await?
-            else {
-                continue;
+            let eligibility = match verified {
+                Some(eligibility) => eligibility,
+                None => {
+                    let Some(eligibility) = self.task_eligibility(
+                        &mut **tx, &task, &task_payload, &run, &worker, &types, kind, queue, protocol_version,
+                    ).await? else { continue; };
+                    eligibility
+                }
             };
+            let TaskEligibility { activity, activity_queue, cancellation, session, type_name, .. } = eligibility;
             let task_id = DB::string(&task, "id")?;
             // `admitActivity`: the session admits the claim or the claim is
             // rolled back, so a held or full session leaves the task ready.
@@ -5181,7 +5242,7 @@ where
         // A continuation whose prefix still holds claims only its resumed
         // task: a same-worker priority, like eager activity dispatch.
         tx.claim_only = if prefix_holds == Some(true) {
-            next_task_id.clone().map(|task_id| ClaimTarget { task_id, kind: "workflow", observed_attempt: None })
+            next_task_id.clone().map(|task_id| ClaimTarget { task_id, kind: "workflow", observed_attempt: None, eligibility_digest: None })
         } else {
             None
         };

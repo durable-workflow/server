@@ -44,6 +44,8 @@ pub(super) struct ClaimTarget {
     /// Delivery acceptance must still see the attempt that was observed.
     /// A carried continuation originates inside the current transaction.
     pub(super) observed_attempt: Option<i64>,
+    /// The authority snapshot sealed for this exact task and attempt.
+    pub(super) eligibility_digest: Option<[u8; 32]>,
 }
 
 /// Every mutable transaction cache, taken before continuation speculation.

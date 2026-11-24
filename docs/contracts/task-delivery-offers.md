@@ -39,6 +39,14 @@ descriptor can select legacy polling before a logical poll begins. A malformed
 supported descriptor is an error. Protocol support alone does not supply this
 capability.
 
+The authenticated native routes use the worker's ordinary namespace and poll
+capacity checks. Registration advertises the descriptor for an eligible worker
+with an open issuance window and storage admission. Native Server refreshes
+the 30-second issuance window every ten seconds while storage accepts new
+work. A failed refresh suspends new offers until a window is committed.
+Acceptance of an already issued packet uses its own signed scope and durable
+receipt.
+
 ## Offer and acceptance
 
 Use `POST /api/worker/{workflow,activity,query,update-validation}-tasks/offers`
@@ -102,6 +110,14 @@ The implementation must define bounded receipt storage and cleanup while
 retaining the accepted identity for the complete live claim, including renewal
 and process restart.
 
+The native producer seals the worker's routing fence, protocol, build and
+history options with the observed task authority. The candidate fingerprint
+covers the task and attempt state and the relevant run, activity, query or
+validation facts. Workflow offers also bind the pending timeout-cleanup
+decision before it can mutate the run. A multiplexed offer observes the kind
+cursor without moving it. Only a committed lease turns the cursor. The native
+acceptance checks the packet deadline again before committing a new claim.
+
 ## Uncertain outcomes
 
 An accepted live claim can replay after the short offer deadline. Replay must
@@ -117,12 +133,37 @@ older replica does not establish that no claim committed. The worker retains
 the same packet, endpoint, registration and poll identity through uncertainty.
 It must not fall back to a legacy claim.
 
-A definitive refusal has HTTP 409, `task: null`, and the matching typed reason.
-Confirmed `task_offer_expired` permits a new logical poll.
+A definitive refusal has HTTP 409, `task: null`, and one of the typed reasons
+listed below. Confirmed `task_offer_expired` permits a new logical poll.
 `worker_registration_lost_authority` ends the old worker. Other refusals and
 terminal outcomes require the existing typed poll contract; an unstructured
 409 is not a definitive no-claim result. An older endpoint's 404 or 405 remains
 uncertain once acceptance has begun.
+
+Native Server returns five definitive refusals. Each body contains exactly
+`task`, `poll_status`, and `reason`, with no worker envelope. Each `poll_status`
+and `reason` pair is listed below:
+
+| `poll_status` | `reason` | Meaning |
+| --- | --- | --- |
+| `task_offer_expired` | `task_offer_expired` | The packet's deadline passed, no claim committed for the logical poll, and the selected task still has the observed attempt. |
+| `task_offer_unclaimable` | `task_offer_unclaimable` | No claim committed for the logical poll, and the selected task can no longer be claimed at the sealed attempt and eligibility, for example because a peer claimed it first. |
+| `task_offer_lease_ended` | `task_offer_lease_ended` | This packet's claim committed earlier, but its lease has ended and it grants no authority. |
+| `task_offer_conflict` | `task_offer_conflict` | The logical poll is already bound to a different packet, kind set or registration, so this packet can never be accepted. |
+| `stale_worker_registration` | `worker_registration_lost_authority` | The packet's registration incarnation was replaced or is no longer fresh. |
+
+Server decides each answer under the transition lock after reading the
+logical poll's receipt. A refused acceptance rolls back. The first four mean
+that the selected packet does not and cannot authorize execution. The worker
+releases only that packet, and its next logical poll uses a new identity.
+`task_offer_lease_ended` and `task_offer_conflict` do not claim that nothing
+committed for the logical poll, only that nothing live is owed to this
+packet. Authority loss ends only the original registration incarnation.
+
+Any other answer is not definitive, including a retryable 503 or a 409 in the
+worker envelope. The worker protocol version stays in the response header. The
+legacy poll routes refuse requests that carry a task delivery header or a
+signed offer token.
 
 ## Remaining source and acceptance work
 
@@ -208,6 +249,49 @@ rotation. Forced key removal and deliberate invalidation of live claims need
 a separate product/operational policy; no automatic removal path is admitted.
 The seal provides authentication/confidentiality, while the existing claim,
 attempt, registration and receipt transaction supplies task authority.
+
+### Native key-use records
+
+The native implementation keeps versioned key-use records in the SQL
+`dw_query_cache` table under `dw-native-offer-key:`. The exact key ID indexes
+the maximum committed read horizon, a count of retained receipts, and a
+domain-separated SHA-256 fingerprint of the installed key material. Retired
+key records preserve the ID-to-material association across future boots.
+Fingerprints stay internal.
+
+An issuer first commits a 30-second issuance window against the database
+clock. Its local monotonic deadline also limits that window. Its latest
+possible expiry is the end of the window plus the ten-second maximum offer
+lifetime. The database retains the key for at least another 1,000 milliseconds.
+A replica admits a database-clock sample only when the sample takes at most
+500 milliseconds and the database time is within 500 milliseconds of both
+local wall-clock observations. Installed qualification must verify at most
+1,000 milliseconds of disagreement among the application replicas and
+database primaries, including failover.
+
+Server startup checks all required read keys before starting the scheduler.
+A required read key that is absent from the configured ring, or an absent
+ring, does not stop the server. It starts and keeps serving the legacy routes,
+but opens no issuance window, so registration advertises no offers. An offer
+acceptance or replay whose packet names a read key that storage still
+requires, but that this replica lacks, receives the retryable HTTP 503
+reason `task_offer_read_key_unavailable`. That refusal is not definitive, and
+the worker keeps the packet for a replica that holds the key. The durable
+obligation is never evicted. A failed issuance-window refresh is logged at
+warning level with a static reason and no key material.
+Starting or renewing an issuance window also checks them in its transaction.
+An accepted receipt increments its key's reference count in the same
+transaction as the lease. Receipt review uses the database clock with the
+clock-skew allowance and decrements the count only when it removes the
+receipt. A retained receipt continues to require its key after the window
+and unaccepted-offer lifetime have elapsed.
+
+To rotate, load the new key as a read key on the serving replicas before
+starting issuers with the new key first. Stop the old issuers, allow their
+last committed windows to age out, and keep the old read key configured
+until receipt review releases its final reference. Startup still rejects
+reuse of an existing key ID for different material. A missing required read
+key suspends issuance and the refusal above, rather than refusing startup.
 
 The shared draft scenarios are in
 [`offer-accept.v1.json`](../../tests/Fixtures/contracts/task-delivery-offers/offer-accept.v1.json).

@@ -1225,6 +1225,16 @@ where
             .as_deref().is_some_and(|proof| task["registration_incarnation"] == proof))
     }
 
+    fn query_offer_digest(task: &Value) -> Result<[u8; 32]> {
+        let fields: Vec<_> = [
+            "query_task_id", "namespace", "task_queue", "workflow_id", "run_id", "workflow_type",
+            "query_name", "query_task_attempt", "status", "lease_owner", "lease_expires_at",
+            "registration_incarnation", "query_admitted_at", "query_deadline_at", "history_observed_sequence",
+            "history_cutoff_sequence", "last_history_sequence", "run_status", "receipt_expires_at", "query_arguments",
+        ].into_iter().map(|field| &task[field]).collect();
+        super::task_offer_seal::authority_digest("query_eligibility", &fields)
+    }
+
     pub(super) async fn peek_query_offer(
         &self, owner: &str, queue: &str, config: &QueryTaskConfig,
         fence: &super::worker_poll_fence::WorkerPollFence,
@@ -1261,8 +1271,9 @@ where
                 if !Self::query_delivery_history(&mut *read, &mut task).await? {
                     continue;
                 }
+                let eligibility_digest = Some(Self::query_offer_digest(&task)?);
                 read.commit().await?;
-                return Ok(Some(ClaimTarget { task_id, kind: "query", observed_attempt: Some(attempt) }));
+                return Ok(Some(ClaimTarget { task_id, kind: "query", observed_attempt: Some(attempt), eligibility_digest }));
             }
         }
         read.commit().await?;
@@ -1404,6 +1415,11 @@ where
             if !Self::query_delivery_history(tx, &mut task).await? {
                 Self::put_query(tx, &key, &task, authority::expiration(&task)?).await?;
                 continue;
+            }
+            if let Some(expected) = tx.claim_only.as_ref().and_then(|target| target.eligibility_digest)
+                && Self::query_offer_digest(&task)? != expected
+            {
+                return Ok(QueryClaim::Empty);
             }
             let next_attempt = task["query_task_attempt"]
                 .as_i64()

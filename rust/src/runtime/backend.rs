@@ -166,6 +166,7 @@ pub(super) trait Backend: Database {
     const OFFER_RECEIPT_DUE: &str = "SELECT 1 FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-offer-receipt:%' AND expiration<=$1 LIMIT 1";
     const OFFER_RECEIPT_DEFER: &str = "UPDATE dw_query_cache SET expiration=$1 WHERE \"key\"=$2";
     const OFFER_RECEIPT_REVIEW: &str = "SELECT \"key\",value FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-offer-receipt:%' AND expiration<=$1 ORDER BY expiration,\"key\" LIMIT $2";
+    const OFFER_REQUIRED_KEYS: &str = "SELECT \"key\",value FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-offer-key:%' AND expiration>=$1 ORDER BY expiration DESC LIMIT 5";
     // One primary-key page of the whole cache table, for the one-time
     // cutover of 3.0.1 query rows (Server #964).
     const QUERY_CACHE_PAGE: &str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\">$1 ORDER BY \"key\" LIMIT 64";
@@ -232,7 +233,7 @@ pub(super) trait Backend: Database {
     // clock, as PHP's `ExternalPayloadBackupHold` does, so every process
     // agrees on expiry. PostgreSQL keeps `owner` as a uuid.
     // `clock_timestamp()` advances within a transaction, unlike `now()`.
-    const BACKUP_HOLD_CLOCK: &str = "SELECT clock_timestamp() AT TIME ZONE 'UTC' AS database_time";
+    const DATABASE_UTC_CLOCK: &str = "SELECT clock_timestamp() AT TIME ZONE 'UTC' AS database_time";
     const BACKUP_HOLD_ROW: &str = "SELECT owner::text AS owner,acquired_at,expires_at FROM runtime_external_payload_backup_hold WHERE id=1";
     const BACKUP_HOLD_SAVE: &str = "UPDATE runtime_external_payload_backup_hold SET owner=CAST($1 AS uuid),acquired_at=$2,expires_at=$3 WHERE id=1";
     fn statement(sql: &'static str) -> Cow<'static, str> {
@@ -303,7 +304,7 @@ impl Backend for Sqlite {
     }
     const ACTIVITY_METADATA_HISTORY: &str = "SELECT sequence,event_type,CASE WHEN projection_bytes<=8388608 THEN payload ELSE NULL END AS payload,workflow_task_id,recorded_at,projection_count FROM (SELECT sequence,event_type,payload,workflow_task_id,recorded_at,COUNT(*) OVER () AS projection_count,SUM(length(CAST(payload AS BLOB))) OVER (ORDER BY sequence) AS projection_bytes FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') ORDER BY sequence LIMIT 10001) AS page ORDER BY sequence";
     const PHP_CONNECTION: &str = "sqlite";
-    const BACKUP_HOLD_CLOCK: &str = "SELECT strftime('%Y-%m-%d %H:%M:%f','now') AS database_time";
+    const DATABASE_UTC_CLOCK: &str = "SELECT strftime('%Y-%m-%d %H:%M:%f','now') AS database_time";
     const BACKUP_HOLD_ROW: &str = "SELECT owner,acquired_at,expires_at FROM runtime_external_payload_backup_hold WHERE id=1";
     const BACKUP_HOLD_SAVE: &str = "UPDATE runtime_external_payload_backup_hold SET owner=$1,acquired_at=$2,expires_at=$3 WHERE id=1";
     // Carbon's millisecond comparison rounds at half a millisecond. Parse only
@@ -617,7 +618,7 @@ impl Backend for MySql {
     const POLL_WAKE_TASKS_SQL: &str = super::cross_kind_poll::poll_wake_tasks_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r");
     type EncodedInteger = Option<i64>;
     // MariaDB's Laravel driver may store the owner as its uuid type.
-    const BACKUP_HOLD_CLOCK: &str = "SELECT UTC_TIMESTAMP(6) AS database_time";
+    const DATABASE_UTC_CLOCK: &str = "SELECT UTC_TIMESTAMP(6) AS database_time";
     const BACKUP_HOLD_ROW: &str = "SELECT CAST(owner AS CHAR(36)) AS owner,acquired_at,expires_at FROM runtime_external_payload_backup_hold WHERE id=1";
     const BACKUP_HOLD_SAVE: &str = "UPDATE runtime_external_payload_backup_hold SET owner=$1,acquired_at=$2,expires_at=$3 WHERE id=1";
     type EncodedFloat = Option<f64>;
@@ -707,6 +708,7 @@ impl Backend for MySql {
     const OFFER_RECEIPT_DUE: &str = "SELECT 1 FROM dw_query_cache WHERE `key` LIKE 'dw-native-offer-receipt:%' AND expiration<=$1 LIMIT 1";
     const OFFER_RECEIPT_DEFER: &str = "UPDATE dw_query_cache SET expiration=$1 WHERE `key`=$2";
     const OFFER_RECEIPT_REVIEW: &str = "SELECT `key`,value FROM dw_query_cache WHERE `key` LIKE 'dw-native-offer-receipt:%' AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";
+    const OFFER_REQUIRED_KEYS: &str = "SELECT `key`,value FROM dw_query_cache WHERE `key` LIKE 'dw-native-offer-key:%' AND expiration>=$1 ORDER BY expiration DESC LIMIT 5";
     const QUERY_CACHE_PAGE: &str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key`>$1 ORDER BY `key` LIMIT 64";
     const QUERY_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE `key` LIKE 'dw-native-query-poll:%' AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";
     const WORKFLOW_POLL_EXPIRED: &str = "SELECT `key` FROM dw_query_cache WHERE (`key` LIKE 'dw-native-workflow-poll:%' OR `key` LIKE 'dw-native-workflow-poll-v2:%') AND expiration<=$1 ORDER BY expiration,`key` LIMIT $2";

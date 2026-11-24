@@ -145,6 +145,23 @@ impl WorkerPollFence {
         })
     }
 
+    pub(super) fn owns_offer_registration(&self, supplied: &str) -> bool {
+        use subtle::ConstantTimeEq;
+        supplied.len() == 32
+            && supplied.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && self.incarnation.as_ref().is_some_and(|token| bool::from(token.as_bytes().ct_eq(supplied.as_bytes())))
+            && self.routing["capabilities"].as_array().is_some_and(|values| values.iter().any(|value| value == "task_delivery_offers"))
+    }
+
+    /// The routing authority an offer packet seals. A heartbeat must not end
+    /// a sealed offer or an accepted claim's replay, so the registration's
+    /// heartbeat timestamps are excluded even without process identity. The
+    /// packet's registration digest and the incarnation check still fence
+    /// every re-registration, which rotates the incarnation token.
+    pub(super) fn offer_routing_digest(&self) -> Result<[u8; 32]> {
+        super::task_offer_seal::authority_digest("worker_routing_fence", &(&self.routing, &self.process))
+    }
+
     /// `isFresh`: active, and heartbeated within the stale window.
     pub(super) fn fresh<DB: Backend>(row: &DB::Row, stale_after_seconds: i64) -> Result<bool> {
         let cutoff = now() - chrono::Duration::seconds(stale_after_seconds);

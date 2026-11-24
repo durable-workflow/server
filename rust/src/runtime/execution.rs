@@ -52,6 +52,8 @@ pub struct Runtime {
     pub(super) transition_codec: Arc<Semaphore>,
     pub(super) external: Arc<super::ExternalPayloadConfig>,
     pub(super) queries: Arc<super::QueryTaskConfig>,
+    pub(super) offer_keys: Option<Arc<super::task_offer_seal::KeyRing>>,
+    offer_window: Arc<super::task_offer_key_usage::OfferWindow>,
     /// The package's signal, update and payload ceilings (DW_V2_LIMIT_*).
     pub(super) structural: super::StructuralLimits,
 }
@@ -62,6 +64,7 @@ struct TimerScheduler {
     /// The maintenance loop's retention, apart from the ticker so a long
     /// prune never delays timers (Server #633).
     retention: Mutex<Option<JoinHandle<()>>>,
+    offers: Mutex<Option<JoinHandle<()>>>,
     healthy: Arc<AtomicBool>,
     /// Whether the ticker also runs the repair pass (`maintenance_repair_enabled`).
     repair: Arc<AtomicBool>,
@@ -85,6 +88,7 @@ impl TimerScheduler {
             stop,
             task: Mutex::new(None),
             retention: Mutex::new(None),
+            offers: Mutex::new(None),
             healthy: Arc::new(AtomicBool::new(true)),
             repair: Arc::new(AtomicBool::new(maintenance_repair_enabled())),
         }
@@ -160,6 +164,25 @@ impl TimerScheduler {
         });
         *self.task.lock().unwrap() = Some(task);
     }
+    fn start_offers(&self, storage: Arc<Storage>, keys: Arc<super::task_offer_seal::KeyRing>,
+        window: Arc<super::task_offer_key_usage::OfferWindow>,
+    ) {
+        let mut stop = self.stop.subscribe();
+        let task = tokio::spawn(async move {
+            let mut logged = None;
+            loop {
+                tokio::select! {
+                    _ = stop.changed() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                        let next = refresh_offer_window(&storage, &keys).await;
+                        window.replace(logged_offer_window(next, &mut logged));
+                    }
+                }
+            }
+        });
+        *self.offers.lock().unwrap() = Some(task);
+    }
+
     async fn close(&self) {
         self.stop.send_replace(true);
         let task = self.task.lock().unwrap().take();
@@ -170,6 +193,11 @@ impl TimerScheduler {
         if let Some(retention) = retention {
             let _ = retention.await;
         }
+        let offers = self.offers.lock().unwrap().take();
+        if let Some(offers) = offers {
+            let _ = offers.await;
+        }
+
     }
     fn running(&self) -> bool {
         self.task
@@ -185,6 +213,61 @@ impl Drop for TimerScheduler {
         if let Some(task) = self.task.get_mut().unwrap().take() {
             task.abort();
         }
+        if let Some(task) = self.offers.get_mut().unwrap().take() {
+            task.abort();
+        }
+    }
+}
+
+/// A bounded, content-free classification of a failed issuance refresh:
+/// a static refusal reason or the storage error kind, never Display text.
+fn offer_refresh_failure(error: &super::RuntimeError) -> &'static str {
+    match error {
+        super::RuntimeError::Refused { reason, .. } => reason,
+        super::RuntimeError::Database(_) => "database",
+        super::RuntimeError::Io(_) => "io",
+        super::RuntimeError::Json(_) => "json",
+        super::RuntimeError::Migration(_) => "migration",
+        super::RuntimeError::Protocol { .. } => "protocol",
+    }
+}
+
+/// Keep a refreshed window, or suspend issuance and log a failed refresh at
+/// warning level. A repeated identical failure is logged once until a
+/// refresh succeeds or the failure changes.
+fn logged_offer_window(
+    refreshed: Result<Option<super::task_offer_key_usage::IssuanceWindow>>,
+    logged: &mut Option<&'static str>,
+) -> Option<super::task_offer_key_usage::IssuanceWindow> {
+    match refreshed {
+        Ok(window) => {
+            if window.is_some() {
+                *logged = None;
+            }
+            window
+        }
+        Err(error) => {
+            let reason = offer_refresh_failure(&error);
+            if *logged != Some(reason) {
+                eprintln!("{}", json!({"event":"task_offer_issuance_refresh_failed","level":"warning","reason":reason}));
+                *logged = Some(reason);
+            }
+            None
+        }
+    }
+}
+
+async fn refresh_offer_window(storage: &Storage, keys: &super::task_offer_seal::KeyRing)
+    -> Result<Option<super::task_offer_key_usage::IssuanceWindow>>
+{
+    match storage {
+        Storage::Sqlite(store) if store.storage_admission.snapshot().accepts_new_work() =>
+            store.reserve_task_offer_issuance(keys).await.map(Some),
+        Storage::Postgres(store) if store.storage_admission.snapshot().accepts_new_work() =>
+            store.reserve_task_offer_issuance(keys).await.map(Some),
+        Storage::MySql(store) if store.storage_admission.snapshot().accepts_new_work() =>
+            store.reserve_task_offer_issuance(keys).await.map(Some),
+        _ => Ok(None),
     }
 }
 
@@ -322,8 +405,15 @@ impl Runtime {
         }
     }
 
+    fn configured_offer_keys() -> Result<Option<Arc<super::task_offer_seal::KeyRing>>> {
+        super::task_offer_seal::KeyRing::from_env()
+            .map(|keys| keys.map(Arc::new))
+            .map_err(|error| refuse(StatusCode::SERVICE_UNAVAILABLE, error.reason()))
+    }
+
     pub async fn open(database: &str, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let offer_keys = Self::configured_offer_keys()?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let poll_sweeps = super::poll_sweeps::Config::from_env()?;
@@ -347,11 +437,12 @@ impl Runtime {
             super::poll_capacity::Settings::from_env(),
             store.pool.options().get_max_connections(),
         ));
-        Self::from_storage(Storage::Sqlite(store), token, external, queries, structural).await
+        Self::from_storage(Storage::Sqlite(store), token, external, queries, structural, offer_keys).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let offer_keys = Self::configured_offer_keys()?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let poll_sweeps = super::poll_sweeps::Config::from_env()?;
@@ -375,11 +466,12 @@ impl Runtime {
             super::poll_capacity::Settings::from_env(),
             store.pool.options().get_max_connections(),
         ));
-        Self::from_storage(Storage::Postgres(store), token, external, queries, structural).await
+        Self::from_storage(Storage::Postgres(store), token, external, queries, structural, offer_keys).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
+        let offer_keys = Self::configured_offer_keys()?;
         let external = super::ExternalPayloadConfig::from_env()?;
         let queries = super::QueryTaskConfig::from_env()?;
         let poll_sweeps = super::poll_sweeps::Config::from_env()?;
@@ -403,7 +495,7 @@ impl Runtime {
             super::poll_capacity::Settings::from_env(),
             store.pool.options().get_max_connections(),
         ));
-        Self::from_storage(Storage::MySql(store), token, external, queries, structural).await
+        Self::from_storage(Storage::MySql(store), token, external, queries, structural, offer_keys).await
     }
 
     async fn from_storage(
@@ -412,6 +504,7 @@ impl Runtime {
         external: super::ExternalPayloadConfig,
         queries: super::QueryTaskConfig,
         structural: super::StructuralLimits,
+        offer_keys: Option<Arc<super::task_offer_seal::KeyRing>>,
     ) -> Result<Self> {
         let runtime = Self {
             storage: Arc::new(storage),
@@ -424,14 +517,43 @@ impl Runtime {
             transition_codec: Arc::new(Semaphore::new(1)),
             external: Arc::new(external),
             queries: Arc::new(queries),
+            offer_keys,
+            offer_window: Default::default(),
             structural,
         };
         runtime.verify_ready().await?;
+        let ring = runtime.offer_keys.as_deref();
+        let keys = match &*runtime.storage {
+            Storage::Sqlite(store) => store.preflight_task_offer_keys(ring).await,
+            Storage::Postgres(store) => store.preflight_task_offer_keys(ring).await,
+            Storage::MySql(store) => store.preflight_task_offer_keys(ring).await,
+        };
+        match keys {
+            // Durable obligations name a read key this process lacks. Start
+            // and keep legacy routes serving, but open no issuance window, so
+            // registration advertises no offers; acceptance and replay that
+            // need the absent key are refused as retryable.
+            Err(error) if super::task_offer_key_usage::is_missing_read_key(&error) => {
+                eprintln!("{}", json!({"event":"task_offer_required_read_key_missing","level":"warning",
+                    "issuance":"suspended"}));
+            }
+            Err(error) => {
+                runtime.close().await;
+                return Err(error);
+            }
+            Ok(()) => {}
+        }
         if let Err(error) = runtime.initialize_namespace_registry().await {
             runtime.close().await;
             return Err(error);
         }
         runtime.scheduler.start(runtime.storage.clone());
+        if let Some(keys) = runtime.offer_keys.as_ref() {
+            let refreshed = refresh_offer_window(&runtime.storage, keys).await;
+            runtime.offer_window.replace(logged_offer_window(refreshed, &mut None));
+            runtime.scheduler.start_offers(runtime.storage.clone(), keys.clone(), runtime.offer_window.clone());
+        }
+
         Ok(runtime)
     }
 
@@ -504,6 +626,8 @@ impl Runtime {
             transition_codec: self.transition_codec.clone(),
             external: self.external.clone(),
             queries: self.queries.clone(),
+            offer_keys: self.offer_keys.clone(),
+            offer_window: self.offer_window.clone(),
             structural: self.structural,
         }
     }
@@ -1444,11 +1568,15 @@ impl Runtime {
     /// A leased validation task as a worker receives it, with the run's
     /// replay bundle.
     async fn update_validation_task(&self, task_id: &str) -> Result<Value> {
-        let mut task = match &*self.storage {
+        let task = match &*self.storage {
             Storage::Sqlite(store) => store.update_validation_payload(task_id).await?,
             Storage::Postgres(store) => store.update_validation_payload(task_id).await?,
             Storage::MySql(store) => store.update_validation_payload(task_id).await?,
         };
+        self.with_validation_history(task).await
+    }
+
+    async fn with_validation_history(&self, mut task: Value) -> Result<Value> {
         if task.get("history_events").is_some()
             && let (Some(workflow_id), Some(run_id)) = (task["workflow_id"].as_str(), task["run_id"].as_str())
         {
@@ -1489,6 +1617,110 @@ impl Runtime {
             }
         }
     }
+    pub(super) fn task_delivery_descriptor(&self) -> Option<Value> {
+        (!self.auth.anonymous && self.offer_window.current().is_some() && self.storage_admission().snapshot().accepts_new_work())
+            .then(super::task_offer_dispatch::descriptor)
+    }
+
+    pub(super) async fn handle_task_offer(&self, endpoint: &'static str, body: &Value, protocol: &str) -> Result<(StatusCode, Value)> {
+        use super::{
+            task_delivery_receipts::{Acceptance, OfferScope},
+            task_offer_dispatch::{self as delivery, Delivery, IncomingOffer},
+        };
+        let Some(keys) = self.offer_keys.as_ref() else {
+            // No configured ring: nothing is issued. A packet whose read key
+            // storage still requires gets its own retryable refusal.
+            let id = body.get("task_offer_token").and_then(Value::as_str)
+                .and_then(super::task_offer_seal::KeyRing::frame_key_id);
+            let required = match id {
+                None => false,
+                Some(id) => match &*self.storage {
+                    Storage::Sqlite(store) => store.offer_read_key_required(id).await?,
+                    Storage::Postgres(store) => store.offer_read_key_required(id).await?,
+                    Storage::MySql(store) => store.offer_read_key_required(id).await?,
+                },
+            };
+            return Err(if required { delivery::read_key_unavailable() } else { delivery::unavailable() });
+        };
+        let request_id = super::workflow_poll_requests::request_id(body)
+            .filter(|id| id.chars().count() <= 255)
+            .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_poll_request_id"))?;
+        let worker_id = super::text(body, "worker_id")?;
+        let queue = super::text(body, "task_queue")?;
+        let registration = super::text(body, "registration_token")?;
+        if registration.len() != 32 || !registration.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_registration_token"));
+        }
+        let kinds = if endpoint == "workflow" {
+            super::update_validation::task_kinds(body)?
+        } else {
+            if body.get("task_kinds").is_some_and(|kinds| !kinds.is_null() && *kinds != json!([endpoint])) {
+                return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_kinds"));
+            }
+            vec![endpoint]
+        };
+        let packet = body.get("task_offer_token").map(|packet| packet.as_str().ok_or_else(|| {
+            refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_token")
+        })).transpose()?;
+        let timeout = match body.get("timeout_seconds") {
+            None | Some(Value::Null) if packet.is_none() => self.worker_poll_wait(),
+            Some(value) => super::laravel_validation::integer(value)
+                .filter(|seconds| (0..=60).contains(seconds))
+                .map(|seconds| seconds as u64)
+                .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
+            _ => return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout")),
+        };
+        if packet.is_some() && timeout != 0 {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"));
+        }
+        let encoding = if endpoint == "workflow" { super::history_pages::requested(body)? } else { None };
+        let page = if endpoint == "workflow" {
+            self.history_pages().poll(super::history_pages::requested_size(body)?, encoding)
+        } else { None };
+        let request = IncomingOffer {
+            scope: OfferScope { worker_id, queue, endpoint, request_id: &request_id, kinds: &kinds },
+            body, protocol, page, timeout, packet,
+        };
+        let outcome = match &*self.storage {
+            Storage::Sqlite(store) => store.dispatch_task_offer(&request, keys, &self.offer_window, &self.queries).await,
+            Storage::Postgres(store) => store.dispatch_task_offer(&request, keys, &self.offer_window, &self.queries).await,
+            Storage::MySql(store) => store.dispatch_task_offer(&request, keys, &self.offer_window, &self.queries).await,
+        };
+        let refusal = |status, reason| Ok((StatusCode::CONFLICT, json!({"task":null,"poll_status":status,"reason":reason})));
+        let outcome = match outcome {
+            Err(super::RuntimeError::Refused { reason: "worker_registration_lost_authority", .. }) =>
+                return refusal("stale_worker_registration", "worker_registration_lost_authority"),
+            other => other?,
+        };
+        let body = match outcome {
+            Delivery::Offer(None) => json!({"task":null,"poll_status":"empty"}),
+            Delivery::Offer(Some(offer)) => json!({"task":null,"poll_status":"offered","task_offer":{
+                "schema":delivery::DELIVERY_SCHEMA,"task_id":offer.target.task_id,"task_kind":offer.target.kind,
+                "token":offer.token,"expires_at_ms":offer.expires_at_ms,
+            }}),
+            Delivery::Acceptance(Acceptance::Expired) => return refusal("task_offer_expired", "task_offer_expired"),
+            Delivery::Acceptance(Acceptance::ConflictingOffer) => return refusal("task_offer_conflict", "task_offer_conflict"),
+            Delivery::Acceptance(Acceptance::LeaseEnded) => return refusal("task_offer_lease_ended", "task_offer_lease_ended"),
+            Delivery::Acceptance(Acceptance::Unclaimable) => return refusal("task_offer_unclaimable", "task_offer_unclaimable"),
+            Delivery::Acceptance(Acceptance::Claimed(mut task) | Acceptance::Replayed(mut task)) => {
+                if task["task_kind"] == "update_validation" {
+                    task = self.with_validation_history(task).await?;
+                    if endpoint == "workflow" {
+                        task["next_history_page_token"] = Value::Null;
+                    }
+                    json!({"task":task,"poll_status":"leased"})
+                } else if endpoint == "workflow" {
+                    super::history_pages::compress(&mut task, encoding)?;
+                    super::carried_polls::workflow_answer(json!({"task":task,"poll_status":"leased"}))
+                } else {
+                    task["task_kind"] = json!(endpoint);
+                    super::store::activity_server_time(endpoint, json!({"task":task,"poll_status":"leased"}))
+                }
+            }
+        };
+        Ok((StatusCode::OK, body))
+    }
+
     pub(crate) async fn poll_query(&self, body: Value) -> Result<Value> {
         match &*self.storage {
             Storage::Sqlite(store) => store.poll_query(body, &self.queries).await,
@@ -2168,5 +2400,348 @@ impl Runtime {
             Storage::Postgres(store) => store.fail_activity(task_id, body, failure, blob, None).await,
             Storage::MySql(store) => store.fail_activity(task_id, body, failure, blob, None).await,
         }
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn task_offer_read_key_preflight_fences_an_incomplete_restart() {
+    use super::task_offer_key_usage::fixture_ring;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("runtime.sqlite");
+    let path = path.to_str().unwrap();
+    let open_with = |keys| async move {
+        let pool = sqlite::open(path).await.unwrap();
+        Runtime::from_storage(
+            Storage::Sqlite(Store::new(pool)),
+            "test-only-runtime-token".into(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            keys,
+        )
+        .await
+    };
+
+    let store = Store::new(sqlite::open(path).await.unwrap());
+    store.reserve_fixture_offer_key().await;
+    store.close().await;
+
+    // A packet under the obligated key, one under a key storage never used,
+    // and the acceptance request that carries each. Opening stops at the key
+    // lookup, so the frame needs no valid ciphertext.
+    let accept = |token: &str| json!({"worker_id":"stranded-worker","task_queue":"stranded-queue",
+        "poll_request_id":"stranded-poll","registration_token":"0123456789abcdef0123456789abcdef",
+        "timeout_seconds":0,"task_offer_token":token});
+    let required_packet = accept("dwo1.fixture-key.AAAA");
+    let unused_packet = accept("dwo1.never-used.AAAA");
+    let refusal = |result: Result<(StatusCode, Value)>| match result {
+        Err(super::RuntimeError::Refused { status, reason }) => (status, reason),
+        other => panic!("expected a typed refusal, got {:?}", other.map(|(status, _)| status)),
+    };
+
+    // Missing ring with a live obligation: start, serve legacy routes, issue
+    // nothing, keep the obligation, and refuse the packet as retryable.
+    let runtime = open_with(None).await.expect("a missing read key does not refuse startup");
+    assert!(runtime.task_delivery_descriptor().is_none());
+    assert!(runtime.offer_window.current().is_none());
+    {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+        runtime.create_namespace(json!({"name":"stranded"})).await.unwrap();
+        let app = super::router(runtime.clone());
+        let post = |path: &str, body: Value| Request::builder().method("POST").uri(path)
+            .header("x-namespace", "stranded").header("x-durable-workflow-protocol-version", "1.20")
+            .header("content-type", "application/json").header("authorization", "Bearer test-only-runtime-token")
+            .body(Body::from(body.to_string())).unwrap();
+        let worker = json!({"worker_id":"legacy-worker","task_queue":"legacy-queue","runtime":"php",
+            "supported_workflow_types":["fixture"],"supported_activity_types":[],"capabilities":["task_delivery_offers"],
+            "capability_manifest":{
+                "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+                "local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+                "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"}
+            }});
+        let registered = app.clone().oneshot(post("/api/worker/register", worker)).await.unwrap();
+        assert_eq!(registered.status(), StatusCode::CREATED);
+        let registered: Value = serde_json::from_slice(
+            &axum::body::to_bytes(registered.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert!(registered["server_capabilities"].get("task_delivery").is_none());
+        let legacy = app.oneshot(post("/api/worker/workflow-tasks/poll",
+            json!({"worker_id":"legacy-worker","task_queue":"legacy-queue","timeout_seconds":0}))).await.unwrap();
+        assert_eq!(legacy.status(), StatusCode::OK, "legacy polling keeps serving");
+    }
+    assert_eq!(refusal(runtime.handle_task_offer("workflow", &required_packet, "1.20").await),
+        (StatusCode::SERVICE_UNAVAILABLE, "task_offer_read_key_unavailable"));
+    assert_eq!(refusal(runtime.handle_task_offer("workflow", &unused_packet, "1.20").await),
+        (StatusCode::SERVICE_UNAVAILABLE, "task_offer_issuance_unavailable"));
+    assert!(runtime.sqlite_store().offer_read_key_required("fixture-key").await.unwrap());
+    runtime.close().await;
+
+    // A configured ring that lacks the obligated key also starts without an
+    // issuance window and refuses only packets that need the absent key.
+    let incomplete = Arc::new(fixture_ring(&[("other", 3)]));
+    let runtime = open_with(Some(incomplete)).await.expect("an incomplete ring does not refuse startup");
+    assert!(runtime.task_delivery_descriptor().is_none());
+    assert!(runtime.offer_window.current().is_none());
+    assert_eq!(refusal(runtime.handle_task_offer("workflow", &required_packet, "1.20").await),
+        (StatusCode::SERVICE_UNAVAILABLE, "task_offer_read_key_unavailable"));
+    assert_eq!(refusal(runtime.handle_task_offer("workflow", &unused_packet, "1.20").await),
+        (StatusCode::CONFLICT, "invalid_task_offer_token"));
+    assert!(runtime.sqlite_store().offer_read_key_required("fixture-key").await.unwrap());
+    runtime.close().await;
+
+    // Reusing a key ID for different material still refuses startup.
+    let changed = Arc::new(fixture_ring(&[("fixture-key", 8)]));
+    assert!(matches!(
+        open_with(Some(changed)).await,
+        Err(super::RuntimeError::Refused { reason: "task_offer_key_identity_changed", .. })
+    ));
+
+    let current = Arc::new(fixture_ring(&[("next", 2), ("fixture-key", 7)]));
+    let runtime = open_with(Some(current)).await.unwrap();
+    assert!(runtime.task_delivery_descriptor().is_some());
+    runtime.close().await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn task_offer_worker_routes_preserve_signed_scope_and_definitive_refusals() {
+    use super::task_offer_key_usage::fixture_ring;
+    use axum::{Router, body::{Body, to_bytes}, http::Request};
+    use tower::ServiceExt;
+
+    async fn request(app: &Router, path: &str, body: &Value, bearer: bool, mode: bool) -> (StatusCode, Value) {
+        let mut request = Request::builder().method("POST").uri(path)
+            .header("x-namespace", "offer-test")
+            .header("x-durable-workflow-protocol-version", "1.20")
+            .header("content-type", "application/json");
+        if bearer {
+            request = request.header("authorization", "Bearer fixture-worker-plane");
+        }
+        if mode {
+            request = request.header("x-durable-workflow-task-delivery", "offer-accept.v1");
+        }
+        let response = app.clone().oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("runtime.sqlite");
+    let storage = Storage::Sqlite(Store::new(sqlite::open(path.to_str().unwrap()).await.unwrap()));
+    let keys = Arc::new(fixture_ring(&[("route-test", 1)]));
+    let runtime = Runtime::from_storage(storage, "fixture-worker-plane".into(),
+        Default::default(), Default::default(), Default::default(), Some(keys)).await.unwrap();
+    runtime.create_namespace(json!({"name":"offer-test"})).await.unwrap();
+    async fn read_horizon(runtime: &Runtime) -> i64 {
+        let value: String = sqlx::query_scalar("SELECT value FROM dw_query_cache WHERE key=?")
+            .bind("dw-native-offer-key:route-test").fetch_one(&runtime.sqlite_store().pool).await.unwrap();
+        serde_json::from_str::<Value>(&value).unwrap()["read_until_ms"].as_i64().unwrap()
+    }
+    let initial_horizon = read_horizon(&runtime).await;
+    let app = super::router(runtime.clone());
+    let worker = json!({"worker_id":"offer-worker","task_queue":"offer-queue","runtime":"php",
+        "supported_workflow_types":["fixture"],"supported_activity_types":[],
+        "capabilities":["task_delivery_offers","grouped_condition_wait_replay"],
+        "capability_manifest":{
+            "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+            "local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+            "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"}
+        }});
+    let (status, registered) = request(&app, "/api/worker/register", &worker, true, false).await;
+    assert_eq!(status, StatusCode::CREATED, "registration refused: {:?}", registered["reason"]);
+    assert_eq!(registered["server_capabilities"]["task_delivery"], super::task_offer_dispatch::descriptor());
+    assert_eq!(registered["server_capabilities"]["grouped_condition_waits"], json!({"supported":true,"version":1}));
+    let input = crate::codec::ValueCodec::new().unwrap().encode(&crate::codec::Value::Array(Vec::new())).unwrap();
+    for id in ["route-offer-one", "route-offer-two"] {
+        runtime.in_namespace("offer-test").start(json!({"workflow_id":id,"workflow_type":"fixture",
+            "task_queue":"offer-queue","input":{"codec":"avro","blob":input}}), None).await.unwrap();
+    }
+
+    let path = "/api/worker/workflow-tasks/offers";
+    let mut poll = json!({"worker_id":"offer-worker","task_queue":"offer-queue","poll_request_id":"route-claim",
+        "registration_token":registered["registration_token"],"timeout_seconds":0});
+    assert_eq!(request(&app, path, &poll, false, true).await.0, StatusCode::UNAUTHORIZED);
+    let anonymous = super::router(runtime.clone().with_auth_options(true, false));
+    assert_eq!(request(&anonymous, path, &poll, false, true).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(request(&app, path, &poll, true, false).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, offered) = request(&app, path, &poll, true, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(offered["poll_status"], "offered");
+    assert!(offered["task"].is_null());
+    let attempt: i64 = sqlx::query_scalar("SELECT attempt_count FROM workflow_tasks WHERE id=?")
+        .bind(offered["task_offer"]["task_id"].as_str().unwrap()).fetch_one(&runtime.sqlite_store().pool).await.unwrap();
+    assert_eq!(attempt, 0);
+
+    poll["task_offer_token"] = offered["task_offer"]["token"].clone();
+    let (status, legacy) = request(&app, "/api/worker/workflow-tasks/poll", &poll, true, false).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(legacy["reason"], "task_offer_endpoint_required");
+    let (status, wrong) = request(&app, "/api/worker/query-tasks/offers", &poll, true, true).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(wrong["reason"], "task_offer_scope_mismatch");
+    for _ in 0..2 {
+        let (status, leased) = request(&app, path, &poll, true, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(leased["task"]["task_id"], offered["task_offer"]["task_id"]);
+        assert_eq!(leased["task"]["task_kind"], "workflow");
+        assert_eq!(leased["task"]["workflow_task_attempt"], 1);
+    }
+
+    poll["poll_request_id"] = json!("expire-before-accept");
+    poll.as_object_mut().unwrap().remove("task_offer_token");
+    let (status, offered) = request(&app, path, &poll, true, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(offered["poll_status"], "offered");
+    poll["task_offer_token"] = offered["task_offer"]["token"].clone();
+    tokio::time::sleep(Duration::from_millis(2050)).await;
+    let (status, expired) = request(&app, path, &poll, true, true).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(expired, json!({"task":null,"poll_status":"task_offer_expired","reason":"task_offer_expired"}));
+
+    let (status, reregistered) = request(&app, "/api/worker/register", &worker, true, false).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, stale) = request(&app, path, &poll, true, true).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(stale, json!({"task":null,"poll_status":"stale_worker_registration",
+        "reason":"worker_registration_lost_authority"}));
+
+    // Every other definitive answer is the same exact three-field 409.
+    let exact = |reason: &str| json!({"task":null,"poll_status":reason,"reason":reason});
+    let offer_poll = |worker_id: &str, token: &Value, request_id: &str| json!({"worker_id":worker_id,
+        "task_queue":"offer-queue","poll_request_id":request_id,"registration_token":token,"timeout_seconds":0});
+
+    // Two workers race for the one ready task. Offers reserve nothing, so both
+    // observe it; the peer's acceptance wins and the loser's packet is
+    // definitively unclaimable.
+    let mut peer = worker.clone();
+    peer["worker_id"] = json!("offer-peer");
+    let (status, peer_registered) = request(&app, "/api/worker/register", &peer, true, false).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let mut loser = offer_poll("offer-worker", &reregistered["registration_token"], "race-loser");
+    let mut winner = offer_poll("offer-peer", &peer_registered["registration_token"], "race-winner");
+    let (_, loser_offer) = request(&app, path, &loser, true, true).await;
+    let (_, winner_offer) = request(&app, path, &winner, true, true).await;
+    assert_eq!(loser_offer["poll_status"], "offered");
+    assert_eq!(winner_offer["task_offer"]["task_id"], loser_offer["task_offer"]["task_id"]);
+    loser["task_offer_token"] = loser_offer["task_offer"]["token"].clone();
+    winner["task_offer_token"] = winner_offer["task_offer"]["token"].clone();
+    let (status, won) = request(&app, path, &winner, true, true).await;
+    assert_eq!((status, &won["task"]["task_id"]), (StatusCode::OK, &winner_offer["task_offer"]["task_id"]));
+    let (status, lost) = request(&app, path, &loser, true, true).await;
+    assert_eq!((status, lost), (StatusCode::CONFLICT, exact("task_offer_unclaimable")));
+
+    // A second packet for a logical poll that already committed another one
+    // can never be accepted.
+    runtime.in_namespace("offer-test").start(json!({"workflow_id":"route-offer-three","workflow_type":"fixture",
+        "task_queue":"offer-queue","input":{"codec":"avro","blob":input}}), None).await.unwrap();
+    let mut first = offer_poll("offer-worker", &reregistered["registration_token"], "bound-poll");
+    let mut second = first.clone();
+    let (_, first_offer) = request(&app, path, &first, true, true).await;
+    let (_, second_offer) = request(&app, path, &second, true, true).await;
+    assert_ne!(first_offer["task_offer"]["token"], second_offer["task_offer"]["token"]);
+    first["task_offer_token"] = first_offer["task_offer"]["token"].clone();
+    second["task_offer_token"] = second_offer["task_offer"]["token"].clone();
+    let (status, bound) = request(&app, path, &first, true, true).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, conflict) = request(&app, path, &second, true, true).await;
+    assert_eq!((status, conflict), (StatusCode::CONFLICT, exact("task_offer_conflict")));
+
+    // Once that claim's lease ends, its own packet no longer replays.
+    let (status, failed) = request(&app, &format!("/api/worker/workflow-tasks/{}/fail", bound["task"]["task_id"].as_str().unwrap()),
+        &json!({"lease_owner":bound["task"]["lease_owner"],"workflow_task_attempt":bound["task"]["workflow_task_attempt"],
+            "failure":{"message":"end the accepted lease","type":"RuntimeException"}}), true, false).await;
+    assert_eq!(status, StatusCode::OK, "{failed}");
+    let (status, ended) = request(&app, path, &first, true, true).await;
+    assert_eq!((status, ended), (StatusCode::CONFLICT, exact("task_offer_lease_ended")));
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while read_horizon(&runtime).await <= initial_horizon {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await.expect("the service renews its durable signing window without a poll");
+    runtime.close().await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn task_offer_replay_survives_heartbeat_and_fences_reregistration() {
+    use super::task_offer_key_usage::fixture_ring;
+    use axum::{Router, body::{Body, to_bytes}, http::Request};
+    use tower::ServiceExt;
+
+    async fn request(app: &Router, path: &str, body: &Value, mode: bool) -> (StatusCode, Value) {
+        let mut request = Request::builder().method("POST").uri(path)
+            .header("x-namespace", "offer-test")
+            .header("x-durable-workflow-protocol-version", "1.20")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer fixture-worker-plane");
+        if mode {
+            request = request.header("x-durable-workflow-task-delivery", "offer-accept.v1");
+        }
+        let response = app.clone().oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    for with_process in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runtime.sqlite");
+        let storage = Storage::Sqlite(Store::new(sqlite::open(path.to_str().unwrap()).await.unwrap()));
+        let keys = Arc::new(fixture_ring(&[("heartbeat-test", 1)]));
+        let runtime = Runtime::from_storage(storage, "fixture-worker-plane".into(),
+            Default::default(), Default::default(), Default::default(), Some(keys)).await.unwrap();
+        runtime.create_namespace(json!({"name":"offer-test"})).await.unwrap();
+        let app = super::router(runtime.clone());
+        let mut worker = json!({"worker_id":"offer-worker","task_queue":"offer-queue","runtime":"php",
+            "supported_workflow_types":["fixture"],"supported_activity_types":[],
+            "capabilities":["task_delivery_offers"],
+            "capability_manifest":{
+                "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+                "local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+                "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"}
+            }});
+        let mut heartbeat = json!({"worker_id":"offer-worker"});
+        if with_process {
+            let process = json!({"host":"fixture-host","process_id":42,"process_started_at":"2026-01-01T00:00:00Z"});
+            worker["process_metrics"] = process.clone();
+            heartbeat["process_metrics"] = process;
+        }
+        let (status, registered) = request(&app, "/api/worker/register", &worker, false).await;
+        assert_eq!(status, StatusCode::CREATED, "registration refused: {:?}", registered["reason"]);
+        let input = crate::codec::ValueCodec::new().unwrap().encode(&crate::codec::Value::Array(Vec::new())).unwrap();
+        runtime.in_namespace("offer-test").start(json!({"workflow_id":"heartbeat-replay","workflow_type":"fixture",
+            "task_queue":"offer-queue","input":{"codec":"avro","blob":input}}), None).await.unwrap();
+
+        let path = "/api/worker/workflow-tasks/offers";
+        let mut poll = json!({"worker_id":"offer-worker","task_queue":"offer-queue","poll_request_id":"heartbeat-claim",
+            "registration_token":registered["registration_token"],"timeout_seconds":0});
+        let (status, offered) = request(&app, path, &poll, true).await;
+        assert_eq!((status, &offered["poll_status"]), (StatusCode::OK, &json!("offered")), "process={with_process}");
+        poll["task_offer_token"] = offered["task_offer"]["token"].clone();
+        let (status, leased) = request(&app, path, &poll, true).await;
+        assert_eq!((status, &leased["poll_status"]), (StatusCode::OK, &json!("leased")), "process={with_process}");
+
+        // Stored heartbeat times have one-second resolution.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let (status, _) = request(&app, "/api/worker/heartbeat", &heartbeat, false).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, replayed) = request(&app, path, &poll, true).await;
+        assert_eq!(status, StatusCode::OK, "process={with_process} reason={:?}", replayed["reason"]);
+        assert_eq!(replayed["poll_status"], "leased");
+        assert_eq!(replayed["task"]["task_id"], offered["task_offer"]["task_id"]);
+        assert_eq!(replayed["task"]["workflow_task_attempt"], 1);
+
+        // Re-registration rotates the incarnation, so the old packet loses
+        // authority even though the routing and process identity are unchanged.
+        let (status, _) = request(&app, "/api/worker/register", &worker, false).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, stale) = request(&app, path, &poll, true).await;
+        assert_eq!(status, StatusCode::CONFLICT, "process={with_process}");
+        assert_eq!(stale, json!({"task":null,"poll_status":"stale_worker_registration",
+            "reason":"worker_registration_lost_authority"}), "process={with_process}");
+        runtime.close().await;
     }
 }

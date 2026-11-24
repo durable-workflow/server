@@ -30,6 +30,7 @@ on:
       - resources/platform-protocol-specs/workflow-task-completion-limits-v1-vectors.json
       - resources/platform-protocol-specs/command-key-legacy-v1-vectors.json
       - tests/Fixtures/ActivityMetadataProjection/**
+      - tests/Fixtures/AuthConfiguration/static-credentials-v1.json
       - tests/Fixtures/CodecRegression/**
       - tests/Fixtures/CommandIntent/**
       - tests/Fixtures/HistoryBudget/**

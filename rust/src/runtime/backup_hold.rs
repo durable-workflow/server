@@ -264,7 +264,7 @@ store_methods! {
         let Some(row) = Self::query(DB::BACKUP_HOLD_ROW).fetch_optional(&mut **tx).await? else {
             return Ok(None);
         };
-        let now = Self::query(DB::BACKUP_HOLD_CLOCK).fetch_one(&mut **tx).await?;
+        let now = Self::query(DB::DATABASE_UTC_CLOCK).fetch_one(&mut **tx).await?;
         Ok(Some(Hold {
             owner: DB::optional_string(&row, "owner")?,
             acquired_at: DB::optional_instant(&row, "acquired_at")?,
@@ -336,7 +336,7 @@ store_methods! {
         let hold = match Self::read_backup_hold(&mut tx).await? {
             Some(hold) => hold,
             None => {
-                let now = Self::query(DB::BACKUP_HOLD_CLOCK).fetch_one(&mut *tx).await?;
+                let now = Self::query(DB::DATABASE_UTC_CLOCK).fetch_one(&mut *tx).await?;
                 Hold { owner: None, acquired_at: None, expires_at: None, now: DB::instant(&now, "database_time")? }
             }
         };

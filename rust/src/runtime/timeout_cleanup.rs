@@ -266,6 +266,34 @@ store_methods! {
         Ok(Self::query("SELECT * FROM workflow_tasks WHERE id=$1").bind(&task_id).fetch_one(&mut **tx).await?)
     }
 
+    pub(super) async fn timeout_cleanup_due(
+        tx: &mut Transaction<'_, DB>, run: &DB::Row, at: DateTime<Utc>,
+    ) -> Result<Option<(&'static str, DateTime<Utc>, DateTime<Utc>)>> {
+        if !matches!(DB::string(run, "status")?.as_str(), "pending" | "running" | "waiting")
+            || DB::optional_string(run, "cancellation_request_command_id")?.is_some()
+        {
+            return Ok(None);
+        }
+        let execution = DB::optional_instant(run, "execution_deadline_at")?;
+        let run_deadline = DB::optional_instant(run, "run_deadline_at")?;
+        let Some((kind, hard)) = earliest_hard_deadline(execution, run_deadline) else {
+            return Ok(None);
+        };
+        // Nothing to read before the largest allowance could apply.
+        if at >= hard || at < hard - chrono::Duration::seconds(MAX_ALLOWANCE_SECONDS) {
+            return Ok(None);
+        }
+        let run_id = DB::string(run, "id")?;
+        let Some(allowance) = Self::timeout_cleanup_allowance(tx, &run_id).await? else {
+            return Ok(None);
+        };
+        let work = hard - chrono::Duration::seconds(allowance);
+        if at < work || Self::timeout_cleanup_started(tx, &run_id).await?.is_some() {
+            return Ok(None);
+        }
+        Ok(Some((kind, hard, work)))
+    }
+
     /// `TimeoutCleanup::enter`, under the run lock: once, at or after the
     /// run's work deadline and before its earliest hard deadline, record an
     /// engine-owned cooperative request with `cause: timeout` whose cleanup
@@ -273,28 +301,10 @@ store_methods! {
     /// the request's history, then request the root scope's descendants and
     /// give the run a workflow task when none is open.
     pub(super) async fn enter_timeout_cleanup(&self, tx: &mut Transaction<'_, DB>, run: &DB::Row, at: DateTime<Utc>) -> Result<bool> {
-        if !matches!(DB::string(run, "status")?.as_str(), "pending" | "running" | "waiting")
-            || DB::optional_string(run, "cancellation_request_command_id")?.is_some()
-        {
-            return Ok(false);
-        }
-        let execution = DB::optional_instant(run, "execution_deadline_at")?;
-        let run_deadline = DB::optional_instant(run, "run_deadline_at")?;
-        let Some((kind, hard)) = earliest_hard_deadline(execution, run_deadline) else {
+        let Some((kind, hard, work)) = Self::timeout_cleanup_due(tx, run, at).await? else {
             return Ok(false);
         };
-        // Nothing to read before the largest allowance could apply.
-        if at >= hard || at < hard - chrono::Duration::seconds(MAX_ALLOWANCE_SECONDS) {
-            return Ok(false);
-        }
         let run_id = DB::string(run, "id")?;
-        let Some(allowance) = Self::timeout_cleanup_allowance(tx, &run_id).await? else {
-            return Ok(false);
-        };
-        let work = hard - chrono::Duration::seconds(allowance);
-        if at < work || Self::timeout_cleanup_started(tx, &run_id).await?.is_some() {
-            return Ok(false);
-        }
         let instance = DB::string(run, "workflow_instance_id")?;
         let request_id = id();
         let timestamp = super::cooperative::timestamp;
