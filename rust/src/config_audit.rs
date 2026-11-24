@@ -555,6 +555,8 @@ const UNLISTED: &[Setting] = &[
 /// These are known names; legacy aliases warn as the contract's do.
 pub const NATIVE_HONORED: &[Setting] = &[
     Setting { name: "DW_TASK_DELIVERY_SEAL_KEYS", legacy: None, disposition: Honored },
+    // The opt-in request access log read by runtime/http.rs.
+    Setting { name: "DW_HTTP_ACCESS_LOG", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_POLL_SWEEP_INTERVAL_MS", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_POLL_SWEEP_BATCH_SIZE", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY", legacy: None, disposition: Honored },
@@ -611,7 +613,6 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_HISTORY_PAGE_SIZE_DEFAULT", legacy: Some("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT"), disposition: Honored },
     Setting { name: "DW_HISTORY_PAGE_SIZE_MAX", legacy: Some("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX"), disposition: Honored },
     Setting { name: "DW_HISTORY_RETENTION_DAYS", legacy: Some("WORKFLOW_HISTORY_RETENTION_DAYS"), disposition: Honored },
-    Setting { name: "DW_HTTP_ACCESS_LOG", legacy: None, disposition: Honored },
     Setting { name: "DW_MAX_HISTORY_EVENTS", legacy: Some("WORKFLOW_MAX_HISTORY_EVENTS"), disposition: Ignored },
     Setting { name: "DW_MAX_MEMO_BYTES", legacy: Some("WORKFLOW_MAX_MEMO_BYTES"), disposition: Honored },
     Setting { name: "DW_MAX_NEXUS_OPERATIONS_PER_CALLER", legacy: Some("WORKFLOW_MAX_NEXUS_OPERATIONS_PER_CALLER"), disposition: Refused(Int(200), NEXUS) },
