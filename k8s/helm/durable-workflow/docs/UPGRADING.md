@@ -69,6 +69,17 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.5.0 / Server 3.27.0 (native)
+
+Chart 5.5.0 selects [native Server 3.27.0](../../../../docs/releases/3.27.0.md).
+It crosses Server 3.23.0 through 3.27.0, none of which changes the database
+schema or the chart's values. Upgrade from chart 5.4.x with the usual Helm
+rollout. Before enabling the new workflow features, read each release's notes:
+grouped condition waits (3.24.0), continue-as-new onto the promoted build
+(3.25.0) and ordered timed conditions (3.27.0) need upgraded workers, and
+ordered wait authoring stays off until every Server process sharing the
+database runs 3.27.0.
+
 ### Chart 5.4.1 / Server 3.22.2 (native)
 
 Chart 5.4.1 selects [native Server 3.22.2](../../../../docs/releases/3.22.2.md).
