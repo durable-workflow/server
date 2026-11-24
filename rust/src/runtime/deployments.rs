@@ -97,11 +97,14 @@ impl Rollout {
 /// `selectedKeyFromRollouts`: the most recently promoted selectable rollout,
 /// the later row on a tie.
 pub(super) fn selected_key(rollouts: &[Rollout]) -> Option<&str> {
+    selected_rollout(rollouts).map(|rollout| rollout.key.as_str())
+}
+
+fn selected_rollout(rollouts: &[Rollout]) -> Option<&Rollout> {
     rollouts
         .iter()
         .filter(|rollout| rollout.selectable())
         .max_by(|left, right| left.promoted_at.cmp(&right.promoted_at).then(left.id.cmp(&right.id)))
-        .map(|rollout| rollout.key.as_str())
 }
 
 /// `DeploymentLifecycleState`, without `pending`, which no row derives.
@@ -341,7 +344,15 @@ where
     pub(super) async fn rollouts(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str) -> Result<Vec<Rollout>> {
         let rows = Self::query("SELECT * FROM workflow_worker_build_id_rollouts WHERE namespace=$1 AND task_queue=$2 ORDER BY id")
             .bind(namespace).bind(task_queue).fetch_all(&mut **tx).await?;
-        rows.iter().map(Rollout::read::<DB>).collect()
+        let mut rollouts = Vec::with_capacity(rows.len());
+        // The SQL predicates use the scope index. Match routed names exactly
+        // so database collation does not choose a different scope.
+        for row in &rows {
+            if DB::string(row, "namespace")? == namespace && DB::string(row, "task_queue")? == task_queue {
+                rollouts.push(Rollout::read::<DB>(row)?);
+            }
+        }
+        Ok(rollouts)
     }
 
     async fn rollout(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, key: &str) -> Result<Option<Rollout>> {
@@ -355,6 +366,19 @@ where
     pub(super) async fn promoted_cohort(tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str) -> Result<Option<Cohort>> {
         let rollouts = Self::rollouts(tx, namespace, task_queue).await?;
         Ok(selected_key(&rollouts).map(|key| Cohort::of_run(Some(key))))
+    }
+
+    /// Continuations resolve the same promotion as new starts. They also need
+    /// positive type evidence from that promotion, even with no workers online.
+    pub(super) async fn promoted_build_for_type(
+        tx: &mut Transaction<'_, DB>, namespace: &str, task_queue: &str, workflow_type: &str,
+    ) -> Result<Option<String>> {
+        let rollouts = Self::rollouts(tx, namespace, task_queue).await?;
+        let qualified = selected_rollout(&rollouts).filter(|rollout| {
+            rollout.workflow_types.as_ref().and_then(Value::as_array)
+                .is_some_and(|types| types.iter().any(|kind| kind.as_str() == Some(workflow_type)))
+        });
+        Ok(qualified.and_then(|rollout| public(&rollout.key)))
     }
 
     /// `workerRegistrationStatus`: a registration on a draining build stays
@@ -545,15 +569,16 @@ where
         let exists = existing.is_some();
         let mut rollout = existing.unwrap_or_else(|| Rollout::new(key.clone()));
         apply(&mut rollout);
+        let workflow_types = rollout.workflow_types.as_ref().map(DB::document);
         let at = second();
         if exists {
-            Self::query("UPDATE workflow_worker_build_id_rollouts SET drain_intent=$1,drained_at=$2,promoted_at=$3,rolled_back_at=$4,updated_at=$5 WHERE id=$6")
+            Self::query("UPDATE workflow_worker_build_id_rollouts SET drain_intent=$1,drained_at=$2,promoted_at=$3,rolled_back_at=$4,updated_at=$5,workflow_types=$6 WHERE id=$7")
                 .bind(rollout.drain_intent.as_str()).bind(DB::optional_time(rollout.drained_at)).bind(DB::optional_time(rollout.promoted_at))
-                .bind(DB::optional_time(rollout.rolled_back_at)).bind(DB::bind_time(at)).bind(rollout.id).execute(&mut **tx).await?;
+                .bind(DB::optional_time(rollout.rolled_back_at)).bind(DB::bind_time(at)).bind(workflow_types).bind(rollout.id).execute(&mut **tx).await?;
         } else {
-            Self::query("INSERT INTO workflow_worker_build_id_rollouts(namespace,task_queue,build_id,drain_intent,drained_at,promoted_at,rolled_back_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+            Self::query("INSERT INTO workflow_worker_build_id_rollouts(namespace,task_queue,build_id,drain_intent,drained_at,promoted_at,rolled_back_at,created_at,updated_at,workflow_types) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
                 .bind(namespace).bind(task_queue).bind(key.as_str()).bind(rollout.drain_intent.as_str()).bind(DB::optional_time(rollout.drained_at))
-                .bind(DB::optional_time(rollout.promoted_at)).bind(DB::optional_time(rollout.rolled_back_at)).bind(DB::bind_time(at)).bind(DB::bind_time(at))
+                .bind(DB::optional_time(rollout.promoted_at)).bind(DB::optional_time(rollout.rolled_back_at)).bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(workflow_types)
                 .execute(&mut **tx).await?;
         }
         Self::rollout(tx, namespace, task_queue, &key).await?.ok_or_else(|| super::refuse(StatusCode::CONFLICT, "build_id_rollout_lost"))
@@ -581,12 +606,19 @@ where
                 if !blockages.is_empty() {
                     return Ok(Err((Some(deployment), blockages)));
                 }
+                let cohort = Cohort::of_run(build);
+                let workers = Self::start_workers(tx, namespace, task_queue, self.worker_stale_after_seconds).await?;
+                let workflow_types: std::collections::BTreeSet<&str> = workers.iter()
+                    .filter(|worker| worker.heartbeated && cohort.admits(worker.build_id.as_deref()))
+                    .filter_map(|worker| worker.workflow_types.as_array())
+                    .flatten().filter_map(Value::as_str).collect();
                 let at = second();
                 let rollout = Self::upsert(tx, namespace, task_queue, build, |row| {
                     row.drain_intent = ACTIVE.to_owned();
                     row.drained_at = None;
                     row.promoted_at = Some(at);
                     row.rolled_back_at = None;
+                    row.workflow_types = Some(json!(workflow_types));
                 }).await?;
                 Ok(Ok(Deployment::of(namespace, task_queue, &rollout)))
             }

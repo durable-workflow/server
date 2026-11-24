@@ -64,3 +64,20 @@ Tests (`tests/execution/child_start_turn.rs`,
 - the advertisement.
 
 They run on SQLite, PostgreSQL and MySQL.
+
+## Explicit child workflow ID
+
+The optional `workflow_id` on a child start uses the HTTP start identifier
+format with at most 128 URL-safe characters. The child keeps its parent's
+namespace. Omitting the field keeps a generated ID. The requested instance
+ID is recorded in `ChildWorkflowScheduled.requested_child_id`. The child
+call and each of its runs have separate runtime-generated IDs.
+
+A distinct call requesting an existing ID receives HTTP 409 with
+`child_workflow_id_unavailable`. The whole completion rolls back and the
+lease remains available. This refusal also covers closed instances and
+reveals no details about the owner. Redelivery uses the original completion
+receipt. Retry and continue-as-new retain the admitted instance ID.
+
+Clients send the field only after the runtime advertises
+`child_workflow_explicit_id` in the cluster or worker capabilities.

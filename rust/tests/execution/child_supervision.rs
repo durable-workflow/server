@@ -170,6 +170,48 @@ fn s(value: &Value) -> String {
     value.as_str().unwrap().to_owned()
 }
 
+#[tokio::test]
+async fn promoted_continuation_moves_supervision_and_keeps_the_child_build() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    super::continuations::register_target_worker(&app, "parent-a", Some("build-a"), "echo").await;
+    super::continuations::register_target_worker(&app, "child-a", Some("build-a"), "child").await;
+    let parent = start(&app, "promoted-parent").await;
+    let first = poll(&app, "parent-a", "workflow").await;
+    let (status, result) = finish_task(&app, &first, json!([child_with("request_cancel", None)])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let history = run_history(&app, &parent["workflow_id"], &parent["run_id"]).await;
+    let scheduled = &events_of(&history, "ChildWorkflowScheduled")[0]["payload"];
+    let child_id = s(&scheduled["child_workflow_instance_id"]);
+    let child_run = &scheduled["child_workflow_run_id"];
+    assert_eq!(current(&app, &child_id).await["compatibility"], "build-a");
+
+    super::continuations::register_target_worker(&app, "parent-b", Some("build-b"), "echo").await;
+    let (status, result) = request(&app, "POST", "/api/task-queues/test/build-ids/promote", json!({"build_id":"build-b"})).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    give_task(&database, &parent["run_id"]).await;
+    let task = poll(&app, "parent-a", "workflow").await;
+    let path = format!("/api/worker/workflow-tasks/{}/complete", s(&task["task_id"]));
+    let (status, result) = request_protocol(&app, "POST", &path,
+        completion(&task, json!([{"type":"continue_as_new","target_build":"promoted"}])), "1.21").await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let successor = current(&app, "promoted-parent").await;
+    assert_eq!(successor["compatibility"], "build-b");
+    assert_eq!(supervisions(&database, &child_id).await, [((s(&successor["run_id"]), s(child_run)),
+        ("request_cancel".to_owned(), scheduled["sequence"].to_string()))]);
+    let child = current(&app, &child_id).await;
+    assert_eq!(child["run_id"], *child_run);
+    assert_eq!(child["compatibility"], "build-a");
+    assert_eq!(child["status"], "pending");
+    let task = poll(&app, "parent-b", "workflow").await;
+    assert_eq!(task["run_id"], successor["run_id"]);
+    assert_eq!(finish_task(&app, &task, complete()).await.0, StatusCode::OK);
+    assert_eq!(current(&app, &child_id).await["status"], "cancelled");
+    runtime.close().await;
+    database.remove().await;
+}
+
 // `testContinueAsNewHandsOpenChildToTheContinuedRunWhichAppliesItsPolicy`.
 #[tokio::test]
 async fn continue_as_new_hands_an_open_child_to_the_continued_run_which_applies_its_policy() {

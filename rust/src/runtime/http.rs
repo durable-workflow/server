@@ -634,13 +634,23 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|v| !v.is_empty());
+    // The negotiated continuation contract is scoped to its task reports.
+    let continuation_request = request.method() == Method::POST
+        && path.strip_prefix("/api/worker/workflow-tasks/")
+            .and_then(|path| path.split_once('/'))
+            .is_some_and(|(task, operation)| !task.is_empty() && matches!(operation, "complete" | "fail"));
+    let maximum_worker_minor = if continuation_request {
+        super::continuations::TARGET_BUILD_PROTOCOL_MINOR
+    } else {
+        20
+    };
     let compatible = if worker {
         requested.is_some_and(|v| {
             v.split_once('.').is_some_and(|(major, minor)| {
                 major == "1"
                     && !minor.is_empty()
                     && minor.bytes().all(|c| c.is_ascii_digit())
-                    && minor.parse::<u8>().is_ok_and(|n| n <= 20)
+                    && minor.parse::<u8>().is_ok_and(|n| n <= maximum_worker_minor)
             })
         })
     } else {
@@ -756,9 +766,7 @@ async fn finish_answer(mut response: Response, worker: bool, header: &'static st
     if worker {
         response = worker_protocol_envelope(response).await;
     }
-    response
-        .headers_mut()
-        .insert(header, HeaderValue::from_static(version));
+    response.headers_mut().entry(header).or_insert(HeaderValue::from_static(version));
     response
 }
 
@@ -2032,7 +2040,7 @@ async fn register(
     Extension(runtime): Extension<Runtime>,
     headers: HeaderMap,
     Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>)> {
+) -> Result<Response> {
     let protocol = request_protocol(&headers)?;
     let mut body = super::worker_admission::normalize_registration(&body, protocol.trim())
         .map_err(worker_refusal)?;
@@ -2054,9 +2062,28 @@ async fn register(
         .filter(|flag| flag.as_str().is_some_and(|flag| !flag.is_empty()))
         .cloned()
         .collect();
+    let grouped_condition_replay = flags.iter().any(|flag| flag == "grouped_condition_wait_replay");
     body["capabilities"] = json!(flags);
     let registered = runtime.register(body, Some(protocol)).await.map_err(worker_refusal)?;
-    Ok((StatusCode::CREATED, Json(worker_response(registered))))
+    let mut response = worker_response(registered);
+    // Earlier SDKs recognize this server flag but cannot replay a physical
+    // reopen. Publish it only to workers that implement the replay contract.
+    if grouped_condition_replay {
+        response["server_capabilities"]["grouped_condition_waits"] = json!({"supported":true,"version":1});
+    }
+    let target_build = super::continuations::target_build_registration(&response["capability_manifest"]);
+    if target_build {
+        response["protocol_version"] = json!(super::continuations::TARGET_BUILD_PROTOCOL_VERSION);
+        response["server_capabilities"][super::continuations::TARGET_BUILD_CAPABILITY] = json!(true);
+    }
+    let mut response = (StatusCode::CREATED, Json(response)).into_response();
+    if target_build {
+        response.headers_mut().insert(
+            "x-durable-workflow-protocol-version",
+            HeaderValue::from_static(super::continuations::TARGET_BUILD_PROTOCOL_VERSION),
+        );
+    }
+    Ok(response)
 }
 
 /// `WorkerProtocol::json` names the protocol and server capabilities on
@@ -2710,7 +2737,7 @@ fn completion_checks(task_id: &str, headers: &HeaderMap, body: Value) -> Result<
     // PHP validates the message-stream fields first, then its transport
     // rules, before every guard, ownership included.
     super::message_streams::check_completion_fields(&body).map_err(worker_refusal)?;
-    let body = super::completion_rules::checked(body).map_err(worker_refusal)?;
+    let body = super::completion_rules::checked(body, Some(request_protocol(headers)?)).map_err(worker_refusal)?;
     if body["commands"].as_array().is_some_and(|commands| {
         commands
             .iter()
@@ -2807,8 +2834,14 @@ fn memo_protocol(headers: &HeaderMap) -> Result<()> {
 async fn fail_workflow_task(
     Extension(runtime): Extension<Runtime>,
     Path(task_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
+    if body["failure"]["reason"] == super::continuations::PROMOTED_BUILD_UNAVAILABLE
+        && !super::continuations::target_build_protocol(Some(request_protocol(&headers)?))
+    {
+        return Err(worker_refusal(super::continuations::refuse_target("unsupported_target_build", false)));
+    }
     let attempt = body["workflow_task_attempt"].clone();
     runtime
         .fail_workflow_task(&task_id, body)

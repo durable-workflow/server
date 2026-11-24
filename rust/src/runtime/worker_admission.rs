@@ -156,6 +156,12 @@ pub(super) fn normalize_registration(raw: &Value, version: &str) -> Result<Value
     }
     admit(&body, Some(version))?;
     let mut manifest = manifest(&body);
+    if version == super::WORKER_PROTOCOL_VERSION
+        && super::continuations::target_build_registration(&body["capability_manifest"])
+    {
+        let capability = super::continuations::TARGET_BUILD_CAPABILITY;
+        manifest[capability] = body["capability_manifest"][capability].clone();
+    }
     if let Some(group_policies) = group_policies {
         manifest[PARALLEL_GROUP_POLICIES] = group_policies;
     }

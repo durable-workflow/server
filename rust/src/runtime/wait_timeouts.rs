@@ -12,6 +12,57 @@ use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::collections::BTreeSet;
 
+pub(super) const CONDITION_INPUT_ORDER_FIELD: &str = "condition_wait_input_order";
+pub(super) const CONDITION_INPUT_AUTHORING: &str = "condition_wait_input_order_authoring";
+pub(super) const DURABLE_RECEIPT_ORDER: &str = "durable_receipt_order";
+pub(super) const RESOLVE_CONDITION_WAIT: &str = "resolve_condition_wait";
+pub(super) const PENDING_CONDITION_INPUT: &str = "condition_wait_pending_input_sequence";
+
+pub(super) struct ConditionDecision<'a> {
+    wait_id: &'a str,
+    satisfied: bool,
+    receipt: Option<i64>,
+    competing_resolution_event_id: Option<&'a str>,
+}
+
+impl<'a> ConditionDecision<'a> {
+    pub(super) fn parse(command: &'a Value) -> Result<Self> {
+        let invalid = || refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_condition_wait_outcome");
+        let wait_id = command["condition_wait_id"].as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 191)
+            .ok_or_else(invalid)?;
+        let satisfied = command["satisfied"].as_bool().ok_or_else(invalid)?;
+        let receipt = command.get("input_receipt_sequence")
+            .map(|value| value.as_i64().filter(|value| *value > 0).ok_or_else(invalid))
+            .transpose()?;
+        let competing_resolution_event_id = command.get("competing_resolution_event_id")
+            .map(|value| value.as_str().filter(|id| !id.is_empty() && id.len() <= 191).ok_or_else(invalid))
+            .transpose()?;
+        if (!satisfied && receipt.is_some()) || (satisfied && competing_resolution_event_id.is_some()) {
+            return Err(invalid());
+        }
+        Ok(Self { wait_id, satisfied, receipt, competing_resolution_event_id })
+    }
+}
+
+pub(super) fn uses_condition_input_order(payload: &Value) -> bool {
+    payload[CONDITION_INPUT_ORDER_FIELD] == DURABLE_RECEIPT_ORDER
+}
+
+pub(super) fn supports_condition_input_order(capabilities: &Value) -> bool {
+    capabilities.as_array().is_some_and(|flags| flags.iter().any(|flag| flag == CONDITION_INPUT_ORDER_FIELD))
+}
+
+pub(super) fn validate_condition_input_order(command: &Value) -> Result<()> {
+    if command.get(CONDITION_INPUT_ORDER_FIELD).is_none() {
+        return Ok(());
+    }
+    if uses_condition_input_order(command) && command["deadline_policy"] == "occurrence" {
+        return Ok(());
+    }
+    Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_condition_wait_input_order"))
+}
+
 pub(super) fn timeout(command: &Value) -> Result<Option<(i64, DateTime<Utc>)>> {
     timeout_for(command, "invalid_signal_timeout")
 }
@@ -79,6 +130,7 @@ pub(super) fn wait_fields(wait: &Value) -> Value {
         "condition_wait_occurrence_id",
         "condition_key",
         "condition_definition_fingerprint",
+        CONDITION_INPUT_ORDER_FIELD,
         "signal_wait_id",
         "signal_name",
     ] {
@@ -114,6 +166,166 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    pub(super) async fn first_pending_condition_input(
+        connection: &mut DB::Connection,
+        run_id: &str,
+    ) -> Result<Option<i64>> {
+        let pending = Self::query(
+            "SELECT received.sequence FROM workflow_history_events received
+             JOIN workflow_commands command ON command.id=received.workflow_command_id
+               AND command.resolved_workflow_run_id=received.workflow_run_id
+             WHERE received.workflow_run_id=$1
+               AND received.event_type IN ('SignalReceived','UpdateAccepted')
+               AND command.status='accepted' AND command.applied_at IS NULL
+             ORDER BY received.sequence LIMIT 1",
+        ).bind(run_id).fetch_optional(connection).await?;
+        pending.map(|row| DB::number(&row, "sequence")).transpose()
+    }
+
+    /// An input task can settle the last accepted input without evaluating
+    /// the workflow. Give the still-open predicate a turn over that committed
+    /// history when no existing workflow task will see it.
+    pub(super) async fn enqueue_condition_evaluation(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        task_id: &str,
+    ) -> Result<Option<String>> {
+        if Self::query(DB::ORDERED_CONDITION_HISTORY).bind(run_id).fetch_optional(&mut **tx).await?.is_none() {
+            return Ok(None);
+        }
+        let source = Self::query(
+            "SELECT e.id,e.event_type FROM workflow_history_events e
+             JOIN workflow_runs r ON r.id=e.workflow_run_id
+             WHERE e.workflow_run_id=$1 AND e.workflow_task_id=$2
+               AND e.event_type IN ('SignalApplied','UpdateCompleted','MessageCursorAdvanced')
+               AND r.status IN ('pending','running','waiting')
+               AND NOT EXISTS (SELECT 1 FROM workflow_tasks pending
+                   WHERE pending.workflow_run_id=r.id AND pending.task_type='workflow'
+                     AND pending.status IN ('ready','leased'))
+             ORDER BY e.sequence DESC LIMIT 1",
+        ).bind(run_id).bind(task_id).fetch_optional(&mut **tx).await?;
+        let Some(source) = source else { return Ok(None); };
+        let waits = Self::waits(tx, run_id).await?;
+        let Some((wait, opening)) = waits.conditions.iter().filter(|wait| wait.is_open())
+            .filter_map(|wait| waits.condition_opening(&wait.id).map(|opening| (wait, opening)))
+            .find(|(_, opening)| uses_condition_input_order(&opening.payload))
+        else { return Ok(None); };
+        let mut payload = wait_fields(&opening.payload);
+        payload["workflow_wait_kind"] = json!("condition");
+        payload["open_wait_id"] = json!(wait.id);
+        payload["resume_source_kind"] = json!("condition_input");
+        payload["resume_source_id"] = json!(DB::string(&source, "id")?);
+        payload["workflow_event_type"] = json!(DB::string(&source, "event_type")?);
+        payload["workflow_sequence"] = json!(wait.sequence);
+        Self::create_task(tx, run_id, queue, "workflow", payload).await.map(Some)
+    }
+
+    pub(super) async fn record_ordered_condition_decision(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        task_id: &str,
+        decision: ConditionDecision<'_>,
+    ) -> Result<Option<String>> {
+        let mismatch = || refuse(StatusCode::CONFLICT, "condition_wait_outcome_mismatch");
+        let waits = Self::waits(tx, run_id).await?;
+        let wait = waits.conditions.iter().find(|wait| wait.id == decision.wait_id && wait.is_open())
+            .ok_or_else(mismatch)?;
+        let opening = waits.condition_opening(&wait.id)
+            .filter(|opening| uses_condition_input_order(&opening.payload))
+            .ok_or_else(mismatch)?;
+        let timeout = wait.fired_at;
+        let candidate = Self::unresolved_selection_candidate(tx, run_id, &opening.payload).await?;
+        let competing_sequence = candidate.as_ref()
+            .map(|candidate| candidate["resolution_event_sequence"].as_i64().ok_or_else(mismatch))
+            .transpose()?;
+        let selection_boundary = timeout.into_iter().chain(competing_sequence).min();
+        if let Some(event_id) = decision.competing_resolution_event_id {
+            let mut candidate = candidate.filter(|value| value["resolution_event_id"] == event_id)
+                .ok_or_else(mismatch)?;
+            let boundary = competing_sequence.filter(|sequence| Some(*sequence) == selection_boundary)
+                .ok_or_else(mismatch)?;
+            Self::guard_condition_prefix(tx, run_id, boundary).await?;
+            candidate.as_object_mut().unwrap().remove("resolution_event_sequence");
+            Self::append(tx, run_id, "SelectionResolved", candidate, Some(task_id), None).await?;
+            let metadata = super::selections::selection(&opening.payload).ok_or_else(mismatch)?;
+            return Self::selection_resume(tx, run_id, queue, json!({
+                "resume_source_kind":"condition_outcome", "resume_source_id":wait.id,
+                "workflow_wait_kind":"condition", "open_wait_id":wait.id, "condition_wait_id":wait.id,
+                "workflow_event_type":"SelectionResolved", "workflow_sequence":wait.sequence,
+            }), metadata, true).await;
+        }
+        if (!decision.satisfied && timeout.is_none())
+            || (decision.satisfied && timeout.is_some() && decision.receipt.is_none())
+            || (!decision.satisfied && timeout != selection_boundary)
+        {
+            return Err(mismatch());
+        }
+        if let Some(receipt) = decision.receipt {
+            if selection_boundary.is_some_and(|boundary| receipt >= boundary) {
+                return Err(mismatch());
+            }
+            // The received position is canonical even if the same task applied
+            // the signal or ran the update after the timer. Failed updates have
+            // no UpdateApplied event.
+            let evidence = Self::query(
+                "SELECT 1 FROM workflow_history_events received
+                 JOIN workflow_history_events applied
+                   ON applied.workflow_run_id=received.workflow_run_id
+                   AND applied.workflow_command_id=received.workflow_command_id
+                 WHERE received.workflow_run_id=$1 AND received.sequence=$2
+                   AND ((received.event_type='SignalReceived' AND applied.event_type='SignalApplied')
+                     OR (received.event_type='UpdateAccepted' AND applied.event_type='UpdateApplied')) LIMIT 1",
+            ).bind(run_id).bind(receipt).fetch_optional(&mut **tx).await?;
+            if evidence.is_none() {
+                return Err(mismatch());
+            }
+        }
+        let prefix_end = if decision.satisfied { decision.receipt } else { timeout };
+        if let Some(boundary) = prefix_end {
+            Self::guard_condition_prefix(tx, run_id, boundary).await?;
+        }
+        let group = super::activity_metadata::payload_for_path(&opening.payload);
+        let mut payload = wait_fields(&opening.payload);
+        payload.as_object_mut().unwrap().extend(group.clone());
+        let sequence = wait.sequence.ok_or_else(mismatch)?;
+        payload["sequence"] = json!(sequence);
+        if let Some(receipt) = decision.receipt {
+            payload["input_receipt_sequence"] = json!(receipt);
+        }
+        if let Some(fire) = timeout {
+            payload["timer_fired_sequence"] = json!(fire);
+            payload["timer_id"] = json!(wait.timer_id().ok_or_else(mismatch)?);
+        }
+        let event = if decision.satisfied { "ConditionWaitSatisfied" } else { "ConditionWaitTimedOut" };
+        Self::append(tx, run_id, event, payload, Some(task_id), None).await?;
+        let winner = Self::claim_wait_selection(tx, run_id, &group, "condition", &wait.id, event).await?;
+        if timeout.is_none() {
+            Self::cancel_wait_timeout(tx, run_id,
+                &json!({"sequence":sequence,"condition_wait_id":wait.id}), task_id, now()).await?;
+        }
+        if let Some(winner) = winner {
+            return Self::selection_resume(tx, run_id, queue, json!({
+                "workflow_wait_kind":"condition","open_wait_id":wait.id,
+                "condition_wait_id":wait.id,"resume_source_kind":"condition_outcome",
+                "resume_source_id":wait.id,"workflow_event_type":event,"workflow_sequence":sequence,
+            }), &winner, true).await;
+        }
+        Ok(None)
+    }
+
+    async fn guard_condition_prefix(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        boundary: i64,
+    ) -> Result<()> {
+        if Self::first_pending_condition_input(&mut **tx, run_id).await?.is_some_and(|pending| pending < boundary) {
+            return Err(refuse(StatusCode::CONFLICT, "condition_wait_input_pending"));
+        }
+        Ok(())
+    }
+
     /// A terminal run cannot fire its remaining wait timeouts. Settle their
     /// physical rows without adding the cancellation events that published PHP
     /// omits for ordinary completion, failure and continuation. Authored timers
@@ -220,7 +432,21 @@ where
         let waits = Self::waits(tx, run_id).await?;
         let mut chain: Vec<_> = waits.conditions.iter().filter(|wait| wait.occurrence() == Some(occurrence)).collect();
         chain.sort_by_key(|wait| wait.sequence.unwrap_or(i64::MAX));
+        if let Some(first) = chain.first()
+            && let Some(opening) = waits.condition_opening(&first.id)
+            && super::selections::is_selection(&opening.payload)
+            && opening.payload["parallel_group_path"] != command["parallel_group_path"]
+        {
+            return Err(super::all_groups::invalid());
+        }
         let mismatch = || refuse(StatusCode::CONFLICT, "condition_wait_occurrence_mismatch");
+        if chain.iter().any(|wait| {
+            waits.condition_opening(&wait.id).is_some_and(|opening| {
+                opening.payload[CONDITION_INPUT_ORDER_FIELD] != command[CONDITION_INPUT_ORDER_FIELD]
+            })
+        }) {
+            return Err(mismatch());
+        }
         let unavailable = || refuse(StatusCode::CONFLICT, "condition_wait_anchor_unavailable");
         let Some(budget) = budget else {
             // Omitting the policy on an anchored chain is a mismatch.
@@ -313,6 +539,9 @@ where
             .as_object_mut()
             .unwrap()
             .extend(wait_fields(wait).as_object().unwrap().clone());
+        // A grouped condition's timeout carries its group (Server #1142).
+        let group = super::activity_metadata::payload_for_path(wait);
+        payload.as_object_mut().unwrap().extend(group.clone());
         Self::append(
             tx,
             &run_id,
@@ -348,6 +577,7 @@ where
         } else {
             let mut task_payload = wait_fields(wait);
             task_payload["timer_id"] = json!(timer_id);
+            task_payload.as_object_mut().unwrap().extend(group);
             let timer_task = Self::create_task(
                 tx,
                 &run_id,

@@ -1,6 +1,79 @@
 use super::*;
 
 #[tokio::test]
+async fn ordered_selection_commits_the_exact_child_candidate_without_waiting_for_the_timer() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
+    let app = router(runtime.clone());
+    let worker = "ordered-selection-parent";
+    let (status, registration) = request(&app, "POST", "/api/worker/register", json!({
+        "worker_id":worker,"task_queue":"test","runtime":"rust",
+        "supported_workflow_types":["echo"],"supported_activity_types":[],
+        "capabilities":["condition_wait_input_order"],
+        "workflow_command_contracts":{"echo":{"signals":["approve"],"queries":[],"updates":[]}}
+    })).await;
+    assert_eq!(status, StatusCode::CREATED, "{registration}");
+    register(&app, "selection-child-worker", json!(["selection-child"]), json!([])).await;
+    let started = start(&app, "ordered-selection-child-first").await;
+    let parent = poll(&app, worker, "workflow").await;
+    let condition = json!({
+        "type":"open_condition_wait", "condition_wait_occurrence_id":"approval:0",
+        "condition_key":"approval", "condition_definition_fingerprint":"approval-v1",
+        "timeout_seconds":240, "deadline_policy":"occurrence",
+        "condition_wait_timeout_budget_seconds":240, "condition_wait_input_order":"durable_receipt_order",
+    });
+    let child_command = child_and_signal_selection()[0].clone();
+    let commands = selection_pair(1, "mixed", [
+        (child_command, "child", "child"),
+        (condition, "approval", "condition"),
+    ]);
+    let (status, result) = finish_task(&app, &parent, commands).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let child = poll(&app, "selection-child-worker", "workflow").await;
+    let (status, result) = finish_task(&app, &child,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let history = || run_history(&app, &started["workflow_id"], &started["run_id"]);
+    let prefix = history().await;
+    let events = prefix.as_array().unwrap();
+    let event = |kind: &str| events.iter().find(|event| event["event_type"] == kind).unwrap();
+    let opened = &event("ConditionWaitOpened")["payload"];
+    let terminal = event("ChildRunCompleted");
+    let candidate = &event("SelectionCandidateReady")["payload"];
+    assert_eq!(candidate["resolution_event_sequence"], terminal["sequence"]);
+    let event_id = database.selection_history_id(
+        started["run_id"].as_str().unwrap(), terminal["sequence"].as_i64().unwrap(),
+    ).await;
+    assert_eq!(candidate["resolution_event_id"], event_id);
+    assert!(events.iter().all(|event| event["event_type"] != "SelectionResolved"));
+
+    let resumed = poll(&app, worker, "workflow").await;
+    let decide = |candidate_id: &str| json!([{
+        "type":"resolve_condition_wait", "condition_wait_id":opened["condition_wait_id"],
+        "satisfied":false, "competing_resolution_event_id":candidate_id,
+    }]);
+    let (status, result) = finish_task(&app, &resumed, decide("unrelated-event")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["reason"], "condition_wait_outcome_mismatch");
+    assert_eq!(history().await, prefix);
+
+    let (status, result) = finish_task(&app, &resumed, decide(&event_id)).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let done = history().await;
+    let resolved = done.as_array().unwrap();
+    let winner = resolved.iter().find(|event| event["event_type"] == "SelectionResolved").unwrap();
+    assert_eq!(winner["payload"]["operation_identity"], child["run_id"]);
+    assert_eq!(winner["payload"]["resolution_event_id"], event_id);
+    assert!(resolved.iter().all(|event| !matches!(event["event_type"].as_str(),
+        Some("TimerFired" | "ConditionWaitTimedOut" | "ConditionWaitSatisfied"))));
+    let replay = poll(&app, worker, "workflow").await;
+    assert_eq!(replay["run_id"], started["run_id"], "{replay}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
 async fn cancellation_retains_original_timer_selection_metadata_across_reopen() {
     let database = TestDatabase::new().await;
     let first = database.open().await.unwrap();
@@ -151,6 +224,526 @@ pub(super) fn mixed_commands(base: i64) -> Value {
         command["parallel_group_path"] = json!([entry]);
     }
     json!([{"type":"record_version_marker","change_id":"pending-repair","version":1,"min_supported":1,"max_supported":1}, activity, timer])
+}
+
+fn selection_pair(base: usize, group_kind: &str, members: [(Value, &str, &str); 2]) -> Value {
+    let commands = members.into_iter().enumerate().map(|(index, (mut command, key, kind))| {
+        let member = json!({
+            "parallel_group_id": format!("select-calls:{base}:2"),
+            "parallel_group_kind": group_kind,
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": base,
+            "parallel_group_size": 2,
+            "parallel_group_index": index,
+            "selection_member_key": key,
+            "selection_member_index": index,
+            "selection_member_base_sequence": base + index,
+            "selection_member_size": 1,
+            "selection_member_kind": kind,
+        });
+        command.as_object_mut().unwrap().extend(member.as_object().unwrap().clone());
+        command["parallel_group_path"] = json!([member]);
+        command
+    }).collect();
+    Value::Array(commands)
+}
+
+fn child_and_signal_selection() -> Value {
+    let child = json!({
+        "type": "start_child_workflow",
+        "workflow_type": "selection-child",
+        "payload_codec": "avro",
+        "arguments": envelope(Payload::Array(vec![Payload::String("loser".into())])),
+    });
+    let signal = json!({"type": "open_signal_wait", "signal_name": "first"});
+    selection_pair(1, "mixed", [(child, "child", "child"), (signal, "first", "signal")])
+}
+
+fn nested_child_selection(children_first: bool) -> Value {
+    let (child_base, signal_index) = if children_first { (1, 2) } else { (2, 0) };
+    let selection = |offset, key, logical_index, base, size, kind| json!({
+        "parallel_group_id": "select-calls:1:3",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": offset,
+        "selection_member_key": key,
+        "selection_member_index": logical_index,
+        "selection_member_base_sequence": base,
+        "selection_member_size": size,
+        "selection_member_kind": kind,
+    });
+    let mut signal = selection(signal_index, "first", usize::from(children_first), signal_index + 1, 1, "signal");
+    signal["parallel_group_path"] = json!([signal.clone()]);
+    signal["type"] = json!("open_signal_wait");
+    signal["signal_name"] = json!("first");
+    let children = (0..2).map(|offset| {
+        let mut child = json!({
+            "parallel_group_id": format!("parallel-children:{child_base}:2"),
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": child_base,
+            "parallel_group_size": 2,
+            "parallel_group_index": offset,
+        });
+        let outer = selection(child_base + offset - 1, "child", usize::from(!children_first), child_base, 2, "group");
+        child["parallel_group_path"] = json!([outer, child.clone()]);
+        child["type"] = json!("start_child_workflow");
+        child["workflow_type"] = json!("selection-child");
+        child["payload_codec"] = json!("avro");
+        child["arguments"] = envelope(Payload::Array(vec![Payload::Long(offset as i64)]));
+        child
+    });
+    let mut commands = Vec::with_capacity(3);
+    if children_first {
+        commands.extend(children);
+        commands.push(signal);
+    } else {
+        commands.push(signal);
+        commands.extend(children);
+    }
+    json!(commands)
+}
+
+#[tokio::test]
+async fn signal_can_win_a_selection_while_the_child_group_remains_available() {
+    recover_selected_child(true).await;
+}
+
+#[tokio::test]
+async fn signal_can_win_a_selection_while_the_started_child_remains_available() {
+    recover_selected_child(false).await;
+}
+
+async fn recover_selected_child(nested: bool) {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "selection-parent-worker", json!(["echo"]), json!([])).await;
+    register(&app, "selection-child-worker", json!(["selection-child"]), json!([])).await;
+    let started = start(&app, "child-signal-selection").await;
+    let initial = poll(&app, "selection-parent-worker", "workflow").await;
+    let initial_commands = if nested { nested_child_selection(true) } else { child_and_signal_selection() };
+    if nested {
+        let mut invalid = initial_commands.clone();
+        invalid[1]["parallel_group_path"][0]["selection_member_base_sequence"] = json!(2);
+        let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        assert_eq!(finish_task(&app, &initial, invalid).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, before);
+    }
+    let (status, scheduled) = finish_task(&app, &initial, initial_commands).await;
+    assert_eq!(status, StatusCode::OK, "{scheduled}");
+    let selection_size = if nested { 3 } else { 2 };
+    let selected_group = format!("select-calls:1:{selection_size}");
+    let subsequent_group = format!("select-calls:{}:2", selection_size + 1);
+    let child_task = poll(&app, "selection-child-worker", "workflow").await;
+    assert!(child_task["task_id"].is_string(), "{child_task}");
+    let (status, signal) = request(&app, "POST", "/api/workflows/child-signal-selection/signal/first",
+        json!({"input":envelope(Payload::Array(vec![Payload::Long(1)]))})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{signal}");
+    let next = poll(&app, "selection-parent-worker", "workflow").await;
+    let later = selection_pair(selection_size + 1, "signal", [
+        (json!({"type":"open_signal_wait","signal_name":"second"}), "second", "signal"),
+        (json!({"type":"open_signal_wait","signal_name":"third"}), "third", "signal"),
+    ]);
+    let (status, scheduled) = finish_task(&app, &next, later).await;
+    assert_eq!(status, StatusCode::OK, "{scheduled}");
+    let (status, signal) = request(&app, "POST", "/api/workflows/child-signal-selection/signal/second",
+        json!({"input":envelope(Payload::Array(vec![Payload::Long(2)]))})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{signal}");
+    let next = poll(&app, "selection-parent-worker", "workflow").await;
+    let waiting_path = format!("/api/worker/workflow-tasks/{}/fail", next["task_id"].as_str().unwrap());
+    let handle = json!({
+        "selection_group_id": selected_group,
+        "member_base_sequence": 1,
+        "member_size": selection_size - 1,
+        "operation_identity": if nested { json!("group:1:2") } else { child_task["run_id"].clone() },
+        "await_position": selection_size + 3,
+        "status": "waiting",
+    });
+    let waiting = json!({
+        "lease_owner": next["lease_owner"],
+        "workflow_task_attempt": next["workflow_task_attempt"],
+        "failure": {
+            "type": "WorkflowTaskWaitingForHistory",
+            "message": "Waiting for the original child.",
+            "selection_handle": handle,
+        },
+    });
+    let mut mismatched = waiting.clone();
+    mismatched["failure"]["selection_handle"]["selection_group_id"] = json!(&subsequent_group);
+    let before = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let (status, refused) = request(&app, "POST", &waiting_path, mismatched).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{}", refused["reason"]);
+    assert_eq!(refused["reason"], "invalid_child_selection_await");
+    assert_eq!(run_history(&app, &started["workflow_id"], &started["run_id"]).await, before);
+    let (status, acknowledged) = request(&app, "POST", &waiting_path, waiting).await;
+    assert_eq!(status, StatusCode::OK, "{acknowledged}");
+    assert_eq!(acknowledged["outcome"], "waiting_for_history");
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let events = history.as_array().unwrap();
+    let recorded_wait = events.iter().filter(|event| event["event_type"] == "ChildWorkflowAwaited").collect::<Vec<_>>();
+    assert_eq!(recorded_wait.len(), 1);
+    assert_eq!(recorded_wait[0]["payload"]["selection_handle"], handle);
+    let summary = observe_selection(&database, &app, &started).await;
+    assert_eq!(summary["liveness_state"], "waiting_for_child");
+    for (group_id, signal_name, index) in [(&selected_group, "first", 1), (&subsequent_group, "second", 0)] {
+        let opened = events.iter().find(|event| event["event_type"] == "SignalWaitOpened"
+            && event["payload"]["signal_name"] == signal_name).unwrap();
+        assert_eq!(opened["payload"]["selection_member_key"], signal_name);
+        let winner = events.iter().find(|event| event["event_type"] == "SelectionResolved"
+            && event["payload"]["selection_group_id"] == group_id.as_str()).unwrap();
+        assert_eq!(winner["payload"]["operation_kind"], "signal");
+        assert_eq!(winner["payload"]["operation_identity"], opened["payload"]["signal_wait_id"]);
+        assert_eq!(winner["payload"]["member_index"], index);
+    }
+    let (status, completed) = finish_task(&app, &child_task,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    if nested {
+        assert!(poll(&app, "selection-parent-worker", "workflow").await.is_null());
+        let summary = observe_selection(&database, &app, &started).await;
+        assert_eq!(summary["liveness_state"], "waiting_for_child");
+        let second = poll(&app, "selection-child-worker", "workflow").await;
+        assert_ne!(second["run_id"], child_task["run_id"]);
+        let (status, completed) = finish_task(&app, &second,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(8))}])).await;
+        assert_eq!(status, StatusCode::OK, "{completed}");
+    }
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    assert_eq!(history.as_array().unwrap().iter().filter(|event| event["event_type"] == "SelectionResolved").count(), 2);
+    assert!(history.as_array().unwrap().iter().any(|event| event["event_type"] == "ChildRunCompleted"));
+    let resumed = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(resumed["run_id"], started["run_id"], "{resumed}");
+    let run_id = started["run_id"].as_str().unwrap();
+    let lost_task = resumed["task_id"].as_str().unwrap();
+    assert!(ulid::Ulid::from_string(lost_task).is_ok());
+    database.execute(sqlx::AssertSqlSafe(format!(
+        "DELETE FROM workflow_tasks WHERE id='{lost_task}' AND workflow_run_id='{run_id}'",
+    ))).await;
+    let repair_path = format!("/api/workflows/child-signal-selection/runs/{run_id}/repair");
+    let (status, repair) = request(&app, "POST", &repair_path, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{}", repair["reason"]);
+    let restored = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(restored["run_id"], started["run_id"], "{restored}");
+    assert_ne!(restored["task_id"], resumed["task_id"]);
+    let mut consumed = handle;
+    consumed["status"] = json!("resumed");
+    let restored_path = format!("/api/worker/workflow-tasks/{}/complete", restored["task_id"].as_str().unwrap());
+    let mut next_turn = completion(&restored, json!([{"type":"open_signal_wait","signal_name":"after"}]));
+    next_turn["selection_handle"] = consumed.clone();
+    let (status, result) = request(&app, "POST", &restored_path, next_turn.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{}", result["reason"]);
+    let (status, duplicate) = request(&app, "POST", &restored_path, next_turn).await;
+    assert_eq!(status, StatusCode::OK, "{}", duplicate["reason"]);
+    assert_eq!(duplicate["recorded"], false);
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let markers: Vec<_> = history.as_array().unwrap().iter()
+        .filter(|event| event["event_type"] == "ChildWorkflowAwaited").collect();
+    assert_eq!(markers.len(), 2);
+    assert_eq!(markers[1]["payload"]["selection_handle"], consumed);
+    let summary = observe_selection(&database, &app, &started).await;
+    assert_eq!(summary["liveness_state"], "waiting_for_signal");
+    assert_eq!(summary["liveness_reason"], "Waiting for signal after.");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn child_can_win_a_selection_while_the_signal_wait_is_open() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "selection-parent-worker", json!(["echo"]), json!([])).await;
+    register(&app, "selection-child-worker", json!(["selection-child"]), json!([])).await;
+    let started = start(&app, "child-wins-selection").await;
+    let initial = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(finish_task(&app, &initial, child_and_signal_selection()).await.0, StatusCode::OK);
+    let child = poll(&app, "selection-child-worker", "workflow").await;
+    let (status, completed) = finish_task(&app, &child,
+        json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let winner = history.as_array().unwrap().iter().find(|event| event["event_type"] == "SelectionResolved").unwrap();
+    assert_eq!(winner["payload"]["operation_kind"], "child");
+    assert_eq!(winner["payload"]["operation_identity"], child["run_id"]);
+    assert_eq!(winner["payload"]["resolution_event_type"], "ChildRunCompleted");
+    let resumed = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(resumed["run_id"], started["run_id"], "{resumed}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn selected_child_group_wins_only_when_its_last_child_finishes() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "selection-parent-worker", json!(["echo"]), json!([])).await;
+    register(&app, "selection-child-worker", json!(["selection-child"]), json!([])).await;
+    let started = start(&app, "child-group-wins-selection").await;
+    let initial = poll(&app, "selection-parent-worker", "workflow").await;
+    let (status, scheduled) = finish_task(&app, &initial, nested_child_selection(false)).await;
+    assert_eq!(status, StatusCode::OK, "{scheduled}");
+
+    for value in [4, 9] {
+        let child = poll(&app, "selection-child-worker", "workflow").await;
+        let (status, completed) = finish_task(&app, &child,
+            json!([{"type":"complete_workflow","result":envelope(Payload::Long(value))}])).await;
+        assert_eq!(status, StatusCode::OK, "{completed}");
+        if value == 4 {
+            assert!(poll(&app, "selection-parent-worker", "workflow").await.is_null());
+            let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+            assert!(history.as_array().unwrap().iter().all(|event| event["event_type"] != "SelectionResolved"));
+        }
+    }
+
+    let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+    let events = history.as_array().unwrap();
+    let winner = events.iter().find(|event| event["event_type"] == "SelectionResolved").unwrap();
+    let last = events.iter().rev().find(|event| event["event_type"] == "ChildRunCompleted").unwrap();
+    let event_id = database.selection_history_id(
+        started["run_id"].as_str().unwrap(), last["sequence"].as_i64().unwrap(),
+    ).await;
+    assert_eq!(winner["payload"]["member_index"], 1);
+    assert_eq!(winner["payload"]["member_base_sequence"], 2);
+    assert_eq!(winner["payload"]["member_size"], 2);
+    assert_eq!(winner["payload"]["operation_kind"], "group");
+    assert_eq!(winner["payload"]["operation_identity"], "group:2:2");
+    assert_eq!(winner["payload"]["resolution_event_id"], event_id);
+    assert_eq!(winner["payload"]["resolution_event_type"], "ChildRunCompleted");
+    let resumed = poll(&app, "selection-parent-worker", "workflow").await;
+    assert_eq!(resumed["run_id"], started["run_id"], "{resumed}");
+    observe_selection(&database, &app, &started).await;
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn false_selected_condition_wake_reuses_the_member_and_then_can_win() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "condition-selection", json!(["echo"]), json!([])).await;
+    let started = start(&app, "selected-condition-reopen").await;
+    let task = poll(&app, "condition-selection", "workflow").await;
+    let mut initial = nested_child_selection(true);
+    let condition = &mut initial[2];
+    condition["type"] = json!("open_condition_wait");
+    condition.as_object_mut().unwrap().remove("signal_name");
+    condition["selection_member_kind"] = json!("condition");
+    condition["parallel_group_path"][0]["selection_member_kind"] = json!("condition");
+    condition["condition_wait_occurrence_id"] = json!("selection-condition:0");
+    condition["condition_key"] = json!("approval");
+    condition["condition_definition_fingerprint"] = json!("approval-v1");
+    condition["timeout_seconds"] = json!(240);
+    condition["deadline_policy"] = json!("occurrence");
+    condition["condition_wait_timeout_budget_seconds"] = json!(240);
+    let condition = condition.clone();
+    let history = || run_history(&app, &started["workflow_id"], &started["run_id"]);
+
+    let prefix = history().await;
+    assert_eq!(
+        finish_task(&app, &task, json!([condition.clone()])).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    );
+    assert_eq!(history().await, prefix, "a partial group cannot author its initial wait");
+    let (status, entry) = finish_task(&app, &task, initial).await;
+    assert_eq!(status, StatusCode::OK, "{entry}");
+
+    let (status, _) = request(
+        &app, "POST", "/api/workflows/selected-condition-reopen/signal/noise", json!([]),
+    ).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let false_wake = poll(&app, "condition-selection", "workflow").await;
+    let mut wrong = condition.clone();
+    wrong["condition_definition_fingerprint"] = json!("approval-v2");
+    let prefix = history().await;
+    assert_eq!(
+        finish_task(&app, &false_wake, json!([wrong])).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    );
+    assert_eq!(history().await, prefix, "the mismatched repeat changed history");
+    let mut ungrouped = condition.clone();
+    ungrouped.as_object_mut().unwrap().retain(|field, _| {
+        !field.starts_with("parallel_group_") && !field.starts_with("selection_member_")
+    });
+    assert_eq!(
+        finish_task(&app, &false_wake, json!([ungrouped])).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    );
+    assert_eq!(history().await, prefix, "the repeat without its group changed history");
+    let (status, result) = finish_task(&app, &false_wake, json!([condition])).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let after_false = history().await;
+    let events = after_false.as_array().unwrap();
+    assert!(events.iter().all(|event| event["event_type"] != "SelectionResolved"));
+    let opened: Vec<_> = events.iter().filter(|event| event["event_type"] == "ConditionWaitOpened").collect();
+    assert_eq!(opened.len(), 2);
+    let original = &opened[0]["payload"];
+    let reopened = &opened[1]["payload"];
+    assert_eq!(reopened["parallel_group_path"], original["parallel_group_path"]);
+    assert_eq!(reopened["condition_wait_occurrence_id"], original["condition_wait_occurrence_id"]);
+    assert_ne!(reopened["condition_wait_id"], original["condition_wait_id"]);
+    assert_ne!(reopened["sequence"], original["sequence"]);
+    assert!(original["occurrence_deadline_at"].is_string());
+    assert_eq!(reopened["occurrence_deadline_at"], original["occurrence_deadline_at"]);
+    assert!(events.iter().any(|event| {
+        event["event_type"] == "TimerCancelled" && event["payload"]["condition_wait_id"] == original["condition_wait_id"]
+    }));
+    assert!(events.iter().any(|event| {
+        event["event_type"] == "ConditionWaitSatisfied" && event["payload"]["condition_wait_reopened"] == true
+    }));
+
+    let (status, _) = request(
+        &app, "POST", "/api/workflows/selected-condition-reopen/signal/approve", json!([]),
+    ).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let true_wake = poll(&app, "condition-selection", "workflow").await;
+    let path = format!("/api/worker/workflow-tasks/{}/fail", true_wake["task_id"].as_str().unwrap());
+    let (status, result) = request(&app, "POST", &path, json!({
+        "lease_owner": true_wake["lease_owner"],
+        "workflow_task_attempt": true_wake["workflow_task_attempt"],
+        "failure": {"type":"WorkflowTaskWaitingForHistory","message":"Replay with the true condition result."},
+    })).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let after_true = history().await;
+    let events = after_true.as_array().unwrap();
+    let resolved: Vec<_> = events.iter().filter(|event| event["event_type"] == "SelectionResolved").collect();
+    assert_eq!(resolved.len(), 1);
+    let winner = &resolved[0]["payload"];
+    assert_eq!(winner["operation_identity"], original["condition_wait_id"]);
+    assert_eq!(winner["member_base_sequence"], 3);
+    let satisfied = events.iter().rev().find(|event| event["event_type"] == "ConditionWaitSatisfied").unwrap();
+    assert_eq!(satisfied["payload"]["condition_wait_id"], reopened["condition_wait_id"]);
+    assert!(satisfied["payload"].get("condition_wait_reopened").is_none());
+    assert_eq!(winner["resolution_event_id"], database.selection_history_id(
+        started["run_id"].as_str().unwrap(), satisfied["sequence"].as_i64().unwrap(),
+    ).await);
+
+    let replay = poll(&app, "condition-selection", "workflow").await;
+    assert_eq!(replay["run_id"], started["run_id"]);
+    assert_eq!(finish_task(&app, &replay, json!([{
+        "type":"complete_workflow","result":envelope(Payload::Boolean(true)),
+    }])).await.0, StatusCode::OK);
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn ordered_selected_condition_keeps_the_timeout_boundary_without_claiming_a_winner() {
+    for marked in [false, true] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
+        let app = router(runtime.clone());
+        let worker = "ordered-condition-worker";
+        let (status, registered) = request(&app, "POST", "/api/worker/register", json!({
+            "worker_id":worker,"task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":[],
+            "capabilities":["condition_wait_input_order"],
+            "workflow_command_contracts":{"echo":{"signals":["approve"],"queries":[],"updates":[]}}
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{registered}");
+        let workflow = "ordered-condition-selection";
+        let started = start(&app, workflow).await;
+        let task = poll(&app, worker, "workflow").await;
+        let mut commands = nested_child_selection(true);
+        let condition = &mut commands[2];
+        condition["type"] = json!("open_condition_wait");
+        condition.as_object_mut().unwrap().remove("signal_name");
+        condition["selection_member_kind"] = json!("condition");
+        condition["parallel_group_path"][0]["selection_member_kind"] = json!("condition");
+        condition["condition_wait_occurrence_id"] = json!("approval:0");
+        condition["condition_key"] = json!("approval");
+        condition["condition_definition_fingerprint"] = json!("approval-v1");
+        condition["timeout_seconds"] = json!(2);
+        condition["deadline_policy"] = json!("occurrence");
+        condition["condition_wait_timeout_budget_seconds"] = json!(2);
+        if marked {
+            condition["condition_wait_input_order"] = json!("durable_receipt_order");
+        }
+
+        let history = || run_history(&app, &started["workflow_id"], &started["run_id"]);
+        let prefix = history().await;
+        let mut invalid = commands.clone();
+        invalid[2]["condition_wait_input_order"] = json!("unsupported");
+        let (status, result) = finish_task(&app, &task, invalid).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{result}");
+        assert_eq!(result["reason"], "invalid_condition_wait_input_order");
+        assert_eq!(history().await, prefix);
+        let (status, result) = finish_task(&app, &task, commands).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+
+        let (status, signal) = request(
+            &app,
+            "POST",
+            &format!("/api/workflows/{workflow}/signal/approve"),
+            json!([]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{signal}");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let events = loop {
+            let observed = history().await;
+            if observed.as_array().unwrap().iter().any(|event| event["event_type"] == "TimerFired") {
+                break observed;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "condition timer did not fire");
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        };
+        let events = events.as_array().unwrap();
+        let event = |kind: &str| events.iter().find(|event| event["event_type"] == kind).unwrap();
+        let opened = &event("ConditionWaitOpened")["payload"];
+        let scheduled = &event("TimerScheduled")["payload"];
+        let fired = event("TimerFired");
+        assert!(event("SignalReceived")["sequence"].as_i64() < fired["sequence"].as_i64());
+        assert_eq!(scheduled["condition_wait_id"], opened["condition_wait_id"]);
+        assert_eq!(fired["payload"]["condition_wait_id"], opened["condition_wait_id"]);
+        assert_eq!(fired["payload"]["timer_id"], scheduled["timer_id"]);
+        assert_eq!(scheduled["fire_at"], opened["occurrence_deadline_at"]);
+        for payload in [opened, scheduled, &fired["payload"]] {
+            assert_eq!(payload.get("condition_wait_input_order").and_then(Value::as_str),
+                marked.then_some("durable_receipt_order"));
+        }
+        let winner = events.iter().find(|event| event["event_type"] == "SelectionResolved");
+        if marked {
+            assert!(winner.is_none());
+        } else {
+            assert_eq!(winner.unwrap()["payload"]["resolution_event_type"], "TimerFired");
+        }
+        assert!(events.iter().all(|event| event["event_type"] != "SignalApplied"));
+        let resumed = poll(&app, worker, "workflow").await;
+        assert_eq!(resumed["run_id"], started["run_id"]);
+        if marked {
+            let decision = |receipt: &Value| json!([{
+                "type":"resolve_condition_wait", "condition_wait_id":opened["condition_wait_id"],
+                "satisfied":true, "input_receipt_sequence":receipt,
+            }]);
+            let prefix = history().await;
+            let (status, result) = finish_task(&app, &resumed, decision(&fired["sequence"])).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{result}");
+            assert_eq!(result["reason"], "condition_wait_outcome_mismatch");
+            assert_eq!(history().await, prefix);
+            let receipt = &event("SignalReceived")["sequence"];
+            let (status, result) = finish_task(&app, &resumed, decision(receipt)).await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+            let resolved = history().await;
+            let resolved = resolved.as_array().unwrap();
+            let resolved_event = |kind: &str| resolved.iter().find(|event| event["event_type"] == kind).unwrap();
+            let applied = resolved_event("SignalApplied");
+            let satisfied = resolved_event("ConditionWaitSatisfied");
+            let selected = resolved_event("SelectionResolved");
+            assert!(applied["sequence"].as_i64() < satisfied["sequence"].as_i64());
+            assert!(satisfied["sequence"].as_i64() < selected["sequence"].as_i64());
+            assert_eq!(satisfied["payload"]["input_receipt_sequence"], *receipt);
+            assert_eq!(satisfied["payload"]["timer_fired_sequence"], fired["sequence"]);
+            assert_eq!(selected["payload"]["resolution_event_type"], "ConditionWaitSatisfied");
+            assert_eq!(selected["payload"]["operation_identity"], opened["condition_wait_id"]);
+        }
+        runtime.close().await;
+        database.remove().await;
+    }
 }
 
 async fn debug(app: &Router, started: &Value) -> Value {

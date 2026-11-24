@@ -127,6 +127,7 @@ where
         result["task_queue"] = result["queue"].clone();
         let is_terminal = terminal(&status);
         result["is_terminal"] = json!(is_terminal);
+        result["continue_as_new_refusal"] = self.observed_continuation_refusal(run_id).await?;
         result["task_attention"] = if is_terminal {
             Value::Null
         } else {
@@ -215,6 +216,9 @@ where
         }
         let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")
             .bind(run_id).fetch_optional(&self.pool).await?.as_ref().map(|r| DB::optional_document_row(r,"payload").map(|v| v.unwrap_or(Value::Null))).transpose()?;
+        result["continue_as_new_build_transitions"] = self.observed_build_transitions(
+            run_id, started.as_ref(), result["closed_reason"] == "continued",
+        ).await?;
         result["command_contract"] = command_contract(started.as_ref());
         result["workflow_definition_fingerprint"] = json!(
             started
