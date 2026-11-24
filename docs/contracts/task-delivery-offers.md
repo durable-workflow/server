@@ -1,10 +1,12 @@
 # Task delivery offers
 
-This is the draft native contract for [Server #931](https://github.com/durable-workflow/server/issues/931)
+This is the native contract for [Server #931](https://github.com/durable-workflow/server/issues/931)
 and the delivery recovery in [#526](https://github.com/durable-workflow/server/issues/526).
-It is not an implemented or published capability. The retained PHP draft is a
-source reference, not a publication path. The native seal/key design and the
-shared scenario executor still require review and implementation.
+Native Server 3.28.0 implements it, and PHP SDK 3.30.0 is its first consumer.
+Offers are off unless `DW_TASK_DELIVERY_SEAL_KEYS` is set. Offers cover polls
+that select a task. A task carried by a completion response is still delivered
+on the legacy route, so its lost-response recovery is the legacy carried-poll
+replay, not an offer.
 
 An offer observes a task without leasing or reserving it. Losing an offer
 response starts no attempt or task-start history, and another worker can claim

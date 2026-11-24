@@ -611,6 +611,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_HISTORY_PAGE_SIZE_DEFAULT", legacy: Some("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT"), disposition: Honored },
     Setting { name: "DW_HISTORY_PAGE_SIZE_MAX", legacy: Some("WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX"), disposition: Honored },
     Setting { name: "DW_HISTORY_RETENTION_DAYS", legacy: Some("WORKFLOW_HISTORY_RETENTION_DAYS"), disposition: Honored },
+    Setting { name: "DW_HTTP_ACCESS_LOG", legacy: None, disposition: Honored },
     Setting { name: "DW_MAX_HISTORY_EVENTS", legacy: Some("WORKFLOW_MAX_HISTORY_EVENTS"), disposition: Ignored },
     Setting { name: "DW_MAX_MEMO_BYTES", legacy: Some("WORKFLOW_MAX_MEMO_BYTES"), disposition: Honored },
     Setting { name: "DW_MAX_NEXUS_OPERATIONS_PER_CALLER", legacy: Some("WORKFLOW_MAX_NEXUS_OPERATIONS_PER_CALLER"), disposition: Refused(Int(200), NEXUS) },
