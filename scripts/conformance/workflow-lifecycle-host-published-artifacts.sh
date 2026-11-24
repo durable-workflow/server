@@ -97,23 +97,60 @@ server_follow_log="$result_dir/workflow-lifecycle-server-process.log"
 scheduler_follow_log="$result_dir/workflow-lifecycle-scheduler-process.log"
 server_log_pid=""
 scheduler_log_pid=""
+network_id=""
+owned_containers=""
+
+owns_container() {
+  grep -Fxq -- "$1" <<< "$owned_containers"
+}
 
 cleanup() {
-  local exit_code=$?
+  local exit_code=$? cleanup_failed=0
   for log_pid in "$server_log_pid" "$scheduler_log_pid"; do
     if [[ -n "$log_pid" ]] && kill -0 "$log_pid" >/dev/null 2>&1; then
       kill "$log_pid" >/dev/null 2>&1 || true
       wait "$log_pid" >/dev/null 2>&1 || true
     fi
   done
-  for container in "$server_name" "$scheduler_name" "$mysql_name" "$redis_name"; do
-    if docker inspect "$container" >/dev/null 2>&1; then
-      docker logs "$container" >"$result_dir/${container}.log" 2>&1 || true
+  if [[ "$network_id" =~ ^[0-9a-f]{64}$ ]]; then
+    owned_containers="$(docker container ls --all --filter "label=org.durable-workflow.lifecycle-network=$network_id" \
+      --format '{{.Names}}')" || cleanup_failed=1
+    for container in "$server_name" "$scheduler_name" "$mysql_name" "$redis_name"; do
+      if owns_container "$container"; then
+        docker logs "$container" >"$result_dir/${container}.log" 2>&1 || true
+      fi
+    done
+    if owns_container "$server_name"; then
+      docker rm --force --volumes "$server_name" >/dev/null || cleanup_failed=1
     fi
-  done
-  docker rm -f "$server_name" "$scheduler_name" "$mysql_name" "$redis_name" >/dev/null 2>&1 || true
-  docker rm -f "$extractor_name" >/dev/null 2>&1 || true
-  docker network rm "$network_name" >/dev/null 2>&1 || true
+    if owns_container "$scheduler_name"; then
+      docker rm --force --volumes "$scheduler_name" >/dev/null || cleanup_failed=1
+    fi
+    if owns_container "$mysql_name"; then
+      docker rm --force --volumes "$mysql_name" >/dev/null || cleanup_failed=1
+    fi
+    if owns_container "$redis_name"; then
+      docker rm --force --volumes "$redis_name" >/dev/null || cleanup_failed=1
+    fi
+    if owns_container "$extractor_name"; then
+      docker rm --force --volumes "$extractor_name" >/dev/null || cleanup_failed=1
+    fi
+    if [[ "$(docker network inspect --format '{{.Id}}' "$network_name")" == "$network_id" ]]; then
+      docker network rm "$network_name" >/dev/null || cleanup_failed=1
+    else
+      cleanup_failed=1
+    fi
+    if [[ "$(docker container ls --all --filter "label=org.durable-workflow.lifecycle-network=$network_id" \
+        --format '{{.Names}}')" != "" ]]; then
+      cleanup_failed=1
+    fi
+  fi
+  if (( cleanup_failed )); then
+    printf '%s\n' 'Failed to remove owned lifecycle Docker resources.' >&2
+    if (( exit_code == 0 )); then
+      exit_code=1
+    fi
+  fi
   exit "$exit_code"
 }
 trap cleanup EXIT
@@ -145,15 +182,17 @@ docker pull "$server_image"
 docker pull "$rust_image"
 docker pull "$mysql_image"
 docker pull "$redis_image"
-docker network create "$network_name" >/dev/null
+network_id="$(docker network create --label "org.durable-workflow.lifecycle-run=$run_id" "$network_name")"
+[[ "$network_id" =~ ^[0-9a-f]{64}$ ]]
+owner_label="org.durable-workflow.lifecycle-network=$network_id"
 
-docker run -d --name "$mysql_name" --network "$network_name" \
+docker run -d --name "$mysql_name" --network "$network_name" --label "$owner_label" \
   -e MYSQL_DATABASE=durable_workflow \
   -e MYSQL_USER=workflow \
   -e MYSQL_PASSWORD=workflow \
   -e MYSQL_ROOT_PASSWORD=root \
   "$mysql_image" >/dev/null
-docker run -d --name "$redis_name" --network "$network_name" "$redis_image" >/dev/null
+docker run -d --name "$redis_name" --network "$network_name" --label "$owner_label" "$redis_image" >/dev/null
 
 for attempt in $(seq 1 60); do
   if docker exec "$mysql_name" mysqladmin ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1 \
@@ -170,13 +209,13 @@ done
 docker run --rm --network "$network_name" "${common_server_env[@]}" \
   "$server_image" server-bootstrap
 
-docker run -d --name "$server_name" --network "$network_name" \
+docker run -d --name "$server_name" --network "$network_name" --label "$owner_label" \
   "${common_server_env[@]}" \
   -e DW_SERVER_TOPOLOGY_SHAPE=standalone_server \
   -e DW_SERVER_PROCESS_CLASS=server_http_node \
   "$server_image" >/dev/null
 
-docker run -d --name "$scheduler_name" --network "$network_name" \
+docker run -d --name "$scheduler_name" --network "$network_name" --label "$owner_label" \
   "${common_server_env[@]}" \
   -e DW_SERVER_TOPOLOGY_SHAPE=standalone_server \
   -e DW_SERVER_PROCESS_CLASS=scheduler_node \
@@ -218,12 +257,12 @@ fi
 
 rm -rf "$artifact_root"
 mkdir -p "$artifact_root/scripts" "$artifact_root/static/platform-conformance"
-docker create --name "$extractor_name" "$server_image" >/dev/null
+docker create --name "$extractor_name" --label "$owner_label" "$server_image" >/dev/null
 docker cp "$extractor_name:/app/scripts/conformance" "$artifact_root/scripts/"
 docker cp \
   "$extractor_name:/app/static/platform-conformance/workflow-lifecycle-scenarios.json" \
   "$artifact_root/static/platform-conformance/workflow-lifecycle-scenarios.json"
-docker rm "$extractor_name" >/dev/null
+docker rm --volumes "$extractor_name" >/dev/null
 
 rust_exit=0
 RESULT_DIR="$result_dir" \

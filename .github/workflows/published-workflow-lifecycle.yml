@@ -110,12 +110,28 @@ jobs:
       - name: Remove job-owned lifecycle containers and network
         if: always()
         run: |
-          docker rm -f "dw-lifecycle-mysql-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
-          docker rm -f "dw-lifecycle-redis-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
-          docker rm -f "dw-lifecycle-server-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
-          docker rm -f "dw-lifecycle-scheduler-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
-          docker rm -f "dw-lifecycle-extract-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
-          docker network rm "dw-lifecycle-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+          network="$(docker network ls --no-trunc --filter "label=org.durable-workflow.lifecycle-run=$DW_JOB_RESOURCE_PREFIX" --format '{{.ID}} {{.Name}}')"
+          network_id="${network%% *}"
+          if [[ "$network_id" =~ ^[0-9a-f]{64}$ ]] && [[ "$network" == "$network_id dw-lifecycle-${DW_JOB_RESOURCE_PREFIX}" ]]; then
+            owned_containers="$(docker ps --all --filter "label=org.durable-workflow.lifecycle-network=$network_id" --format '{{.Names}}')"
+            owned_containers=" ${owned_containers//$'\n'/ } "
+            if [[ "$owned_containers" == *" dw-lifecycle-mysql-${DW_JOB_RESOURCE_PREFIX} "* ]]; then
+              docker rm -f -v "dw-lifecycle-mysql-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+            fi
+            if [[ "$owned_containers" == *" dw-lifecycle-redis-${DW_JOB_RESOURCE_PREFIX} "* ]]; then
+              docker rm -f -v "dw-lifecycle-redis-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+            fi
+            if [[ "$owned_containers" == *" dw-lifecycle-server-${DW_JOB_RESOURCE_PREFIX} "* ]]; then
+              docker rm -f -v "dw-lifecycle-server-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+            fi
+            if [[ "$owned_containers" == *" dw-lifecycle-scheduler-${DW_JOB_RESOURCE_PREFIX} "* ]]; then
+              docker rm -f -v "dw-lifecycle-scheduler-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+            fi
+            if [[ "$owned_containers" == *" dw-lifecycle-extract-${DW_JOB_RESOURCE_PREFIX} "* ]]; then
+              docker rm -f -v "dw-lifecycle-extract-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+            fi
+            docker network rm "dw-lifecycle-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+          fi
           docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.php.yml down --volumes --remove-orphans >/dev/null 2>&1 || true
 
       - name: Require PHP replay cleanup receipt
@@ -152,4 +168,4 @@ jobs:
 
       - name: Remove job-owned evidence container
         if: always()
-        run: docker rm -f "dw-lifecycle-evidence-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
+        run: docker rm -f -v "dw-lifecycle-evidence-${DW_JOB_RESOURCE_PREFIX}" >/dev/null 2>&1 || true
