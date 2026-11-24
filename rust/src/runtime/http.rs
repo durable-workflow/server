@@ -2620,8 +2620,13 @@ async fn worker_offer(runtime: Runtime, headers: HeaderMap, body: Value, kind: &
     }
     poll_rules(&body, if kind == "workflow" { WORKFLOW_POLL_RULES } else { ACTIVITY_POLL_RULES })?;
     let (status, answer) = runtime.handle_task_offer(kind, &body, protocol).await?;
+    // Each definitive answer is decided under the transition lock after the
+    // logical poll's receipt was read. The worker releases only the selected
+    // packet (or, for authority loss, the old incarnation), so the body is
+    // exactly `task`, `poll_status` and `reason`, without the worker envelope.
     let definitive = status == StatusCode::CONFLICT && matches!(answer["reason"].as_str(),
-        Some("task_offer_expired" | "worker_registration_lost_authority"));
+        Some("task_offer_expired" | "task_offer_unclaimable" | "task_offer_lease_ended"
+            | "task_offer_conflict" | "worker_registration_lost_authority"));
     let mut response = (status, Json(answer)).into_response();
     if definitive {
         response.extensions_mut().insert(ExactTaskOfferRefusal);

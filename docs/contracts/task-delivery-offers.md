@@ -133,18 +133,37 @@ older replica does not establish that no claim committed. The worker retains
 the same packet, endpoint, registration and poll identity through uncertainty.
 It must not fall back to a legacy claim.
 
-A definitive refusal has HTTP 409, `task: null`, and the matching typed reason.
-Confirmed `task_offer_expired` permits a new logical poll.
+A definitive refusal has HTTP 409, `task: null`, and one of the typed reasons
+listed below. Confirmed `task_offer_expired` permits a new logical poll.
 `worker_registration_lost_authority` ends the old worker. Other refusals and
 terminal outcomes require the existing typed poll contract; an unstructured
 409 is not a definitive no-claim result. An older endpoint's 404 or 405 remains
 uncertain once acceptance has begun.
 
-These two definitive responses contain exactly `task`, `poll_status`, and
-`reason`. Their `poll_status` values are `task_offer_expired` and
-`stale_worker_registration`, respectively. The worker protocol version stays
-in the response header. The legacy poll routes refuse requests that carry a
-task delivery header or a signed offer token.
+Native Server returns five definitive refusals. Each body contains exactly
+`task`, `poll_status`, and `reason`, with no worker envelope. Each `poll_status`
+and `reason` pair is listed below:
+
+| `poll_status` | `reason` | Meaning |
+| --- | --- | --- |
+| `task_offer_expired` | `task_offer_expired` | The packet's deadline passed, no claim committed for the logical poll, and the selected task still has the observed attempt. |
+| `task_offer_unclaimable` | `task_offer_unclaimable` | No claim committed for the logical poll, and the selected task can no longer be claimed at the sealed attempt and eligibility, for example because a peer claimed it first. |
+| `task_offer_lease_ended` | `task_offer_lease_ended` | This packet's claim committed earlier, but its lease has ended and it grants no authority. |
+| `task_offer_conflict` | `task_offer_conflict` | The logical poll is already bound to a different packet, kind set or registration, so this packet can never be accepted. |
+| `stale_worker_registration` | `worker_registration_lost_authority` | The packet's registration incarnation was replaced or is no longer fresh. |
+
+Server decides each answer under the transition lock after reading the
+logical poll's receipt. A refused acceptance rolls back. The first four mean
+that the selected packet does not and cannot authorize execution. The worker
+releases only that packet, and its next logical poll uses a new identity.
+`task_offer_lease_ended` and `task_offer_conflict` do not claim that nothing
+committed for the logical poll, only that nothing live is owed to this
+packet. Authority loss ends only the original registration incarnation.
+
+Any other answer is not definitive, including a retryable 503 or a 409 in the
+worker envelope. The worker protocol version stays in the response header. The
+legacy poll routes refuse requests that carry a task delivery header or a
+signed offer token.
 
 ## Remaining source and acceptance work
 

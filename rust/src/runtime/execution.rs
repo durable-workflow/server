@@ -2590,12 +2590,61 @@ async fn task_offer_worker_routes_preserve_signed_scope_and_definitive_refusals(
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(expired, json!({"task":null,"poll_status":"task_offer_expired","reason":"task_offer_expired"}));
 
-    let (status, _) = request(&app, "/api/worker/register", &worker, true, false).await;
+    let (status, reregistered) = request(&app, "/api/worker/register", &worker, true, false).await;
     assert_eq!(status, StatusCode::CREATED);
     let (status, stale) = request(&app, path, &poll, true, true).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(stale, json!({"task":null,"poll_status":"stale_worker_registration",
         "reason":"worker_registration_lost_authority"}));
+
+    // Every other definitive answer is the same exact three-field 409.
+    let exact = |reason: &str| json!({"task":null,"poll_status":reason,"reason":reason});
+    let offer_poll = |worker_id: &str, token: &Value, request_id: &str| json!({"worker_id":worker_id,
+        "task_queue":"offer-queue","poll_request_id":request_id,"registration_token":token,"timeout_seconds":0});
+
+    // Two workers race for the one ready task. Offers reserve nothing, so both
+    // observe it; the peer's acceptance wins and the loser's packet is
+    // definitively unclaimable.
+    let mut peer = worker.clone();
+    peer["worker_id"] = json!("offer-peer");
+    let (status, peer_registered) = request(&app, "/api/worker/register", &peer, true, false).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let mut loser = offer_poll("offer-worker", &reregistered["registration_token"], "race-loser");
+    let mut winner = offer_poll("offer-peer", &peer_registered["registration_token"], "race-winner");
+    let (_, loser_offer) = request(&app, path, &loser, true, true).await;
+    let (_, winner_offer) = request(&app, path, &winner, true, true).await;
+    assert_eq!(loser_offer["poll_status"], "offered");
+    assert_eq!(winner_offer["task_offer"]["task_id"], loser_offer["task_offer"]["task_id"]);
+    loser["task_offer_token"] = loser_offer["task_offer"]["token"].clone();
+    winner["task_offer_token"] = winner_offer["task_offer"]["token"].clone();
+    let (status, won) = request(&app, path, &winner, true, true).await;
+    assert_eq!((status, &won["task"]["task_id"]), (StatusCode::OK, &winner_offer["task_offer"]["task_id"]));
+    let (status, lost) = request(&app, path, &loser, true, true).await;
+    assert_eq!((status, lost), (StatusCode::CONFLICT, exact("task_offer_unclaimable")));
+
+    // A second packet for a logical poll that already committed another one
+    // can never be accepted.
+    runtime.in_namespace("offer-test").start(json!({"workflow_id":"route-offer-three","workflow_type":"fixture",
+        "task_queue":"offer-queue","input":{"codec":"avro","blob":input}}), None).await.unwrap();
+    let mut first = offer_poll("offer-worker", &reregistered["registration_token"], "bound-poll");
+    let mut second = first.clone();
+    let (_, first_offer) = request(&app, path, &first, true, true).await;
+    let (_, second_offer) = request(&app, path, &second, true, true).await;
+    assert_ne!(first_offer["task_offer"]["token"], second_offer["task_offer"]["token"]);
+    first["task_offer_token"] = first_offer["task_offer"]["token"].clone();
+    second["task_offer_token"] = second_offer["task_offer"]["token"].clone();
+    let (status, bound) = request(&app, path, &first, true, true).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, conflict) = request(&app, path, &second, true, true).await;
+    assert_eq!((status, conflict), (StatusCode::CONFLICT, exact("task_offer_conflict")));
+
+    // Once that claim's lease ends, its own packet no longer replays.
+    let (status, failed) = request(&app, &format!("/api/worker/workflow-tasks/{}/fail", bound["task"]["task_id"].as_str().unwrap()),
+        &json!({"lease_owner":bound["task"]["lease_owner"],"workflow_task_attempt":bound["task"]["workflow_task_attempt"],
+            "failure":{"message":"end the accepted lease","type":"RuntimeException"}}), true, false).await;
+    assert_eq!(status, StatusCode::OK, "{failed}");
+    let (status, ended) = request(&app, path, &first, true, true).await;
+    assert_eq!((status, ended), (StatusCode::CONFLICT, exact("task_offer_lease_ended")));
     tokio::time::timeout(Duration::from_secs(15), async {
         while read_horizon(&runtime).await <= initial_horizon {
             tokio::time::sleep(Duration::from_millis(100)).await;
