@@ -44,6 +44,9 @@ pub(super) enum SealError {
     Invalid,
     #[error("task_offer_nonce_unavailable")]
     Nonce,
+    /// A well-formed frame whose key ID this replica does not hold.
+    #[error("invalid_task_offer_token")]
+    UnknownKey,
 }
 
 #[derive(Deserialize)]
@@ -312,6 +315,20 @@ impl KeyRing {
         ))
     }
 
+    /// The key ID of a frame that [`KeyRing::open`] refused as
+    /// [`SealError::UnknownKey`]. It is a public frame segment, not a secret.
+    pub(super) fn frame_key_id(token: &str) -> Option<&str> {
+        let mut parts = token.split('.');
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(FRAME), Some(id), Some(encoded), None)
+                if valid_key_id(id) && !encoded.is_empty() =>
+            {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn open(&self, token: &str) -> Result<OpenedToken, SealError> {
         if token.len() > MAX_TOKEN_BYTES || !token.is_ascii() {
             return Err(SealError::Invalid);
@@ -329,7 +346,7 @@ impl KeyRing {
             .0
             .iter()
             .find(|key| key.id == id)
-            .ok_or(SealError::Invalid)?;
+            .ok_or(SealError::UnknownKey)?;
         let mut packet = Zeroizing::new(
             URL_SAFE_NO_PAD
                 .decode(encoded)
@@ -415,6 +432,10 @@ mod tests {
             <[u8; 32]>::from(Sha256::digest(first.as_bytes()))
         );
         let wrong_id = first.replacen(".now.", ".alias.", 1);
+        let unknown_id = first.replacen(".now.", ".retired.", 1);
+        assert!(matches!(ring.open(&unknown_id), Err(SealError::UnknownKey)));
+        assert_eq!(KeyRing::frame_key_id(&unknown_id), Some("retired"));
+        assert_eq!(KeyRing::frame_key_id(&format!("{unknown_id}.")), None);
         for invalid in [
             wrong_id,
             format!("{first}="),

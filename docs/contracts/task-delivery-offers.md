@@ -251,6 +251,15 @@ local wall-clock observations. Installed qualification must verify at most
 database primaries, including failover.
 
 Server startup checks all required read keys before starting the scheduler.
+A required read key that is absent from the configured ring, or an absent
+ring, does not stop the server. It starts and keeps serving the legacy routes,
+but opens no issuance window, so registration advertises no offers. An offer
+acceptance or replay whose packet names a read key that storage still
+requires, but that this replica lacks, receives the retryable HTTP 503
+reason `task_offer_read_key_unavailable`. That refusal is not definitive, and
+the worker keeps the packet for a replica that holds the key. The durable
+obligation is never evicted. A failed issuance-window refresh is logged at
+warning level with a static reason and no key material.
 Starting or renewing an issuance window also checks them in its transaction.
 An accepted receipt increments its key's reference count in the same
 transaction as the lease. Receipt review uses the database clock with the
@@ -261,8 +270,9 @@ and unaccepted-offer lifetime have elapsed.
 To rotate, load the new key as a read key on the serving replicas before
 starting issuers with the new key first. Stop the old issuers, allow their
 last committed windows to age out, and keep the old read key configured
-until receipt review releases its final reference. Startup rejects missing
-required read keys and reuse of an existing key ID for different material.
+until receipt review releases its final reference. Startup still rejects
+reuse of an existing key ID for different material. A missing required read
+key suspends issuance and the refusal above, rather than refusing startup.
 
 The shared draft scenarios are in
 [`offer-accept.v1.json`](../../tests/Fixtures/contracts/task-delivery-offers/offer-accept.v1.json).

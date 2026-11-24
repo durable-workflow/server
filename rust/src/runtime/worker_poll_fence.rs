@@ -153,9 +153,13 @@ impl WorkerPollFence {
             && self.routing["capabilities"].as_array().is_some_and(|values| values.iter().any(|value| value == "task_delivery_offers"))
     }
 
+    /// The routing authority an offer packet seals. A heartbeat must not end
+    /// a sealed offer or an accepted claim's replay, so the registration's
+    /// heartbeat timestamps are excluded even without process identity. The
+    /// packet's registration digest and the incarnation check still fence
+    /// every re-registration, which rotates the incarnation token.
     pub(super) fn offer_routing_digest(&self) -> Result<[u8; 32]> {
-        let fallback_times = self.process.is_empty().then_some((self.updated_at, self.last_heartbeat_at));
-        super::task_offer_seal::authority_digest("worker_routing_fence", &(&self.routing, &self.process, fallback_times))
+        super::task_offer_seal::authority_digest("worker_routing_fence", &(&self.routing, &self.process))
     }
 
     /// `isFresh`: active, and heartbeated within the stale window.

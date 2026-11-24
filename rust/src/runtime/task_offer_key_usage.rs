@@ -59,6 +59,18 @@ fn invalid_key_usage() -> super::RuntimeError {
     )
 }
 
+/// Whether a startup preflight refusal only reports an absent required read
+/// key. Startup continues without issuance; any other refusal stays fatal.
+pub(super) fn is_missing_read_key(error: &super::RuntimeError) -> bool {
+    matches!(
+        error,
+        super::RuntimeError::Refused {
+            reason: "task_offer_required_read_key_missing",
+            ..
+        }
+    )
+}
+
 fn missing_key() -> super::RuntimeError {
     refuse(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -163,6 +175,17 @@ store_methods! {
     async fn check_offer_key_ring_in(
         tx: &mut Transaction<'_, DB>, ring: Option<&KeyRing>, at: DateTime<Utc>,
     ) -> Result<()> {
+        // A reused key ID is checked first, so a missing read key cannot
+        // hide it from the startup preflight.
+        if let Some(ring) = ring {
+            for id in ring.key_ids() {
+                if let Some(existing) = Self::offer_key_in(tx, id).await?
+                    && ring.key_fingerprint(id) != Some(existing.fingerprint)
+                {
+                    return Err(changed_key());
+                }
+            }
+        }
         let required = Self::query(DB::OFFER_REQUIRED_KEYS)
             .bind(at.timestamp()).fetch_all(&mut **tx).await?;
         // Five indexed rows cannot be satisfied by a four-slot ring.
@@ -180,26 +203,32 @@ store_methods! {
                 }
             }
         }
-        if let Some(ring) = ring {
-            for id in ring.key_ids() {
-                if let Some(existing) = Self::offer_key_in(tx, id).await?
-                    && ring.key_fingerprint(id) != Some(existing.fingerprint)
-                {
-                    return Err(changed_key());
-                }
-            }
-        }
         Ok(())
     }
 
     /// Startup checks all durable obligations before activating a configured
-    /// issuer. No configured keys is valid only when no read key is required.
+    /// issuer. A missing required read key is reported as
+    /// `task_offer_required_read_key_missing`; the runtime then starts without
+    /// an issuance window and refuses only packets that need the absent key.
+    /// A key ID reused for different material remains a startup refusal.
     pub(super) async fn preflight_task_offer_keys(&self, ring: Option<&KeyRing>) -> Result<()> {
         let mut tx = self.begin().await?;
         let at = Self::database_utc_now(&mut *tx).await?;
         Self::check_offer_key_ring_in(&mut tx, ring, at).await?;
         tx.rollback().await?;
         Ok(())
+    }
+
+    /// Whether storage still requires the read key with this ID: a committed
+    /// issuance horizon has not elapsed or a retained receipt references it.
+    pub(super) async fn offer_read_key_required(&self, id: &str) -> Result<bool> {
+        let name = key_name(id);
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&name).fetch_optional(&self.pool).await? else {
+            return Ok(false);
+        };
+        let key = KeyUse::decode(&DB::string(&row, "value")?, &name)?;
+        let at = Self::database_utc_now(&self.pool).await?;
+        Ok(key.required(at))
     }
 
     pub(super) async fn task_offer_read_time(&self, ring: &KeyRing) -> Result<DateTime<Utc>> {

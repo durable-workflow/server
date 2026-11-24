@@ -169,12 +169,13 @@ impl TimerScheduler {
     ) {
         let mut stop = self.stop.subscribe();
         let task = tokio::spawn(async move {
+            let mut logged = None;
             loop {
                 tokio::select! {
                     _ = stop.changed() => break,
                     _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                        let next = refresh_offer_window(&storage, &keys).await.ok().flatten();
-                        window.replace(next);
+                        let next = refresh_offer_window(&storage, &keys).await;
+                        window.replace(logged_offer_window(next, &mut logged));
                     }
                 }
             }
@@ -214,6 +215,44 @@ impl Drop for TimerScheduler {
         }
         if let Some(task) = self.offers.get_mut().unwrap().take() {
             task.abort();
+        }
+    }
+}
+
+/// A bounded, content-free classification of a failed issuance refresh:
+/// a static refusal reason or the storage error kind, never Display text.
+fn offer_refresh_failure(error: &super::RuntimeError) -> &'static str {
+    match error {
+        super::RuntimeError::Refused { reason, .. } => reason,
+        super::RuntimeError::Database(_) => "database",
+        super::RuntimeError::Io(_) => "io",
+        super::RuntimeError::Json(_) => "json",
+        super::RuntimeError::Migration(_) => "migration",
+        super::RuntimeError::Protocol { .. } => "protocol",
+    }
+}
+
+/// Keep a refreshed window, or suspend issuance and log a failed refresh at
+/// warning level. A repeated identical failure is logged once until a
+/// refresh succeeds or the failure changes.
+fn logged_offer_window(
+    refreshed: Result<Option<super::task_offer_key_usage::IssuanceWindow>>,
+    logged: &mut Option<&'static str>,
+) -> Option<super::task_offer_key_usage::IssuanceWindow> {
+    match refreshed {
+        Ok(window) => {
+            if window.is_some() {
+                *logged = None;
+            }
+            window
+        }
+        Err(error) => {
+            let reason = offer_refresh_failure(&error);
+            if *logged != Some(reason) {
+                eprintln!("{}", json!({"event":"task_offer_issuance_refresh_failed","level":"warning","reason":reason}));
+                *logged = Some(reason);
+            }
+            None
         }
     }
 }
@@ -478,9 +517,20 @@ impl Runtime {
             Storage::Postgres(store) => store.preflight_task_offer_keys(ring).await,
             Storage::MySql(store) => store.preflight_task_offer_keys(ring).await,
         };
-        if let Err(error) = keys {
-            runtime.close().await;
-            return Err(error);
+        match keys {
+            // Durable obligations name a read key this process lacks. Start
+            // and keep legacy routes serving, but open no issuance window, so
+            // registration advertises no offers; acceptance and replay that
+            // need the absent key are refused as retryable.
+            Err(error) if super::task_offer_key_usage::is_missing_read_key(&error) => {
+                eprintln!("{}", json!({"event":"task_offer_required_read_key_missing","level":"warning",
+                    "issuance":"suspended"}));
+            }
+            Err(error) => {
+                runtime.close().await;
+                return Err(error);
+            }
+            Ok(()) => {}
         }
         if let Err(error) = runtime.initialize_namespace_registry().await {
             runtime.close().await;
@@ -488,7 +538,8 @@ impl Runtime {
         }
         runtime.scheduler.start(runtime.storage.clone());
         if let Some(keys) = runtime.offer_keys.as_ref() {
-            runtime.offer_window.replace(refresh_offer_window(&runtime.storage, keys).await.ok().flatten());
+            let refreshed = refresh_offer_window(&runtime.storage, keys).await;
+            runtime.offer_window.replace(logged_offer_window(refreshed, &mut None));
             runtime.scheduler.start_offers(runtime.storage.clone(), keys.clone(), runtime.offer_window.clone());
         }
 
@@ -1565,7 +1616,21 @@ impl Runtime {
             task_delivery_receipts::{Acceptance, OfferScope},
             task_offer_dispatch::{self as delivery, Delivery, IncomingOffer},
         };
-        let keys = self.offer_keys.as_ref().ok_or_else(delivery::unavailable)?;
+        let Some(keys) = self.offer_keys.as_ref() else {
+            // No configured ring: nothing is issued. A packet whose read key
+            // storage still requires gets its own retryable refusal.
+            let id = body.get("task_offer_token").and_then(Value::as_str)
+                .and_then(super::task_offer_seal::KeyRing::frame_key_id);
+            let required = match id {
+                None => false,
+                Some(id) => match &*self.storage {
+                    Storage::Sqlite(store) => store.offer_read_key_required(id).await?,
+                    Storage::Postgres(store) => store.offer_read_key_required(id).await?,
+                    Storage::MySql(store) => store.offer_read_key_required(id).await?,
+                },
+            };
+            return Err(if required { delivery::read_key_unavailable() } else { delivery::unavailable() });
+        };
         let request_id = super::workflow_poll_requests::request_id(body)
             .filter(|id| id.chars().count() <= 255)
             .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_task_offer_poll_request_id"))?;
@@ -2351,11 +2416,71 @@ async fn task_offer_read_key_preflight_fences_an_incomplete_restart() {
     let store = Store::new(sqlite::open(path).await.unwrap());
     store.reserve_fixture_offer_key().await;
     store.close().await;
-    assert!(matches!(
-        open_with(None).await,
-        Err(super::RuntimeError::Refused { reason: "task_offer_required_read_key_missing", .. })
-    ));
 
+    // A packet under the obligated key, one under a key storage never used,
+    // and the acceptance request that carries each. Opening stops at the key
+    // lookup, so the frame needs no valid ciphertext.
+    let accept = |token: &str| json!({"worker_id":"stranded-worker","task_queue":"stranded-queue",
+        "poll_request_id":"stranded-poll","registration_token":"0123456789abcdef0123456789abcdef",
+        "timeout_seconds":0,"task_offer_token":token});
+    let required_packet = accept("dwo1.fixture-key.AAAA");
+    let unused_packet = accept("dwo1.never-used.AAAA");
+    let refusal = |result: Result<(StatusCode, Value)>| match result {
+        Err(super::RuntimeError::Refused { status, reason }) => (status, reason),
+        other => panic!("expected a typed refusal, got {:?}", other.map(|(status, _)| status)),
+    };
+
+    // Missing ring with a live obligation: start, serve legacy routes, issue
+    // nothing, keep the obligation, and refuse the packet as retryable.
+    let runtime = open_with(None).await.expect("a missing read key does not refuse startup");
+    assert!(runtime.task_delivery_descriptor().is_none());
+    assert!(runtime.offer_window.current().is_none());
+    {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+        runtime.create_namespace(json!({"name":"stranded"})).await.unwrap();
+        let app = super::router(runtime.clone());
+        let post = |path: &str, body: Value| Request::builder().method("POST").uri(path)
+            .header("x-namespace", "stranded").header("x-durable-workflow-protocol-version", "1.20")
+            .header("content-type", "application/json").header("authorization", "Bearer test-only-runtime-token")
+            .body(Body::from(body.to_string())).unwrap();
+        let worker = json!({"worker_id":"legacy-worker","task_queue":"legacy-queue","runtime":"php",
+            "supported_workflow_types":["fixture"],"supported_activity_types":[],"capabilities":["task_delivery_offers"],
+            "capability_manifest":{
+                "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+                "local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+                "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"}
+            }});
+        let registered = app.clone().oneshot(post("/api/worker/register", worker)).await.unwrap();
+        assert_eq!(registered.status(), StatusCode::CREATED);
+        let registered: Value = serde_json::from_slice(
+            &axum::body::to_bytes(registered.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert!(registered["server_capabilities"].get("task_delivery").is_none());
+        let legacy = app.oneshot(post("/api/worker/workflow-tasks/poll",
+            json!({"worker_id":"legacy-worker","task_queue":"legacy-queue","timeout_seconds":0}))).await.unwrap();
+        assert_eq!(legacy.status(), StatusCode::OK, "legacy polling keeps serving");
+    }
+    assert_eq!(refusal(runtime.handle_task_offer("workflow", &required_packet, "1.20").await),
+        (StatusCode::SERVICE_UNAVAILABLE, "task_offer_read_key_unavailable"));
+    assert_eq!(refusal(runtime.handle_task_offer("workflow", &unused_packet, "1.20").await),
+        (StatusCode::SERVICE_UNAVAILABLE, "task_offer_issuance_unavailable"));
+    assert!(runtime.sqlite_store().offer_read_key_required("fixture-key").await.unwrap());
+    runtime.close().await;
+
+    // A configured ring that lacks the obligated key also starts without an
+    // issuance window and refuses only packets that need the absent key.
+    let incomplete = Arc::new(fixture_ring(&[("other", 3)]));
+    let runtime = open_with(Some(incomplete)).await.expect("an incomplete ring does not refuse startup");
+    assert!(runtime.task_delivery_descriptor().is_none());
+    assert!(runtime.offer_window.current().is_none());
+    assert_eq!(refusal(runtime.handle_task_offer("workflow", &required_packet, "1.20").await),
+        (StatusCode::SERVICE_UNAVAILABLE, "task_offer_read_key_unavailable"));
+    assert_eq!(refusal(runtime.handle_task_offer("workflow", &unused_packet, "1.20").await),
+        (StatusCode::CONFLICT, "invalid_task_offer_token"));
+    assert!(runtime.sqlite_store().offer_read_key_required("fixture-key").await.unwrap());
+    runtime.close().await;
+
+    // Reusing a key ID for different material still refuses startup.
     let changed = Arc::new(fixture_ring(&[("fixture-key", 8)]));
     assert!(matches!(
         open_with(Some(changed)).await,
@@ -2363,7 +2488,9 @@ async fn task_offer_read_key_preflight_fences_an_incomplete_restart() {
     ));
 
     let current = Arc::new(fixture_ring(&[("next", 2), ("fixture-key", 7)]));
-    open_with(Some(current)).await.unwrap().close().await;
+    let runtime = open_with(Some(current)).await.unwrap();
+    assert!(runtime.task_delivery_descriptor().is_some());
+    runtime.close().await;
 }
 
 #[cfg(test)]
@@ -2475,4 +2602,86 @@ async fn task_offer_worker_routes_preserve_signed_scope_and_definitive_refusals(
         }
     }).await.expect("the service renews its durable signing window without a poll");
     runtime.close().await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn task_offer_replay_survives_heartbeat_and_fences_reregistration() {
+    use super::task_offer_key_usage::fixture_ring;
+    use axum::{Router, body::{Body, to_bytes}, http::Request};
+    use tower::ServiceExt;
+
+    async fn request(app: &Router, path: &str, body: &Value, mode: bool) -> (StatusCode, Value) {
+        let mut request = Request::builder().method("POST").uri(path)
+            .header("x-namespace", "offer-test")
+            .header("x-durable-workflow-protocol-version", "1.20")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer fixture-worker-plane");
+        if mode {
+            request = request.header("x-durable-workflow-task-delivery", "offer-accept.v1");
+        }
+        let response = app.clone().oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    for with_process in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runtime.sqlite");
+        let storage = Storage::Sqlite(Store::new(sqlite::open(path.to_str().unwrap()).await.unwrap()));
+        let keys = Arc::new(fixture_ring(&[("heartbeat-test", 1)]));
+        let runtime = Runtime::from_storage(storage, "fixture-worker-plane".into(),
+            Default::default(), Default::default(), Default::default(), Some(keys)).await.unwrap();
+        runtime.create_namespace(json!({"name":"offer-test"})).await.unwrap();
+        let app = super::router(runtime.clone());
+        let mut worker = json!({"worker_id":"offer-worker","task_queue":"offer-queue","runtime":"php",
+            "supported_workflow_types":["fixture"],"supported_activity_types":[],
+            "capabilities":["task_delivery_offers"],
+            "capability_manifest":{
+                "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+                "local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+                "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"}
+            }});
+        let mut heartbeat = json!({"worker_id":"offer-worker"});
+        if with_process {
+            let process = json!({"host":"fixture-host","process_id":42,"process_started_at":"2026-01-01T00:00:00Z"});
+            worker["process_metrics"] = process.clone();
+            heartbeat["process_metrics"] = process;
+        }
+        let (status, registered) = request(&app, "/api/worker/register", &worker, false).await;
+        assert_eq!(status, StatusCode::CREATED, "registration refused: {:?}", registered["reason"]);
+        let input = crate::codec::ValueCodec::new().unwrap().encode(&crate::codec::Value::Array(Vec::new())).unwrap();
+        runtime.in_namespace("offer-test").start(json!({"workflow_id":"heartbeat-replay","workflow_type":"fixture",
+            "task_queue":"offer-queue","input":{"codec":"avro","blob":input}}), None).await.unwrap();
+
+        let path = "/api/worker/workflow-tasks/offers";
+        let mut poll = json!({"worker_id":"offer-worker","task_queue":"offer-queue","poll_request_id":"heartbeat-claim",
+            "registration_token":registered["registration_token"],"timeout_seconds":0});
+        let (status, offered) = request(&app, path, &poll, true).await;
+        assert_eq!((status, &offered["poll_status"]), (StatusCode::OK, &json!("offered")), "process={with_process}");
+        poll["task_offer_token"] = offered["task_offer"]["token"].clone();
+        let (status, leased) = request(&app, path, &poll, true).await;
+        assert_eq!((status, &leased["poll_status"]), (StatusCode::OK, &json!("leased")), "process={with_process}");
+
+        // Stored heartbeat times have one-second resolution.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let (status, _) = request(&app, "/api/worker/heartbeat", &heartbeat, false).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, replayed) = request(&app, path, &poll, true).await;
+        assert_eq!(status, StatusCode::OK, "process={with_process} reason={:?}", replayed["reason"]);
+        assert_eq!(replayed["poll_status"], "leased");
+        assert_eq!(replayed["task"]["task_id"], offered["task_offer"]["task_id"]);
+        assert_eq!(replayed["task"]["workflow_task_attempt"], 1);
+
+        // Re-registration rotates the incarnation, so the old packet loses
+        // authority even though the routing and process identity are unchanged.
+        let (status, _) = request(&app, "/api/worker/register", &worker, false).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, stale) = request(&app, path, &poll, true).await;
+        assert_eq!(status, StatusCode::CONFLICT, "process={with_process}");
+        assert_eq!(stale, json!({"task":null,"poll_status":"stale_worker_registration",
+            "reason":"worker_registration_lost_authority"}), "process={with_process}");
+        runtime.close().await;
+    }
 }

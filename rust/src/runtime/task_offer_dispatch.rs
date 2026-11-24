@@ -60,9 +60,21 @@ pub(super) struct IssuedOffer {
     pub(super) expires_at_ms: i64,
 }
 
+/// A packet sealed under a key this replica lacks while storage still
+/// requires that key. Retryable and not definitive: the claim may exist and
+/// a replica holding the key can still replay it.
+pub(super) fn read_key_unavailable() -> super::RuntimeError {
+    refuse(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "task_offer_read_key_unavailable",
+    )
+}
+
 fn seal_error(error: SealError) -> super::RuntimeError {
     match error {
-        SealError::Invalid => refuse(StatusCode::CONFLICT, "invalid_task_offer_token"),
+        SealError::Invalid | SealError::UnknownKey => {
+            refuse(StatusCode::CONFLICT, "invalid_task_offer_token")
+        }
         SealError::Nonce => refuse(
             StatusCode::SERVICE_UNAVAILABLE,
             "task_offer_nonce_unavailable",
@@ -112,13 +124,11 @@ impl OfferClaim<'_> {
 }
 
 fn authenticate_packet(
-    keys: &KeyRing,
-    token: &str,
+    opened: OpenedToken,
     scope: &OfferScope<'_>,
     namespace: &str,
     registration: &str,
 ) -> Result<OpenedToken> {
-    let opened = keys.open(token).map_err(seal_error)?;
     let context = &opened.context;
     let registration_digest: [u8; 32] = Sha256::digest(registration.as_bytes()).into();
     let requested_kinds = normalized(scope.kinds)
@@ -139,6 +149,21 @@ fn authenticate_packet(
 }
 
 store_methods! {
+    /// Open a packet. A frame naming a key this replica does not hold is
+    /// refused as retryable while storage still requires that read key.
+    async fn open_offer_packet(&self, keys: &KeyRing, token: &str) -> Result<OpenedToken> {
+        match keys.open(token) {
+            Err(SealError::UnknownKey) => {
+                let required = match KeyRing::frame_key_id(token) {
+                    Some(id) => self.offer_read_key_required(id).await?,
+                    None => false,
+                };
+                Err(if required { read_key_unavailable() } else { seal_error(SealError::Invalid) })
+            }
+            opened => opened.map_err(seal_error),
+        }
+    }
+
     pub(super) async fn dispatch_task_offer(
         &self, request: &IncomingOffer<'_>, keys: &KeyRing, windows: &OfferWindow, config: &QueryTaskConfig,
     ) -> Result<Delivery> {
@@ -150,7 +175,8 @@ store_methods! {
             PollAdmission::Fenced(fence) => fence,
             _ => {
                 if let Some(packet) = request.packet {
-                    authenticate_packet(keys, packet, scope, self.namespace.as_ref(), super::text(request.body, "registration_token")?)?;
+                    let opened = self.open_offer_packet(keys, packet).await?;
+                    authenticate_packet(opened, scope, self.namespace.as_ref(), super::text(request.body, "registration_token")?)?;
                 }
                 return Err(lost_worker_authority());
             }
@@ -249,7 +275,8 @@ store_methods! {
         // Establish the original signed scope before a stale registration can
         // produce a definitive refusal for that logical poll.
         let registration = super::text(claim.body, "registration_token")?;
-        let opened = authenticate_packet(keys, token, claim.scope, self.namespace.as_ref(), registration)?;
+        let opened = self.open_offer_packet(keys, token).await?;
+        let opened = authenticate_packet(opened, claim.scope, self.namespace.as_ref(), registration)?;
         let context = opened.context;
         let (_, routing_digest) = claim.validate_offer_scope()?;
         if context.routing_digest != routing_digest {
