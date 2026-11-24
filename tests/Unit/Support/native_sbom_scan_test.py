@@ -19,13 +19,13 @@ SCOPE = "general-native-sbom-test"
 OWNER = "dev.durable-workflow.qualification.scope"
 VERSION_ID, SCAN_ID = "1" * 64, "2" * 64
 VOLUME_ID = "3" * 64
-ENVIRONMENT = ["HOME=/tmp", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-TMPFS = "rw,noexec,nosuid,nodev,size=512m,mode=1777"
+ENVIRONMENT = ["HOME=/scanner-work", "TMPDIR=/scanner-work",
+               "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
 PIN = json.loads((scan.ROOT / "tool-pins.v1.json").read_bytes())["generator"]
 HOST = {"NetworkMode": "none", "IpcMode": "none", "ReadonlyRootfs": True, "Privileged": False,
         "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges"], "PortBindings": {},
         "PublishAllPorts": False, "Memory": 1610612736, "MemorySwap": 1610612736,
-        "NanoCpus": 1000000000, "PidsLimit": 64, "Tmpfs": {"/tmp": TMPFS},
+        "NanoCpus": 1000000000, "PidsLimit": 64,
         "LogConfig": {"Type": "none", "Config": {}}}
 RAW = b'{"spdxVersion":"SPDX-2.3"}\n'
 
@@ -90,6 +90,7 @@ class SbomScannerTest(unittest.TestCase):
 
     def operation(self, operation, identity, reference, platform, directory, result, mutate=None):
         container = VERSION_ID if operation == "version" else SCAN_ID
+        workspace_options = f"rw,noexec,nosuid,nodev,size=512m,mode=0700,uid={self.uid},gid={self.gid}"
         mounts = [("/syft.yaml", scan.CONFIG)]
         args = ["--config", "/syft.yaml", operation]
         output_limit = 4096
@@ -104,8 +105,9 @@ class SbomScannerTest(unittest.TestCase):
             "docker", "create", "--name", SCOPE + "-" + operation, "--label", OWNER + "=" + SCOPE,
             "--platform", platform, "--pull=never", "--network=none", "--ipc=none", "--read-only",
             "--user", self.user, "--cap-drop=ALL", "--security-opt=no-new-privileges",
-            "--env", ENVIRONMENT[0], "--env", ENVIRONMENT[1], "--tmpfs", "/tmp:" + TMPFS,
-            "--workdir=/tmp", "--cpus=1", "--memory=1536m", "--memory-swap=1536m", "--pids-limit=64",
+            "--env", ENVIRONMENT[0], "--env", ENVIRONMENT[1], "--env", ENVIRONMENT[2],
+            "--tmpfs", "/scanner-work:" + workspace_options,
+            "--workdir=/scanner-work", "--cpus=1", "--memory=1536m", "--memory-swap=1536m", "--pids-limit=64",
             "--log-driver=none", "--entrypoint=/syft",
         ]
         for target, path in mounts:
@@ -113,8 +115,8 @@ class SbomScannerTest(unittest.TestCase):
         observed = {
             "Id": container, "Name": f"/{SCOPE}-{operation}", "Image": identity,
             "Config": {"Image": reference, "User": self.user, "Entrypoint": ["/syft"], "Cmd": args,
-                       "Labels": {OWNER: SCOPE}, "Env": list(ENVIRONMENT), "WorkingDir": "/tmp"},
-            "HostConfig": copy.deepcopy(HOST),
+                       "Labels": {OWNER: SCOPE}, "Env": list(ENVIRONMENT), "WorkingDir": "/scanner-work"},
+            "HostConfig": {**copy.deepcopy(HOST), "Tmpfs": {"/scanner-work": workspace_options}},
             "Mounts": [{"Type": "bind", "Source": str(path), "Destination": target, "RW": False}
                        for target, path in mounts],
         }
@@ -196,6 +198,24 @@ class SbomScannerTest(unittest.TestCase):
                     scan.collect_spdx(path, config, platform, SCOPE, commands, None)
                 cleanup.assert_called_once_with(None, SCOPE)
                 commands.finished()
+
+    def test_workspace_with_looser_permissions_refuses_before_start(self):
+        platform = "linux/amd64"
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            files, config = fixture(platform)
+            (path / "input.oci.tar").write_bytes(archive(files))
+            reference, identity, image = self.image(platform)
+
+            def loosen_workspace(data):
+                mounts = data["HostConfig"]["Tmpfs"]
+                mounts["/scanner-work"] = mounts["/scanner-work"].replace("mode=0700", "mode=0755")
+
+            steps = [image, *self.operation("version", identity, reference, platform, path, None, loosen_workspace)]
+            commands = DockerScript(self, steps)
+            with patch.object(scan, "_cleanup_scanner"), self.assertRaisesRegex(SbomRefusal, "sbom_scanner_confinement"):
+                scan.collect_spdx(path, config, platform, SCOPE, commands, None)
+            commands.finished()
 
     def test_version_refusal_keeps_original_reason_when_cleanup_fails(self):
         platform = "linux/amd64"

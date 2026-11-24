@@ -14,8 +14,9 @@ CONFIG = ROOT / "syft.yaml"
 CONFIG_TARGET = "/syft.yaml"
 ARCHIVE_TARGET = "/input.oci.tar"
 CONFIG_BYTES = b"check-for-app-update: false\n"
-SCANNER_ENV = ("HOME=/tmp", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-SCANNER_TMPFS = "/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777"
+SCANNER_WORKDIR = "/scanner-work"
+SCANNER_ENV = (f"HOME={SCANNER_WORKDIR}", f"TMPDIR={SCANNER_WORKDIR}",
+               "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 SBOM_SCOPE = re.compile(r"(?:dw|general)-native-sbom-[a-z0-9][a-z0-9-]{0,94}")
 
 
@@ -97,7 +98,9 @@ def _scanner_image(commands: Commands, platform: str, tool: dict) -> tuple[str, 
 
 def _run_scanner(commands: Commands, scope: str, platform: str, reference: str, identity: str,
                  archive: Path | None, output_limit: int) -> bytes:
-    user = f"{os.geteuid()}:{os.getegid()}"
+    uid, gid = os.geteuid(), os.getegid()
+    user = f"{uid}:{gid}"
+    workspace_options = f"rw,noexec,nosuid,nodev,size=512m,mode=0700,uid={uid},gid={gid}"
     files = {CONFIG_TARGET: CONFIG}
     operation = "version"
     arguments = ["--config", CONFIG_TARGET, operation, "-o", "json"]
@@ -112,7 +115,7 @@ def _run_scanner(commands: Commands, scope: str, platform: str, reference: str, 
         "docker", "create", "--name", f"{scope}-{operation}", "--label", f"{OWNER}={scope}",
         "--platform", platform, "--pull=never", "--network=none", "--ipc=none", "--read-only",
         "--user", user, "--cap-drop=ALL", "--security-opt=no-new-privileges",
-        *environment, "--tmpfs", SCANNER_TMPFS, "--workdir=/tmp",
+        *environment, "--tmpfs", f"{SCANNER_WORKDIR}:{workspace_options}", f"--workdir={SCANNER_WORKDIR}",
         "--cpus=1", "--memory=1536m", "--memory-swap=1536m", "--pids-limit=64", "--log-driver=none",
         "--entrypoint=/syft", *mounts, reference, *arguments,
     ], 128)
@@ -129,7 +132,7 @@ def _run_scanner(commands: Commands, scope: str, platform: str, reference: str, 
             and config.get("Cmd") == arguments and type(labels) is dict and labels.get(OWNER) == scope,
             "sbom_scanner_container")
     require(type(env) is list and len(env) == len(SCANNER_ENV) and all(setting in env for setting in SCANNER_ENV)
-            and config.get("WorkingDir") == "/tmp", "sbom_scanner_environment")
+            and config.get("WorkingDir") == SCANNER_WORKDIR, "sbom_scanner_environment")
     host = observed.get("HostConfig")
     require(type(host) is dict and host.get("NetworkMode") == "none"
             and host.get("IpcMode") == "none"
@@ -138,7 +141,7 @@ def _run_scanner(commands: Commands, scope: str, platform: str, reference: str, 
             and not host.get("PortBindings") and host.get("PublishAllPorts") is False
             and host.get("Memory") == host.get("MemorySwap") == 1536 * 1024 * 1024
             and host.get("NanoCpus") == 1_000_000_000 and host.get("PidsLimit") == 64
-            and host.get("Tmpfs") == {"/tmp": SCANNER_TMPFS.removeprefix("/tmp:")}
+            and host.get("Tmpfs") == {SCANNER_WORKDIR: workspace_options}
             and host.get("LogConfig") == {"Type": "none", "Config": {}},
             "sbom_scanner_confinement")
     reads = observed.get("Mounts")
