@@ -8,40 +8,28 @@ reference for [Durable Workflow Server](../README.md).
 ### Official Image + SQLite
 
 Use this path when you want to validate the published image without cloning the
-repository or starting MySQL/Redis. The image defaults to SQLite, database
-queues, and file cache; mount `/app/database` so the bootstrap command and API
-server share the same SQLite file.
+repository or starting MySQL or Redis. The native image defaults to SQLite at
+`/app/database/database.sqlite` and creates its schema on first start, in a
+single container. Mount `/app/database` to keep the database across
+restarts.
 
-The `2` image tag tracks the current stable Server release. Pin an immutable
-version tag or digest for production change control.
+Pin an immutable version tag or digest for production change control.
 
 ```bash
-export DW_SERVER_IMAGE="durableworkflow/server:2"
+export DW_SERVER_IMAGE="durableworkflow/server:3.28.0"
 export DW_AUTH_TOKEN=dev-token
 docker volume create durable-workflow-sqlite
 
-# Bootstrap schema + default namespace once.
-docker run --rm \
-  -v durable-workflow-sqlite:/app/database \
-  -e DW_AUTH_DRIVER=token \
-  -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
-  "$DW_SERVER_IMAGE" server-bootstrap
-
-# Start the API server.
 docker run --rm --name durable-workflow-server \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v durable-workflow-sqlite:/app/database \
   -e DW_AUTH_DRIVER=token \
   -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
   "$DW_SERVER_IMAGE"
-
-# In a separate terminal, run the database queue worker that fires timers.
-docker run --rm --name durable-workflow-queue-worker \
-  -v durable-workflow-sqlite:/app/database \
-  -e DW_AUTH_DRIVER=token \
-  -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
-  "$DW_SERVER_IMAGE" php artisan queue:work database --sleep=1 --tries=3
 ```
+
+The `schema-bootstrap` command is for MySQL, MariaDB and PostgreSQL; SQLite
+needs no separate bootstrap or queue worker.
 
 In another terminal:
 

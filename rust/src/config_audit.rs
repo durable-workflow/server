@@ -555,6 +555,8 @@ const UNLISTED: &[Setting] = &[
 /// These are known names; legacy aliases warn as the contract's do.
 pub const NATIVE_HONORED: &[Setting] = &[
     Setting { name: "DW_TASK_DELIVERY_SEAL_KEYS", legacy: None, disposition: Honored },
+    // The opt-in request access log read by runtime/http.rs.
+    Setting { name: "DW_HTTP_ACCESS_LOG", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_POLL_SWEEP_INTERVAL_MS", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_POLL_SWEEP_BATCH_SIZE", legacy: None, disposition: Honored },
     Setting { name: "DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY", legacy: None, disposition: Honored },
