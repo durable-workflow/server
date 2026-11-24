@@ -213,8 +213,10 @@ and terminal resource cleanup stay with the caller.
 
 The scanner component uses the held archive and the pinned Syft child for the
 same platform. It checks the actual version, enforces read-only container
-settings and mounts before startup, and uses the existing qualified-resource
-cleanup to verify absence before returning raw SPDX bytes. The source tests
-check the complete Docker arguments for both platforms and refuse changed
-confinement or ownership. The component returns raw bytes for the separate
-validator. Release wiring, authorization and tool qualification remain open.
+settings and mounts before startup, and checks cleanup before returning raw
+SPDX bytes. Cleanup binds the two scanner names to the exact scope owner label
+and verifies the absence of any anonymous volumes found on those containers
+by name. The source tests check the complete Docker arguments for both
+platforms and refuse changed confinement or ownership. The component returns
+raw bytes for the separate validator. Release wiring, authorization and tool
+qualification remain open.

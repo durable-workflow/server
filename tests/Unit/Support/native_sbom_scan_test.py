@@ -18,6 +18,7 @@ from native_sbom_policy import Refusal as SbomRefusal
 SCOPE = "general-native-sbom-test"
 OWNER = "dev.durable-workflow.qualification.scope"
 VERSION_ID, SCAN_ID = "1" * 64, "2" * 64
+VOLUME_ID = "3" * 64
 ENVIRONMENT = ["HOME=/tmp", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
 TMPFS = "rw,noexec,nosuid,nodev,size=512m,mode=1777"
 PIN = json.loads((scan.ROOT / "tool-pins.v1.json").read_bytes())["generator"]
@@ -125,18 +126,31 @@ class SbomScannerTest(unittest.TestCase):
             steps.append((["docker", "container", "start", "--attach", container], result, output_limit))
         return steps
 
-    def cleanup(self):
+    def cleanup_inventory(self, owned, named):
         selector = ["--filter", "label=" + OWNER + "=" + SCOPE]
         networks = ["docker", "network", "ls", "-q", "--no-trunc", *selector]
-        containers = ["docker", "container", "ls", "-aq", "--no-trunc", *selector]
+        containers = ["docker", "container", "ls", "-aq", "--no-trunc"]
         volumes = ["docker", "volume", "ls", "-q", *selector]
-        steps = [(networks, b"", None), (containers, f"{VERSION_ID}\n{SCAN_ID}\n".encode(), None),
-                 (volumes, b"", None)]
-        for identity in (VERSION_ID, SCAN_ID):
+        return [([*containers, *selector], owned, None),
+                ([*containers, "--filter", f"name=^/{SCOPE}-(version|scan)$"], named, None),
+                (networks, b"", None), (volumes, b"", None)]
+
+    def cleanup(self, anonymous_mount=False, volume_after_removal=b""):
+        containers = f"{VERSION_ID}\n{SCAN_ID}\n".encode()
+        steps = self.cleanup_inventory(containers, containers)
+        for identity, operation in ((VERSION_ID, "version"), (SCAN_ID, "scan")):
+            mounts = [{"Type": "volume", "Name": VOLUME_ID}] if anonymous_mount and operation == "scan" else []
             steps.append((["docker", "container", "inspect", identity],
-                          [{"Id": identity, "Config": {"Labels": {OWNER: SCOPE}}, "Mounts": []}], None))
-        steps += [(["docker", "container", "rm", "-f", "-v", VERSION_ID, SCAN_ID], b"", None),
-                  (networks, b"", None), (containers, b"", None), (volumes, b"", None)]
+                          [{"Id": identity, "Name": f"/{SCOPE}-{operation}",
+                            "Config": {"Labels": {OWNER: SCOPE}}, "Mounts": mounts}], None))
+        if anonymous_mount:
+            steps.append((["docker", "volume", "inspect", VOLUME_ID],
+                          [{"Name": VOLUME_ID, "Labels": {"com.docker.volume.anonymous": ""}}], None))
+        steps.append((["docker", "container", "rm", "-f", "-v", VERSION_ID, SCAN_ID], b"", None))
+        steps.extend(self.cleanup_inventory(b"", b""))
+        if anonymous_mount:
+            steps.append((["docker", "volume", "ls", "-q", "--filter", f"name=^{VOLUME_ID}$"],
+                          volume_after_removal, None))
         return DockerScript(self, steps)
 
     def version(self, platform):
@@ -178,9 +192,9 @@ class SbomScannerTest(unittest.TestCase):
                 reference, identity, image = self.image(platform)
                 steps = [image, *self.operation("version", identity, reference, platform, path, None, mutate)]
                 commands = DockerScript(self, steps)
-                with patch.object(scan, "cleanup") as cleanup, self.assertRaisesRegex(SbomRefusal, reason):
+                with patch.object(scan, "_cleanup_scanner") as cleanup, self.assertRaisesRegex(SbomRefusal, reason):
                     scan.collect_spdx(path, config, platform, SCOPE, commands, None)
-                cleanup.assert_called_once_with(None, "sbom", SCOPE)
+                cleanup.assert_called_once_with(None, SCOPE)
                 commands.finished()
 
     def test_version_refusal_keeps_original_reason_when_cleanup_fails(self):
@@ -193,7 +207,7 @@ class SbomScannerTest(unittest.TestCase):
             wrong = {**self.version(platform), "version": "1.54.0"}
             steps = [image, *self.operation("version", identity, reference, platform, path, wrong)]
             commands = DockerScript(self, steps)
-            with patch.object(scan, "cleanup", side_effect=DockerRefusal("cleanup_not_absent")):
+            with patch.object(scan, "_cleanup_scanner", side_effect=DockerRefusal("cleanup_not_absent")):
                 with self.assertRaisesRegex(SbomRefusal, "sbom_scanner_version") as stopped:
                     scan.collect_spdx(path, config, platform, SCOPE, commands, None)
             self.assertEqual(["sbom_cleanup_failed"], stopped.exception.__notes__)
@@ -205,6 +219,23 @@ class SbomScannerTest(unittest.TestCase):
             scan.collect_spdx(Path("/fixture"), "", "linux/amd64", "foreign-scope", commands, None)
         with patch.object(scan.os, "getegid", return_value=0), self.assertRaisesRegex(SbomRefusal, "sbom_scanner_nonroot"):
             scan.collect_spdx(Path("/fixture"), "", "linux/amd64", SCOPE, commands, None)
+
+    def test_cleanup_reads_back_only_a_verified_anonymous_mount(self):
+        commands = self.cleanup(anonymous_mount=True)
+        self.assertTrue(scan._cleanup_scanner(commands, SCOPE)["verified_absent"])
+        commands.finished()
+
+    def test_cleanup_requires_anonymous_mount_absence_after_container_removal(self):
+        commands = self.cleanup(anonymous_mount=True, volume_after_removal=f"{VOLUME_ID}\n".encode())
+        with self.assertRaisesRegex(SbomRefusal, "sbom_cleanup_not_absent"):
+            scan._cleanup_scanner(commands, SCOPE)
+        commands.finished()
+
+    def test_cleanup_refuses_when_a_scanner_name_lacks_the_owner_label(self):
+        commands = DockerScript(self, self.cleanup_inventory(b"", f"{VERSION_ID}\n".encode())[:2])
+        with self.assertRaisesRegex(SbomRefusal, "sbom_cleanup_container_inventory"):
+            scan._cleanup_scanner(commands, SCOPE)
+        commands.finished()
 
 
 if __name__ == "__main__":

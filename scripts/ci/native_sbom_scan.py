@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from native_alias_transport import Commands
-from native_qualification import OBJECT_ID, OWNER, SBOM_SCOPE, cleanup, inspect
+from native_qualification import OBJECT_ID, OWNER, VOLUME_NAME, inspect, lines, owned_mounts
 from native_sbom_archive import consume_owned_oci_export
 from native_sbom_policy import PLATFORMS, RAW_LIMIT, ROOT, is_digest, parse, require
 
@@ -16,6 +16,50 @@ ARCHIVE_TARGET = "/input.oci.tar"
 CONFIG_BYTES = b"check-for-app-update: false\n"
 SCANNER_ENV = ("HOME=/tmp", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 SCANNER_TMPFS = "/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777"
+SBOM_SCOPE = re.compile(r"(?:dw|general)-native-sbom-[a-z0-9][a-z0-9-]{0,94}")
+
+
+def _scanner_inventory(commands: Commands, scope: str) -> set[str]:
+    owner = "label=" + OWNER + "=" + scope
+    containers = ["container", "ls", "-aq", "--no-trunc", "--filter"]
+    owned = lines(commands, [*containers, owner], OBJECT_ID)
+    named = lines(commands, [*containers, f"name=^/{scope}-(version|scan)$"], OBJECT_ID)
+    require(owned == named and len(owned) <= 2, "sbom_cleanup_container_inventory")
+    # The scanner creates neither networks nor labelled volumes.
+    require(not lines(commands, ["network", "ls", "-q", "--no-trunc", "--filter", owner], OBJECT_ID)
+            and not lines(commands, ["volume", "ls", "-q", "--filter", owner], VOLUME_NAME),
+            "sbom_cleanup_unexpected_resource")
+    return owned
+
+
+def _cleanup_scanner(commands: Commands, scope: str) -> dict:
+    require(SBOM_SCOPE.fullmatch(scope), "sbom_scanner_scope")
+    containers = _scanner_inventory(commands, scope)
+    names = {f"/{scope}-version", f"/{scope}-scan"}
+    volumes = set()
+    for identity in sorted(containers):
+        observed = inspect(commands, "container", identity)
+        name = observed.get("Name")
+        config = observed.get("Config")
+        labels = config.get("Labels") if type(config) is dict else None
+        mounts = observed.get("Mounts")
+        require(observed.get("Id") == identity and type(name) is str and name in names
+                and type(labels) is dict and labels.get(OWNER) == scope
+                and type(mounts) is list and all(type(mount) is dict for mount in mounts),
+                "sbom_cleanup_container_owner")
+        names.remove(name)
+        volumes |= owned_mounts(commands, mounts, "sbom", scope)
+    require(len(volumes) <= 64, "sbom_cleanup_volume_bound")
+    if containers:
+        commands.run(["docker", "container", "rm", "-f", "-v", *sorted(containers)])
+    require(not _scanner_inventory(commands, scope), "sbom_cleanup_not_absent")
+    # Docker removes the inspected anonymous mounts with the container. Read
+    # back their exact names even if Docker returned success from removal.
+    for name in sorted(volumes):
+        require(not lines(commands, ["volume", "ls", "-q", "--filter", f"name=^{re.escape(name)}$"],
+                          VOLUME_NAME), "sbom_cleanup_not_absent")
+    return {"api_ok": True, "verified_absent": True, "container_count": 0,
+            "network_count": 0, "volume_count": 0}
 
 
 def _mounted_file(path: Path, target: str) -> str:
@@ -131,11 +175,11 @@ def collect_spdx(directory: Path, expected_config: str, platform: str, scope: st
         export, raw = consume_owned_oci_export(directory, expected_config, platform, scan)
     except BaseException as error:
         try:
-            cleanup(cleanup_commands, "sbom", scope)
+            _cleanup_scanner(cleanup_commands, scope)
         except Exception:
             error.add_note("sbom_cleanup_failed")
         raise
-    absence = cleanup(cleanup_commands, "sbom", scope)
+    absence = _cleanup_scanner(cleanup_commands, scope)
     return {"export": export, "scanner_image": reference, "scanner_version": tool["version"],
             "cleanup": absence}, raw
 
