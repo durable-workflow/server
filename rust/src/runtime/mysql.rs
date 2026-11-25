@@ -2664,6 +2664,7 @@ mod tests {
         let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_workflow_poll_transactions().await;
         store.qualify_first_candidate_batch().await;
+        store.qualify_same_run_offer_fence().await;
         store.qualify_claim_history_sequence().await;
         store.qualify_fenced_registration_reuse().await;
         store.qualify_query_poll_transactions().await;

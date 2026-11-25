@@ -274,7 +274,7 @@ async fn a_ready_root_task_carries_the_start_turn() {
 }
 
 // A leased task's worker may have read history before the start, so it is
-// not taken as the turn.
+// not taken as the turn. The fresh turn is delivered once that lease ends.
 #[tokio::test]
 async fn a_leased_task_does_not_replace_the_start_turn() {
     let database = TestDatabase::new().await;
@@ -284,7 +284,9 @@ async fn a_leased_task_does_not_replace_the_start_turn() {
     let started = start(&app, "leased-turn").await;
     let first = poll(&app, "worker", "workflow").await;
     let run = started["run_id"].as_str().unwrap();
-    // Another root task of the run, claimed elsewhere before the start.
+    // Another root task of the run, claimed elsewhere before the start by a
+    // live worker, so its lease is not recovered as abandoned.
+    update_worker(&app, "elsewhere").await;
     database.execute(sqlx::AssertSqlSafe(format!(
         "INSERT INTO workflow_tasks(id,workflow_run_id,namespace,task_type,status,payload,queue,lease_owner,lease_expires_at,attempt_count,available_at,created_at,updated_at) \
          SELECT '01M6FZZZZZZZZZZZZZZZZZZZZZ',workflow_run_id,namespace,'workflow','leased',payload,queue,'elsewhere','2037-01-01 00:00:00',1,available_at,created_at,updated_at \
@@ -292,8 +294,12 @@ async fn a_leased_task_does_not_replace_the_start_turn() {
     let (status, body) = finish_task(&app, &first, json!([child(Some("started"))])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(parent_tasks(&database, &started["run_id"]).await, 3, "the claim, the leased task and a fresh turn: {body}");
+    // One live workflow task lease per run (Server #1282): the fresh turn
+    // waits until the other lease completes.
+    assert!(poll(&app, "worker", "workflow").await.is_null(), "no second live lease of the run");
+    database.execute("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id='01M6FZZZZZZZZZZZZZZZZZZZZZ'").await;
     let turn = poll(&app, "worker", "workflow").await;
-    assert_eq!(turn["run_id"], json!(run), "a fresh start turn beside the leased task: {body}");
+    assert_eq!(turn["run_id"], json!(run), "a fresh start turn after the leased task: {body}");
     assert_ne!(turn["task_id"], "01M6FZZZZZZZZZZZZZZZZZZZZZ", "not the leased task");
     assert_eq!(events(&turn, "ChildRunStarted").len(), 1, "{turn}");
     runtime.close().await;

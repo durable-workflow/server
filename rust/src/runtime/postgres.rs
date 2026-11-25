@@ -26,6 +26,9 @@ macro_rules! status_candidates {
             "WHERE t.namespace COLLATE \"C\"=$1 AND t.queue COLLATE \"C\"=$2 AND t.task_type COLLATE \"C\"=$3 AND t.status COLLATE \"C\"='", $status, "' ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",
             "AND (t.available_at IS NULL OR t.available_at<=$5) ",
+            "AND (t.task_type<>'workflow' OR COALESCE(t.payload->>'resume_source_kind','')='workflow_update' OR NOT EXISTS (",
+            "SELECT 1 FROM workflow_tasks o WHERE o.workflow_run_id=t.workflow_run_id AND o.task_type='workflow' AND o.status='leased' ",
+            "AND o.id<>t.id AND o.lease_expires_at>$7 AND COALESCE(o.payload->>'resume_source_kind','')<>'workflow_update')) ",
             "ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit, ")")
     };
 }
@@ -1256,6 +1259,7 @@ mod tests {
         let store = super::super::store::Store::new(PostgresStorage::open(db.options.clone()).await.unwrap().into_pool());
         store.qualify_workflow_poll_transactions().await;
         store.qualify_first_candidate_batch().await;
+        store.qualify_same_run_offer_fence().await;
         store.qualify_claim_history_sequence().await;
         store.qualify_fenced_registration_reuse().await;
         store.qualify_query_poll_transactions().await;

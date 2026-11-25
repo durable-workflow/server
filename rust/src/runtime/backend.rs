@@ -42,6 +42,10 @@ WHERE (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND 
     AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t._dw_lease_order<=rtrim(rtrim($4,'0'),'.')))
     AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($5,'0'),'.'))
     AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6)
+    AND (t.task_type<>'workflow' OR COALESCE(json_extract(t.payload,'$.resume_source_kind'),'')='workflow_update' OR NOT EXISTS (
+        SELECT 1 FROM workflow_tasks o WHERE o.workflow_run_id=t.workflow_run_id AND o.task_type='workflow' AND o.status='leased' AND o.id<>t.id
+            AND rtrim(rtrim(CASE WHEN length(replace(replace(replace(o.lease_expires_at,'T',' '),'Z',''),'+00:00',''))=19 THEN replace(replace(replace(o.lease_expires_at,'T',' '),'Z',''),'+00:00','')||'.0' ELSE replace(replace(replace(o.lease_expires_at,'T',' '),'Z',''),'+00:00','') END,'0'),'.')>rtrim(rtrim($7,'0'),'.')
+            AND COALESCE(json_extract(o.payload,'$.resume_source_kind'),'')<>'workflow_update'))
 ORDER BY t.priority,t._dw_available_order,t.id LIMIT "#, $limit, "\n")
     };
 }
@@ -580,21 +584,24 @@ impl Backend for Postgres {
 // Equality on the dispatch index's status prefix preserves each range's
 // order. The outer sort sees at most two bounded candidate pages.
 macro_rules! mysql_status_candidates {
-    ($status:literal, $namespace:literal, $queue:literal, $kind:literal, $lease_at:literal, $ready_at:literal, $build:literal, $limit:literal) => {
+    ($status:literal, $namespace:literal, $queue:literal, $kind:literal, $lease_at:literal, $ready_at:literal, $build:literal, $fence_at:literal, $limit:literal) => {
         concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_scoped_dispatch) STRAIGHT_JOIN workflow_runs r FORCE INDEX (PRIMARY) ON r.id=t.workflow_run_id ",
             "WHERE t.namespace=", $namespace, " AND t.queue=", $queue, " AND t.task_type=", $kind, " AND t.status='", $status, "' ",
             "AND (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity')) ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=", $lease_at, ")) ",
             "AND (t.available_at IS NULL OR t.available_at<=", $ready_at, ") ",
             "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=", $build, ") ",
+            "AND (t.task_type<>'workflow' OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(t.payload,'$.resume_source_kind')),'')='workflow_update' OR NOT EXISTS (",
+            "SELECT 1 FROM workflow_tasks o FORCE INDEX (workflow_tasks_workflow_run_id_index) WHERE o.workflow_run_id=t.workflow_run_id AND o.task_type='workflow' AND o.status='leased' AND o.id<>t.id ",
+            "AND o.lease_expires_at>", $fence_at, " AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.resume_source_kind')),'')<>'workflow_update')) ",
             "ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit, ")")
     };
 }
 
 macro_rules! mysql_task_candidates_sql {
     ($limit:literal) => {
-        concat!("SELECT * FROM (", mysql_status_candidates!("ready", "$1", "$2", "$3", "$4", "$5", "$6", $limit),
-            " UNION ALL ", mysql_status_candidates!("leased", "$7", "$8", "$9", "$10", "$11", "$12", $limit),
+        concat!("SELECT * FROM (", mysql_status_candidates!("ready", "$1", "$2", "$3", "$4", "$5", "$6", "$7", $limit),
+            " UNION ALL ", mysql_status_candidates!("leased", "$8", "$9", "$10", "$11", "$12", "$13", "$14", $limit),
             ") AS candidates ORDER BY priority,available_at,id LIMIT ", $limit)
     };
 }
@@ -897,7 +904,7 @@ mod timestamp_tests {
         // range must fail the existing adapter assertion before any query.
         for sql in [MySql::TASK_CANDIDATES_SQL, MySql::FIRST_TASK_CANDIDATES_SQL] {
             let statement = MySql::statement(sql);
-            assert_eq!(statement.matches('?').count(), 12);
+            assert_eq!(statement.matches('?').count(), 14);
         }
         assert_eq!(MySql::TASK_CANDIDATE_BIND_SETS, 2);
     }
@@ -947,6 +954,7 @@ mod timestamp_tests {
                 .bind(Sqlite::bind_time(clock))
                 .bind(Sqlite::bind_time(clock))
                 .bind(None::<&str>)
+                .bind(Sqlite::bind_time(clock))
                 .fetch_all(pool)
                 .await
                 .unwrap();
@@ -965,6 +973,7 @@ mod timestamp_tests {
                 .bind(Sqlite::bind_time(clock))
                 .bind(Sqlite::bind_time(clock))
                 .bind(None::<&str>)
+                .bind(Sqlite::bind_time(clock))
                 .fetch_all(pool)
                 .await
                 .unwrap();
