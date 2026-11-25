@@ -903,14 +903,14 @@ impl TestDatabase {
         }
     }
 
+    /// Drops the database now and fails the test if it cannot. The drop on
+    /// `Drop` then finds nothing (`IF EXISTS`).
     async fn remove(self) {
         match &self {
             Self::Postgres { url, .. } => Postgres::drop_database(url).await.unwrap(),
             Self::MySql { url, .. } => MySql::drop_database(url).await.unwrap(),
-            Self::Sqlite(_) => return,
+            Self::Sqlite(_) => {}
         }
-        // Already dropped: skip the drop on `Drop`. Only the options leak.
-        std::mem::forget(self);
     }
 
     async fn replace_history_payload(&self, payload: Value) {
