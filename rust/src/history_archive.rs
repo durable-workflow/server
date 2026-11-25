@@ -385,29 +385,54 @@ enum FileRead {
     Unreadable(String),
 }
 
-/// A regular file's bytes. A link is refused: an archive that points at
-/// files elsewhere is not self-contained.
-fn read_file(path: &Path) -> FileRead {
-    match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => FileRead::Missing,
-        Err(error) => FileRead::Unreadable(error.to_string()),
-        Ok(metadata) if !metadata.file_type().is_file() => FileRead::NotRegular,
-        Ok(_) => match std::fs::read(path) {
-            Ok(bytes) => FileRead::Bytes(bytes),
-            Err(error) => FileRead::Unreadable(error.to_string()),
-        },
-    }
-}
-
-/// A regular file's length and SHA-256, streamed in bounded chunks.
-fn digest_file(path: &Path) -> Result<(u64, String), FileRead> {
+/// Open a regular file that is the archive's only name for its bytes. A
+/// symbolic link is refused without being followed, and a hard link is
+/// refused because the same bytes then also live outside the archive. The
+/// checks are made on the opened handle, so the file cannot be swapped
+/// between check and read.
+fn open_regular(path: &Path) -> Result<std::fs::File, FileRead> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(FileRead::Missing),
         Err(error) => return Err(FileRead::Unreadable(error.to_string())),
         Ok(metadata) if !metadata.file_type().is_file() => return Err(FileRead::NotRegular),
         Ok(_) => {}
     }
-    let mut file = std::fs::File::open(path).map_err(|error| FileRead::Unreadable(error.to_string()))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+    let file = options.open(path).map_err(|error| match error.raw_os_error() {
+        #[cfg(unix)]
+        Some(libc::ELOOP) => FileRead::NotRegular,
+        _ => FileRead::Unreadable(error.to_string()),
+    })?;
+    let metadata = file.metadata().map_err(|error| FileRead::Unreadable(error.to_string()))?;
+    if !metadata.file_type().is_file() {
+        return Err(FileRead::NotRegular);
+    }
+    #[cfg(unix)]
+    if std::os::unix::fs::MetadataExt::nlink(&metadata) != 1 {
+        return Err(FileRead::NotRegular);
+    }
+    Ok(file)
+}
+
+/// A regular file's bytes; see [`open_regular`].
+fn read_file(path: &Path) -> FileRead {
+    let mut file = match open_regular(path) {
+        Ok(file) => file,
+        Err(read) => return read,
+    };
+    let mut bytes = Vec::new();
+    match file.read_to_end(&mut bytes) {
+        Ok(_) => FileRead::Bytes(bytes),
+        Err(error) => FileRead::Unreadable(error.to_string()),
+    }
+}
+
+/// A regular file's length and SHA-256, streamed in bounded chunks.
+fn digest_file(path: &Path) -> Result<(u64, String), FileRead> {
+    let mut file = open_regular(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut length = 0u64;
@@ -441,7 +466,7 @@ impl Report {
         let path = Some(file.to_owned());
         match read {
             FileRead::Missing => self.fail("file_missing", format!("{file} is missing."), path),
-            FileRead::NotRegular => self.fail("file_not_regular", format!("{file} is not a regular file; links are not self-contained."), path),
+            FileRead::NotRegular => self.fail("file_not_regular", format!("{file} is not a regular file with a single name; links are not self-contained."), path),
             FileRead::Unreadable(error) => self.fail("file_unreadable", format!("{file} could not be read: {error}"), path),
             FileRead::Bytes(_) => {}
         }
@@ -534,12 +559,12 @@ fn check_history(dir: &Path, manifest: &Value, report: &mut Report, out: &mut Ma
     };
     let plan = plan(&export);
     report.findings.extend(plan.blockers.iter().cloned());
-    let workflow = &export["workflow"];
+    // Every identity field the manifest records, as the export states it;
+    // the namespace is the one field the export does not carry.
     let identity = &manifest["identity"];
-    if identity["workflow_id"] != workflow["instance_id"]
-        || identity["run_id"] != workflow["run_id"]
-        || identity["last_history_sequence"] != workflow["last_history_sequence"]
-    {
+    let mut expected = self::identity(&export, "");
+    expected["namespace"] = identity["namespace"].clone();
+    if *identity != expected || !identity["namespace"].is_string() {
         report.fail("identity_mismatch", "The manifest identity does not match the archived export.", Some("identity".into()));
     }
     Some(plan)
@@ -892,6 +917,17 @@ mod tests {
                 receipt["hold"]["acquired_at"] = json!("2026-11-25 00:10:00");
                 std::fs::write(dir.join(RECEIPT_FILE), serde_json::to_vec(&receipt).unwrap()).unwrap();
             }, &["receipt_invalid"], "incomplete"),
+            ("edited identity", |dir| {
+                let mut manifest: Value = serde_json::from_slice(&std::fs::read(dir.join(MANIFEST_FILE)).unwrap()).unwrap();
+                manifest["identity"]["status"] = json!("failed");
+                std::fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec(&manifest).unwrap()).unwrap();
+            }, &["identity_mismatch", "receipt_mismatch"], "incomplete"),
+            ("hard-linked object", |dir| {
+                #[cfg(unix)]
+                std::fs::hard_link(dir.join(OBJECTS_DIR).join(ID_A), dir.join("elsewhere")).unwrap();
+                #[cfg(not(unix))]
+                std::fs::remove_file(dir.join(OBJECTS_DIR).join(ID_A)).unwrap();
+            }, if cfg!(unix) { &["file_not_regular"] } else { &["object_missing"] }, "incomplete"),
             ("newer format", |dir| {
                 let mut manifest: Value = serde_json::from_slice(&std::fs::read(dir.join(MANIFEST_FILE)).unwrap()).unwrap();
                 manifest["format_version"] = json!(2);

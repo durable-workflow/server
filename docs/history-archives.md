@@ -2,7 +2,8 @@
 
 A history export (`GET /api/workflows/{workflow_id}/runs/{run_id}/history/export`)
 keeps each external payload as a reference envelope. Its `payload_manifest`
-marks these entries `external_storage_reference`, and no bytes are copied. The
+marks these entries with `encoding: "external-storage-reference"` (diagnostic
+`external_storage_reference`), and no bytes are copied. The
 export therefore still depends on the source database's payload registrations
 and on the payload store. A history archive removes that dependency
 ([Server #520](https://github.com/durable-workflow/server/issues/520)). It is a
@@ -88,8 +89,15 @@ for example with a signature or write-once storage.
 Object files are named by reference id. A valid id is `ep_` followed by 26
 Crockford base-32 characters, so it is always one safe file name. A verifier
 derives every path itself and never follows a path from the manifest. Every
-file must be a regular file and `objects/` a real directory, because a link
-would point outside the archive.
+file must be a regular file and `objects/` a real directory. Symbolic links are
+refused without being followed, and on Unix a file with more than one hard link
+is refused, because its bytes then also live outside the archive. Verify a
+plain copy, not a hard-linked snapshot. The checks are made on the opened file.
+
+The manifest's whole `identity` must match the archived export: `workflow_id`,
+`run_id`, `run_number`, `workflow_type`, `status`, `closed_at`,
+`last_history_sequence`, `history_event_count` and `dedupe_key`. Only
+`namespace` cannot be checked, because the export does not carry it.
 
 `rust/tests/fixtures/history-archive-v1/` is the version 1 conformance
 archive. Every verifier must report it `verified`.
