@@ -49,9 +49,19 @@ clock as unavailable at entry. It must not substitute its own time.
 Query tasks and update-validation tasks carry the same object, chosen by the
 same rules, as the run's workflow tasks (.github#215). An SDK that rebuilds
 the workflow body to answer a query or validate an update then gives an entry
-read the value the workflow task gave it. Omission follows the same rules:
-when a workflow task would omit the object, so do the run's query and
-validation tasks.
+read the value the workflow task gave it.
+
+On these two task kinds the key is always present (worker OpenAPI revision
+69):
+
+- an object: the same carrier the run's workflow tasks carry;
+- `null`: this Server proved no start, so the run's workflow tasks omit the
+  object too, and an entry read is unavailable in both places;
+- absent: an older Server that never sends the object on these tasks. The SDK
+  cannot know what the workflow task carried, so a rebuild that reads entry
+  time must fail closed.
+
+Workflow tasks keep omitting the object when it is not proved.
 
 ## Stability
 

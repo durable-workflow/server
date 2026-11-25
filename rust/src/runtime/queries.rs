@@ -1543,12 +1543,9 @@ where
         task["run_status"] = json!(DB::string(&run, "status")?);
         // .github#215: the same entry instant the run's workflow tasks carry,
         // so a query that rebuilds a body which read it at entry sees it too.
-        match Self::replay_clock(&mut *conn, &run).await? {
-            Some(clock) => task["replay_clock"] = clock,
-            None => {
-                task.as_object_mut().expect("native query task").remove("replay_clock");
-            }
-        }
+        // An explicit null says this Server checked and proved no start, which
+        // a worker can tell apart from an older Server that omits the key.
+        task["replay_clock"] = Self::replay_clock(&mut *conn, &run).await?.unwrap_or(Value::Null);
         task["history_events"] = json!(history);
         task["last_history_sequence"] = json!(cutoff.unwrap_or(last));
         task["history_cutoff_sequence"] = json!(cutoff);

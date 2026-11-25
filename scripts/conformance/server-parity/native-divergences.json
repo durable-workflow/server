@@ -168,6 +168,15 @@
       "published_php": "A workflow task completion with a signal_external_workflow command is refused as an unsupported workflow command; workflow code can signal another workflow only through an activity that calls the client.",
       "native": "Native admits signal_external_workflow (.github#223). The completion records ExternalSignalRequested and, at the same sequence, ExternalSignalDelivered or ExternalSignalFailed (target_not_found, target_closed or rejected) in the sender's history, and gives the sender one turn. A delivered signal is admitted on the target exactly as an HTTP signal is, under the command key workflow-signal:<sender run>:<sequence>, with source workflow and Core's CommandContext::workflow context. Embedded Workflow 2.33.0 has no durable equivalent (a child handle signals directly, outside the parent's history).",
       "harness": "No shared fixture sends the command, so no fixture section names this divergence and every PHP and embedded recording is unchanged. The cluster-info contract lists the capability under native_additions. The all-backend native execution suite (signal_external) covers the behavior, and the target's SignalReceived history was compared key-for-key with an embedded child-handle signal."
+    },
+    {
+      "id": "replay-clock-validation-tasks",
+      "issue": "https://github.com/durable-workflow/.github/issues/215",
+      "since": "native source (unreleased)",
+      "applies_to": ["update-validation"],
+      "published_php": "Update-validation tasks and query tasks carry no replay_clock member.",
+      "native": "Update-validation tasks (dedicated and multiplexed polls) and query tasks always carry replay_clock: the run's WorkerReplayClock v1 object, identical to its workflow tasks', or null when the Server proves no start.",
+      "harness": "The update-validation contract adds replay_clock to the recorded key set of native's dedicated_poll and multiplexed_poll tasks. Every other recorded field, the PHP and embedded recordings and the frozen fixtures are unchanged. Values and the null case are covered by the all-backend native execution suite (replay_clock)."
     }
   ]
 }

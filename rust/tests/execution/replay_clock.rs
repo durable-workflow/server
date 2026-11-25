@@ -123,13 +123,14 @@ async fn query_tasks_carry_their_runs_entry_instant() {
     assert_eq!(answered.0, StatusCode::OK, "{}", answered.1);
     assert_eq!(waiting.await.unwrap().0, StatusCode::OK);
 
-    // A run whose start is not proved omits the object, as its workflow tasks would.
+    // A run whose start is not proved has no carrier, as its workflow tasks would.
     let run = started["run_id"].as_str().unwrap();
     database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_runs SET started_at=NULL WHERE id='{run}'"))).await;
     let waiting = send_query(&app, "clocked-query");
     let unproved = await_query(&app, "clock-query-worker").await;
     assert_eq!(unproved["run_id"], started["run_id"], "{unproved}");
-    assert!(unproved.get("replay_clock").is_none(), "{unproved}");
+    // The key stays, as an explicit null an older Server's absence can't be mistaken for.
+    assert_eq!(unproved.get("replay_clock"), Some(&Value::Null), "{unproved}");
     waiting.abort();
     runtime.close().await;
     database.remove().await;
@@ -167,7 +168,8 @@ async fn update_validation_tasks_carry_their_runs_entry_instant() {
     let pending = send_update(&app, "clocked-validation", "approve_me", update_body(2, Some("clock-2")));
     let unproved = poll_validation(&app, "clock-validator", "clock-vq").await;
     assert_eq!(unproved["run_id"], started["run_id"], "{unproved}");
-    assert!(unproved.get("replay_clock").is_none(), "{unproved}");
+    // The key stays, as an explicit null an older Server's absence can't be mistaken for.
+    assert_eq!(unproved.get("replay_clock"), Some(&Value::Null), "{unproved}");
     pending.abort();
     runtime.close().await;
     database.remove().await;

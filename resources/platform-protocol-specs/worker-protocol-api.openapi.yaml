@@ -3181,6 +3181,7 @@ components:
         - task_queue
         - lease_owner
         - lease_expires_at
+        - replay_clock
       properties:
         task_kind: { type: string, const: update_validation }
         update_validation_task_id: { type: string, minLength: 1 }
@@ -3197,8 +3198,15 @@ components:
         lease_owner: { type: string, minLength: 1 }
         lease_expires_at: { type: string, format: date-time }
         replay_clock:
-          $ref: "#/components/schemas/WorkerReplayClock"
-          description: The run's entry instant, identical to its workflow tasks' replay_clock (.github#215).
+          oneOf:
+            - { type: "null" }
+            - { $ref: "#/components/schemas/WorkerReplayClock" }
+          description: >-
+            The run's entry instant, identical to its workflow tasks'
+            replay_clock (.github#215). Always present from revision 69: null
+            means this Server proved no start, so the run's workflow tasks omit
+            the object too. An absent key means an older Server that never sends
+            it on this task kind.
     WorkflowPollNormalizationPending:
       type: object
       description: Temporary cutover refusal for this attempt only. Retained predecessor answers remain authoritative; retry with the original poll identity.
@@ -3900,7 +3908,7 @@ components:
       pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$'
     QueryTask:
       type: object
-      required: [query_task_id, query_task_attempt, lease_owner, lease_expires_at, query_admitted_at, query_deadline_at, server_time]
+      required: [query_task_id, query_task_attempt, lease_owner, lease_expires_at, query_admitted_at, query_deadline_at, server_time, replay_clock]
       description: >
         Original admission/deadline timestamps are additive for protocols 1.19
         and 1.20. Queueing, configuration drift, cached delivery and redelivery
@@ -3917,8 +3925,15 @@ components:
         lease_expires_at: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
         server_time: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
         replay_clock:
-          $ref: "#/components/schemas/WorkerReplayClock"
-          description: The run's entry instant, identical to its workflow tasks' replay_clock (.github#215).
+          oneOf:
+            - { type: "null" }
+            - { $ref: "#/components/schemas/WorkerReplayClock" }
+          description: >-
+            The run's entry instant, identical to its workflow tasks'
+            replay_clock (.github#215). Always present from revision 69: null
+            means this Server proved no start, so the run's workflow tasks omit
+            the object too. An absent key means an older Server that never sends
+            it on this task kind.
     QueryTaskPollResult:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"
