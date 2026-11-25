@@ -437,6 +437,8 @@ mod prometheus_exposition;
 mod signal_with_start;
 #[path = "execution/update_deadlocks.rs"]
 mod update_deadlocks;
+#[path = "execution/same_run_workflow_claims.rs"]
+mod same_run_workflow_claims;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),

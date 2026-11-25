@@ -7,14 +7,14 @@ use sqlx::{AssertSqlSafe, Postgres, Row, types::Json};
 
 async fn candidates(tx: &mut Transaction<'_, Postgres>, sql: &str, at: DateTime<Utc>, kind: &str, build: Option<&str>) -> Vec<Value> {
     sqlx::query(AssertSqlSafe(format!("SELECT row_to_json(candidate) AS candidate FROM ({sql}) candidate")))
-        .bind("default").bind("ordered").bind(kind).bind(Postgres::bind_time(at)).bind(Postgres::bind_time(at)).bind(build)
+        .bind("default").bind("ordered").bind(kind).bind(Postgres::bind_time(at)).bind(Postgres::bind_time(at)).bind(build).bind(Postgres::bind_time(at))
         .fetch_all(&mut **tx).await.unwrap().into_iter().map(|row| row.get::<Json<Value>, _>("candidate").0).collect()
 }
 
 async fn explain(tx: &mut Transaction<'_, Postgres>, sql: &str, at: DateTime<Utc>) -> Value {
     let row = sqlx::query(AssertSqlSafe(format!("EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON) {sql}")))
         .bind("default").bind("ordered").bind("workflow").bind(Postgres::bind_time(at))
-        .bind(Postgres::bind_time(at)).bind(None::<&str>).fetch_one(&mut **tx).await.unwrap();
+        .bind(Postgres::bind_time(at)).bind(None::<&str>).bind(Postgres::bind_time(at)).fetch_one(&mut **tx).await.unwrap();
     row.get::<Json<Value>, _>("QUERY PLAN").0
 }
 
@@ -22,6 +22,16 @@ fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize, in_ra
     assert!(!in_range || !matches!(node["Node Type"].as_str(), Some("Sort" | "Incremental Sort")),
         "a status range must retain index order: {node}");
     match node["Relation Name"].as_str() {
+        // Server #1282's same-run lease fence probes one run's tasks.
+        Some("workflow_tasks") if node["Alias"].as_str().is_some_and(|alias| alias == "o" || alias.starts_with("o_")) => {
+            fn seeks_run(node: &Value) -> bool {
+                (node["Index Name"] == "workflow_tasks_workflow_run_id_index"
+                    && node["Index Cond"].as_str().is_some_and(|condition| condition.contains("workflow_run_id")))
+                    || node["Plans"].as_array().is_some_and(|children| children.iter().any(seeks_run))
+            }
+            assert!(seeks_run(node), "the fence must seek its run: {node}");
+            return;
+        }
         Some("workflow_tasks") => {
             assert!(matches!(node["Node Type"].as_str(),Some("Index Scan" | "Index Only Scan")),"{node}");
             assert_eq!(node["Index Name"],"dw_workflow_tasks_scoped_dispatch",

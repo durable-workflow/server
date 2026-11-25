@@ -151,7 +151,7 @@ store_methods! {
         for _ in 0..sets {
             query = query.bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
                 .bind(DB::bind_time(at)).bind(DB::bind_time(at));
-            if !wake { query = query.bind(None::<&str>); }
+            if !wake { query = query.bind(None::<&str>).bind(DB::bind_time(at)); }
         }
         let rows = query.fetch_all(&self.pool).await.unwrap();
         rows.iter().map(|row| DB::string(row, "id").unwrap()).collect()
@@ -170,7 +170,7 @@ store_methods! {
         for _ in 0..sets {
             query = query.bind(self.namespace.as_ref()).bind("bounds").bind(if wake {"activity"} else {"workflow"})
                 .bind(DB::bind_time(lease_at)).bind(DB::bind_time(ready_at));
-            if !wake { query = query.bind(None::<&str>); }
+            if !wake { query = query.bind(None::<&str>).bind(DB::bind_time(lease_at)); }
         }
         let rows = query.fetch_all(&self.pool).await.unwrap();
         let mut plan = Vec::new();
@@ -206,6 +206,11 @@ store_methods! {
                 } else { compiled.clone() };
                 let predecessor = predecessor.replace(" AND t.status IN ('ready','leased')", "")
                     .replace(" FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN ", " JOIN ");
+                // The shared template reads JSON with PostgreSQL's operator.
+                let predecessor = if DB::NAME == "MySQL" {
+                    predecessor.replace("t.payload->>'resume_source_kind'", "JSON_UNQUOTE(JSON_EXTRACT(t.payload,'$.resume_source_kind'))")
+                        .replace("o.payload->>'resume_source_kind'", "JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.resume_source_kind'))")
+                } else { predecessor };
                 let expected = self.poll_work_candidates(&predecessor, wake).await;
                 let actual = self.poll_work_candidates(&compiled, wake).await;
                 assert_eq!(actual, expected, "{size} tasks / wake={wake}");
