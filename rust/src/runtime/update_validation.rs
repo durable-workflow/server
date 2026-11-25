@@ -716,8 +716,9 @@ where
             .fetch_one(&mut *connection)
             .await?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let mut payload = json!({});
-        if let Some(run) = Self::query("SELECT workflow_class,arguments,status,last_history_sequence FROM workflow_runs WHERE id=$1")
+        // .github#215: the key is always present; null means no proved start.
+        let mut payload = json!({"replay_clock":null});
+        if let Some(run) = Self::query("SELECT id,workflow_instance_id,started_at,workflow_class,arguments,status,last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_optional(&mut *connection)
             .await?
@@ -738,6 +739,8 @@ where
                 "run_status":DB::string(&run, "status")?,
                 "last_history_sequence":DB::optional_number(&run, "last_history_sequence")?.unwrap_or(0),
                 "history_events":history});
+            // .github#215: the run's entry instant, as its workflow tasks carry it.
+            payload["replay_clock"] = Self::replay_clock(&mut *connection, &run).await?.unwrap_or(Value::Null);
         }
         let fields = json!({"task_kind":"update_validation","update_validation_task_id":task_id,"update_id":task_id,
             "update_validation_attempt":DB::number(&task, "attempt_count")?,

@@ -50,6 +50,9 @@ test('the recorder forwards its native target to retained update validation chec
     Object.assign(raw.update_validation[step].response, {request_id, retained: step.startsWith('retained_'),
       intent_verified: step !== 'retained_rejection'});
   }
+  for (const step of ['dedicated_poll', 'multiplexed_poll']) {
+    raw.update_validation[step].task.keys = [...raw.update_validation[step].task.keys, 'replay_clock'].sort();
+  }
   assert.deepEqual(checkObservation(combined, raw, raw.workflow_id, undefined, 'rust').update_validation,
     {scope: 'update_validation', steps: Object.keys(updateFixture.update_validation.expected).length});
   assert.throws(() => checkObservation(combined, raw, raw.workflow_id, undefined, 'php'), /approved_update/);

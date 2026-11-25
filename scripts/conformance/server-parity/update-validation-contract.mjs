@@ -59,6 +59,7 @@ export function checkUpdateValidation(fixture, observation, workflowId, target) 
   const actual = normalizeUpdateValidation(state, workflowId);
   const retainedIntent = nativeDivergence(target, 'retained-command-intent-readback');
   const receiptMetadata = nativeDivergence(target, 'command-key-receipt-metadata');
+  const replayClock = nativeDivergence(target, 'replay-clock-validation-tasks');
   const keyedReceipts = {approved_update: 'r1', plain: 'p1', completed_wait: 'r4',
     retained_approval: 'r1', retained_rejection: 'r2'};
   assert.deepStrictEqual(Object.keys(actual), Object.keys(expected), 'update validation steps');
@@ -72,6 +73,10 @@ export function checkUpdateValidation(fixture, observation, workflowId, target) 
       const retained = step.startsWith('retained_');
       wanted = {...wanted, response: {...wanted.response, request_id: keyedReceipts[step],
         retained, intent_verified: step !== 'retained_rejection'}};
+    }
+    // Native validation tasks always carry the run's replay_clock (.github#215).
+    if (replayClock && ['dedicated_poll', 'multiplexed_poll'].includes(step) && Array.isArray(wanted.task?.keys)) {
+      wanted = {...wanted, task: {...wanted.task, keys: [...wanted.task.keys, 'replay_clock'].sort()}};
     }
     assert.deepStrictEqual(actual[step], wanted, `update validation ${step}`);
   }
