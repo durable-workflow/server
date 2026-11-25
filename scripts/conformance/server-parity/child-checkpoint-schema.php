@@ -35,7 +35,7 @@ function projectSqliteChildCheckpoints(array $rows): array
 
 function verifyMysqlChildCheckpointCode(PDO $pdo): void
 {
-    $routineBody = trim(file_get_contents(__DIR__.'/../../../rust/migrations/mysql/0021_child_summary_checkpoint_catalog.sql'));
+    $routineBody = trim(file_get_contents(__DIR__.'/../../../rust/migrations/mysql/0023_child_summary_catalog_lookup.sql'));
     $routines = $pdo->query("SELECT ROUTINE_NAME, ROUTINE_TYPE, SECURITY_TYPE, SQL_DATA_ACCESS, DTD_IDENTIFIER, IS_DETERMINISTIC,
         SHA2(TRIM(TRAILING ';' FROM TRIM(ROUTINE_DEFINITION)),256), BINARY DEFINER=BINARY CURRENT_USER()
         FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE() LIMIT 2")->fetchAll(PDO::FETCH_NUM);
@@ -70,7 +70,7 @@ function verifyMysqlChildCheckpointCode(PDO $pdo): void
         }
     }
     $triggers = $pdo->query('SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE, EVENT_MANIPULATION, ACTION_TIMING, ACTION_ORIENTATION, ACTION_STATEMENT,
-        ACTION_ORDER, BINARY DEFINER=BINARY CURRENT_USER() FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() LIMIT 28')->fetchAll(PDO::FETCH_NUM);
+        ACTION_ORDER, BINARY DEFINER=BINARY CURRENT_USER() FROM information_schema.TRIGGERS WHERE EVENT_OBJECT_SCHEMA=DATABASE() LIMIT 28')->fetchAll(PDO::FETCH_NUM);
     foreach ($triggers as [$name, $table, $event, $timing, $orientation, $action, $position, $owner]) {
         $action = preg_replace('/;$/D', '', trim($action));
         if (($expected[$name] ?? null) !== [$table, $event, $timing, $orientation, $action] || (int) $position !== 1 || (int) $owner !== 1) {

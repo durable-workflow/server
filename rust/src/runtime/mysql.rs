@@ -21,21 +21,28 @@ use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 /// supervisions MySQL 18 / MariaDB 17, and the maintenance scan indexes
 /// (server#1256) MySQL 19 / MariaDB 18. Workflow task lease loss uses
 /// MySQL 20 / MariaDB 19. Child summary checkpoints use MySQL 21 / MariaDB 20,
-/// and the same-run fence index (server#1327) MySQL 22 / MariaDB 21.
-/// `Flavor::version` selects the one a server needs.
-pub const MYSQL_VERSION: i64 = 22;
-pub const MARIADB_VERSION: i64 = 21;
+/// the same-run fence index (server#1327) MySQL 22 / MariaDB 21, and the
+/// checkpoint catalog function's this-database trigger lookup (server#1339)
+/// MySQL 23 / MariaDB 22. `Flavor::version` selects the one a server needs.
+pub const MYSQL_VERSION: i64 = 23;
+pub const MARIADB_VERSION: i64 = 22;
 type Catalog = Vec<(String, String)>;
 const CHILD_SUMMARY_CHECKPOINT_SCHEMA: &str = include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql");
 const CHILD_SUMMARY_CALL_INDEX: &str = "CREATE INDEX dw_child_calls_run_status_sequence ON workflow_child_calls(parent_workflow_run_id,status,sequence);";
 
-fn child_summary_checkpoint_bootstrap_sql(mut sql: String) -> String {
+fn child_summary_checkpoint_bootstrap_sql(sql: String) -> String {
+    child_summary_checkpoint_bootstrap_sql_with(sql, checkpoint_catalog::bootstrap_sql())
+}
+
+/// `code` is the checkpoint code a bootstrap ends with: the current one, or
+/// the predecessor one that schemas MySQL 21-22 / MariaDB 20-21 recorded.
+fn child_summary_checkpoint_bootstrap_sql_with(mut sql: String, code: &str) -> String {
     let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_child_calls` (").expect("compiled child calls");
     let key = start + sql[start..].find("  CONSTRAINT").expect("compiled child call foreign key");
     sql.insert_str(key, "  KEY `dw_child_calls_run_status_sequence` (`parent_workflow_run_id`,`status`,`sequence`),\n");
     sql = sql.replace(CHILD_SUMMARY_CALL_INDEX, "");
     sql.push('\n');
-    sql.push_str(checkpoint_catalog::bootstrap_sql());
+    sql.push_str(code);
     sql
 }
 
@@ -127,8 +134,8 @@ impl Flavor {
         };
         slot.get_or_init(|| {
             let description = match self {
-                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index",
-                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index",
+                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index and child summary catalog lookup",
+                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index and child summary catalog lookup",
             };
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
                 self.version(),
@@ -139,6 +146,33 @@ impl Flavor {
             )]);
             // A bounded named lock on this dedicated initialization connection
             // covers preflight, DDL, resumption and final marking.
+            migrations.set_locking(false);
+            migrations
+        })
+    }
+
+    /// The schema MySQL 22 / MariaDB 21 bootstrap, byte for byte: the
+    /// current relations followed by the checkpoint code with the predecessor
+    /// catalog function body, which is all schema 23 / 22 changed.
+    fn retained_catalog_lookup_predecessor(self) -> &'static Migrator {
+        static MYSQL: OnceLock<Migrator> = OnceLock::new();
+        static MARIA: OnceLock<Migrator> = OnceLock::new();
+        let (slot, version, description) = match self {
+            Self::MySql => (&MYSQL, 22, "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index"),
+            Self::MariaDb => (&MARIA, 21, "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index"),
+        };
+        slot.get_or_init(|| {
+            let current: &str = self.migration().sql.as_ref();
+            let relations = current.strip_suffix(checkpoint_catalog::bootstrap_sql())
+                .expect("compiled checkpoint code at the end of the bootstrap");
+            let sql = format!("{relations}{}", checkpoint_catalog::predecessor_bootstrap_sql());
+            let mut migrations = Migrator::with_migrations(vec![Migration::new(
+                version,
+                description.into(),
+                MigrationType::Simple,
+                AssertSqlSafe(sql).into_sql_str(),
+                false,
+            )]);
             migrations.set_locking(false);
             migrations
         })
@@ -217,7 +251,8 @@ impl Flavor {
                 match self { Self::MySql => 21, Self::MariaDb => 20 },
                 description.into(),
                 MigrationType::Simple,
-                AssertSqlSafe(child_summary_checkpoint_bootstrap_sql(self.bootstrap_sql(sql))).into_sql_str(),
+                AssertSqlSafe(child_summary_checkpoint_bootstrap_sql_with(
+                    self.bootstrap_sql(sql), checkpoint_catalog::predecessor_bootstrap_sql())).into_sql_str(),
                 false,
             )]);
             // A bounded named lock on this dedicated initialization connection
@@ -751,6 +786,8 @@ impl Flavor {
     static DISPATCH_MYSQL: OnceLock<Migration> = OnceLock::new();
     static DISPATCH_MARIADB: OnceLock<Migration> = OnceLock::new();
         match (self, version) {
+            (Self::MySql, 22) => self.retained_catalog_lookup_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0022_catalog.json"))),
+            (Self::MariaDb, 21) => self.retained_catalog_lookup_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0021_catalog.json"))),
             (Self::MySql, 21) => self.retained_fence_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0021_catalog.json"))),
             (Self::MariaDb, 20) => self.retained_fence_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0020_catalog.json"))),
             (Self::MySql, 20) => self.retained_checkpoint_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0020_catalog.json"))),
@@ -1171,6 +1208,7 @@ impl Flavor {
     /// The step file that moves a native database from `version` to the next.
     fn step(self, version: i64) -> Option<&'static str> {
         match (self, version) {
+            (Self::MySql, 22) | (Self::MariaDb, 21) => Some(include_str!("../../migrations/mysql/0023_child_summary_catalog_lookup.sql")),
             (Self::MySql, 21) => Some(include_str!("../../migrations/mysql/0022_same_run_fence_index.sql")),
             (Self::MariaDb, 20) => Some(include_str!("../../migrations/mariadb/0021_same_run_fence_index.sql")),
             (Self::MySql, 20) | (Self::MariaDb, 19) => Some(CHILD_SUMMARY_CHECKPOINT_SCHEMA),
@@ -1661,9 +1699,18 @@ pub(super) async fn ensure_run_fence_index(connection: &mut MySqlConnection, fla
 }
 
 fn child_summary_trigger_privilege_required(error: &sqlx::Error) -> bool {
+    // 1419: binary logging without SUPER or trusted function creators.
+    // 1370: replacing a function this account was not granted ALTER ROUTINE
+    // on, as when an operator installed it from the staged DDL.
     error.as_database_error().is_some_and(|error| {
-        error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>().is_some_and(|error| error.number() == 1419)
+        error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>().is_some_and(|error| matches!(error.number(), 1419 | 1370))
     })
+}
+
+/// The step that replaces the checkpoint catalog function's body
+/// (server#1339): MySQL's from 22, MariaDB's from 21.
+fn child_summary_catalog_lookup_step(flavor: Flavor) -> i64 {
+    match flavor { Flavor::MySql => 22, Flavor::MariaDb => 21 }
 }
 
 fn dispatch_summary_step(flavor: Flavor) -> i64 {
@@ -2115,6 +2162,11 @@ pub(super) async fn child_summary_checkpoint_ddl(connect_options: MySqlConnectOp
     let definer = format!("{}@{}", quote(user), quote(host));
     let mut ddl = format!("USE {};\n", quote(&database));
     for create in installed.missing_ddl() {
+        // The predecessor catalog function is dropped before its replacement.
+        if create.starts_with("DROP ") {
+            ddl.push_str(&create);
+            continue;
+        }
         let statement = create.strip_prefix("CREATE ").expect("compiled checkpoint statement");
         ddl.push_str(&format!("CREATE DEFINER={definer} {statement}"));
     }
@@ -2294,9 +2346,13 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         let earlier_catalog: Catalog = serde_json::from_str(&canonical(earlier_catalog))?;
         let actual = catalog(&mut connection).await?;
         if engine == DEVELOPMENT_ENGINE {
-            // Checkpoint code exists exactly from the checkpoint schema on.
+            // Checkpoint code exists exactly from the checkpoint schema on,
+            // with the predecessor catalog function body until the catalog
+            // lookup step. Under this marker that step has not started, so
+            // only the exact predecessor function is accepted; a resumed
+            // upgrade accepts a dropped one.
             let code_matches = if from > child_summary_checkpoint_step(flavor) {
-                installed_code.complete()
+                installed_code.predecessor_routine && installed_code.awaiting_routine()
             } else {
                 installed_code.empty()
             };
@@ -2346,6 +2402,10 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         // Each step's own marker update names the development engine, so it
         // changes nothing while the marker fences the upgrade.
         for version in from..flavor.version() {
+            if version == child_summary_catalog_lookup_step(flavor) {
+                ensure_child_summary_code(&mut connection).await?;
+                continue;
+            }
             if version == run_fence_step(flavor) {
                 ensure_run_fence_index(&mut connection, flavor).await?;
                 continue;
@@ -3142,40 +3202,7 @@ mod tests {
     async fn qualification_catalog_check_does_not_wait_on_another_databases_ddl() {
         let db = Database::new().await;
         let storage = MySqlStorage::open(db.options.clone()).await.unwrap();
-        let other = Database::new().await;
-        let mut holder = other.connection().await;
-        for statement in [
-            "CREATE TABLE a (id INT PRIMARY KEY) ENGINE=InnoDB",
-            "CREATE TABLE b (id INT PRIMARY KEY) ENGINE=InnoDB",
-            "CREATE TRIGGER a_insert AFTER INSERT ON a FOR EACH ROW SET @dw_other=1",
-            "CREATE TRIGGER b_insert AFTER INSERT ON b FOR EACH ROW SET @dw_other=2",
-            "INSERT INTO b VALUES (1)",
-        ] {
-            holder.execute(statement).await.unwrap();
-        }
-        let mut transaction = holder.begin().await.unwrap();
-        sqlx::query("SELECT id FROM b").fetch_all(&mut *transaction).await.unwrap();
-        let mut dropper = other.connection().await;
-        let dropper_id: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut dropper).await.unwrap();
-        dropper.execute("SET SESSION lock_wait_timeout=30").await.unwrap();
-        let dropping = tokio::spawn(async move {
-            let dropped = dropper.execute("DROP TABLE a, b").await.map(|_| ());
-            (dropper, dropped)
-        });
-        let mut observer = db.connection().await;
-        let waiting = async {
-            loop {
-                let state: Option<String> = sqlx::query_scalar(
-                    "SELECT STATE FROM information_schema.PROCESSLIST WHERE ID=?")
-                    .bind(dropper_id).fetch_optional(&mut observer).await.unwrap().flatten();
-                if state.is_some_and(|state| state.contains("metadata lock")) {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await
-            .expect("the other database's DROP TABLE waits on the open transaction");
+        let blocked = BlockedDrop::start().await;
         let pool = storage.into_pool();
         let mut connection = pool.acquire().await.unwrap();
         let started = std::time::Instant::now();
@@ -3183,18 +3210,72 @@ mod tests {
         // would otherwise end the old query's wait at the same moment.
         let checked = tokio::time::timeout(std::time::Duration::from_secs(2), verify_history(&mut *connection)).await;
         let elapsed = started.elapsed();
-        transaction.rollback().await.unwrap();
-        let (dropper, dropped) = dropping.await.unwrap();
-        dropped.unwrap();
+        blocked.release().await;
         checked.expect("the catalog check waited on another database's metadata lock").unwrap();
         assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
         drop(connection);
         pool.close().await;
-        for connection in [holder, dropper, observer] {
-            connection.close().await.unwrap();
-        }
-        other.remove().await;
         db.remove().await;
+    }
+
+    /// Another database whose `DROP TABLE a, b` has taken `a` (which has a
+    /// trigger) and waits on a transaction's read of `b`, as a test database
+    /// drop waited in CI (Server #1204, #1339).
+    struct BlockedDrop {
+        other: Database,
+        holder: MySqlConnection,
+        dropping: tokio::task::JoinHandle<(MySqlConnection, sqlx::Result<()>)>,
+    }
+
+    impl BlockedDrop {
+        async fn start() -> Self {
+            let other = Database::new().await;
+            let mut holder = other.connection().await;
+            for statement in [
+                "CREATE TABLE a (id INT PRIMARY KEY) ENGINE=InnoDB",
+                "CREATE TABLE b (id INT PRIMARY KEY) ENGINE=InnoDB",
+                "CREATE TRIGGER a_insert AFTER INSERT ON a FOR EACH ROW SET @dw_other=1",
+                "CREATE TRIGGER b_insert AFTER INSERT ON b FOR EACH ROW SET @dw_other=2",
+                "INSERT INTO b VALUES (1)",
+                "START TRANSACTION",
+                "SELECT id FROM b",
+            ] {
+                holder.execute(statement).await.unwrap();
+            }
+            let mut dropper = other.connection().await;
+            let dropper_id: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut dropper).await.unwrap();
+            dropper.execute("SET SESSION lock_wait_timeout=30").await.unwrap();
+            let dropping = tokio::spawn(async move {
+                let dropped = dropper.execute("DROP TABLE a, b").await.map(|_| ());
+                (dropper, dropped)
+            });
+            let mut observer = other.connection().await;
+            let waiting = async {
+                loop {
+                    let state: Option<String> = sqlx::query_scalar(
+                        "SELECT STATE FROM information_schema.PROCESSLIST WHERE ID=?")
+                        .bind(dropper_id).fetch_optional(&mut observer).await.unwrap().flatten();
+                    if state.is_some_and(|state| state.contains("metadata lock")) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await
+                .expect("the other database's DROP TABLE waits on the open transaction");
+            observer.close().await.unwrap();
+            Self { other, holder, dropping }
+        }
+
+        async fn release(mut self) {
+            self.holder.execute("ROLLBACK").await.unwrap();
+            let (dropper, dropped) = self.dropping.await.unwrap();
+            dropped.unwrap();
+            for connection in [self.holder, dropper] {
+                connection.close().await.unwrap();
+            }
+            self.other.remove().await;
+        }
     }
 
     #[tokio::test]
@@ -4439,6 +4520,33 @@ mod tests {
         }
     }
 
+    /// Server #1339: schema MySQL 23 / MariaDB 22 changes only the catalog
+    /// function's trigger predicate. The retained bootstrap is the recorded
+    /// schema MySQL 22 / MariaDB 21 one, byte for byte.
+    #[test]
+    fn catalog_lookup_predecessors_keep_their_pinned_source_checksums() {
+        let current_body = include_str!("../../migrations/mysql/0023_child_summary_catalog_lookup.sql").trim_end();
+        let previous_body = include_str!("../../migrations/mysql/0021_child_summary_checkpoint_catalog.sql").trim_end();
+        assert!(current_body.contains("WHERE EVENT_OBJECT_SCHEMA=DATABASE()") && !current_body.contains("TRIGGER_SCHEMA"));
+        assert_eq!(current_body.replace("EVENT_OBJECT_SCHEMA", "TRIGGER_SCHEMA"), previous_body);
+        for (flavor, version, pinned) in [
+            (Flavor::MySql, 22, include_str!("../../migrations/mysql/0022_checksum.txt")),
+            (Flavor::MariaDb, 21, include_str!("../../migrations/mariadb/0021_checksum.txt")),
+        ] {
+            assert_eq!(child_summary_catalog_lookup_step(flavor), version);
+            assert_eq!(flavor.version(), version + 1);
+            let (retained, _) = flavor.earlier(version).unwrap();
+            assert_eq!(retained.version, version);
+            assert_eq!(checksum_hex(retained), pinned.trim());
+            let previous: &str = retained.sql.as_ref();
+            let current: &str = flavor.migration().sql.as_ref();
+            assert_eq!(previous.matches(previous_body).count(), 1);
+            assert_eq!(current.matches(current_body).count(), 1);
+            assert_eq!(current.replace(current_body, previous_body), previous);
+            assert_eq!(flavor.step(version).unwrap().trim_end(), current_body);
+        }
+    }
+
     #[test]
     fn run_fence_predecessors_keep_their_released_checksums() {
         for (flavor, version, pinned) in [
@@ -4458,7 +4566,7 @@ mod tests {
             let catalog: Catalog = serde_json::from_str(&canonical(catalog)).unwrap();
             assert_eq!(before_run_fence(flavor, flavor.expected().unwrap()).unwrap(), catalog);
         }
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (22, 21));
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (23, 22));
     }
 
     #[tokio::test]
@@ -4493,7 +4601,7 @@ mod tests {
 
     #[test]
     fn current_bootstraps_create_the_lease_loss_columns_once() {
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (22, 21));
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (23, 22));
         for flavor in [Flavor::MySql, Flavor::MariaDb] {
             let predecessor = task_lease_loss_step(flavor);
             let (retained, _) = flavor.earlier(predecessor).unwrap();
@@ -4539,6 +4647,139 @@ mod tests {
         connection.execute(AssertSqlSafe(changed)).await.unwrap();
         connection.close().await.unwrap();
         refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+        db.remove().await;
+    }
+
+    /// Server #1339: upgrading a schema MySQL 22 / MariaDB 21 database
+    /// replaces only the catalog function, keeps every row, and resumes when
+    /// the replacement stopped after dropping the predecessor function.
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_child_summary_catalog_lookup_upgrade_replaces_the_function() {
+        for stopped_after_drop in [false, true] {
+            let db = Database::new().await;
+            let mut connection = db.connection().await;
+            let flavor = Flavor::detect(&mut connection).await.unwrap();
+            connection.close().await.unwrap();
+            let from = child_summary_catalog_lookup_step(flavor);
+            retained_version_database(&db, from).await;
+            let mut connection = db.connection().await;
+            let (_, installed) = physical_scope(&mut connection).await.unwrap();
+            assert!(installed.predecessor_routine && !installed.routine && installed.awaiting_routine());
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_upgrade_required");
+            if stopped_after_drop {
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                connection.execute("DROP FUNCTION dw_child_summary_catalog").await.unwrap();
+                let (_, installed) = physical_scope(&mut connection).await.unwrap();
+                assert!(!installed.predecessor_routine && !installed.routine && installed.awaiting_routine());
+            }
+            connection.close().await.unwrap();
+
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection = db.connection().await;
+            let (_, installed) = physical_scope(&mut connection).await.unwrap();
+            assert!(installed.complete() && !installed.predecessor_routine);
+            let body: String = sqlx::query_scalar(
+                "SELECT ROUTINE_DEFINITION FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE() AND ROUTINE_NAME='dw_child_summary_catalog'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert!(body.contains("EVENT_OBJECT_SCHEMA=DATABASE()") && !body.contains("TRIGGER_SCHEMA"), "{body}");
+            // The SELECT-only inspection evaluates the replaced function.
+            checkpoint_catalog::read_only(&mut connection).await.unwrap();
+            let kept: String = sqlx::query_scalar("SELECT description FROM workflow_namespaces WHERE name='kept'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(kept, format!("seeded at version {from}"));
+            connection.close().await.unwrap();
+            MySqlStorage::open(db.options.clone()).await.unwrap().close().await;
+
+            // At the current version neither in-progress state verifies.
+            let mut connection = db.connection().await;
+            connection.execute("DROP FUNCTION dw_child_summary_catalog").await.unwrap();
+            assert!(checkpoint_catalog::read_only(&mut connection).await.is_err());
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+            let predecessor = checkpoint_catalog::predecessor_bootstrap_sql();
+            let routine = &predecessor[..predecessor.find("CREATE SQL SECURITY DEFINER VIEW").unwrap()];
+            connection.execute(AssertSqlSafe(routine.to_owned())).await.unwrap();
+            assert!(checkpoint_catalog::read_only(&mut connection).await.is_err());
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+            for statement in physical_scope(&mut connection).await.unwrap().1.missing_ddl() {
+                connection.execute(AssertSqlSafe(statement)).await.unwrap();
+            }
+            checkpoint_catalog::read_only(&mut connection).await.unwrap();
+            connection.close().await.unwrap();
+            MySqlStorage::open(db.options.clone()).await.unwrap().close().await;
+            db.remove().await;
+        }
+    }
+
+    /// Server #1339: the SELECT-only inspection evaluates the catalog
+    /// function, which now reads only this database's triggers. It answers
+    /// promptly, without error or skipped-table warning, while another
+    /// database's `DROP TABLE` holds one table and waits on the other.
+    #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_catalog_function_ignores_another_databases_ddl() {
+        let db = Database::new().await;
+        MySqlStorage::open(db.options.clone()).await.unwrap().close().await;
+        let blocked = BlockedDrop::start().await;
+        let mut connection = db.connection().await;
+        let started = std::time::Instant::now();
+        let inspected = tokio::time::timeout(std::time::Duration::from_secs(2),
+            checkpoint_catalog::read_only(&mut connection)).await;
+        let elapsed = started.elapsed();
+        let warnings: Vec<(String, u32, String)> = sqlx::raw_sql("SHOW WARNINGS")
+            .fetch_all(&mut connection).await.unwrap().iter()
+            .map(|row| (row.try_get("Level").unwrap(), row.try_get("Code").unwrap(), row.try_get("Message").unwrap()))
+            .collect();
+        blocked.release().await;
+        inspected.expect("the catalog function waited on another database's metadata lock").unwrap();
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+        assert!(warnings.iter().all(|(_, code, _)| *code != 1684), "{warnings:?}");
+        connection.close().await.unwrap();
+        db.remove().await;
+    }
+
+    /// Server #1339: an account without ALTER ROUTINE on the predecessor
+    /// function, as when an administrator installed it, is refused with the
+    /// staged-DDL reason; the export drops and recreates only the function.
+    #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_catalog_lookup_upgrade_stages_the_function_without_alter_routine() {
+        let db = Database::new().await;
+        let mut connection = db.connection().await;
+        let flavor = Flavor::detect(&mut connection).await.unwrap();
+        let database: String = sqlx::query_scalar("SELECT DATABASE()").fetch_one(&mut connection).await.unwrap();
+        assert!(database.starts_with("dw_schema_") && database.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'));
+        let account = format!("lkp_{}", ulid::Ulid::new().to_string().to_lowercase());
+        let password = format!("{}{}a!", ulid::Ulid::new(), ulid::Ulid::new());
+        connection.execute(AssertSqlSafe(format!("CREATE USER '{account}'@'%' IDENTIFIED BY '{password}'"))).await.unwrap();
+        connection.execute(AssertSqlSafe(format!("GRANT ALL PRIVILEGES ON \x60{database}\x60.* TO '{account}'@'%'"))).await.unwrap();
+        let app = db.options.clone().username(&account).password(&password);
+        // The application account owns the schema MySQL 22 / MariaDB 21 code,
+        // then loses ALTER ROUTINE on the function, as when an administrator
+        // installed it from schema-checkpoint-ddl.
+        let from = child_summary_catalog_lookup_step(flavor);
+        retained_version_database(&Database { options: app.clone(), url: db.url.clone() }, from).await;
+        connection.execute(AssertSqlSafe(format!("REVOKE ALTER ROUTINE ON \x60{database}\x60.* FROM '{account}'@'%'"))).await.unwrap();
+        let routine_grants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mysql.procs_priv WHERE Db=? AND User=? AND Routine_name='dw_child_summary_catalog'")
+            .bind(&database).bind(&account).fetch_one(&mut connection).await.unwrap();
+        if routine_grants > 0 {
+            connection.execute(AssertSqlSafe(format!("REVOKE ALTER ROUTINE ON FUNCTION \x60{database}\x60.dw_child_summary_catalog FROM '{account}'@'%'"))).await.unwrap();
+        }
+        let denied = upgrade(app.clone()).await.unwrap_err();
+        assert!(matches!(denied, super::super::RuntimeError::Refused { reason: "native_child_checkpoint_trigger_privilege_required", .. }), "{denied}");
+        let marker: String = sqlx::query_scalar("SELECT engine FROM dw_server_schema").fetch_one(&mut connection).await.unwrap();
+        assert_eq!(marker, "rust-upgrading");
+        let ddl = child_summary_checkpoint_ddl(app.clone()).await.unwrap();
+        assert_eq!(ddl.matches("DROP FUNCTION dw_child_summary_catalog;").count(), 1, "{ddl}");
+        assert_eq!(ddl.matches("CREATE DEFINER=").count(), 1, "{ddl}");
+        assert!(ddl.find("DROP FUNCTION").unwrap() < ddl.find("CREATE DEFINER=").unwrap(), "{ddl}");
+        connection.execute(AssertSqlSafe(ddl)).await.unwrap();
+        assert_eq!(upgrade(app.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+        MySqlStorage::check(app.clone()).await.unwrap();
+        MySqlStorage::check(db.options.clone()).await.unwrap();
+        connection.execute(AssertSqlSafe(format!("DROP USER '{account}'@'%'"))).await.unwrap();
+        connection.close().await.unwrap();
         db.remove().await;
     }
 

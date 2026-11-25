@@ -30,7 +30,7 @@ pub(super) const DEVELOPMENT_ENGINE: &str = "rust-development";
 pub(super) const UPGRADING_ENGINE: &str = "rust-upgrading";
 /// Earlier native schema versions this binary upgrades in place. Release
 /// candidates `3.0.0-rc.1` and `3.0.0-rc.2` shipped version 7.
-pub(super) const UPGRADABLE: &[i64] = &[7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
+pub(super) const UPGRADABLE: &[i64] = &[7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
 
 /// The refusal for a native marker this binary does not open as it is.
 pub(super) fn marker_refusal(engine: &str, version: i64, current: i64) -> RuntimeError {
@@ -171,5 +171,22 @@ mod tests {
         assert_eq!(reason(marker_refusal(UPGRADING_ENGINE, 7, 8)), "native_schema_upgrade_incomplete");
         assert_eq!(reason(marker_refusal("rust-initializing", 8, 8)), "unsupported_rust_schema");
         assert_eq!(reason(marker_refusal("php", 7, 8)), "unsupported_rust_schema");
+    }
+
+    /// Server #1339: each backend's previous schema must name the upgrade
+    /// step. A schema step that bumped MySQL without listing its previous
+    /// version called a database at that version unsupported.
+    #[test]
+    fn every_backends_previous_schema_is_upgradable() {
+        for (backend, current) in [
+            ("sqlite", super::super::schema::VERSION),
+            ("postgres", super::super::postgres::VERSION),
+            ("mysql", super::super::mysql::MYSQL_VERSION),
+            ("mariadb", super::super::mysql::MARIADB_VERSION),
+        ] {
+            assert!(UPGRADABLE.contains(&(current - 1)), "{backend} {}", current - 1);
+            assert_eq!(reason(marker_refusal(DEVELOPMENT_ENGINE, current - 1, current)),
+                "native_schema_upgrade_required", "{backend}");
+        }
     }
 }

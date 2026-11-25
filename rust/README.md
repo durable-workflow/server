@@ -342,6 +342,18 @@ definitions and takes the database out of its staged state. The trigger
 definer requires access to the checkpoint table for as long as the triggers
 are installed.
 
+Schema MySQL 23 / MariaDB 22 replaces only the catalog function, so that it
+reads this database's triggers through MariaDB's `EVENT_OBJECT_SCHEMA` lookup
+instead of every database's tables (server#1339). `schema-upgrade` drops the
+earlier function and creates the new one; tables, rows, the view and the
+triggers are unchanged. An account that was not granted `ALTER ROUTINE` on the
+function, because an administrator installed it from `schema-checkpoint-ddl`,
+gets the same `native_child_checkpoint_trigger_privilege_required` refusal,
+and that command's output then includes the `DROP FUNCTION` before the
+replacement. On a binlogged server the drop can succeed and the creation be
+refused instead; the output then creates only the function, and
+`schema-upgrade` resumes from there.
+
 ## Rolling out durable input ordering for timed waits
 
 Leave `DW_ORDERED_CONDITION_WAIT_AUTHORING` unset while replacing Server
