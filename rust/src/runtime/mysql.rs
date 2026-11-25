@@ -3130,6 +3130,73 @@ mod tests {
         db.remove().await;
     }
 
+    /// Server #1204: the readiness and bootstrap catalog check reads this
+    /// database's triggers only. MariaDB does not use `TRIGGER_SCHEMA` to
+    /// select schemas, so filtering on it read every database's tables and
+    /// waited behind DDL holding their metadata locks; `EVENT_OBJECT_SCHEMA`
+    /// is the schema it does look up. Another database here holds a `DROP
+    /// TABLE` that has taken one table and waits on a transaction's read of
+    /// the other, as a test database drop waited in CI.
+    #[tokio::test]
+    #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+    async fn qualification_catalog_check_does_not_wait_on_another_databases_ddl() {
+        let db = Database::new().await;
+        let storage = MySqlStorage::open(db.options.clone()).await.unwrap();
+        let other = Database::new().await;
+        let mut holder = other.connection().await;
+        for statement in [
+            "CREATE TABLE a (id INT PRIMARY KEY) ENGINE=InnoDB",
+            "CREATE TABLE b (id INT PRIMARY KEY) ENGINE=InnoDB",
+            "CREATE TRIGGER a_insert AFTER INSERT ON a FOR EACH ROW SET @dw_other=1",
+            "CREATE TRIGGER b_insert AFTER INSERT ON b FOR EACH ROW SET @dw_other=2",
+            "INSERT INTO b VALUES (1)",
+        ] {
+            holder.execute(statement).await.unwrap();
+        }
+        let mut transaction = holder.begin().await.unwrap();
+        sqlx::query("SELECT id FROM b").fetch_all(&mut *transaction).await.unwrap();
+        let mut dropper = other.connection().await;
+        let dropper_id: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()").fetch_one(&mut dropper).await.unwrap();
+        dropper.execute("SET SESSION lock_wait_timeout=30").await.unwrap();
+        let dropping = tokio::spawn(async move {
+            let dropped = dropper.execute("DROP TABLE a, b").await.map(|_| ());
+            (dropper, dropped)
+        });
+        let mut observer = db.connection().await;
+        let waiting = async {
+            loop {
+                let state: Option<String> = sqlx::query_scalar(
+                    "SELECT STATE FROM information_schema.PROCESSLIST WHERE ID=?")
+                    .bind(dropper_id).fetch_optional(&mut observer).await.unwrap().flatten();
+                if state.is_some_and(|state| state.contains("metadata lock")) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await
+            .expect("the other database's DROP TABLE waits on the open transaction");
+        let pool = storage.into_pool();
+        let mut connection = pool.acquire().await.unwrap();
+        let started = std::time::Instant::now();
+        // Well inside the pool session's own lock_wait_timeout (5 s), which
+        // would otherwise end the old query's wait at the same moment.
+        let checked = tokio::time::timeout(std::time::Duration::from_secs(2), verify_history(&mut *connection)).await;
+        let elapsed = started.elapsed();
+        transaction.rollback().await.unwrap();
+        let (dropper, dropped) = dropping.await.unwrap();
+        dropped.unwrap();
+        checked.expect("the catalog check waited on another database's metadata lock").unwrap();
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+        drop(connection);
+        pool.close().await;
+        for connection in [holder, dropper, observer] {
+            connection.close().await.unwrap();
+        }
+        other.remove().await;
+        db.remove().await;
+    }
+
     #[tokio::test]
     #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
     async fn qualification_concurrent_bootstrap_and_reopen() {

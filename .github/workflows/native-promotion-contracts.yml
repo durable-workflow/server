@@ -14,6 +14,7 @@ on:
       - tests/Unit/Support/native_alias_*test.py
       - tests/Unit/Support/native_qualification_test.py
       - scripts/ci/native-image-scan.sh
+      - scripts/ci/native-sbom/tool-pins.v1.json
       - scripts/ci/native_scan_receipt.py
       - scripts/ci/resolve_latest_platform_digest.py
       - tests/Unit/Support/native_scan_receipt_test.py
@@ -25,6 +26,10 @@ jobs:
   contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      # The release-tag check runs the SBOM generator's input refusals, which
+      # stop before Docker; the cleanup below covers its scanner name anyway.
+      RESOURCE_SCOPE: dw-native-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
@@ -36,3 +41,6 @@ jobs:
           python3 -m unittest discover -s tests/Unit/Support -p 'native_scan_receipt_test.py' -v
       - name: Preserve release, candidate and monotonic alias contracts
         run: bash scripts/ci/check-native-release-tags.sh
+      - name: Remove this job's SBOM scanner container
+        if: always()
+        run: docker rm -f "$RESOURCE_SCOPE-syft" || true
