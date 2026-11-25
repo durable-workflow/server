@@ -1510,7 +1510,7 @@ where
     /// that grew past native's one bounded page fails the query instead.
     async fn query_delivery_history(conn: &mut DB::Connection, task: &mut Value) -> Result<bool> {
         let run_id = task["run_id"].as_str().unwrap_or_default().to_owned();
-        let run = Self::query("SELECT status,last_history_sequence FROM workflow_runs WHERE id=$1")
+        let run = Self::query("SELECT id,workflow_instance_id,started_at,status,last_history_sequence FROM workflow_runs WHERE id=$1")
             .bind(&run_id)
             .fetch_one(&mut *conn)
             .await?;
@@ -1541,6 +1541,14 @@ where
             return Ok(false);
         }
         task["run_status"] = json!(DB::string(&run, "status")?);
+        // .github#215: the same entry instant the run's workflow tasks carry,
+        // so a query that rebuilds a body which read it at entry sees it too.
+        match Self::replay_clock(&mut *conn, &run).await? {
+            Some(clock) => task["replay_clock"] = clock,
+            None => {
+                task.as_object_mut().expect("native query task").remove("replay_clock");
+            }
+        }
         task["history_events"] = json!(history);
         task["last_history_sequence"] = json!(cutoff.unwrap_or(last));
         task["history_cutoff_sequence"] = json!(cutoff);

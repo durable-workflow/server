@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "68"
+  version: "69"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -2503,7 +2503,8 @@ components:
       required: [schema, workflow_run_id, started_at, source]
       description: >-
         The instant this run's replay starts from, for a replay-safe workflow
-        clock at ordinary entry (.github#215). Optional: absent when the
+        clock at ordinary entry (.github#215). Workflow tasks, query tasks and
+        update-validation tasks of a run carry the same value. Optional: absent when the
         server cannot prove it. started_at is not lease, dispatch or history
         insertion time. An ordinary, continued or child run uses its own
         start; a redrive successor uses the replay anchor its WorkflowStarted
@@ -3195,6 +3196,9 @@ components:
         task_queue: { type: string, minLength: 1 }
         lease_owner: { type: string, minLength: 1 }
         lease_expires_at: { type: string, format: date-time }
+        replay_clock:
+          $ref: "#/components/schemas/WorkerReplayClock"
+          description: The run's entry instant, identical to its workflow tasks' replay_clock (.github#215).
     WorkflowPollNormalizationPending:
       type: object
       description: Temporary cutover refusal for this attempt only. Retained predecessor answers remain authoritative; retry with the original poll identity.
@@ -3912,6 +3916,9 @@ components:
         query_deadline_at: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
         lease_expires_at: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
         server_time: { $ref: "#/components/schemas/QueryAuthorityTimestamp" }
+        replay_clock:
+          $ref: "#/components/schemas/WorkerReplayClock"
+          description: The run's entry instant, identical to its workflow tasks' replay_clock (.github#215).
     QueryTaskPollResult:
       allOf:
         - $ref: "#/components/schemas/WorkerEnvelope"

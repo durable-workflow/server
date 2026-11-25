@@ -92,3 +92,83 @@ async fn a_redriven_run_carries_its_correlated_replay_anchor() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// A query request for `workflow`, answered or abandoned by the caller.
+fn send_query(app: &Router, workflow: &str) -> tokio::task::JoinHandle<(StatusCode, Value)> {
+    let app = app.clone();
+    let path = format!("/api/workflows/{workflow}/query/state");
+    tokio::spawn(async move { request(&app, "POST", &path, json!({"input":envelope(Payload::Array(vec![Payload::Long(7)]))})).await })
+}
+
+#[tokio::test]
+async fn query_tasks_carry_their_runs_entry_instant() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    query_worker(&app, "clock-query-worker").await;
+    let started = start(&app, "clocked-query").await;
+    let task = poll(&app, "clock-query-worker", "workflow").await;
+    let entry = clock(&task, "run_started_at");
+    let (status, body) = finish_task(&app, &task, json!([{"type":"complete_workflow","result":envelope(Payload::Long(7))}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A query rebuilds the body from the same entry instant the workflow task gave it.
+    let waiting = send_query(&app, "clocked-query");
+    let claim = await_query(&app, "clock-query-worker").await;
+    assert_eq!(claim["run_id"], started["run_id"], "{claim}");
+    assert_eq!(clock(&claim, "run_started_at"), entry);
+    let answered = request(&app, "POST", &format!("/api/worker/query-tasks/{}/complete", claim["query_task_id"].as_str().unwrap()),
+        json!({"lease_owner":"clock-query-worker","query_task_attempt":claim["query_task_attempt"],
+            "result_envelope":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(answered.0, StatusCode::OK, "{}", answered.1);
+    assert_eq!(waiting.await.unwrap().0, StatusCode::OK);
+
+    // A run whose start is not proved omits the object, as its workflow tasks would.
+    let run = started["run_id"].as_str().unwrap();
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_runs SET started_at=NULL WHERE id='{run}'"))).await;
+    let waiting = send_query(&app, "clocked-query");
+    let unproved = await_query(&app, "clock-query-worker").await;
+    assert_eq!(unproved["run_id"], started["run_id"], "{unproved}");
+    assert!(unproved.get("replay_clock").is_none(), "{unproved}");
+    waiting.abort();
+    runtime.close().await;
+    database.remove().await;
+}
+
+#[tokio::test]
+async fn update_validation_tasks_carry_their_runs_entry_instant() {
+    use super::update_validation::{complete, poll_validation, send_update, update_body, validating_worker};
+
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    validating_worker(&app, "clock-validator", "clock-vq", Some(json!(["approve_me"])), true).await;
+    let (status, started) = request(&app, "POST", "/api/workflows", json!({"workflow_id":"clocked-validation",
+        "workflow_type":"echo","task_queue":"clock-vq","input":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let (status, polled) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"clock-validator","task_queue":"clock-vq","timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    let task = polled["task"].clone();
+    let entry = clock(&task, "run_started_at");
+    assert_eq!(finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await.0, StatusCode::OK);
+
+    let pending = send_update(&app, "clocked-validation", "approve_me", update_body(1, Some("clock-1")));
+    let validation = poll_validation(&app, "clock-validator", "clock-vq").await;
+    assert_eq!(validation["run_id"], started["run_id"], "{validation}");
+    assert_eq!(clock(&validation, "run_started_at"), entry);
+    let body = json!({"lease_owner":"clock-validator","update_validation_attempt":validation["update_validation_attempt"]});
+    let (status, decided) = complete(&app, validation["update_validation_task_id"].as_str().unwrap(), "approve", body).await;
+    assert_eq!(status, StatusCode::OK, "{decided}");
+    pending.abort();
+
+    let run = started["run_id"].as_str().unwrap();
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_runs SET started_at=NULL WHERE id='{run}'"))).await;
+    let pending = send_update(&app, "clocked-validation", "approve_me", update_body(2, Some("clock-2")));
+    let unproved = poll_validation(&app, "clock-validator", "clock-vq").await;
+    assert_eq!(unproved["run_id"], started["run_id"], "{unproved}");
+    assert!(unproved.get("replay_clock").is_none(), "{unproved}");
+    pending.abort();
+    runtime.close().await;
+    database.remove().await;
+}
