@@ -770,37 +770,36 @@ got:
 $job_conditions"
 grep -q 'run: scripts/ci/verify-native-release-dispatch.sh' .github/workflows/native-release.yml \
   || fail "the plan job must run the dispatch verifier."
-# Server #1012: each build job generates its platform's SBOM from the smoked
-# digest, and the publish job attests both to the index in both registries
-# with the pinned actions/attest, so the step cannot silently disappear.
+# Server #1012: the publish job generates both platform SBOMs from the
+# smoked digests before it tags anything, and attests both to the index in
+# both registries as SPDX predicates, so the step cannot silently disappear.
 native_release=.github/workflows/native-release.yml
-for arch in amd64 arm64; do
-  job=$(sed -n "/^  build-$arch:\$/,/^  [a-z0-9-]*:\$/p" "$native_release")
-  smoke=$(grep -n 'run: bash scripts/ci/native-image-smoke.sh' <<<"$job" | cut -d: -f1 || true)
-  sbom=$(grep -n 'run: bash scripts/ci/native-release-sbom.sh "\$IMAGE" "\$PLATFORM" "\$VERSION" native-sbom$' <<<"$job" | cut -d: -f1 || true)
-  [[ -n "$smoke" && -n "$sbom" ]] && ((sbom > smoke)) \
-    || fail "build-$arch must generate its SBOM from the smoked digest after the smoke."
-  grep -q "IMAGE: \${{ env.GHCR_IMAGE }}@\${{ steps.build.outputs.digest }}" <<<"$job" \
-    || fail "build-$arch must generate its SBOM from the pushed digest."
-  grep -q "name: native-sbom-$arch$" <<<"$job" && grep -q "path: native-sbom/server-linux-$arch.spdx.json$" <<<"$job" \
-    || fail "build-$arch must keep its SBOM for the publish job."
-done
 publish_job=$(sed -n '/^  publish:$/,/^  [a-z0-9-]*:$/p' "$native_release")
 attest_steps=$(awk '
-  /uses: actions\/attest@/ { step = 1; pinned = ($0 ~ /@1e69f48acb82d1966a394da916b4c1698aa569d6 /); next }
+  /uses: actions\/attest-build-provenance@/ { step = 1; type = ""; sbom = ""; name = ""; next }
   step && /subject-name:/ { name = $2 " " $3 " " $4 }
   step && /subject-digest:/ { digest = $2 " " $3 " " $4 }
-  step && /sbom-path:/ { sbom = $2 }
+  step && /predicate-type:/ { type = $2 }
+  step && /predicate-path:/ { sbom = $2 }
   step && /push-to-registry:/ { push = $2 }
-  step && /create-storage-record:/ { print pinned, name, digest, sbom, push; step = 0 }
+  step && /create-storage-record:/ { if (sbom != "") print type, name, digest, sbom, push; step = 0 }
 ' <<<"$publish_job" | sort || true)
-expected_attest=$(printf '1 %s ${{ steps.index.outputs.digest }} native-sbom/server-linux-%s.spdx.json true\n' \
+expected_attest=$(printf 'https://spdx.dev/Document/v2.3 %s ${{ steps.index.outputs.digest }} native-sbom/server-linux-%s.spdx.json true\n' \
   '${{ env.GHCR_IMAGE }}' amd64 '${{ env.GHCR_IMAGE }}' arm64 \
   'index.docker.io/${{ env.DOCKERHUB_IMAGE }}' amd64 'index.docker.io/${{ env.DOCKERHUB_IMAGE }}' arm64 | sort)
 [[ "$attest_steps" == "$expected_attest" ]] \
   || fail "the publish job must attest both platform SBOMs to the index in both registries; got:
 $attest_steps"
-grep -q 'pattern: native-sbom-\*$' <<<"$publish_job" || fail "the publish job must collect both platform SBOMs."
+generate=$(grep -n '^      - name: Generate both platform SBOMs from the smoked digests$' <<<"$publish_job" | cut -d: -f1 || true)
+tagging=$(grep -n '^      - name: Tag and verify the index in each registry$' <<<"$publish_job" | cut -d: -f1 || true)
+[[ -n "$generate" && -n "$tagging" ]] && ((generate < tagging)) \
+  || fail "the publish job must generate both SBOMs before it tags the index."
+for arch in amd64 arm64; do
+  upper=$(tr a-z A-Z <<<"$arch")
+  grep -q "^          DIGEST_$upper: \${{ needs.build-$arch.outputs.digest }}$" <<<"$publish_job" \
+    && grep -qF "native-release-sbom.sh \"\$GHCR_IMAGE@\$DIGEST_$upper\" linux/$arch \"\$VERSION\" native-sbom" <<<"$publish_job" \
+    || fail "the publish job must generate the linux/$arch SBOM from the smoked digest."
+done
 sbom=scripts/ci/native-release-sbom.sh
 expect "name the image by digest" bash "$sbom" ghcr.io/example/native:3.1.0 linux/amd64 3.1.0 out
 expect "unsupported platform" bash "$sbom" "ghcr.io/example/native@$index" linux/s390x 3.1.0 out

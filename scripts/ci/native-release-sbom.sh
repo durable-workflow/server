@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Generates the SPDX 2.3 SBOM for one smoked native image platform (Server
-# #1012). The build job calls it after the smoke, so it reads the exact
-# pushed digest that passed, not a rebuild or a mutable tag. The publish job
-# attests the result to the release index in both registries, and
+# #1012). The publish job calls it with the exact digest each build job
+# pushed and smoked, never a rebuild or a mutable tag, before it tags
+# anything. It then attests the result to the release index in both
+# registries, and
 # native-release-github-release.sh verifies those attestations before it
 # attaches the documents to the GitHub Release.
 #
 # The image is exported from the local daemon with docker save and scanned
-# offline by the pinned Syft image for the same platform, read from
+# offline by the pinned Syft image for the runner's architecture, read from
 # scripts/ci/native-sbom/tool-pins.v1.json. The scanner gets no network, a
 # read-only root and input, no capabilities and bounded resources.
 #
@@ -34,7 +35,14 @@ esac
 arch=${platform#linux/}
 
 pins="$(dirname "${BASH_SOURCE[0]}")/native-sbom/tool-pins.v1.json"
-scanner_child=$(jq -er --arg p "$platform" '.generator.platforms[$p].child_manifest_digest' "$pins")
+# Syft only reads the image, so the scanner runs for the runner's own
+# architecture; the amd64 publish job scans the arm64 image too.
+host=linux/$(docker version --format '{{.Server.Arch}}')
+case $host in
+  linux/amd64 | linux/arm64) ;;
+  *) fail "no pinned Syft image for a $host runner." ;;
+esac
+scanner_child=$(jq -er --arg p "$host" '.generator.platforms[$p].child_manifest_digest' "$pins")
 scanner_version=$(jq -er '.generator.version' "$pins")
 [[ $(jq -er '.generator.image' "$pins") == docker.io/anchore/syft && $scanner_child =~ ^sha256:[0-9a-f]{64}$ ]] \
   || fail "the Syft pin in $pins is not an exact digest."
@@ -50,7 +58,7 @@ fi
 docker image inspect "$image" >/dev/null 2>&1 || docker pull --platform "$platform" "$image" >/dev/null
 observed=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
 [[ $observed == "$platform" ]] || fail "$image is $observed, not $platform."
-docker pull --quiet --platform "$platform" "$scanner" >/dev/null
+docker pull --quiet --platform "$host" "$scanner" >/dev/null
 
 mkdir -p "$out"
 work=$(mktemp -d)
@@ -60,7 +68,7 @@ chmod 0644 "$work/image.tar"
 document="$out/server-linux-$arch.spdx.json"
 name="durable-workflow-server-linux-$arch"
 
-docker run --rm --init --name "$RESOURCE_SCOPE-syft" --platform "$platform" --pull=never \
+docker run --rm --init --name "$RESOURCE_SCOPE-syft" --platform "$host" --pull=never \
   --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges \
   --user "$(id -u):$(id -g)" \
   --tmpfs "/scratch:rw,noexec,nosuid,nodev,size=512m,mode=0700,uid=$(id -u),gid=$(id -g)" \

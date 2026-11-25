@@ -224,15 +224,22 @@ qualification remain open.
 
 ## Release wiring
 
-`../native-release-sbom.sh` is the generator the native release runs. Each
-build job calls it after the smoke test, on the exact pushed digest that
-passed. It exports that image with `docker save` and scans it offline with
-the Syft child pinned above for the same platform. The scanner runs with no
+`../native-release-sbom.sh` is the generator the native release runs. The
+publish job calls it for each platform, before it tags anything, on the exact
+digest that the build job pushed and smoked. It exports that image with
+`docker save` and scans it offline with the Syft child pinned above for the
+runner's architecture. Syft only reads the image, so the amd64 publish job
+scans the arm64 image as well. Generating in the publish job avoids a
+privileged artifact handoff, which the central action policy does not admit
+in this workflow. The scanner runs with no
 network, a read-only root and input, no capabilities and bounded resources.
 The script refuses a document that is not SPDX 2.3 from that Syft version,
 or whose root package does not name the expected platform. The publish job
-attests both documents to the release index in both registries with the
-`actions/attest` commit pinned above. `../native-release-github-release.sh`
+attests both documents to the release index in both registries. It uses the
+centrally approved `actions/attest-build-provenance` v4 commit, which passes
+the SPDX predicate type and document to the `actions/attest` v4.1.1 it pins.
+The `actions/attest` v4.2.2 commit recorded above is not in the central action
+policy. `../native-release-github-release.sh`
 verifies those four attestations for the exact run attempt before it creates
 a Release, and attaches the verified predicates as Release assets.
 `../check-native-release-tags.sh` covers the workflow steps and the Release
