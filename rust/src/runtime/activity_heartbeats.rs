@@ -90,7 +90,10 @@ where
         let expires = DB::optional_instant(&attempt, "lease_expires_at")?
             .or(DB::optional_instant(&task, "lease_expires_at")?);
         let activity_expiry = super::activity_deadlines::expired_kind::<DB>(&activity, now())?;
-        let (can_continue, cancel_requested, reason) = if run_status == "cancelled" {
+        // An activity abandoned at its run's cooperative close keeps working
+        // after that close (Server #971).
+        let abandoned = run_status == "cancelled" && Self::abandoned_activity_allowed(&mut **tx, &run, &activity).await?;
+        let (can_continue, cancel_requested, reason) = if run_status == "cancelled" && !abandoned {
             (false, true, Some("run_cancelled"))
         } else if run_status == "terminated" {
             (false, true, Some("run_terminated"))
@@ -103,7 +106,7 @@ where
             (false, true, Some("activity_cancelled"))
         } else if task_status == "cancelled" {
             (false, true, Some("task_cancelled"))
-        } else if !matches!(run_status.as_str(), "pending" | "running" | "waiting") {
+        } else if !matches!(run_status.as_str(), "pending" | "running" | "waiting") && !abandoned {
             (false, false, Some("run_closed"))
         } else if activity_status != "running" {
             (false, false, Some("activity_not_running"))
@@ -163,7 +166,7 @@ where
         {
             response["cancellation_acknowledgement"] = receipt;
         }
-        Ok((response, Self::cancellation_request(&run)?.is_none()))
+        Ok((response, abandoned || Self::cancellation_request(&run)?.is_none()))
     }
 
     pub(crate) async fn heartbeat_activity(&self, task_id: &str, body: Value) -> Result<Value> {
@@ -255,7 +258,6 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let run = Self::active_run(&mut tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
         let activity =
             Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
@@ -263,6 +265,7 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
                 .await?;
+        let (run, run_closed) = Self::activity_run(&mut tx, &run_id, &activity).await?;
         if DB::string(&activity, "status")? != "running"
             || DB::optional_string(&activity, "current_attempt_id")?.as_deref() != Some(attempt_id)
         {
@@ -289,7 +292,7 @@ where
             }
         }
         let at = now();
-        let expires = if Self::cancellation_request(&run)?.is_none() {
+        let expires = if run_closed || Self::cancellation_request(&run)?.is_none() {
             at + chrono::Duration::seconds(self.activity_task_lease_seconds)
         } else {
             self.cancellation_lease_expiry(&run)?
@@ -318,11 +321,13 @@ where
             .execute(&mut *tx)
             .await?;
         tx.summary_changed(&run_id);
-        Self::query("UPDATE workflow_runs SET last_progress_at=$1 WHERE id=$2")
-            .bind(DB::bind_time(at))
-            .bind(&run_id)
-            .execute(&mut *tx)
-            .await?;
+        if !run_closed {
+            Self::query("UPDATE workflow_runs SET last_progress_at=$1 WHERE id=$2")
+                .bind(DB::bind_time(at))
+                .bind(&run_id)
+                .execute(&mut *tx)
+                .await?;
+        }
         let mut payload = Self::activity_payload(&activity)?;
         payload["activity"]["last_heartbeat_at"] = json!(at);
         payload["activity_attempt_id"] = json!(attempt_id);

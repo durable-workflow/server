@@ -84,6 +84,7 @@ jobs:
         run: |
           python -I -B tests/Unit/Support/native_sbom_archive_test.py
           python -I -B tests/Unit/Support/native_sbom_policy_test.py
+          python -I -B tests/Unit/Support/native_sbom_scan_test.py
 
   preflight:
     name: Repository contracts

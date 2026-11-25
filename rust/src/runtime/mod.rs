@@ -23,6 +23,7 @@ macro_rules! store_methods {
     };
 }
 
+mod abandoned_activities;
 mod active_summary;
 mod activity_cancellation_ack;
 mod activity_completion_uploads;

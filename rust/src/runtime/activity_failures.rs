@@ -434,7 +434,6 @@ where
         Self::closed_run_outcome(&mut tx, &task, &body, reported).await?;
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        Self::active_run(&mut tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
         let activity =
             Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
@@ -442,6 +441,10 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut *tx)
                 .await?;
+        // After its run's cooperative close, an abandoned activity still
+        // retries under its own policy, and its terminal failure resumes
+        // nothing (Server #971).
+        let (run, run_closed) = Self::activity_run(&mut tx, &run_id, &activity).await?;
         if DB::string(&attempt, "status")? != "running"
             || count < 1
             || count != DB::number(&task, "attempt_count")?
@@ -551,12 +554,11 @@ where
                 None,
             )
             .await?;
-            let run = Self::active_run(&mut tx, &run_id).await?;
             let host = super::standalone_activities::HostClose::Failed {
                 payload: super::standalone_activities::failed_payload(&failed_event, &activity_id),
                 closed_reason: "failed",
             };
-            let next = if Self::close_standalone_host(&mut tx, &run_id, host).await? {
+            let next = if run_closed || Self::close_standalone_host(&mut tx, &run_id, host).await? {
                 None
             } else {
                 Self::selection_resume(

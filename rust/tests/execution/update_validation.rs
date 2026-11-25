@@ -28,7 +28,7 @@ pub(super) async fn validating_worker(app: &Router, worker: &str, queue: &str, v
 }
 
 /// A run on `queue` waiting for a signal, so updates find it idle.
-async fn waiting_run(app: &Router, workflow: &str, queue: &str, worker: &str) -> Value {
+pub(super) async fn waiting_run(app: &Router, workflow: &str, queue: &str, worker: &str) -> Value {
     let (status, started) = request(app, "POST", "/api/workflows", json!({"workflow_id":workflow,"workflow_type":"echo",
         "task_queue":queue,"input":envelope(Payload::Array(vec![]))})).await;
     assert_eq!(status, StatusCode::CREATED, "{started}");
@@ -41,7 +41,7 @@ async fn waiting_run(app: &Router, workflow: &str, queue: &str, worker: &str) ->
     started
 }
 
-fn update_body(value: i64, request_id: Option<&str>) -> Value {
+pub(super) fn update_body(value: i64, request_id: Option<&str>) -> Value {
     let mut body = json!({"input":envelope(Payload::Array(vec![Payload::Long(value)]))});
     if let Some(request_id) = request_id {
         body["request_id"] = json!(request_id);
@@ -50,13 +50,13 @@ fn update_body(value: i64, request_id: Option<&str>) -> Value {
 }
 
 /// An update request that waits for its validator, answered later.
-fn send_update(app: &Router, workflow: &str, name: &str, body: Value) -> tokio::task::JoinHandle<(StatusCode, Value)> {
+pub(super) fn send_update(app: &Router, workflow: &str, name: &str, body: Value) -> tokio::task::JoinHandle<(StatusCode, Value)> {
     let app = app.clone();
     let path = format!("/api/workflows/{workflow}/update/{name}");
     tokio::spawn(async move { request(&app, "POST", &path, body).await })
 }
 
-async fn poll_validation(app: &Router, worker: &str, queue: &str) -> Value {
+pub(super) async fn poll_validation(app: &Router, worker: &str, queue: &str) -> Value {
     let (status, body) = request(app, "POST", "/api/worker/update-validation-tasks/poll",
         json!({"worker_id":worker,"task_queue":queue,"timeout_seconds":5})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -64,7 +64,7 @@ async fn poll_validation(app: &Router, worker: &str, queue: &str) -> Value {
     body["task"].clone()
 }
 
-async fn complete(app: &Router, task: &str, verdict: &str, body: Value) -> (StatusCode, Value) {
+pub(super) async fn complete(app: &Router, task: &str, verdict: &str, body: Value) -> (StatusCode, Value) {
     request(app, "POST", &format!("/api/worker/update-validation-tasks/{task}/{verdict}"), body).await
 }
 
