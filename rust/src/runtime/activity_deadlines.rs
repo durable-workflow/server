@@ -251,21 +251,28 @@ where
         if !matches!(DB::string(&activity, "status")?.as_str(), "pending" | "running") {
             return Ok(Skipped("execution_already_terminal"));
         }
+        let run_id = DB::string(&activity, "workflow_run_id")?;
+        // Core's `closesExpiredRowOfClosedRun` comes before the attempt-state
+        // checks: an expired open row of a cancelled run without abandon
+        // authority is cancelled without history even when its attempt is no
+        // longer running. Skipped instead, it would be selected again every
+        // tick and enough such rows would fill the sweep's page.
+        if expired_kind::<DB>(&activity, now())?.is_some()
+            && let Err(super::RuntimeError::Refused { reason: "run_closed", .. }) = Self::activity_run(&mut tx, &run_id, &activity).await
+            && Self::cancel_closed_run_activity(&mut tx, &run_id, &activity).await?
+        {
+            tx.commit().await?;
+            return Ok(Skipped("run_already_terminal"));
+        }
         if let Some(reason) = Self::attempt_state_reason(&mut tx, &activity).await? {
             return Ok(Skipped(reason));
         }
         let Some(kind) = expired_kind::<DB>(&activity, now())? else {
             return Ok(Skipped("no_deadline_expired"));
         };
-        let run_id = DB::string(&activity, "workflow_run_id")?;
         let run = match Self::activity_run(&mut tx, &run_id, &activity).await {
             Ok((run, _)) => run,
             Err(super::RuntimeError::Refused { reason: "run_closed", .. }) => {
-                // Core's `closesExpiredRowOfClosedRun`: an expired open row of
-                // a cancelled run without abandon authority is cancelled
-                // without history, so the sweep stops selecting it.
-                Self::cancel_closed_run_activity(&mut tx, &run_id, &activity).await?;
-                tx.commit().await?;
                 return Ok(Skipped("run_already_terminal"));
             }
             Err(super::RuntimeError::Refused { reason: "cancellation_deadline_expired", .. }) => {

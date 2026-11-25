@@ -279,3 +279,40 @@ async fn an_abandoned_activity_times_out_at_its_original_deadline_after_the_clos
     runtime.close().await;
     database.remove().await;
 }
+
+// An expired open row of a cancelled run without abandon authority is
+// cancelled before its attempt state is read. Skipped instead, fifty such
+// rows would fill the deadline sweep's page every tick and no other run's
+// activity would ever time out.
+#[tokio::test]
+async fn stale_rows_of_a_cancelled_run_do_not_stall_the_deadline_sweep() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_cooperative(&app).await;
+    let cancelled = abandon_then_cancel(&app, "stale-rows", json!({}), false, true).await;
+    let run = cancelled.started["run_id"].as_str().unwrap();
+    // Rows that sort first and whose current attempt is gone.
+    for index in 0..50 {
+        database.execute(sqlx::AssertSqlSafe(format!("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_class,activity_type,status,schedule_to_close_deadline_at) \
+            VALUES ('00000000000000000000000{index:03}','{run}',{},'stale','stale','running','2000-01-01 00:00:00')", 100 + index))).await;
+    }
+    let started = start(&app, "live-expiry").await;
+    let task = cooperative_poll(&app, "workflow").await;
+    let scheduled = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
+        completion(&task, json!([{"type":"schedule_activity","activity_type":"plain-activity","arguments":envelope(Payload::Array(vec![])),
+            "schedule_to_close_timeout":1}])), "1.20").await;
+    assert_eq!(scheduled.0, StatusCode::OK, "{}", scheduled.1);
+    let waited_until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        if event_types(&history).iter().any(|event| event == "ActivityTimedOut") {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < waited_until, "the live activity never timed out: {history}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(count(&database, format!("SELECT COUNT(*) FROM activity_executions WHERE workflow_run_id='{run}' AND activity_type='stale' AND status='cancelled'")).await, 50);
+    runtime.close().await;
+    database.remove().await;
+}
