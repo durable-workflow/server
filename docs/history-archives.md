@@ -19,7 +19,7 @@ pruned the run, after payload cleanup has reclaimed its objects, and without
 the Server or the payload store.
 
 `dw workflow:history-archive` creates archives and
-`dw workflow:history-archive-verify` checks them. The Server binary also
+`dw workflow:history-archive-check` checks them. The Server binary also
 verifies an archive offline:
 
 ```bash
@@ -80,7 +80,10 @@ receipt.json             durable-workflow.history-archive.receipt.v1 (written la
 `verified_at`, the SHA-256 of the exact manifest bytes (`manifest_sha256`),
 `history_sha256`, `object_count`, `object_bytes`, and the hold, including the
 `confirmed_at` database time when the hold was confirmed after verification.
-Any later change to the manifest or the history no longer matches the receipt.
+An accidental later change to the manifest or the history no longer matches
+the receipt. The digests are not signatures, though: they detect damage, not
+deliberate tampering. Protect archives you must trust against modification,
+for example with a signature or write-once storage.
 
 Object files are named by reference id. A valid id is `ep_` followed by 26
 Crockford base-32 characters, so it is always one safe file name. A verifier
@@ -122,10 +125,13 @@ backup hold is an admin route.
    from acquisition, which bounds one archive's copy to a day.
 4. Write `history-export.json` and `manifest.json`, then verify the directory
    from disk. Every byte is read back; nothing in memory is trusted.
-5. Confirm that the hold is still this copy's:
-   `GET /api/system/external-payload-backup-hold?owner=<uuid>`. An owner is
-   single-use, so a hold that is still active proves it never lapsed during the
-   copy. Only then write `receipt.json`.
+5. Confirm that the hold is still this copy's acquisition:
+   `GET /api/system/external-payload-backup-hold?owner=<uuid>` must answer
+   `active: true` with the `acquired_at` the acquire returned. Each copy uses
+   a new owner, and a hold cannot be renewed after it lapses, so this proves
+   the hold never lapsed during the copy. Only then write `receipt.json`. The
+   receipt records that `acquired_at`, and a verifier requires it to match the
+   manifest's.
 6. Release the hold, whatever the outcome.
 
 A copy that fails at any step leaves no receipt. A directory without a receipt

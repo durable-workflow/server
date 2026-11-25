@@ -93,13 +93,16 @@ async fn finish(router: &Router, copy: &Copy, dir: &Path) -> Result<Value, Value
     let confirmed = json_request(router, "GET", &format!("{HOLD}?owner={}", copy.owner), "admin-token", Value::Null).await;
     let result = if report["outcome"] != "verified" {
         Err(report)
-    } else if confirmed.0 != StatusCode::OK || confirmed.1["active"] != true {
+    } else if confirmed.0 != StatusCode::OK || confirmed.1["active"] != true
+        // The same acquisition, not a later re-acquire by the same owner.
+        || confirmed.1["acquired_at"] != copy.hold["acquired_at"]
+    {
         Err(confirmed.1)
     } else {
         let mut hold = copy.hold.clone();
         hold["confirmed_at"] = confirmed.1["database_time"].clone();
         hold["expires_at"] = confirmed.1["expires_at"].clone();
-        let receipt = archive::receipt(&report, "2026-11-25T00:00:01Z", hold);
+        let receipt = archive::receipt(&report, "2026-11-25T00:00:01Z", hold).unwrap();
         std::fs::write(dir.join(RECEIPT_FILE), serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
         Ok(receipt)
     };
