@@ -462,29 +462,64 @@ impl Drop for TestDatabase {
             Self::MySql { url, .. } => (url.clone(), false),
         };
         // The test's runtime may be single-threaded or unwinding, so the drop
-        // runs on a thread and runtime of its own. A server session that is
-        // still inside a transaction keeps its locks, so the MySQL drop waits
-        // for them only briefly and leaves the database rather than hang.
+        // runs on a thread and runtime of its own.
         let dropped = std::thread::spawn(move || -> Result<(), String> {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
             runtime.block_on(async {
                 if postgres {
                     return Postgres::force_drop_database(&url).await.map_err(|error| error.to_string());
                 }
-                use sqlx::Connection;
-                let options = MySqlConnectOptions::from_str(&url).map_err(|error| error.to_string())?;
-                let name = options.get_database().unwrap_or_default().replace('`', "");
-                let mut connection = sqlx::MySqlConnection::connect_with(&options.database("information_schema"))
-                    .await.map_err(|error| error.to_string())?;
-                sqlx::raw_sql("SET SESSION lock_wait_timeout=10").execute(&mut connection).await.map_err(|error| error.to_string())?;
-                sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS `{name}`")))
-                    .execute(&mut connection).await.map(drop).map_err(|error| error.to_string())
+                force_drop_mysql_database(&url).await
             })
         })
         .join()
         .unwrap_or_else(|_| Err("drop thread panicked".into()));
         if let Err(error) = dropped {
             eprintln!("test_database_drop_failed: {error}");
+        }
+    }
+}
+
+/// The MySQL-family counterpart of PostgreSQL's `force_drop_database`.
+///
+/// A test that ends without closing its runtime leaves that runtime's pooled
+/// sessions on the server, sometimes inside a transaction. A plain `DROP
+/// DATABASE` then waits for their metadata locks while holding exclusive locks
+/// on the tables it already took. MariaDB filters `information_schema.TRIGGERS`
+/// by `TRIGGER_SCHEMA` only after reading every schema, so the runtime
+/// catalog check of the other test running in parallel waited behind it.
+/// Ending this database's idle sessions first lets the drop finish at once;
+/// the bounded lock wait and the retries cover a session that is busy or
+/// reconnects in between. Only idle sessions are ended: while another test's
+/// session reads that `TRIGGERS` scan, MariaDB lists it under each schema it
+/// visits, so a busy session showing this database may not be this test's.
+async fn force_drop_mysql_database(url: &str) -> Result<(), String> {
+    use sqlx::Connection;
+    let options = MySqlConnectOptions::from_str(url).map_err(|error| error.to_string())?;
+    let name = options.get_database().unwrap_or_default().replace('`', "");
+    let mut connection = sqlx::MySqlConnection::connect_with(&options.database("information_schema"))
+        .await.map_err(|error| error.to_string())?;
+    sqlx::raw_sql("SET SESSION lock_wait_timeout=3").execute(&mut connection).await.map_err(|error| error.to_string())?;
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let sessions: Vec<i64> = sqlx::query_scalar(
+            "SELECT CAST(ID AS SIGNED) FROM information_schema.PROCESSLIST WHERE DB=? AND COMMAND='Sleep' AND ID<>CONNECTION_ID()")
+            .bind(&name)
+            .fetch_all(&mut connection).await.map_err(|error| error.to_string())?;
+        if !sessions.is_empty() {
+            eprintln!("test_database_drop_ended_sessions: {name} {sessions:?}");
+        }
+        for id in sessions {
+            // A session that ended on its own meanwhile is already gone.
+            let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("KILL CONNECTION {id}"))).execute(&mut connection).await;
+        }
+        match sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS `{name}`")))
+            .execute(&mut connection).await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) if attempts < 3 => eprintln!("test_database_drop_retry: {error}"),
+            Err(error) => return Err(error.to_string()),
         }
     }
 }
@@ -514,11 +549,20 @@ async fn text_rows(database: &TestDatabase, sqlite: &str, postgres: &str, mysql:
 }
 
 /// Every table of the test database, by name, with its row count.
+///
+/// Base tables only, as SQLite's `type='table'` already lists. A view stores
+/// no rows of its own. The MySQL schema's one view, `dw_child_summary_catalog`,
+/// always returns the single row of its catalog function, and counting it ran
+/// that function's `information_schema.TRIGGERS` scan, which covers every
+/// schema on the server. On MariaDB the count then failed with error 1684
+/// ("skipped since its definition is being modified by concurrent DDL
+/// statement") while the other test running in parallel dropped or created
+/// its database (Server #1204).
 async fn table_counts(database: &TestDatabase) -> Vec<(String, i64)> {
     let tables = text_rows(database,
         "SELECT name, name FROM sqlite_master WHERE type='table' ORDER BY name",
-        "SELECT table_name::text, table_name::text FROM information_schema.tables WHERE table_schema='public' ORDER BY 1",
-        "SELECT CAST(table_name AS CHAR), CAST(table_name AS CHAR) FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY 1").await;
+        "SELECT table_name::text, table_name::text FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY 1",
+        "SELECT CAST(table_name AS CHAR), CAST(table_name AS CHAR) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_type='BASE TABLE' ORDER BY 1").await;
     let mut counts = Vec::with_capacity(tables.len());
     for (table, _) in tables {
         let sql: &'static str = Box::leak(format!("SELECT COUNT(*) FROM {table}").into_boxed_str());
