@@ -374,6 +374,8 @@ mod workflow_poll_requests;
 mod worker_poll_fence;
 #[path = "execution/activity_cancellation_ack.rs"]
 mod activity_cancellation_ack;
+#[path = "execution/abandoned_activities.rs"]
+mod abandoned_activities;
 
 #[path = "execution/route_coverage.rs"]
 mod route_coverage;

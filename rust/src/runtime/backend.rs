@@ -38,7 +38,7 @@ WITH utc_tasks AS (
     FROM utc_tasks
 )
 SELECT t.*,r.workflow_type FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
-WHERE r.status IN ('pending','running','waiting')
+WHERE (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity'))
     AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t._dw_lease_order<=rtrim(rtrim($4,'0'),'.')))
     AND (t.available_at IS NULL OR t._dw_available_order<=rtrim(rtrim($5,'0'),'.'))
     AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6)
@@ -336,7 +336,7 @@ SELECT id,ordinal FROM ordinals WHERE position IS NOT ordinal ORDER BY ordinal L
     const SESSION_RUNNING_ATTEMPTS: &str = "SELECT COUNT(*) FROM activity_attempts p JOIN activity_executions e ON e.id=p.activity_execution_id JOIN workflow_tasks t ON t.id=p.workflow_task_id WHERE t.namespace=$1 AND p.status='running' AND p.lease_expires_at>$2 AND p.lease_owner=$3 AND json_extract(e.activity_options,'$.worker_session.session_id')=$4 AND p.workflow_task_id<>$5";
     const POLL_WAKE_TASKS_SQL: &str = r#"
 WITH utc_tasks AS (
-    SELECT t.id,t.namespace,t.queue,t.workflow_run_id,t.status,t.available_at,
+    SELECT t.id,t.namespace,t.queue,t.workflow_run_id,t.task_type,t.status,t.available_at,
         replace(replace(replace(t.available_at,'T',' '),'Z',''),'+00:00','') AS available_utc,
         replace(replace(replace(t.lease_expires_at,'T',' '),'Z',''),'+00:00','') AS lease_utc
     FROM workflow_tasks t WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type!=$3 AND t.task_type IN ('workflow','activity') AND t.status IN ('ready','leased')
@@ -347,7 +347,7 @@ WITH utc_tasks AS (
     FROM utc_tasks
 )
 SELECT t.id,t.namespace,t.queue FROM ordered_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id
-WHERE r.status IN ('pending','running','waiting')
+WHERE (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity'))
     AND (t.status='ready' OR (t.status='leased' AND t.lease_order<=rtrim(rtrim($4,'0'),'.')))
     AND (t.available_at IS NULL OR t.available_order<=rtrim(rtrim($5,'0'),'.'))
 ORDER BY t.available_order,t.id LIMIT 100
@@ -583,7 +583,7 @@ macro_rules! mysql_status_candidates {
     ($status:literal, $namespace:literal, $queue:literal, $kind:literal, $lease_at:literal, $ready_at:literal, $build:literal, $limit:literal) => {
         concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_scoped_dispatch) STRAIGHT_JOIN workflow_runs r FORCE INDEX (PRIMARY) ON r.id=t.workflow_run_id ",
             "WHERE t.namespace=", $namespace, " AND t.queue=", $queue, " AND t.task_type=", $kind, " AND t.status='", $status, "' ",
-            "AND r.status IN ('pending','running','waiting') ",
+            "AND (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity')) ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=", $lease_at, ")) ",
             "AND (t.available_at IS NULL OR t.available_at<=", $ready_at, ") ",
             "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=", $build, ") ",

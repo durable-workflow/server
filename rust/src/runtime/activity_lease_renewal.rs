@@ -45,6 +45,9 @@ pub(super) struct Rows<R> {
     pub(super) activity: Option<R>,
     pub(super) run: Option<R>,
     pub(super) task: Option<R>,
+    /// The activity keeps its abandon authority after its run's
+    /// cooperative close (Server #971).
+    pub(super) abandoned: bool,
 }
 
 store_methods! {
@@ -205,7 +208,13 @@ store_methods! {
                 .await?,
             None => None,
         };
-        Ok(Some(Rows { attempt, activity, run, task }))
+        let abandoned = match (&activity, &run) {
+            (Some(activity), Some(run)) if DB::string(run, "status")? == "cancelled" => {
+                Self::abandoned_activity_allowed(&mut **tx, run, activity).await?
+            }
+            _ => false,
+        };
+        Ok(Some(Rows { attempt, activity, run, task, abandoned }))
     }
 
     /// Workflow's `attemptStatus` over its continuation state. `refused`
@@ -265,7 +274,7 @@ store_methods! {
         };
         if attempt_status != "running" {
             return Ok(match run_status.as_deref() {
-                Some("cancelled") => (false, true, Some("run_cancelled")),
+                Some("cancelled") if !rows.abandoned => (false, true, Some("run_cancelled")),
                 Some("terminated") => (false, true, Some("run_terminated")),
                 // The run's own close cancelled it (Server #1193).
                 Some("completed" | "failed") if attempt_status == "cancelled" => (false, true, Some("run_closed")),
@@ -284,7 +293,7 @@ store_methods! {
             None => None,
         };
         match run_status.as_str() {
-            "cancelled" => return Ok((false, true, Some("run_cancelled"))),
+            "cancelled" if !rows.abandoned => return Ok((false, true, Some("run_cancelled"))),
             "terminated" => return Ok((false, true, Some("run_terminated"))),
             _ => {}
         }
@@ -294,7 +303,7 @@ store_methods! {
         if task_status.as_deref() == Some("cancelled") {
             return Ok((false, true, Some("task_cancelled")));
         }
-        if !matches!(run_status.as_str(), "pending" | "running" | "waiting") {
+        if !matches!(run_status.as_str(), "pending" | "running" | "waiting") && !rows.abandoned {
             return Ok((false, false, Some("run_closed")));
         }
         if activity_status != "running" {

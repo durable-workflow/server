@@ -242,7 +242,6 @@ where
         body: &Value,
         protocol: Option<&str>,
         strict_minor: bool,
-        runtime_gap: Option<&'static str>,
         reason: &'static str,
         remediation: &'static str,
     ) -> Result<()> {
@@ -258,7 +257,6 @@ where
         if !Self::claim_supports_cancellation(task)? {
             unavailable.push("worker_claim_capability");
         }
-        unavailable.extend(runtime_gap);
         if unavailable.is_empty() {
             return Ok(());
         }
@@ -1278,9 +1276,24 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "cancellation_request_missing"))?;
         let deadline = DB::optional_instant(run, "cancellation_deadline_at")?
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "cancellation_deadline_missing"))?;
-        // The cancelled close takes every open activity and timer with it.
-        let activities=Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id")
-            .bind(&run_id).fetch_all(&mut **tx).await?;
+        // The cancelled close takes every open activity and timer with it,
+        // except an activity that keeps its abandon authority (Server #971):
+        // it stays open, with its task, until its own outcome or deadline.
+        let mut activities = Vec::new();
+        let mut abandoned_tasks = Vec::new();
+        for activity in Self::query("SELECT * FROM activity_executions WHERE workflow_run_id=$1 AND status IN ('pending','running') ORDER BY id")
+            .bind(&run_id).fetch_all(&mut **tx).await?
+        {
+            if !Self::abandoned_activity_allowed(&mut **tx, run, &activity).await? {
+                activities.push(activity);
+                continue;
+            }
+            if let Some(task) = Self::query(DB::ACTIVITY_OPEN_TASK_SQL).bind(&run_id).bind(DB::string(&activity, "id")?)
+                .fetch_optional(&mut **tx).await?
+            {
+                abandoned_tasks.push(DB::string(&task, "id")?);
+            }
+        }
         let timers=Self::query("SELECT * FROM workflow_run_timers WHERE workflow_run_id=$1 AND status='pending' ORDER BY id")
             .bind(&run_id).fetch_all(&mut **tx).await?;
         let delivery=Self::query("SELECT id,workflow_command_id,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='CooperativeCancellationDelivered' ORDER BY sequence LIMIT 1")
@@ -1316,8 +1329,20 @@ where
         } else {
             "Cooperative cancellation completed."
         };
-        Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND status IN ('ready','leased')")
-            .bind(&run_id).execute(&mut **tx).await?;
+        if abandoned_tasks.is_empty() {
+            Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE workflow_run_id=$1 AND status IN ('ready','leased')")
+                .bind(&run_id).execute(&mut **tx).await?;
+        } else {
+            for task in Self::query("SELECT id FROM workflow_tasks WHERE workflow_run_id=$1 AND status IN ('ready','leased') ORDER BY id")
+                .bind(&run_id).fetch_all(&mut **tx).await?
+            {
+                let task_id = DB::string(&task, "id")?;
+                if !abandoned_tasks.contains(&task_id) {
+                    Self::query("UPDATE workflow_tasks SET status='cancelled',lease_expires_at=NULL,last_error=NULL WHERE id=$1")
+                        .bind(&task_id).execute(&mut **tx).await?;
+                }
+            }
+        }
         Self::query("UPDATE workflow_tasks SET lease_expires_at=NULL WHERE workflow_run_id=$1 AND status='completed'")
             .bind(&run_id).execute(&mut **tx).await?;
         Self::query("UPDATE activity_attempts SET lease_expires_at=NULL WHERE workflow_run_id=$1 AND status='completed'")
