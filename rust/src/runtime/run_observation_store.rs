@@ -220,6 +220,11 @@ where
             run_id, started.as_ref(), result["closed_reason"] == "continued",
         ).await?;
         result["command_contract"] = command_contract(started.as_ref());
+        // Server #1201: an opted-in run's recorded cleanup, in the portable
+        // shape embedded RunObservation returns; absent until recorded.
+        if let Some(observed) = self.observed_timeout_cleanup(run_id, &status, started.as_ref()).await? {
+            result[super::timeout_cleanup::STARTED_KEY] = observed;
+        }
         result["workflow_definition_fingerprint"] = json!(
             started
                 .as_ref()
@@ -245,6 +250,20 @@ where
             .observation_attributes(workflow, run_id, &options.keys)
             .await?;
         Ok(result)
+    }
+
+    async fn observed_timeout_cleanup(&self, run_id: &str, status: &str, started: Option<&Value>) -> Result<Option<Value>> {
+        let opted_in = started.is_some_and(|started| started[super::timeout_cleanup::STARTED_KEY].is_object());
+        let Some(event_type) = super::timeout_cleanup::observation_event(status).filter(|_| opted_in) else {
+            return Ok(None);
+        };
+        let row = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type=$2 ORDER BY sequence DESC LIMIT 1")
+            .bind(run_id).bind(event_type).fetch_optional(&self.pool).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let payload = DB::optional_document_row(&row, "payload")?.unwrap_or(Value::Null);
+        Ok(super::timeout_cleanup::observation(event_type, &payload))
     }
 
     async fn observation_history(
