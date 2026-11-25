@@ -122,6 +122,10 @@ macro_rules! task_candidates_sql {
 pub(super) use task_candidates_sql;
 pub(super) const TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r", "100");
 pub(super) const FIRST_TASK_CANDIDATES_SQL: &str = task_candidates_sql!("FROM workflow_tasks t JOIN workflow_runs r", "10");
+/// An accepted update's workflow task (`create_update_task`).
+fn update_task(payload: &Value) -> bool {
+    payload["resume_source_kind"] == "workflow_update"
+}
 /// A signal record's place in `PendingMessageTask::signalFollows`: its
 /// command sequence (unsequenced last), receipt and creation times, id.
 struct SignalOrder {
@@ -2666,10 +2670,50 @@ where
             return Ok(false);
         }
         let at = now();
-        Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
-            .fetch_optional(&self.pool)
-            .await?
-            .is_some())
+        if kind != "workflow" {
+            return Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
+                .fetch_optional(&self.pool)
+                .await?
+                .is_some());
+        }
+        let candidates = self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
+            .fetch_all(&self.pool)
+            .await?;
+        // A workflow task whose run holds another live lease cannot be
+        // claimed (Server #1282), so it does not wake the claim. A full first
+        // page may hide claimable tasks behind fenced ones; the claim reads on.
+        for task in &candidates {
+            if update_task(&DB::document_row(task, "payload")?)
+                || !Self::same_run_lease_held(&self.pool, &DB::string(task, "workflow_run_id")?, &DB::string(task, "id")?, at).await?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(candidates.len() >= super::priority_fairness::FAIRNESS_BATCH)
+    }
+
+    /// Server #1282: whether another workflow task of the run holds a live
+    /// lease. Both tasks would replay the same history and author the same
+    /// next commands, so the run's other workflow tasks stay ready until that
+    /// lease completes or expires. Update tasks keep their own authority and
+    /// neither wait for nor hold back the run's other tasks. Expiry is
+    /// compared after decoding, so each backend's stored timestamp shapes
+    /// compare alike. A lease without an expiry never fences, so it cannot
+    /// strand the run's later work.
+    pub(super) async fn same_run_lease_held<'e, E>(executor: E, run_id: &str, task_id: &str, at: DateTime<Utc>) -> Result<bool>
+    where
+        E: Executor<'e, Database = DB>,
+    {
+        let leases = Self::query("SELECT lease_expires_at,payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='leased' AND id<>$2")
+            .bind(run_id).bind(task_id).fetch_all(executor).await?;
+        for lease in &leases {
+            if DB::optional_instant(lease, "lease_expires_at")?.is_some_and(|expires| expires > at)
+                && !update_task(&DB::document_row(lease, "payload")?)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(super) fn task_candidate_query(
@@ -3227,6 +3271,13 @@ where
             DB::optional_instant(&task, "lease_expires_at")?;
             let run_id = DB::string(&task, "workflow_run_id")?;
             let mut task_payload = DB::document_row(&task, "payload")?;
+            // Server #1282: one live workflow task lease per run. The check
+            // runs under the transition lock, which every node shares.
+            if kind == "workflow" && !update_task(&task_payload)
+                && Self::same_run_lease_held(&mut **tx, &run_id, &DB::string(&task, "id")?, lease_at).await?
+            {
+                continue;
+            }
             if kind == "workflow" && !Self::workflow_history_supported(&mut **tx, &worker, &run_id).await? {
                 continue;
             }
