@@ -87,11 +87,13 @@ impl HeldRows {
         }
     }
 
-    /// Returns once the `count`th lock wait, at `statement`, is observed. The
-    /// runtime's own lock waits end after five seconds, so this barrier must
-    /// be reached well before that.
+    /// Returns once the `count`th lock wait, at `statement`, is observed. A
+    /// MySQL or MariaDB session of the runtime stops waiting for a row lock
+    /// after five seconds, so the barrier must be reached before that there.
+    /// PostgreSQL sessions wait without a bound, so a slow runner gets longer.
     async fn until_waiting(&mut self, count: i64, statement: &str, requests: &mut [&mut tokio::task::JoinHandle<(StatusCode, Value)>]) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let bound = match self { Self::Postgres(_) => Duration::from_secs(30), Self::MySql(_) => Duration::from_millis(4500) };
+        let deadline = tokio::time::Instant::now() + bound;
         while !self.waiting(count, statement).await {
             for request in requests.iter_mut() {
                 if request.is_finished() {

@@ -37,14 +37,16 @@ fn mysql_full_scan(plan: &serde_json::Value) -> bool {
 store_methods! {
     /// Closed runs, each with a summary and a completed activity, plus two
     /// open runs and two open activities. One run in ten, including the first
-    /// open one, has a cooperative cancellation request.
+    /// open one, has a cooperative cancellation request. One closed run in
+    /// seven is cancelled, since the activity deadline scan also visits
+    /// cancelled runs for their abandoned activities (Server #971).
     async fn seed_retained_runs(&self, closed: usize) {
         let mut tx = self.begin().await.unwrap();
         let closed_at = now() - Duration::days(1);
         for index in 0..closed + 2 {
             let open = index >= closed;
             let run = id();
-            let status = if open { "waiting" } else { "completed" };
+            let status = if open { "waiting" } else if index % 7 == 3 { "cancelled" } else { "completed" };
             let cancellation = (index % 10 == 0).then(id);
             Self::query("INSERT INTO workflow_runs(id,workflow_instance_id,run_number,workflow_class,workflow_type,namespace,status,closed_at,cancellation_request_command_id,cancellation_deadline_at) VALUES ($1,$2,1,'scan','scan',$3,$4,$5,$6,$7)")
                 .bind(&run).bind(format!("scan-{index}")).bind(self.namespace.as_ref()).bind(status)
@@ -54,7 +56,7 @@ store_methods! {
                 .execute(&mut *tx).await.unwrap();
             Self::query("INSERT INTO workflow_run_summaries(id,workflow_instance_id,run_number,class,workflow_type,namespace,status,status_bucket,closed_at) VALUES ($1,$2,1,'scan','scan',$3,$4,$5,$6)")
                 .bind(&run).bind(format!("scan-{index}")).bind(self.namespace.as_ref()).bind(status)
-                .bind(if open { "running" } else { "completed" }).bind(DB::optional_time((!open).then_some(closed_at)))
+                .bind(match status { "waiting" => "running", "cancelled" => "failed", _ => "completed" }).bind(DB::optional_time((!open).then_some(closed_at)))
                 .execute(&mut *tx).await.unwrap();
             Self::query("INSERT INTO activity_executions(id,workflow_run_id,sequence,activity_class,activity_type,status,close_deadline_at) VALUES ($1,$2,1,'scan','scan',$3,$4)")
                 .bind(id()).bind(&run).bind(if open { "running" } else { "completed" })

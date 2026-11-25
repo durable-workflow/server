@@ -107,15 +107,15 @@ store_methods! {
     /// activity it left open without abandon authority, such as a row from
     /// before an upgrade, is cancelled with its attempt and task and no
     /// history, so the deadline sweep stops selecting it. Other closed runs
-    /// are left as they are.
+    /// are left as they are. Whether it cancelled the activity.
     pub(super) async fn cancel_closed_run_activity(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         activity: &DB::Row,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let run = Self::query("SELECT status FROM workflow_runs WHERE id=$1").bind(run_id).fetch_one(&mut **tx).await?;
         if DB::string(&run, "status")? != "cancelled" {
-            return Ok(());
+            return Ok(false);
         }
         let activity_id = DB::string(activity, "id")?;
         let at = now();
@@ -128,7 +128,7 @@ store_methods! {
         Self::query("UPDATE activity_executions SET status='cancelled',closed_at=$1 WHERE id=$2 AND status IN ('pending','running')")
             .bind(DB::bind_time(at)).bind(&activity_id).execute(&mut **tx).await?;
         tx.summary_changed(run_id);
-        Ok(())
+        Ok(true)
     }
 }
 
