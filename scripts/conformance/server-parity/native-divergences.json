@@ -70,18 +70,18 @@
     {
       "id": "describe-timeout-cleanup-state",
       "issue": "https://github.com/durable-workflow/server/issues/1201",
-      "since": "native source PR #1235 (unreleased)",
+      "since": "native 3.14.0",
       "applies_to": ["timeout-cleanup"],
-      "published_php": "Published PHP does not admit timeout cleanup on service starts, and embedded Workflow 2.29.0 run detail and describe show neither the cleanup state nor its outcome; the outcome is visible only on the terminal history event and in the timeout failure message.",
-      "native": "Describe and run detail of an opted-in run carry timeout_cleanup {state: armed | cancellation_cleanup_running | finished | not_entered, cause (timeout once entered), allowance_seconds, timeout_kind, work_deadline_at, cleanup_deadline_at, started_at, outcome (running while cleanup is open, as embedded Workflow 2.40.0 reports it, then the recorded outcome), failure_id}. A run without the opt-in has no timeout_cleanup key; an opted-in run that has not entered cleanup reports it armed or not_entered where embedded 2.40.0 omits the field.",
-      "harness": "No recorded corpus run opts in, so no comparator changes. The all-backend execution tests cover every state and outcome."
+      "published_php": "Published PHP does not admit timeout cleanup on service starts. Embedded Workflow 2.40.0 describe and run detail return timeout_cleanup only once cleanup is recorded: {outcome: running, cause: timeout, timeout_kind, started_at, work_deadline_at, cleanup_deadline_at} while it is open, then the terminal event's {outcome, timeout_kind, started_at, cleanup_deadline_at, finished_at, failure_id}, omitting absent fields; with nothing recorded the field is omitted.",
+      "native": "Describe and run detail of an opted-in run always carry timeout_cleanup {state, cause, allowance_seconds, timeout_kind, work_deadline_at, cleanup_deadline_at, started_at, outcome, failure_id}, with null for absent values. state is armed before the work deadline is noticed and not_entered when the run closed without entering cleanup, where embedded omits the field; cancellation_cleanup_running while cleanup is open, with outcome running from the release after 3.29.0 (null before); finished with the recorded outcome, without finished_at. A run without the opt-in has no timeout_cleanup key. From the release after 3.29.0 the bounded run observation is not part of this divergence: it returns embedded's shape.",
+      "harness": "No recorded corpus run opts in, so no comparator changes. The all-backend execution tests cover every describe state and outcome and the observation's absent, running and finished shapes."
     },
     {
       "id": "child-timeout-cleanup-opt-in",
       "issue": "https://github.com/durable-workflow/server/issues/1201",
-      "since": "native source PR #1235 (unreleased)",
+      "since": "native 3.14.0",
       "applies_to": ["timeout-cleanup"],
-      "published_php": "Embedded Workflow 2.29.0 has no child-workflow timeout cleanup option; the portable contract gives a child its own timeouts and its own opt-in.",
+      "published_php": "Embedded Workflow 2.40.0 has no child-workflow timeout cleanup option; the portable contract gives a child its own timeouts and its own opt-in.",
       "native": "start_child_workflow accepts timeout_cleanup_seconds under the start's admission rules (1 to 86400, a child timeout required, shorter than each one, a live capable worker on the child's queue); the child records its own WorkflowStarted.timeout_cleanup, and a retried child keeps its allowance. The parent's allowance never carries over.",
       "harness": "No recorded corpus command carries the field. The all-backend execution tests cover validation, capability refusal without writes, and the child's recorded allowance."
     },

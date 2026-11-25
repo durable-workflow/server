@@ -105,6 +105,52 @@ pub(super) fn summary(outcome: &Value) -> Option<&'static str> {
     }
 }
 
+/// The history event the bounded run observation reads for a run in
+/// `status`, as embedded `TimeoutCleanup::observe` does: the terminal event
+/// of a closed run, or the cleanup entry of an open one. A completed run
+/// reports nothing.
+pub(super) fn observation_event(status: &str) -> Option<&'static str> {
+    match status {
+        "failed" => Some("WorkflowTimedOut"),
+        "cancelled" => Some("WorkflowCancelled"),
+        "terminated" => Some("WorkflowTerminated"),
+        "pending" | "running" | "waiting" => Some("WorkflowTimeoutCleanupStarted"),
+        _ => None,
+    }
+}
+
+/// The bounded run observation's top-level `timeout_cleanup` from the
+/// event `observation_event` chose, in the portable shape embedded Workflow
+/// 2.40.0 returns: `outcome: running` with the cause, kind, start and
+/// deadlines while cleanup is open, then the outcome recorded on the
+/// terminal event. Only string fields are kept; nothing is reported when
+/// cleanup was never recorded.
+pub(super) fn observation(event_type: &str, payload: &Value) -> Option<Value> {
+    if !payload.is_object() {
+        return None;
+    }
+    let mut observed = serde_json::Map::new();
+    if event_type == "WorkflowTimeoutCleanupStarted" {
+        observed.insert("outcome".into(), json!("running"));
+        observed.insert("cause".into(), json!(CAUSE_TIMEOUT));
+        for (key, from) in [("timeout_kind", "timeout_kind"), ("started_at", "detected_at"),
+            ("work_deadline_at", "work_deadline_at"), ("cleanup_deadline_at", "cleanup_deadline_at")] {
+            if let Some(value) = payload.get(from).filter(|value| value.is_string()) {
+                observed.insert(key.into(), value.clone());
+            }
+        }
+        return Some(Value::Object(observed));
+    }
+    let recorded = &payload[STARTED_KEY];
+    summary(recorded)?;
+    for key in ["outcome", "timeout_kind", "started_at", "cleanup_deadline_at", "finished_at", "failure_id"] {
+        if let Some(value) = recorded.get(key).filter(|value| value.is_string()) {
+            observed.insert(key.into(), value.clone());
+        }
+    }
+    Some(Value::Object(observed))
+}
+
 /// A registration that delivers the typed timeout interruption: it lists
 /// the capability and its manifest supports version 1.
 pub(super) fn worker_supports(capabilities: &Value, manifest: &Value) -> bool {
@@ -530,6 +576,27 @@ mod tests {
             json!({"failure": {"interruption": ""}})] {
             assert!(interruption_marker(&bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_observation_follows_embedded() {
+        assert_eq!(observation_event("waiting"), Some("WorkflowTimeoutCleanupStarted"));
+        assert_eq!(observation_event("failed"), Some("WorkflowTimedOut"));
+        assert_eq!(observation_event("completed"), None, "completed and continued-as-new runs report nothing");
+        assert_eq!(observation_event("cancelled"), Some("WorkflowCancelled"));
+        assert_eq!(observation_event("terminated"), Some("WorkflowTerminated"));
+        assert_eq!(observation_event("pending"), Some("WorkflowTimeoutCleanupStarted"));
+        assert_eq!(observation("WorkflowTimeoutCleanupStarted", &Value::Null), None);
+        let entered = json!({"timeout_kind": "run", "work_deadline_at": "w", "cleanup_deadline_at": "c",
+            "hard_deadline_at": "h", "detected_at": "d", "workflow_command_id": "x"});
+        assert_eq!(observation("WorkflowTimeoutCleanupStarted", &entered), Some(json!({"outcome": "running",
+            "cause": "timeout", "timeout_kind": "run", "started_at": "d", "work_deadline_at": "w", "cleanup_deadline_at": "c"})));
+        let closed = json!({"timeout_cleanup": {"outcome": "failed", "timeout_kind": "execution", "cleanup_deadline_at": "c",
+            "finished_at": "f", "failure_id": "id", "started_at": null}});
+        assert_eq!(observation("WorkflowTimedOut", &closed), Some(json!({"outcome": "failed", "timeout_kind": "execution",
+            "cleanup_deadline_at": "c", "finished_at": "f", "failure_id": "id"})));
+        assert_eq!(observation("WorkflowTimedOut", &json!({"cancellation_cleanup": {"outcome": "preempted"}})), None);
+        assert_eq!(observation("WorkflowTimedOut", &json!({"timeout_cleanup": {"outcome": "unknown"}})), None);
     }
 
     #[test]

@@ -185,6 +185,9 @@ async fn a_start_without_the_option_keeps_the_hard_timeout_unchanged() {
     assert_eq!(keys, ["failure_id", "timeout_kind", "failure_category", "message", "exception_class",
         "execution_deadline_at", "run_deadline_at", "task"]);
     assert_eq!(timed_out["message"], "Workflow execution deadline expired at 2000-01-01T00:00:00+00:00.");
+    let (_, observed) = request(&app, "GET", &format!("/api/workflows/tc-default/runs/{}/observation", run.as_str().unwrap()), Value::Null).await;
+    assert_eq!(observed["status"], "failed", "{observed}");
+    assert!(observed.get("timeout_cleanup").is_none(), "{observed}");
 }
 
 // Vectors 1 and 6, the idle wake and the audited user request.
@@ -390,6 +393,8 @@ async fn terminate_and_hard_cancel_preempt_cleanup() {
         let closed = terminal(&history, event);
         assert_eq!(closed["timeout_cleanup"]["outcome"], "preempted", "{closed}");
         assert_eq!(closed["timeout_cleanup"]["timeout_kind"], "execution");
+        let (_, observed) = request(&app, "GET", &format!("/api/workflows/{workflow}/runs/{}/observation", run.as_str().unwrap()), Value::Null).await;
+        assert_eq!(observed["timeout_cleanup"], closed["timeout_cleanup"], "{observed}");
     }
 }
 
@@ -535,6 +540,9 @@ async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_stat
     assert_eq!(described["timeout_cleanup"]["state"], "armed", "{described}");
     assert_eq!(described["timeout_cleanup"]["cause"], Value::Null);
     assert_eq!(described["timeout_cleanup"]["outcome"], Value::Null);
+    let observation = format!("/api/workflows/tc-run-kind/runs/{}/observation", run.as_str().unwrap());
+    let (_, observed) = request(&app, "GET", &observation, Value::Null).await;
+    assert!(observed.get("timeout_cleanup").is_none(), "nothing recorded while armed: {observed}");
     assert_eq!(described["timeout_cleanup"]["allowance_seconds"], ALLOWANCE);
     assert_eq!(described["timeout_cleanup"]["timeout_kind"], "run");
     let first = cleanup_poll(&app, "cleanup-worker").await;
@@ -551,6 +559,10 @@ async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_stat
     let view = &described["timeout_cleanup"];
     assert_eq!((view["state"].as_str(), view["cause"].as_str()), (Some("cancellation_cleanup_running"), Some("timeout")), "{view}");
     assert_eq!(view["outcome"], "running", "the portable open-cleanup outcome");
+    let (_, observed) = request(&app, "GET", &observation, Value::Null).await;
+    assert_eq!(observed["timeout_cleanup"], json!({"outcome": "running", "cause": "timeout", "timeout_kind": "run",
+        "started_at": entered["detected_at"], "work_deadline_at": entered["work_deadline_at"],
+        "cleanup_deadline_at": entered["cleanup_deadline_at"]}), "{observed}");
     assert_eq!(view["started_at"], entered["detected_at"]);
     assert_eq!(view["cleanup_deadline_at"], json!(iso));
     let task = cleanup_poll(&app, "cleanup-worker").await;
@@ -565,6 +577,9 @@ async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_stat
     let (_, described) = request(&app, "GET", &format!("/api/workflows/tc-run-kind/runs/{}", run.as_str().unwrap()), Value::Null).await;
     assert_eq!(described["timeout_cleanup"]["state"], "finished", "{described}");
     assert_eq!(described["timeout_cleanup"]["outcome"], "completed");
+    let (_, observed) = request(&app, "GET", &observation, Value::Null).await;
+    assert_eq!(observed["timeout_cleanup"], timed_out["timeout_cleanup"], "{observed}");
+    assert_eq!(observed["timeout_cleanup"]["outcome"], "completed");
 }
 
 // Vector 6 and worker replacement: the task holding the cleanup turn moves
