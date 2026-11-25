@@ -12,6 +12,47 @@ use chrono::SecondsFormat;
 use serde_json::{Value, json};
 use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 
+fn invalid_definition() -> RuntimeError {
+    refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_namespace_definition")
+}
+
+/// The retention fields a request names, under `NamespaceController::update`'s
+/// rules: the mode, and the days (`Some(None)` for an explicit null). An
+/// absent field keeps the stored value. A retention plan validates its
+/// proposed policy with the same rules (Server #522).
+pub(super) fn requested_retention(body: &Value) -> Result<(Option<&str>, Option<Option<i64>>)> {
+    let mode = match body.get("retention_mode") {
+        None => None,
+        Some(Value::String(mode)) if matches!(mode.as_str(), "bounded" | "forever") => Some(mode.as_str()),
+        Some(_) => return Err(invalid_definition()),
+    };
+    let days = match body.get("retention_days") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(value) => Some(Some(value.as_i64().filter(|days| (1..=365).contains(days)).ok_or_else(invalid_definition)?)),
+    };
+    Ok((mode, days))
+}
+
+/// The policy the requested fields leave over the stored one: its mode, and
+/// its days unless the mode is `forever`. `forever` takes no days and
+/// `bounded` needs them.
+pub(super) fn resolved_retention(
+    (requested_mode, requested_days): (Option<&str>, Option<Option<i64>>),
+    stored_mode: String,
+    stored_days: Option<i64>,
+) -> Result<(String, Option<i64>)> {
+    let mode = requested_mode.map_or(stored_mode, str::to_owned);
+    let days = requested_days.unwrap_or(stored_days);
+    let forever = mode == "forever";
+    if forever && requested_days.is_some_and(|days| days.is_some())
+        || !forever && (requested_days == Some(None) || days.is_none())
+    {
+        return Err(invalid_definition());
+    }
+    Ok((mode, if forever { None } else { days }))
+}
+
 impl<DB: Backend> Store<DB>
 where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
@@ -92,35 +133,13 @@ where
     /// PHP's NamespaceController::update: a description replaces the stored
     /// one only when given, and retention follows retentionForUpdate.
     pub(super) async fn update_namespace(&self, name: &str, body: Value) -> Result<Value> {
-        let invalid = || {
-            refuse(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_namespace_definition",
-            )
-        };
         let name = name.to_ascii_lowercase();
         let description = match body.get("description") {
             None | Some(Value::Null) => None,
             Some(Value::String(text)) if text.chars().count() <= 1000 => Some(text.as_str()),
-            Some(_) => return Err(invalid()),
+            Some(_) => return Err(invalid_definition()),
         };
-        let requested_mode = match body.get("retention_mode") {
-            None => None,
-            Some(Value::String(mode)) if matches!(mode.as_str(), "bounded" | "forever") => {
-                Some(mode.as_str())
-            }
-            Some(_) => return Err(invalid()),
-        };
-        let requested_days = match body.get("retention_days") {
-            None => None,
-            Some(Value::Null) => Some(None),
-            Some(value) => Some(Some(
-                value
-                    .as_i64()
-                    .filter(|days| (1..=365).contains(days))
-                    .ok_or_else(invalid)?,
-            )),
-        };
+        let requested = requested_retention(&body)?;
         let mut tx = self.begin().await?;
         let row = Self::query("SELECT * FROM workflow_namespaces WHERE name=$1")
             .bind(&name)
@@ -130,21 +149,12 @@ where
                 status: StatusCode::NOT_FOUND,
                 response: json!({"reason":"namespace_not_found","namespace":name,"message":format!("Namespace [{name}] not found.")}),
             })?;
-        let mode = match requested_mode {
-            Some(mode) => mode.to_owned(),
-            None => DB::string(&row, "retention_mode")?,
-        };
-        let days = match requested_days {
-            Some(days) => days,
-            None => DB::optional_number(&row, "retention_days")?,
-        };
-        let forever = mode == "forever";
-        if forever && requested_days.is_some_and(|days| days.is_some())
-            || !forever && (requested_days == Some(None) || days.is_none())
-        {
-            return Err(invalid());
-        }
-        let days = if forever { 0 } else { days.unwrap_or_default() };
+        let (mode, days) = resolved_retention(
+            requested,
+            DB::string(&row, "retention_mode")?,
+            DB::optional_number(&row, "retention_days")?,
+        )?;
+        let days = days.unwrap_or_default();
         Self::query("UPDATE workflow_namespaces SET description=COALESCE($1,description),retention_mode=$2,retention_days=NULLIF($3,0),updated_at=$4 WHERE name=$5")
             .bind(description).bind(&mode).bind(days).bind(DB::bind_time(now())).bind(&name)
             .execute(&mut *tx).await?;

@@ -720,6 +720,59 @@ drops the connection mid-statement still surfaces as
 - `PUT /api/namespaces/{name}` — Update namespace
 - `DELETE /api/namespaces/{name}` — Delete namespace and clean up its runtime state
 - `PUT /api/namespaces/{name}/external-storage` — Configure external payload storage policy
+- `POST /api/namespaces/{name}/retention-plan` — Preview a proposed retention policy without applying it (native Server)
+
+#### Retention plan
+
+`PUT /api/namespaces/{name}` activates a new retention policy at once, and the
+next retention pass applies it to existing closed runs. To see the impact
+first, an admin can send the proposed `retention_mode` and `retention_days` to
+`POST /api/namespaces/{name}/retention-plan`. The fields follow the namespace
+update's rules, and a field left out keeps its current value. Optional
+`scan_limit` (default 1000, at most 10000) bounds each count, and
+`hold_scan_limit` (default 100, at most 1000) bounds how many runs are checked
+for holds.
+
+```bash
+curl -X POST $SERVER/api/namespaces/my-app/retention-plan \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+  -d '{"retention_days":7}'
+```
+
+The answer has schema `durable-workflow.v2.retention-plan.v1`. It reports:
+
+- `current_policy` and `proposed_policy`, each with its cutoff.
+- `policy_revision`, a SHA-256 over the namespace, its stored retention mode
+  and days, the days in effect and the namespace's `updated_at`. Any policy
+  change produces a new revision. Other namespace updates move `updated_at`
+  too, so they also produce a new revision.
+- `changes`: closed, unarchived runs that become eligible for pruning
+  (`newly_eligible`), stop being eligible (`no_longer_eligible`), stay
+  eligible (`unchanged_eligible`) or stay retained (`unchanged_retained`).
+  Each lists up to five example runs, oldest first.
+- `exclusions`: archived runs past the proposed cutoff (`archived`), closed
+  runs a `forever` proposal keeps (`forever`), open runs (`not_terminal`), and
+  eligible runs a prune would currently skip for an open abandoned activity
+  (`detached_activity_hold`), a payload reference native cannot settle
+  (`external_payload_cleanup_unavailable`) or an active online backup hold
+  (`backup_hold`).
+
+Each count carries `count`, `lower_bound` and `complete`. A count that reaches
+its bound has `count: null` and `complete: false`, and `incomplete` names it.
+Treat such a count as a minimum, not an exact figure.
+
+The plan makes no writes. It changes no policy, marks no row, fetches no
+payload object and prunes nothing. It reads one snapshot, so it describes that
+moment only. Runs can close, age past the cutoff, be archived or gain and lose
+holds, and the policy can change before the next retention pass. It is not a
+fixed list of what a later prune will delete.
+
+A guarded apply that confirms the retrospective scope and refuses a stale
+`policy_revision` is planned next (Server #522), followed by the CLI and
+Waterline journey. Until then, applying a policy is still the immediate
+namespace update.
 
 When a namespace enables external payload storage, remote clients upload and
 fetch encoded bytes through `/api/external-payloads/v1` using their normal

@@ -1740,18 +1740,26 @@ where
     /// terminal event for its last attempt (`ActivityAbandonment::hasTerminalHistory`).
     /// Other activities left open when a run closed do not hold it.
     async fn abandoned_activity_open(&self, run_id: &str) -> Result<bool> {
-        let rows = Self::query("SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityCompleted','ActivityFailed','ActivityCancelled','ActivityTimedOut') ORDER BY sequence")
-            .bind(run_id).fetch_all(&self.pool).await?;
-        let mut events = Vec::with_capacity(rows.len());
-        for row in &rows {
-            events.push((DB::number(row, "sequence")?, DB::string(row, "event_type")?, DB::document_row(row, "payload")?));
-        }
-        Ok(events.iter().any(|(sequence, kind, payload)| {
-            kind == "ActivityScheduled"
-                && payload["activity"]["cancellation_policy"] == "abandon"
-                && !abandoned_activity_closed(&events, *sequence, payload)
-        }))
+        let rows = Self::query(ABANDONED_ACTIVITY_EVENTS).bind(run_id).fetch_all(&self.pool).await?;
+        abandoned_activity_held::<DB>(&rows)
     }
+}
+
+/// A run's activity events, which decide whether an abandoned activity holds it.
+pub(super) const ABANDONED_ACTIVITY_EVENTS: &str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityCompleted','ActivityFailed','ActivityCancelled','ActivityTimedOut') ORDER BY sequence";
+
+/// Whether the rows of [`ABANDONED_ACTIVITY_EVENTS`] hold an abandoned
+/// activity with no terminal event for its last attempt.
+pub(super) fn abandoned_activity_held<DB: Backend>(rows: &[DB::Row]) -> Result<bool> {
+    let mut events = Vec::with_capacity(rows.len());
+    for row in rows {
+        events.push((DB::number(row, "sequence")?, DB::string(row, "event_type")?, DB::document_row(row, "payload")?));
+    }
+    Ok(events.iter().any(|(sequence, kind, payload)| {
+        kind == "ActivityScheduled"
+            && payload["activity"]["cancellation_policy"] == "abandon"
+            && !abandoned_activity_closed(&events, *sequence, payload)
+    }))
 }
 
 /// `ActivityAbandonment::hasTerminalHistory` over a run's activity events.

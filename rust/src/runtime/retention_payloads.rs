@@ -146,7 +146,7 @@ store_methods! {
 
     /// `isReferencedByRetainedRun`: whether a retained run holds this
     /// reference, or any reference registered for the same object.
-    async fn payload_retained(
+    pub(super) async fn payload_retained(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
         reference: &Reference,

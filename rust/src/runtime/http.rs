@@ -40,6 +40,8 @@ pub fn router(runtime: Runtime) -> Router {
             "/api/namespaces/{namespace}",
             get(describe_namespace).put(update_namespace).delete(delete_namespace),
         )
+        // Server #522: a read-only preview of a proposed retention policy.
+        .route("/api/namespaces/{namespace}/retention-plan", post(retention_plan))
         .route(
             "/api/namespaces/{namespace}/external-storage",
             axum::routing::put(super::external_transport::set_policy),
@@ -585,6 +587,8 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path == "/api/storage/test"
         // Updating or deleting a namespace, or its external storage, needs an admin.
         || path.starts_with("/api/namespaces/") && matches!(*request.method(), Method::PUT | Method::DELETE)
+        // Planning a retention change needs the admin who could apply it.
+        || retention_plan_route(&path)
         // PHP's system routes are admin-only.
         || path.starts_with("/api/system/")
         || path == "/api/runtime-credentials"
@@ -1105,6 +1109,22 @@ async fn update_namespace(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     Ok(Json(runtime.update_namespace(&namespace, body).await?))
+}
+/// `POST /api/namespaces/{namespace}/retention-plan` (Server #522): what a
+/// proposed retention policy would change, without applying it.
+async fn retention_plan(
+    Extension(runtime): Extension<Runtime>,
+    Path(namespace): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>> {
+    let request = super::retention_plan::plan_request(&request_json(&body)?)?;
+    Ok(Json(runtime.retention_plan(&namespace, request).await?))
+}
+
+fn retention_plan_route(path: &str) -> bool {
+    path.strip_prefix("/api/namespaces/")
+        .and_then(|rest| rest.strip_suffix("/retention-plan"))
+        .is_some_and(|namespace| !namespace.is_empty() && !namespace.contains('/'))
 }
 /// PHP answers 207 while a committed provider deletion is still pending.
 async fn delete_namespace(
