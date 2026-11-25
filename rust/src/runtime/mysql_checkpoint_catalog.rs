@@ -156,11 +156,15 @@ pub(super) async fn direct(
          FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=DATABASE() LIMIT 2")
         .bind(observer_definer)
         .fetch_all(&mut *connection).await?;
+    // A trigger always lives in its table's schema, so this selects exactly
+    // the rows TRIGGER_SCHEMA=DATABASE() did. MariaDB looks up only
+    // EVENT_OBJECT_SCHEMA; filtering on TRIGGER_SCHEMA read every database's
+    // tables and waited behind other databases' DDL (Server #1204).
     let triggers: Vec<Trigger> = sqlx::query_as(
         "SELECT TRIGGER_NAME,EVENT_OBJECT_TABLE,EVENT_MANIPULATION,ACTION_TIMING,ACTION_ORIENTATION,
          CAST(ACTION_ORDER AS SIGNED), SHA2(TRIM(TRAILING ';' FROM TRIM(ACTION_STATEMENT)),256),
          CAST(BINARY DEFINER=BINARY COALESCE(?,CURRENT_USER()) AS SIGNED)
-         FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=DATABASE() ORDER BY TRIGGER_NAME LIMIT 28")
+         FROM information_schema.TRIGGERS WHERE EVENT_OBJECT_SCHEMA=DATABASE() ORDER BY TRIGGER_NAME LIMIT 28")
         .bind(observer_definer)
         .fetch_all(&mut *connection).await?;
     let events: i64 = sqlx::query_scalar(
