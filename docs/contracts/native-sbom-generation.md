@@ -1,5 +1,12 @@
 # Native SBOM generation source proposal
 
+> **Current release path.** Native releases now generate and attest SBOMs with
+> the simpler path in `scripts/ci/native-release-sbom.sh`: Syft scans a
+> `docker save` export of the exact smoked registry digest, and
+> `actions/attest` attests the result to the release index. See
+> `scripts/ci/native-sbom/README.md` ("Release wiring"). The OCI-export design
+> below remains a possible later hardening and is not wired.
+
 This is the remaining generation design for Server #1012, targeting the future
 3.2 line. It is not an executable, accepted producer format or operation
 admission. `generation_mode` stays null until the complete source and tool

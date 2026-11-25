@@ -9,10 +9,11 @@ name: Native release candidate
 # native-github-release.yml, which verifies what this run published; this
 # workflow holds no contents: write. Each architecture builds on its own runner and pushes by
 # digest only; that exact digest is pulled back and smoke-tested there, so a
-# failed smoke leaves no tag. The publish job then refuses tags that already
-# exist, gives both smoked digests
+# failed smoke leaves no tag. Each build job then generates that digest's
+# SPDX SBOM (Server #1012), so a failed generation also leaves no tag. The
+# publish job then refuses tags that already exist, gives both smoked digests
 # the release tag in both registries as one index, verifies it, and attests
-# its build provenance. The PHP image and its Release workflow are unchanged.
+# its build provenance and both platform SBOMs to it. The PHP image and its Release workflow are unchanged.
 #
 # It publishes to the same repositories as the PHP release,
 # durableworkflow/server and ghcr.io/durable-workflow/server (operator
@@ -184,11 +185,27 @@ jobs:
           IMAGE: ${{ env.GHCR_IMAGE }}@${{ steps.build.outputs.digest }}
         run: bash scripts/ci/native-image-smoke.sh "$IMAGE" "$PLATFORM" native-release/smoke-amd64.json
 
-      - name: Remove this job's smoke containers and network
+      # Server #1012: the SBOM is generated from the digest that just passed
+      # the smoke, before any tag exists, so a failed generation tags nothing.
+      - name: Generate the linux/amd64 SBOM from the smoked digest
+        env:
+          IMAGE: ${{ env.GHCR_IMAGE }}@${{ steps.build.outputs.digest }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: bash scripts/ci/native-release-sbom.sh "$IMAGE" "$PLATFORM" "$VERSION" native-sbom
+
+      - name: Remove this job's smoke and SBOM containers and network
         if: always()
         run: |
-          docker rm -f "$RESOURCE_SCOPE-native-sqlite" "$RESOURCE_SCOPE-native-pgsql" "$RESOURCE_SCOPE-native-mysql" "$RESOURCE_SCOPE-postgres" "$RESOURCE_SCOPE-mysql" || true
+          docker rm -f "$RESOURCE_SCOPE-native-sqlite" "$RESOURCE_SCOPE-native-pgsql" "$RESOURCE_SCOPE-native-mysql" "$RESOURCE_SCOPE-postgres" "$RESOURCE_SCOPE-mysql" "$RESOURCE_SCOPE-syft" || true
           docker network rm "$RESOURCE_SCOPE" || true
+
+      - name: Keep the linux/amd64 SBOM for attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: native-sbom-amd64
+          path: native-sbom/server-linux-amd64.spdx.json
+          retention-days: 90
+          if-no-files-found: error
 
       - name: Keep the linux/amd64 smoke receipt
         if: always()
@@ -277,11 +294,27 @@ jobs:
           IMAGE: ${{ env.GHCR_IMAGE }}@${{ steps.build.outputs.digest }}
         run: bash scripts/ci/native-image-smoke.sh "$IMAGE" "$PLATFORM" native-release/smoke-arm64.json
 
-      - name: Remove this job's smoke containers and network
+      # Server #1012: the SBOM is generated from the digest that just passed
+      # the smoke, before any tag exists, so a failed generation tags nothing.
+      - name: Generate the linux/arm64 SBOM from the smoked digest
+        env:
+          IMAGE: ${{ env.GHCR_IMAGE }}@${{ steps.build.outputs.digest }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: bash scripts/ci/native-release-sbom.sh "$IMAGE" "$PLATFORM" "$VERSION" native-sbom
+
+      - name: Remove this job's smoke and SBOM containers and network
         if: always()
         run: |
-          docker rm -f "$RESOURCE_SCOPE-native-sqlite" "$RESOURCE_SCOPE-native-pgsql" "$RESOURCE_SCOPE-native-mysql" "$RESOURCE_SCOPE-postgres" "$RESOURCE_SCOPE-mysql" || true
+          docker rm -f "$RESOURCE_SCOPE-native-sqlite" "$RESOURCE_SCOPE-native-pgsql" "$RESOURCE_SCOPE-native-mysql" "$RESOURCE_SCOPE-postgres" "$RESOURCE_SCOPE-mysql" "$RESOURCE_SCOPE-syft" || true
           docker network rm "$RESOURCE_SCOPE" || true
+
+      - name: Keep the linux/arm64 SBOM for attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: native-sbom-arm64
+          path: native-sbom/server-linux-arm64.spdx.json
+          retention-days: 90
+          if-no-files-found: error
 
       - name: Keep the linux/arm64 smoke receipt
         if: always()
@@ -352,6 +385,55 @@ jobs:
           subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
           subject-digest: ${{ steps.index.outputs.digest }}
           push-to-registry: true
+
+      # Server #1012: each platform's SPDX document, generated from its smoked
+      # digest, is attested to the published index in both registries.
+      # native-github-release.yml verifies all four before it attaches the
+      # documents to the GitHub Release.
+      - name: Collect both platform SBOMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: native-sbom-*
+          path: native-sbom
+          merge-multiple: true
+
+      - name: Attest the linux/amd64 SBOM to the index in GHCR
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          sbom-path: native-sbom/server-linux-amd64.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest the linux/amd64 SBOM to the index in Docker Hub
+        if: needs.plan.outputs.dockerhub == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          sbom-path: native-sbom/server-linux-amd64.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest the linux/arm64 SBOM to the index in GHCR
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          sbom-path: native-sbom/server-linux-arm64.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest the linux/arm64 SBOM to the index in Docker Hub
+        if: needs.plan.outputs.dockerhub == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: index.docker.io/${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          sbom-path: native-sbom/server-linux-arm64.spdx.json
+          push-to-registry: true
+          create-storage-record: false
 
   # Server #802: each published platform digest is scanned with the pinned
   # Trivy. A HIGH or CRITICAL row with a fixed version fails this job, and

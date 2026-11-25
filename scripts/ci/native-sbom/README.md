@@ -221,3 +221,23 @@ by name. The source tests check the complete Docker arguments for both
 platforms and refuse changed confinement or ownership. The component returns
 raw bytes for the separate validator. Release wiring, authorization and tool
 qualification remain open.
+
+## Release wiring
+
+`../native-release-sbom.sh` is the generator the native release runs. Each
+build job calls it after the smoke test, on the exact pushed digest that
+passed. It exports that image with `docker save` and scans it offline with
+the Syft child pinned above for the same platform. The scanner runs with no
+network, a read-only root and input, no capabilities and bounded resources.
+The script refuses a document that is not SPDX 2.3 from that Syft version,
+or whose root package does not name the expected platform. The publish job
+attests both documents to the release index in both registries with the
+`actions/attest` commit pinned above. `../native-release-github-release.sh`
+verifies those four attestations for the exact run attempt before it creates
+a Release, and attaches the verified predicates as Release assets.
+`../check-native-release-tags.sh` covers the workflow steps and the Release
+verification. The native image pull-request workflow runs the same generator
+on its locally built image for both platforms.
+
+That path does not yet use the OCI-export custody, policy validator or
+confined-scanner components above.
