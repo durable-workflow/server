@@ -598,8 +598,10 @@ contract fixture before its correction.
   and closes `WorkflowTimedOut`, `WorkflowTerminated` or `WorkflowCancelled`
   with the embedded 2.29.0 `timeout_cleanup` outcome. Children opt in on
   their own, and describe reports the cleanup state; both are registered
-  native divergences. The server capability stays unadvertised until
-  installed cross-SDK acceptance
+  native divergences. Cluster info and worker responses advertise
+  `timeout_cleanup: {supported: true, version: 1}`, after the contract
+  vectors 1 to 12 passed against published native with the published PHP
+  SDK 3.31.0 worker (`scripts/conformance/timeout-cleanup/run.sh`)
   ([#1201](https://github.com/durable-workflow/server/issues/1201)).
 - **Signal and update names PHP cannot store.** PHP validates signal,
   update and query names at 1 to 256 bytes with no control characters, but

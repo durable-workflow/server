@@ -147,10 +147,11 @@ async fn admission_refuses_invalid_allowances_and_queues_without_a_capable_worke
     let hard = chrono::DateTime::parse_from_rfc3339(payload["execution_deadline_at"].as_str().unwrap()).unwrap();
     let work = (hard - chrono::Duration::seconds(ALLOWANCE)).format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
     assert_eq!(payload["timeout_cleanup"], json!({"allowance_seconds": ALLOWANCE, "work_deadlines": {"execution": work}}));
-    // Neither surface advertises end-to-end support yet.
+    // Both discovery surfaces advertise version 1.
+    let advertised = json!({"supported": true, "version": 1});
     let (_, cluster) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
-    assert!(cluster["capabilities"].get("timeout_cleanup").is_none(), "{}", cluster["capabilities"]);
-    assert!(cluster["worker_protocol"]["server_capabilities"].get("timeout_cleanup").is_none());
+    assert_eq!(cluster["capabilities"]["timeout_cleanup"], advertised, "{}", cluster["capabilities"]);
+    assert_eq!(cluster["worker_protocol"]["server_capabilities"]["timeout_cleanup"], advertised);
 }
 
 // Vector 11: without the option nothing changes.
@@ -533,6 +534,7 @@ async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_stat
     let (_, described) = request(&app, "GET", "/api/workflows/tc-run-kind", Value::Null).await;
     assert_eq!(described["timeout_cleanup"]["state"], "armed", "{described}");
     assert_eq!(described["timeout_cleanup"]["cause"], Value::Null);
+    assert_eq!(described["timeout_cleanup"]["outcome"], Value::Null);
     assert_eq!(described["timeout_cleanup"]["allowance_seconds"], ALLOWANCE);
     assert_eq!(described["timeout_cleanup"]["timeout_kind"], "run");
     let first = cleanup_poll(&app, "cleanup-worker").await;
@@ -548,6 +550,7 @@ async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_stat
     let (_, described) = request(&app, "GET", "/api/workflows/tc-run-kind", Value::Null).await;
     let view = &described["timeout_cleanup"];
     assert_eq!((view["state"].as_str(), view["cause"].as_str()), (Some("cancellation_cleanup_running"), Some("timeout")), "{view}");
+    assert_eq!(view["outcome"], "running", "the portable open-cleanup outcome");
     assert_eq!(view["started_at"], entered["detected_at"]);
     assert_eq!(view["cleanup_deadline_at"], json!(iso));
     let task = cleanup_poll(&app, "cleanup-worker").await;
