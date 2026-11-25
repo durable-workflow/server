@@ -3003,13 +3003,15 @@ mod tests {
         let pool = storage.into_pool();
         let mut connection = pool.acquire().await.unwrap();
         let started = std::time::Instant::now();
-        let checked = tokio::time::timeout(std::time::Duration::from_secs(5), verify_history(&mut *connection)).await;
+        // Well inside the pool session's own lock_wait_timeout (5 s), which
+        // would otherwise end the old query's wait at the same moment.
+        let checked = tokio::time::timeout(std::time::Duration::from_secs(2), verify_history(&mut *connection)).await;
         let elapsed = started.elapsed();
         transaction.rollback().await.unwrap();
         let (dropper, dropped) = dropping.await.unwrap();
         dropped.unwrap();
         checked.expect("the catalog check waited on another database's metadata lock").unwrap();
-        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
         drop(connection);
         pool.close().await;
         for connection in [holder, dropper, observer] {
