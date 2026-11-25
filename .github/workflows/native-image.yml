@@ -4,7 +4,7 @@ name: Native image
 # same smoke test the native release runs (Server #325). Only changes to the
 # image's own files run it: the release workflow is dispatch-only, so this is
 # where a pull request finds out that the Dockerfile, its ignore file or the
-# smoke and publish scripts no longer work. Nothing is pushed.
+# smoke, SBOM and publish scripts no longer work. Nothing is pushed.
 
 on:
   pull_request:
@@ -14,6 +14,8 @@ on:
       - scripts/ci/native-image-smoke.sh
       - scripts/ci/native-registry-absence.sh
       - scripts/ci/native-release-publish.sh
+      - scripts/ci/native-release-sbom.sh
+      - scripts/ci/native-sbom/tool-pins.v1.json
       - scripts/ci/native-release-rolling-tags.sh
       - scripts/ci/native-release-identity.sh
       - scripts/ci/resolve-release-image-rolling-tags.sh
@@ -78,13 +80,19 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: bash scripts/ci/native-image-smoke.sh "$RESOURCE_SCOPE:smoke" "$PLATFORM" "native-image/smoke-$ARCH.json"
 
-      - name: Remove this job's smoke containers and network
+      - name: Generate the SBOM the release would attest
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          NATIVE_SBOM_LOCAL_IMAGE: 'true'
+        run: bash scripts/ci/native-release-sbom.sh "$RESOURCE_SCOPE:smoke" "$PLATFORM" 0.0.0 native-image
+
+      - name: Remove this job's smoke and SBOM containers and network
         if: always()
         run: |
-          docker rm -f "$RESOURCE_SCOPE-native-sqlite" "$RESOURCE_SCOPE-native-pgsql" "$RESOURCE_SCOPE-native-mysql" "$RESOURCE_SCOPE-postgres" "$RESOURCE_SCOPE-mysql" || true
+          docker rm -f "$RESOURCE_SCOPE-native-sqlite" "$RESOURCE_SCOPE-native-pgsql" "$RESOURCE_SCOPE-native-mysql" "$RESOURCE_SCOPE-postgres" "$RESOURCE_SCOPE-mysql" "$RESOURCE_SCOPE-syft" || true
           docker network rm "$RESOURCE_SCOPE" || true
 
-      - name: Keep the smoke receipt
+      - name: Keep the smoke receipt and SBOM
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:

@@ -10,7 +10,9 @@
 #   completed successfully;
 # - the image: both registries' exact version tags name one index, whose
 #   build-provenance attestation was signed by native-release.yml from that
-#   tag's ref at that commit, in that run.
+#   tag's ref at that commit, in that run;
+# - for a new Release, both platform SBOMs attested to that index the same
+#   way (Server #1012), which it attaches as Release assets.
 # GitHub Latest follows the registry: a final release is marked Latest only
 # when the latest alias names its index in both registries, read live right
 # before the release is created. The caller holds the rolling-alias lock
@@ -22,8 +24,9 @@
 # tagged notes. Any failed read stops the step before it writes.
 #
 # Env: RELEASE_TAG, RELEASE_RUN_ID, GITHUB_REPOSITORY, GHCR_IMAGE,
-# DOCKERHUB_IMAGE, optional REPAIR_LEGACY_NOTES. GH and DOCKER override the
-# gh and docker commands.
+# DOCKERHUB_IMAGE, optional REPAIR_LEGACY_NOTES and NATIVE_SBOM_DIR (where the
+# verified SBOMs are written; a temporary directory by default). GH and
+# DOCKER override the gh and docker commands.
 set -euo pipefail
 source scripts/ci/native-registry-absence.sh
 fail() { printf 'GitHub Release failed: %s\n' "$1" >&2; exit 1; }
@@ -131,7 +134,54 @@ if existing=$("$gh_bin" release view "$tag" --repo "$repo" --json tagName,name,i
   exit 0
 fi
 
-args=(release create "$tag" --repo "$repo" --verify-tag --title "$version" --notes "$notes")
+# A new Release also requires both platform SBOMs (Server #1012): in each
+# registry, an SPDX 2.3 attestation to this index, signed by native-release.yml
+# from the tag at its commit in this exact run attempt, for linux/amd64 and
+# linux/arm64. The two registries' documents must agree, and the verified
+# predicates are what the Release attaches, so an unsigned or changed file
+# cannot be attached. Existing Releases above predate this and are unchanged.
+sbom_dir=${NATIVE_SBOM_DIR:-$(mktemp -d)}
+mkdir -p "$sbom_dir"
+sbom_assets=()
+spdx=https://spdx.dev/Document/v2.3
+attempt_uri="https://github.com/$repo/actions/runs/$run_id/attempts/$run_attempt"
+for platform in linux/amd64 linux/arm64; do
+  arch=${platform#linux/}
+  asset="$sbom_dir/server-linux-$arch.spdx.json"
+  rm -f "$asset"
+  for image in "$GHCR_IMAGE" "$DOCKERHUB_IMAGE"; do
+    subject=$image
+    [[ "$image" == */*/* ]] || subject=index.docker.io/$image
+    "$gh_bin" attestation verify "oci://$image@$index" --repo "$repo" \
+      --signer-workflow "github.com/$repo/$workflow" --source-ref "refs/tags/$tag" --source-digest "$commit" \
+      --deny-self-hosted-runners --predicate-type "$spdx" --format json > "$sbom_dir/statements.json" \
+      || fail "the release index SBOM attestations do not verify in $image."
+    # Exactly one document per platform and registry from this attempt;
+    # identical duplicates count once. Documents run to megabytes, so they
+    # stay in files rather than arguments.
+    jq -ce --arg uri "$attempt_uri" --arg subject "$subject" --arg digest "${index#sha256:}" \
+        --arg spdx "$spdx" --arg name "durable-workflow-server-linux-$arch" '
+        [.[].verificationResult
+         | select(.signature.certificate.runInvocationURI == $uri)
+         | .statement
+         | select(.predicateType == $spdx and .predicate.name == $name
+                  and any(.subject[]; .name == $subject and .digest.sha256 == $digest))
+         | .predicate] | unique
+        | if length == 1 then .[0] else error("want one document") end' \
+      "$sbom_dir/statements.json" > "$sbom_dir/predicate.json" \
+      || fail "$image has no single $platform SBOM attested by this run attempt."
+    if [[ -e "$asset" ]]; then
+      jq -e --slurpfile other "$sbom_dir/predicate.json" '. == $other[0]' "$asset" >/dev/null \
+        || fail "the registries' $platform SBOMs differ."
+    else
+      mv "$sbom_dir/predicate.json" "$asset"
+    fi
+  done
+  sbom_assets+=("$asset")
+done
+rm -f "$sbom_dir/statements.json" "$sbom_dir/predicate.json"
+
+args=(release create "$tag" "${sbom_assets[@]}" --repo "$repo" --verify-tag --title "$version" --notes "$notes")
 if [[ "$version" == *-* ]]; then
   args+=(--prerelease --latest=false)
 elif [[ "$latest" == true ]]; then
