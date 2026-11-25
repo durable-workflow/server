@@ -1,6 +1,8 @@
 use super::*;
 #[path = "external_payloads/backup_hold.rs"]
 mod backup_hold;
+#[path = "external_payloads/history_archive.rs"]
+mod history_archive;
 #[path = "external_payloads/cleanup.rs"]
 mod cleanup;
 #[path = "external_payloads/claim_prune_race.rs"]

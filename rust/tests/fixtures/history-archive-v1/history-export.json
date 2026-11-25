@@ -1,0 +1,123 @@
+{
+  "schema": "durable-workflow.v2.history-export",
+  "schema_version": 2,
+  "exported_at": "2026-11-25T00:00:00.000000Z",
+  "dedupe_key": "run-1:3:2026-11-25T00:00:00.000000Z",
+  "history_complete": true,
+  "workflow": {
+    "instance_id": "order-1",
+    "run_id": "run-1",
+    "run_number": 1,
+    "workflow_type": "echo",
+    "status": "completed",
+    "closed_at": "2026-11-25T00:00:00.000000Z",
+    "last_history_sequence": 3,
+    "details_state": "retained",
+    "details_pruned_at": null,
+    "memo": [],
+    "search_attributes": []
+  },
+  "payloads": {
+    "codec": "avro",
+    "arguments": {
+      "available": true,
+      "data": {
+        "codec": "avro",
+        "external_payload": {
+          "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+          "reference_id": "ep_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "codec": "avro",
+          "size_bytes": 5,
+          "sha256": "a7937b64b8caa58f03721bb6bacf5c78cb235febe0e70b1b84cd99541461a08e"
+        }
+      }
+    },
+    "output": {
+      "available": true,
+      "codec": "avro",
+      "data": {
+        "codec": "avro",
+        "external_payload": {
+          "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+          "reference_id": "ep_01BX5ZZKBKACTAV9WEVGEMMVRZ",
+          "codec": "avro",
+          "size_bytes": 6,
+          "sha256": "16367aacb67a4a017c8da8ab95682ccb390863780f7114dda0a0e0c55644c7c4"
+        }
+      }
+    }
+  },
+  "history_events": [
+    {
+      "id": "e1",
+      "sequence": 1,
+      "type": "StartAccepted",
+      "payload": {}
+    },
+    {
+      "id": "e2",
+      "sequence": 2,
+      "type": "WorkflowStarted",
+      "payload": {
+        "arguments": {
+          "codec": "avro",
+          "external_payload": {
+            "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+            "reference_id": "ep_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "codec": "avro",
+            "size_bytes": 5,
+            "sha256": "a7937b64b8caa58f03721bb6bacf5c78cb235febe0e70b1b84cd99541461a08e"
+          }
+        }
+      }
+    },
+    {
+      "id": "e3",
+      "sequence": 3,
+      "type": "WorkflowCompleted",
+      "payload": {
+        "output": {
+          "codec": "avro",
+          "external_payload": {
+            "schema": "durable-workflow.v2.runtime-external-payload-reference.v1",
+            "reference_id": "ep_01BX5ZZKBKACTAV9WEVGEMMVRZ",
+            "codec": "avro",
+            "size_bytes": 6,
+            "sha256": "16367aacb67a4a017c8da8ab95682ccb390863780f7114dda0a0e0c55644c7c4"
+          }
+        }
+      }
+    }
+  ],
+  "redaction": {
+    "applied": false,
+    "policy": null,
+    "paths": []
+  },
+  "payload_manifest": {
+    "version": 1,
+    "entries": [
+      {
+        "path": "payloads.arguments.data",
+        "codec": "avro",
+        "available": true,
+        "redacted": false,
+        "encoding": "external-storage-reference",
+        "diagnostic": "external_storage_reference"
+      },
+      {
+        "path": "payloads.output.data",
+        "codec": "avro",
+        "available": true,
+        "redacted": false,
+        "encoding": "external-storage-reference",
+        "diagnostic": "external_storage_reference"
+      }
+    ]
+  },
+  "integrity": {
+    "canonicalization": "json-recursive-ksort-v1",
+    "checksum_algorithm": "sha256",
+    "checksum": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

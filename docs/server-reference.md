@@ -1245,6 +1245,10 @@ History export responses are the exception inside the workflow route group:
 `GET /api/workflows/{id}/runs/{runId}/history/export` returns the replay bundle
 as-is so its integrity checksum and optional signature cover the exact artifact
 the client receives.
+The bundle keeps each external payload as a reference envelope and copies no
+bytes. For an archive that outlives retention cleanup and the payload store,
+copy the referenced objects under the backup hold into a
+[self-contained verified history archive](history-archives.md).
 
 The server also publishes the current request contract in
 `GET /api/cluster/info` under `control_plane.request_contract` with:
