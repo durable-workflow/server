@@ -99,7 +99,7 @@ async fn finish(router: &Router, copy: &Copy, dir: &Path) -> Result<Value, Value
         let mut hold = copy.hold.clone();
         hold["confirmed_at"] = confirmed.1["database_time"].clone();
         hold["expires_at"] = confirmed.1["expires_at"].clone();
-        let receipt = archive::receipt(&std::fs::read(dir.join(MANIFEST_FILE)).unwrap(), &report, "2026-11-25T00:00:01Z", hold);
+        let receipt = archive::receipt(&report, "2026-11-25T00:00:01Z", hold);
         std::fs::write(dir.join(RECEIPT_FILE), serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
         Ok(receipt)
     };

@@ -40,6 +40,11 @@ pub const OBJECTS_DIR: &str = "objects";
 pub const HOLD_KIND: &str = "durable-workflow.external-payload-backup-hold.v1";
 const EXPORT_SCHEMA: &str = "durable-workflow.v2.history-export";
 const EXPORT_SCHEMA_VERSION: i64 = 2;
+/// A runtime reference stored as text, as native stores it in a column.
+const NATIVE_STORED_PREFIX: &str = "dw-native-external-payload-v1:";
+/// A published PHP stored reference: a provider object, not fetchable
+/// through the runtime transport.
+const PHP_STORED_PREFIX: &str = "dw-external-payload:v1:";
 
 /// Application values the export decodes into plain JSON. A map there that
 /// looks like an envelope is application data, not a reference.
@@ -155,6 +160,17 @@ pub fn plan(export: &Value) -> Plan {
     }
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     walk(export, String::new(), &mut plan, &mut seen);
+    // Every payload the export itself marks external must be a planned object.
+    for entry in export["payload_manifest"]["entries"].as_array().into_iter().flatten() {
+        let Some(path) = entry["path"].as_str().filter(|_| entry["encoding"] == "external-storage-reference") else {
+            continue;
+        };
+        let planned = plan.objects.iter().any(|object| object.paths.iter().any(|known| known == path));
+        let blocked = plan.blockers.iter().any(|blocker| blocker.path.as_deref() == Some(path));
+        if !planned && !blocked {
+            plan.blockers.push(unsupported(path.to_owned()));
+        }
+    }
     plan
 }
 
@@ -172,8 +188,11 @@ fn walk(value: &Value, path: String, plan: &mut Plan, seen: &mut BTreeMap<String
                 walk(item, child(&path, &index.to_string()), plan, seen);
             }
         }
+        // Fail closed on anything the Server treats as an external reference
+        // but this format cannot fetch: an archive must never verify while a
+        // payload it needs lives only in the source store.
         Value::Object(fields) => {
-            if let Some(reference) = fields.get("external_payload").filter(|value| value["schema"] == REFERENCE_SCHEMA) {
+            if let Some(reference) = fields.get("external_payload").filter(|value| !value.is_null()) {
                 match Reference::validate(reference) {
                     Ok(reference) => add(plan, seen, reference, path),
                     Err(error) => plan.blockers.push(Finding::new(
@@ -184,20 +203,38 @@ fn walk(value: &Value, path: String, plan: &mut Plan, seen: &mut BTreeMap<String
                 }
                 return;
             }
-            if fields.contains_key("codec") && fields.get("external_storage").is_some_and(Value::is_object) {
-                plan.blockers.push(Finding::new(
-                    "unsupported_payload_reference",
-                    "A provider-specific external_storage reference cannot be fetched through the runtime transport.",
-                    Some(path),
-                ));
+            if fields.get("external_storage").is_some_and(|value| !value.is_null()) {
+                plan.blockers.push(unsupported(path));
                 return;
             }
             for (key, item) in fields {
                 walk(item, child(&path, key), plan, seen);
             }
         }
+        Value::String(text) => {
+            if let Some(stored) = text.strip_prefix(NATIVE_STORED_PREFIX) {
+                match serde_json::from_str::<Value>(stored).ok().map(|value| Reference::validate(&value)) {
+                    Some(Ok(reference)) => add(plan, seen, reference, path),
+                    _ => plan.blockers.push(Finding::new(
+                        "invalid_payload_reference",
+                        "Invalid stored runtime external payload reference.",
+                        Some(path),
+                    )),
+                }
+            } else if text.starts_with(PHP_STORED_PREFIX) {
+                plan.blockers.push(unsupported(path));
+            }
+        }
         _ => {}
     }
+}
+
+fn unsupported(path: String) -> Finding {
+    Finding::new(
+        "unsupported_payload_reference",
+        "A provider-specific or PHP stored external payload reference cannot be fetched through the runtime transport.",
+        Some(path),
+    )
 }
 
 fn add(plan: &mut Plan, seen: &mut BTreeMap<String, usize>, reference: Reference, path: String) {
@@ -304,17 +341,17 @@ pub fn manifest(
     })
 }
 
-/// The receipt for a cold verification `report` of the archive whose manifest
-/// bytes are `manifest_bytes`. `hold` records that the copy's hold was still
-/// held after the verification.
-pub fn receipt(manifest_bytes: &[u8], report: &Value, verified_at: &str, hold: Value) -> Value {
+/// The receipt for a verified cold verification `report`, bound to the exact
+/// manifest and history bytes that verification read. `hold` records that
+/// the copy's hold was still held after the verification.
+pub fn receipt(report: &Value, verified_at: &str, hold: Value) -> Value {
     json!({
         "schema": RECEIPT_SCHEMA,
         "format_version": FORMAT_VERSION,
         "outcome": "verified",
         "verification": "cold",
         "verified_at": verified_at,
-        "manifest_sha256": sha256_hex(manifest_bytes),
+        "manifest_sha256": report["manifest_sha256"],
         "history_sha256": report["history_sha256"],
         "object_count": report["object_count"],
         "object_bytes": report["object_bytes"],
@@ -409,28 +446,51 @@ fn check(dir: &Path, receipt_required: bool) -> Value {
     let mut report = Report { findings: Vec::new(), refused: false };
     let mut out = Map::new();
     out.insert("schema".into(), json!(REPORT_SCHEMA));
+    let Some((manifest_bytes, manifest)) = read_manifest(dir, &mut report) else {
+        return finish(out, report);
+    };
+    out.insert("identity".into(), manifest["identity"].clone());
+    out.insert("manifest_sha256".into(), json!(sha256_hex(&manifest_bytes)));
+    let plan = check_history(dir, &manifest, &mut report, &mut out);
+    let listed = check_listing(&manifest, &mut report);
+    let (verified, verified_bytes) = match &plan {
+        Some(plan) => {
+            check_unreferenced(plan, &listed, &mut report);
+            check_objects(dir, plan, &listed, &mut report)
+        }
+        None => (0, 0),
+    };
+    let plan = plan.unwrap_or_default();
+    out.insert("object_count".into(), json!(plan.objects.len()));
+    out.insert("object_bytes".into(), json!(plan.object_bytes()));
+    out.insert("verified_objects".into(), json!(verified));
+    out.insert("verified_object_bytes".into(), json!(verified_bytes));
+    check_receipt(dir, &manifest, receipt_required, &mut report, &mut out);
+    finish(out, report)
+}
+
+/// The manifest's bytes and document, or `None` after refusing an archive
+/// this verifier cannot read.
+fn read_manifest(dir: &Path, report: &mut Report) -> Option<(Vec<u8>, Value)> {
     let manifest_bytes = match read_file(&dir.join(MANIFEST_FILE)) {
         FileRead::Bytes(bytes) => bytes,
         FileRead::Missing => {
             report.refuse("manifest_missing", format!("{MANIFEST_FILE} is missing; this is not a history archive."), Some(MANIFEST_FILE.into()));
-            return finish(out, report);
+            return None;
         }
         other => {
             report.unreadable(MANIFEST_FILE, other);
             report.refused = true;
-            return finish(out, report);
+            return None;
         }
     };
-    let manifest: Value = match serde_json::from_slice(&manifest_bytes) {
-        Ok(value @ Value::Object(_)) => value,
-        _ => {
-            report.refuse("manifest_invalid", format!("{MANIFEST_FILE} is not a JSON object."), Some(MANIFEST_FILE.into()));
-            return finish(out, report);
-        }
+    let Ok(manifest @ Value::Object(_)) = serde_json::from_slice::<Value>(&manifest_bytes) else {
+        report.refuse("manifest_invalid", format!("{MANIFEST_FILE} is not a JSON object."), Some(MANIFEST_FILE.into()));
+        return None;
     };
     if manifest["schema"] != MANIFEST_SCHEMA {
         report.refuse("unsupported_archive", format!("The manifest schema is not {MANIFEST_SCHEMA}."), Some("schema".into()));
-        return finish(out, report);
+        return None;
     }
     if manifest["format_version"] != FORMAT_VERSION {
         report.refuse(
@@ -438,56 +498,83 @@ fn check(dir: &Path, receipt_required: bool) -> Value {
             format!("Archive format version {} is not supported; this verifier reads version {FORMAT_VERSION}.", manifest["format_version"]),
             Some("format_version".into()),
         );
-        return finish(out, report);
+        return None;
     }
-    out.insert("identity".into(), manifest["identity"].clone());
-    out.insert("manifest_sha256".into(), json!(sha256_hex(&manifest_bytes)));
+    Some((manifest_bytes, manifest))
+}
 
-    // The history file, by the manifest's length and digest.
+/// The history file by the manifest's length and digest, and the plan of
+/// the export it holds; `None` when there is no readable export.
+fn check_history(dir: &Path, manifest: &Value, report: &mut Report, out: &mut Map<String, Value>) -> Option<Plan> {
     let history = &manifest["history"];
     if history["path"] != HISTORY_FILE {
-        report.fail("manifest_invalid", format!("history.path must be {HISTORY_FILE}."), Some("history.path".into()));
+        report.fail("manifest_inconsistent", format!("history.path must be {HISTORY_FILE}."), Some("history.path".into()));
     }
-    let export_bytes = match read_file(&dir.join(HISTORY_FILE)) {
-        FileRead::Bytes(bytes) => Some(bytes),
+    let bytes = match read_file(&dir.join(HISTORY_FILE)) {
+        FileRead::Bytes(bytes) => bytes,
         other => {
             report.unreadable(HISTORY_FILE, other);
-            None
+            return None;
         }
     };
-    let mut plan = Plan::default();
-    if let Some(bytes) = &export_bytes {
-        let digest = sha256_hex(bytes);
-        out.insert("history_sha256".into(), json!(digest));
-        if history["size_bytes"].as_u64() != Some(bytes.len() as u64) || history["sha256"] != digest.as_str() {
-            report.fail("history_digest_mismatch", format!("{HISTORY_FILE} does not match the manifest's length and SHA-256."), Some(HISTORY_FILE.into()));
-        }
-        match serde_json::from_slice::<Value>(bytes) {
-            Ok(export) => {
-                plan = self::plan(&export);
-                for blocker in &plan.blockers {
-                    report.findings.push(blocker.clone());
-                }
-                let workflow = &export["workflow"];
-                let identity = &manifest["identity"];
-                if identity["workflow_id"] != workflow["instance_id"]
-                    || identity["run_id"] != workflow["run_id"]
-                    || identity["last_history_sequence"] != workflow["last_history_sequence"]
-                {
-                    report.fail("identity_mismatch", "The manifest identity does not match the archived export.", Some("identity".into()));
-                }
-            }
-            Err(_) => report.fail("history_invalid", format!("{HISTORY_FILE} is not valid JSON."), Some(HISTORY_FILE.into())),
-        }
+    let digest = sha256_hex(&bytes);
+    if history["size_bytes"].as_u64() != Some(bytes.len() as u64) || history["sha256"] != digest.as_str() {
+        report.fail("history_digest_mismatch", format!("{HISTORY_FILE} does not match the manifest's length and SHA-256."), Some(HISTORY_FILE.into()));
     }
+    out.insert("history_sha256".into(), json!(digest));
+    let Ok(export) = serde_json::from_slice::<Value>(&bytes) else {
+        report.fail("history_invalid", format!("{HISTORY_FILE} is not valid JSON."), Some(HISTORY_FILE.into()));
+        return None;
+    };
+    let plan = plan(&export);
+    report.findings.extend(plan.blockers.iter().cloned());
+    let workflow = &export["workflow"];
+    let identity = &manifest["identity"];
+    if identity["workflow_id"] != workflow["instance_id"]
+        || identity["run_id"] != workflow["run_id"]
+        || identity["last_history_sequence"] != workflow["last_history_sequence"]
+    {
+        report.fail("identity_mismatch", "The manifest identity does not match the archived export.", Some("identity".into()));
+    }
+    Some(plan)
+}
 
-    // Every object the export references, and nothing else, by its length and digest.
-    let listed: Vec<&Value> = manifest["objects"].as_array().map(|objects| objects.iter().collect()).unwrap_or_default();
-    if !manifest["objects"].is_array() {
-        report.fail("manifest_invalid", "objects must be a list.", Some("objects".into()));
+/// The manifest's object entries: a list, each reference id once, with
+/// totals that match.
+fn check_listing<'a>(manifest: &'a Value, report: &mut Report) -> Vec<&'a Value> {
+    let Some(listed) = manifest["objects"].as_array() else {
+        report.fail("manifest_inconsistent", "objects must be a list.", Some("objects".into()));
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = listed.iter().map(|entry| entry["reference_id"].to_string()).collect();
+    ids.sort();
+    if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+        report.fail("manifest_inconsistent", "objects lists a reference_id more than once.", Some("objects".into()));
     }
-    let mut verified = 0usize;
-    let mut verified_bytes = 0i64;
+    let totals = &manifest["totals"];
+    let bytes: i64 = listed.iter().filter_map(|entry| entry["size_bytes"].as_i64()).sum();
+    if totals["object_count"] != listed.len() || totals["object_bytes"].as_i64() != Some(bytes) {
+        report.fail("manifest_inconsistent", "totals do not match the listed objects.", Some("totals".into()));
+    }
+    listed.iter().collect()
+}
+
+fn check_unreferenced(plan: &Plan, listed: &[&Value], report: &mut Report) {
+    for entry in listed {
+        if !plan.objects.iter().any(|object| entry["reference_id"] == object.reference.reference_id.as_str()) {
+            report.fail("object_unreferenced", format!("The manifest lists {} but the export does not reference it.", entry["reference_id"]), Some("objects".into()));
+        }
+    }
+}
+
+/// Every object the export references, by its manifest entry and its file's
+/// length and digest. Answers the count and bytes that verified.
+fn check_objects(dir: &Path, plan: &Plan, listed: &[&Value], report: &mut Report) -> (usize, i64) {
+    if std::fs::symlink_metadata(dir.join(OBJECTS_DIR)).is_ok_and(|metadata| !metadata.file_type().is_dir()) {
+        report.fail("file_not_regular", format!("{OBJECTS_DIR} is not a directory; links are not self-contained."), Some(OBJECTS_DIR.into()));
+        return (0, 0);
+    }
+    let mut verified = (0, 0);
     for object in &plan.objects {
         let reference = &object.reference;
         let path = object.path();
@@ -512,28 +599,17 @@ fn check(dir: &Path, receipt_required: bool) -> Value {
             ),
             Ok((_, digest)) if digest != reference.sha256 => report.fail("object_digest_mismatch", format!("{path} does not match its SHA-256."), Some(path)),
             Ok(_) => {
-                verified += 1;
-                verified_bytes += reference.size_bytes;
+                verified.0 += 1;
+                verified.1 += reference.size_bytes;
             }
         }
     }
-    if export_bytes.is_some() {
-        for entry in &listed {
-            if !plan.objects.iter().any(|object| entry["reference_id"] == object.reference.reference_id.as_str()) {
-                report.fail("object_unreferenced", format!("The manifest lists {} but the export does not reference it.", entry["reference_id"]), Some("objects".into()));
-            }
-        }
-    }
-    let totals = &manifest["totals"];
-    if totals["object_count"] != listed.len() || totals["object_bytes"].as_i64() != Some(listed.iter().filter_map(|entry| entry["size_bytes"].as_i64()).sum()) {
-        report.fail("manifest_invalid", "totals do not match the listed objects.", Some("totals".into()));
-    }
-    out.insert("object_count".into(), json!(plan.objects.len()));
-    out.insert("object_bytes".into(), json!(plan.object_bytes()));
-    out.insert("verified_objects".into(), json!(verified));
-    out.insert("verified_object_bytes".into(), json!(verified_bytes));
+    verified
+}
 
-    // The receipt binds a cold verification to these exact manifest bytes.
+/// The receipt binds a cold verification, under a confirmed hold of the
+/// manifest's owner, to these exact manifest and history bytes.
+fn check_receipt(dir: &Path, manifest: &Value, required: bool, report: &mut Report, out: &mut Map<String, Value>) {
     let receipt = match read_file(&dir.join(RECEIPT_FILE)) {
         FileRead::Bytes(bytes) => match serde_json::from_slice::<Value>(&bytes) {
             Ok(receipt @ Value::Object(_)) => Ok(receipt),
@@ -545,24 +621,38 @@ fn check(dir: &Path, receipt_required: bool) -> Value {
         Ok(receipt) => json!({"present": true, "verified_at": receipt["verified_at"], "hold": receipt["hold"]}),
         Err(_) => json!({"present": false}),
     });
-    if receipt_required {
-        match receipt {
-            Err(FileRead::Missing) => report.fail(
+    if !required {
+        return;
+    }
+    let receipt = match receipt {
+        Ok(receipt) => receipt,
+        Err(FileRead::Missing) => {
+            report.fail(
                 "receipt_missing",
                 "No verification receipt: the archive was never completed, or its copy or hold failed.",
                 Some(RECEIPT_FILE.into()),
-            ),
-            Err(read) => report.unreadable(RECEIPT_FILE, read),
-            Ok(receipt) => {
-                if receipt["schema"] != RECEIPT_SCHEMA || receipt["format_version"] != FORMAT_VERSION || receipt["outcome"] != "verified" {
-                    report.fail("receipt_invalid", format!("{RECEIPT_FILE} is not a {RECEIPT_SCHEMA} verified receipt."), Some(RECEIPT_FILE.into()));
-                } else if receipt["manifest_sha256"] != out["manifest_sha256"] || receipt["history_sha256"] != *out.get("history_sha256").unwrap_or(&Value::Null) {
-                    report.fail("receipt_mismatch", "The receipt was issued for a different manifest or history.", Some(RECEIPT_FILE.into()));
-                }
-            }
+            );
+            return;
         }
+        Err(read) => {
+            report.unreadable(RECEIPT_FILE, read);
+            return;
+        }
+    };
+    let hold = &receipt["hold"];
+    if receipt["schema"] != RECEIPT_SCHEMA || receipt["format_version"] != FORMAT_VERSION || receipt["outcome"] != "verified" {
+        report.fail("receipt_invalid", format!("{RECEIPT_FILE} is not a {RECEIPT_SCHEMA} verified receipt."), Some(RECEIPT_FILE.into()));
+    } else if receipt["manifest_sha256"] != out["manifest_sha256"] || receipt["history_sha256"] != *out.get("history_sha256").unwrap_or(&Value::Null) {
+        report.fail("receipt_mismatch", "The receipt was issued for a different manifest or history.", Some(RECEIPT_FILE.into()));
+    } else if hold["kind"] != HOLD_KIND
+        || hold["owner"].as_str().is_none()
+        || hold["owner"] != manifest["hold"]["owner"]
+        || !hold["confirmed_at"].is_string()
+        || receipt["object_count"] != out["object_count"]
+        || receipt["object_bytes"] != out["object_bytes"]
+    {
+        report.fail("receipt_invalid", "The receipt's hold confirmation or counts do not match the archive.", Some(RECEIPT_FILE.into()));
     }
-    finish(out, report)
 }
 
 fn finish(mut out: Map<String, Value>, report: Report) -> Value {
@@ -663,6 +753,32 @@ mod tests {
         assert_eq!(codes(&plan(&conflicting)), ["conflicting_payload_reference"]);
 
         assert_eq!(codes(&plan(&json!({"schema": EXPORT_SCHEMA, "schema_version": 1}))), ["unsupported_export"]);
+
+        // Anything else the Server treats as a reference refuses the archive.
+        let mut php = export(b"a", b"b");
+        php["commands"] = json!([{"payload": "dw-external-payload:v1:eyJkaXNrIjoiczMifQ=="}]);
+        assert_eq!(codes(&plan(&php)), ["unsupported_payload_reference"]);
+        let mut bare_storage = export(b"a", b"b");
+        bare_storage["activities"] = json!([{"result": {"external_storage": {"uri": "s3://bucket/key"}}}]);
+        assert_eq!(codes(&plan(&bare_storage)), ["unsupported_payload_reference"]);
+        let mut foreign_schema = export(b"a", b"b");
+        foreign_schema["payloads"]["arguments"]["data"]["external_payload"]["schema"] = json!("other.v1");
+        assert_eq!(codes(&plan(&foreign_schema)), ["invalid_payload_reference"]);
+        let mut bad_stored = export(b"a", b"b");
+        bad_stored["signals"] = json!([{"arguments": "dw-native-external-payload-v1:{\"schema\":1}"}]);
+        assert_eq!(codes(&plan(&bad_stored)), ["invalid_payload_reference"]);
+        // The export's own manifest marks a path external that holds no runtime reference.
+        let mut unmatched = export(b"a", b"b");
+        unmatched["payload_manifest"]["entries"] = json!([{"path": "payloads.output.data", "encoding": "external-storage-reference"},
+            {"path": "commands.0.payload", "encoding": "external-storage-reference"}]);
+        assert_eq!(codes(&plan(&unmatched)), ["unsupported_payload_reference"]);
+
+        // A runtime reference stored as text is planned like an envelope.
+        let mut stored = export(b"a", b"b");
+        stored["updates"] = json!([{"result": format!("dw-native-external-payload-v1:{}", reference(ID_B, b"b"))}]);
+        let planned = plan(&stored);
+        assert_eq!(codes(&planned), Vec::<&str>::new());
+        assert!(planned.objects[1].paths.contains(&"updates.0.result".to_owned()), "{:?}", planned.objects[1].paths);
     }
 
     /// A complete archive of `export(a, b)` in `dir`.
@@ -680,7 +796,9 @@ mod tests {
         std::fs::write(dir.join(MANIFEST_FILE), &manifest_bytes).unwrap();
         let contents = verify_contents(dir);
         assert_eq!(contents["outcome"], "verified", "{contents}");
-        let receipt = receipt(&manifest_bytes, &contents, "2026-11-25T00:00:01Z", hold);
+        let mut confirmed = hold;
+        confirmed["confirmed_at"] = json!("2026-11-25 00:00:01");
+        let receipt = receipt(&contents, "2026-11-25T00:00:01Z", confirmed);
         std::fs::write(dir.join(RECEIPT_FILE), serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
     }
 
@@ -701,9 +819,13 @@ mod tests {
         assert_eq!(report["receipt"]["present"], true);
     }
 
+    /// A name, the damage done to a complete archive, the expected finding
+    /// codes and the expected outcome.
+    type DamageCase = (&'static str, fn(&Path), &'static [&'static str], &'static str);
+
     #[test]
     fn damage_makes_an_archive_incomplete_and_foreign_formats_are_refused() {
-        let cases: &[(&str, fn(&Path), &[&str], &str)] = &[
+        let cases: &[DamageCase] = &[
             ("missing object", |dir| std::fs::remove_file(dir.join(OBJECTS_DIR).join(ID_A)).unwrap(), &["object_missing"], "incomplete"),
             ("corrupt object", |dir| std::fs::write(dir.join(OBJECTS_DIR).join(ID_B), b"secono").unwrap(), &["object_digest_mismatch"], "incomplete"),
             ("short object", |dir| std::fs::write(dir.join(OBJECTS_DIR).join(ID_B), b"sec").unwrap(), &["object_size_mismatch"], "incomplete"),
@@ -733,6 +855,26 @@ mod tests {
                 #[cfg(not(unix))]
                 std::fs::create_dir(dir.join(OBJECTS_DIR).join(ID_A)).unwrap();
             }, &["file_not_regular"], "incomplete"),
+            ("linked objects directory", |dir| {
+                let outside = dir.join("elsewhere");
+                std::fs::rename(dir.join(OBJECTS_DIR), &outside).unwrap();
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&outside, dir.join(OBJECTS_DIR)).unwrap();
+                #[cfg(not(unix))]
+                std::fs::write(dir.join(OBJECTS_DIR), b"").unwrap();
+            }, &["file_not_regular"], "incomplete"),
+            ("duplicate manifest entry", |dir| {
+                let mut manifest: Value = serde_json::from_slice(&std::fs::read(dir.join(MANIFEST_FILE)).unwrap()).unwrap();
+                let first = manifest["objects"][0].clone();
+                manifest["objects"].as_array_mut().unwrap().push(first);
+                manifest["totals"] = json!({"object_count": 3, "object_bytes": 16});
+                std::fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec(&manifest).unwrap()).unwrap();
+            }, &["manifest_inconsistent", "receipt_mismatch"], "incomplete"),
+            ("receipt without hold confirmation", |dir| {
+                let mut receipt: Value = serde_json::from_slice(&std::fs::read(dir.join(RECEIPT_FILE)).unwrap()).unwrap();
+                receipt["hold"].as_object_mut().unwrap().remove("confirmed_at");
+                std::fs::write(dir.join(RECEIPT_FILE), serde_json::to_vec(&receipt).unwrap()).unwrap();
+            }, &["receipt_invalid"], "incomplete"),
             ("newer format", |dir| {
                 let mut manifest: Value = serde_json::from_slice(&std::fs::read(dir.join(MANIFEST_FILE)).unwrap()).unwrap();
                 manifest["format_version"] = json!(2);

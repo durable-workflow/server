@@ -85,13 +85,15 @@ Any later change to the manifest or the history no longer matches the receipt.
 Object files are named by reference id. A valid id is `ep_` followed by 26
 Crockford base-32 characters, so it is always one safe file name. A verifier
 derives every path itself and never follows a path from the manifest. Every
-file must be a regular file; a link would point outside the archive.
+file must be a regular file and `objects/` a real directory, because a link
+would point outside the archive.
 
 `rust/tests/fixtures/history-archive-v1/` is the version 1 conformance
 archive. Every verifier must report it `verified`.
 
 ## Creating an archive
 
+`dw workflow:history-archive` follows this procedure; any other client must too.
 The copy uses existing routes only. It needs an admin credential, because the
 backup hold is an admin route.
 
@@ -108,8 +110,11 @@ backup hold is an admin route.
    - `workflow.details_state` is `pruned`;
    - redaction was applied;
    - history sequences do not run from 1 to `last_history_sequence`;
-   - it holds a provider-specific `external_storage` reference that the runtime
-     transport cannot fetch, or an invalid reference.
+   - it holds any reference the runtime transport cannot fetch. That covers a
+     provider-specific `external_storage` reference, a published PHP stored
+     reference (`dw-external-payload:v1:`), an invalid runtime reference, and
+     a path that the export's own `payload_manifest` marks external but that
+     holds no runtime reference.
 3. Fetch each object once with
    `GET /api/external-payloads/v1/{reference_id}` and its codec, size and
    digest headers. Check the length and SHA-256 before the file is renamed into
@@ -134,9 +139,9 @@ run releases the hold it recorded. The offline
 
 | Outcome | Meaning |
 | --- | --- |
-| `verified` | The receipt matches the manifest and the history. The history matches its recorded length and digest and is complete. Every referenced object is present with its recorded length and digest. The manifest lists exactly those objects. |
+| `verified` | The receipt matches the manifest and the history. It records a confirmed hold of the manifest's owner and the archive's object count and bytes. The history matches its recorded length and digest and is complete. Every referenced object is present with its recorded length and digest. The manifest lists exactly those objects, each once. |
 | `incomplete` | A supported archive that fails a check. Each finding has a `code`, a message and a `path`. |
-| `refused` | Not an archive this verifier can read: `manifest_missing`, `manifest_invalid`, `unsupported_archive` or `unsupported_format_version`. |
+| `refused` | Not an archive this verifier can read. The manifest is missing (`manifest_missing`), unreadable or a link (`file_unreadable`, `file_not_regular`), not a JSON object (`manifest_invalid`), or of another schema or format version (`unsupported_archive`, `unsupported_format_version`). |
 
 The finding codes are:
 
@@ -146,7 +151,8 @@ The finding codes are:
 - references: `unsupported_export`, `unsupported_payload_reference`,
   `invalid_payload_reference`, `conflicting_payload_reference`;
 - objects: `object_missing`, `object_size_mismatch`, `object_digest_mismatch`,
-  `object_unlisted`, `object_unreferenced`, `manifest_object_mismatch`;
+  `object_unlisted`, `object_unreferenced`, `manifest_object_mismatch`,
+  `manifest_inconsistent`;
 - files: `file_missing`, `file_not_regular`, `file_unreadable`;
 - receipt: `receipt_missing`, `receipt_invalid`, `receipt_mismatch`.
 
