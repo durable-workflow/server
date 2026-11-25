@@ -446,6 +446,45 @@ enum TestDatabase {
     },
 }
 
+/// Server #1204: a test that never calls `remove` still drops its database.
+/// Every database left on the shard's server kept its tables in the server's
+/// memory, so a long shard brought a 1 GiB MariaDB toward its memory limit and
+/// stalled later tests' transitions past the pool's acquisition deadline.
+impl Drop for TestDatabase {
+    fn drop(&mut self) {
+        let (url, postgres) = match self {
+            Self::Sqlite(_) => return,
+            Self::Postgres { url, .. } => (url.clone(), true),
+            Self::MySql { url, .. } => (url.clone(), false),
+        };
+        // The test's runtime may be single-threaded or unwinding, so the drop
+        // runs on a thread and runtime of its own. A server session that is
+        // still inside a transaction keeps its locks, so the MySQL drop waits
+        // for them only briefly and leaves the database rather than hang.
+        let dropped = std::thread::spawn(move || -> Result<(), String> {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+            runtime.block_on(async {
+                if postgres {
+                    return Postgres::force_drop_database(&url).await.map_err(|error| error.to_string());
+                }
+                use sqlx::Connection;
+                let options = MySqlConnectOptions::from_str(&url).map_err(|error| error.to_string())?;
+                let name = options.get_database().unwrap_or_default().replace('`', "");
+                let mut connection = sqlx::MySqlConnection::connect_with(&options.database("information_schema"))
+                    .await.map_err(|error| error.to_string())?;
+                sqlx::raw_sql("SET SESSION lock_wait_timeout=10").execute(&mut connection).await.map_err(|error| error.to_string())?;
+                sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS `{name}`")))
+                    .execute(&mut connection).await.map(drop).map_err(|error| error.to_string())
+            })
+        })
+        .join()
+        .unwrap_or_else(|_| Err("drop thread panicked".into()));
+        if let Err(error) = dropped {
+            eprintln!("test_database_drop_failed: {error}");
+        }
+    }
+}
+
 /// The rows of a two-column text query, written for each backend.
 async fn text_rows(database: &TestDatabase, sqlite: &str, postgres: &str, mysql: &str) -> Vec<(String, String)> {
     match database {
@@ -865,11 +904,13 @@ impl TestDatabase {
     }
 
     async fn remove(self) {
-        match self {
-            Self::Postgres { url, .. } => Postgres::drop_database(&url).await.unwrap(),
-            Self::MySql { url, .. } => MySql::drop_database(&url).await.unwrap(),
-            Self::Sqlite(_) => {}
+        match &self {
+            Self::Postgres { url, .. } => Postgres::drop_database(url).await.unwrap(),
+            Self::MySql { url, .. } => MySql::drop_database(url).await.unwrap(),
+            Self::Sqlite(_) => return,
         }
+        // Already dropped: skip the drop on `Drop`. Only the options leak.
+        std::mem::forget(self);
     }
 
     async fn replace_history_payload(&self, payload: Value) {
