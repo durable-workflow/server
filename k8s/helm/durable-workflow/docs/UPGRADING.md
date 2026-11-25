@@ -69,6 +69,17 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.6.0 / Server 3.29.0 (native)
+
+Chart 5.6.0 selects [native Server 3.29.0](../../../../docs/releases/3.29.0.md).
+It crosses Server 3.28.0 and 3.29.0, neither of which changes the database
+schema, the worker protocol version or the chart's values. Upgrade from chart
+5.5.x with the usual Helm rollout. Signed task offers (3.28.0) stay off unless
+`DW_TASK_DELIVERY_SEAL_KEYS` is set. To enable them, add it to
+`server.extraEnv` from a Kubernetes Secret (`valueFrom.secretKeyRef`), not to
+the `config.extraEnv` ConfigMap. Only 3.29.0 pods apply the one-lease-per-run
+check, so finish the rollout before you rely on it.
+
 ### Chart 5.5.0 / Server 3.27.0 (native)
 
 Chart 5.5.0 selects [native Server 3.27.0](../../../../docs/releases/3.27.0.md).
