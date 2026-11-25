@@ -1115,9 +1115,9 @@ async fn update_namespace(
 async fn retention_plan(
     Extension(runtime): Extension<Runtime>,
     Path(namespace): Path<String>,
-    body: axum::body::Bytes,
+    Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
-    let request = super::retention_plan::plan_request(&request_json(&body)?)?;
+    let request = super::retention_plan::plan_request(&body)?;
     Ok(Json(runtime.retention_plan(&namespace, request).await?))
 }
 
