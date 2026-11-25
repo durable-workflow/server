@@ -15,6 +15,11 @@ function nativeObservation() {
     Object.assign(actual.update_validation[step].response, {request_id, retained: step.startsWith('retained_'),
       intent_verified: step !== 'retained_rejection'});
   }
+  // Native validation tasks always carry the run's replay_clock (.github#215).
+  for (const step of ['dedicated_poll', 'multiplexed_poll']) {
+    const task = actual.update_validation[step].task;
+    task.keys = [...task.keys, 'replay_clock'].sort();
+  }
   return actual;
 }
 const projection = {scope: 'update_validation', steps: Object.keys(fixture.update_validation.expected).length};
@@ -63,6 +68,19 @@ test('native keyed receipts require exact keys and fresh markers without weakeni
   }
   assert.throws(() => checkUpdateValidation(fixture, observation(), workflowId, 'rust'), /approved_update/);
   assert.throws(() => checkUpdateValidation(fixture, nativeObservation(), workflowId, 'php'), /approved_update/);
+});
+
+test('native validation tasks carry replay_clock under their named divergence', () => {
+  for (const step of ['dedicated_poll', 'multiplexed_poll']) {
+    const actual = nativeObservation();
+    const task = actual.update_validation[step].task;
+    task.keys = task.keys.filter(key => key !== 'replay_clock');
+    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), new RegExp(step));
+  }
+  const published = observation();
+  published.update_validation.dedicated_poll.task.keys = [...published.update_validation.dedicated_poll.task.keys,
+    'replay_clock'].sort();
+  assert.throws(() => checkUpdateValidation(fixture, published, workflowId), /dedicated_poll/);
 });
 
 test('embedded explicitly declares update validation inapplicable', () => {

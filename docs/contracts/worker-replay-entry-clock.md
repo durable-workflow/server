@@ -51,8 +51,9 @@ same rules, as the run's workflow tasks (.github#215). An SDK that rebuilds
 the workflow body to answer a query or validate an update then gives an entry
 read the value the workflow task gave it.
 
-On these two task kinds the key is always present (worker OpenAPI revision
-69):
+On these two task kinds the native Server always sends the key (worker
+OpenAPI revision 69). The schema keeps it optional, because published PHP
+Servers don't send it:
 
 - an object: the same carrier the run's workflow tasks carry;
 - `null`: this Server proved no start, so the run's workflow tasks omit the
