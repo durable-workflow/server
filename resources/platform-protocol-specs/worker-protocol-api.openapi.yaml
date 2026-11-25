@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "69"
+  version: "70"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -3219,7 +3219,7 @@ components:
           description: >-
             The run's entry instant, identical to its workflow tasks'
             replay_clock (.github#215). The native Server always sends it from
-            revision 69: null means it proved no start, so the run's workflow
+            revision 70: null means it proved no start, so the run's workflow
             tasks omit the object too. An absent key means a Server that never
             sends it on this task kind, and a worker must not assume either.
     WorkflowPollNormalizationPending:
@@ -3946,7 +3946,7 @@ components:
           description: >-
             The run's entry instant, identical to its workflow tasks'
             replay_clock (.github#215). The native Server always sends it from
-            revision 69: null means it proved no start, so the run's workflow
+            revision 70: null means it proved no start, so the run's workflow
             tasks omit the object too. An absent key means a Server that never
             sends it on this task kind, and a worker must not assume either.
     QueryTaskPollResult:

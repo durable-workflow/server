@@ -52,7 +52,7 @@ the workflow body to answer a query or validate an update then gives an entry
 read the value the workflow task gave it.
 
 On these two task kinds the native Server always sends the key (worker
-OpenAPI revision 69). The schema keeps it optional, because published PHP
+OpenAPI revision 70). The schema keeps it optional, because published PHP
 Servers don't send it:
 
 - an object: the same carrier the run's workflow tasks carry;
@@ -72,5 +72,5 @@ Lookups use existing keys, so no schema change is needed.
 
 The OpenAPI schema is `WorkerReplayClock` in
 `resources/platform-protocol-specs/worker-protocol-api.openapi.yaml`
-(revision 67; query and validation tasks since revision 69). Tests:
+(revision 67; query and validation tasks since revision 70). Tests:
 `tests/execution/replay_clock.rs`.
