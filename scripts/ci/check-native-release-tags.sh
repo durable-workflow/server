@@ -313,6 +313,23 @@ case "$1 $2" in
   "attestation verify")
     printf '%s\n' "$*" >> "$GH_ATTEST_LOG"
     [[ "${ATTEST:-ok}" == ok ]] || exit 1
+    if [[ "$*" == *"--predicate-type https://spdx.dev/Document/v2.3 --format json"* ]]; then
+      # One SBOM statement per platform for the queried registry, as the
+      # provider returns them; SBOM_* variables break one property each.
+      [[ "${SBOM_FAIL_IMAGE:-}" != "$3" ]] || exit 1
+      ref=${3#oci://}; name=${ref%@*}; [[ "$name" == */*/* ]] || name=index.docker.io/$name
+      jq -n --arg name "${SBOM_SUBJECT:-$name}" --arg digest "${INDEX#sha256:}" \
+          --arg uri "${SBOM_URI:-https://github.com/example/server/actions/runs/${RUN_ID}/attempts/1}" \
+          --arg type "${SBOM_TYPE:-https://spdx.dev/Document/v2.3}" --arg missing "${SBOM_MISSING:-}" \
+          --arg changed "${SBOM_CHANGED_IMAGE:-}" --arg queried "$3" --argjson extra "${SBOM_EXTRA:-0}" '
+          [("amd64", "arm64") | select(. != $missing) as $arch | range(0; 1 + $extra) as $copy
+           | {verificationResult: {signature: {certificate: {runInvocationURI: $uri}},
+              statement: {predicateType: $type, subject: [{name: $name, digest: {sha256: $digest}}],
+                predicate: {spdxVersion: "SPDX-2.3", name: ("durable-workflow-server-linux-" + $arch),
+                  packages: [{name: (if $queried == $changed then "changed" else "libc6" end)}],
+                  copy: (if $copy > 0 and $extra > 1 then $copy else 0 end)}}}}]'
+      exit 0
+    fi
     [[ "${ATTEST_FAIL_IMAGE:-}" != "$3" ]] || exit 1
     printf '%s\n' "${ATTEST_URI:-https://github.com/example/server/actions/runs/${RUN_ID}/attempts/1}"; exit 0 ;;
 esac
@@ -360,9 +377,9 @@ chmod +x "$scratch/python3"
 newer_index=sha256:$(printf '%064d' 0 | tr 0 b)
 gh_release() { # release tag, latest state [, VAR=value ...] -> the Latest choice
   local tag=$1 state=$2; shift 2
-  : > "$scratch/gh_calls"; : > "$scratch/gh_attest"; : > "$scratch/gh_notes"
+  : > "$scratch/gh_calls"; : > "$scratch/gh_attest"; : > "$scratch/gh_notes"; rm -rf "$scratch/sbom"
   env -i PATH="$scratch:$PATH" GH="$scratch/gh" GH_LOG="$scratch/gh_calls" GH_ATTEST_LOG="$scratch/gh_attest" GH_NOTES="$scratch/gh_notes" \
-    DOCKER="$scratch/release-docker" "${images[@]}" GITHUB_REPOSITORY=example/server \
+    DOCKER="$scratch/release-docker" "${images[@]}" GITHUB_REPOSITORY=example/server NATIVE_SBOM_DIR="$scratch/sbom" \
     RELEASE_TAG="$tag" RELEASE_RUN_ID=41 RELEASE_RUN_ATTEMPT=1 PROMOTION_EVIDENCE=synthetic-selected-evidence RUN_ID=41 COMMIT="$commit" INDEX="$index" LATEST_STATE="$state" "$@" \
     bash scripts/ci/native-release-github-release.sh >/dev/null 2>&1 || { echo FAILED; return; }
   if grep -q -- '^release edit ' "$scratch/gh_calls"; then
@@ -476,6 +493,35 @@ want_release "provenance from another attempt" "$(gh_release 3.0.2 "$ours" ATTES
 want_release "qualification refusal" "$(gh_release 3.0.2 "$ours" QUALIFICATION_STATUS=1)" "$failed"
 [[ ! -s "$scratch/gh_calls" ]] || fail "Release was created despite qualification refusal."
 want_release "final missing qualification" "$(gh_release 3.0.2 "$ours" PROMOTION_EVIDENCE=)" "$failed"
+# A new Release attaches both platform SBOMs (Server #1012), verified in
+# each registry as attested to the index by this exact run attempt.
+want_release "SBOMs attached" "$(gh_release 3.1.0 "$ours")" "--latest"
+grep -q -- "^release create 3.1.0 $scratch/sbom/server-linux-amd64.spdx.json $scratch/sbom/server-linux-arm64.spdx.json --repo " "$scratch/gh_calls" \
+  || fail "a new Release must attach both platform SBOMs."
+for arch in amd64 arm64; do
+  jq -e --arg name "durable-workflow-server-linux-$arch" '.spdxVersion == "SPDX-2.3" and .name == $name' \
+    "$scratch/sbom/server-linux-$arch.spdx.json" >/dev/null || fail "the attached $arch SBOM is not its verified predicate."
+done
+for image in ghcr.io/example/native example/native; do
+  grep -q -- "^attestation verify oci://$image@$index --repo example/server --signer-workflow github.com/example/server/.github/workflows/native-release.yml --source-ref refs/tags/3.1.0 --source-digest $commit --deny-self-hosted-runners --predicate-type https://spdx.dev/Document/v2.3 --format json$" "$scratch/gh_attest" \
+    || fail "the $image SBOM must be verified against the signer, tag ref and commit."
+done
+want_release "candidate SBOMs attached" "$(gh_release 3.1.0-rc.1 "$ours")" "--prerelease --latest=false"
+grep -q -- 'server-linux-arm64.spdx.json --repo ' "$scratch/gh_calls" || fail "a candidate Release must attach its SBOMs."
+want_release "identical duplicate SBOM statements" "$(gh_release 3.1.0 "$ours" SBOM_EXTRA=1)" "--latest"
+want_release "SBOM verification fails" "$(gh_release 3.1.0 "$ours" SBOM_FAIL_IMAGE="oci://example/native@$index")" "$failed"
+[[ ! -s "$scratch/gh_calls" ]] || fail "Release was created after Docker Hub SBOM failure."
+want_release "no arm64 SBOM" "$(gh_release 3.1.0 "$ours" SBOM_MISSING=arm64)" "$failed"
+want_release "no amd64 SBOM" "$(gh_release 3.1.0 "$ours" SBOM_MISSING=amd64)" "$failed"
+want_release "SBOM from another attempt" "$(gh_release 3.1.0 "$ours" SBOM_URI=https://github.com/example/server/actions/runs/41/attempts/2)" "$failed"
+want_release "SBOM from a run id prefix" "$(gh_release 3.1.0 "$ours" SBOM_URI=https://github.com/example/server/actions/runs/411/attempts/1)" "$failed"
+want_release "SBOM for another registry" "$(gh_release 3.1.0 "$ours" SBOM_SUBJECT=ghcr.io/example/other)" "$failed"
+want_release "SBOM of another predicate type" "$(gh_release 3.1.0 "$ours" SBOM_TYPE=https://cyclonedx.org/bom)" "$failed"
+want_release "conflicting SBOMs in one registry" "$(gh_release 3.1.0 "$ours" SBOM_EXTRA=2)" "$failed"
+want_release "registries disagree on an SBOM" "$(gh_release 3.1.0 "$ours" SBOM_CHANGED_IMAGE="oci://example/native@$index")" "$failed"
+[[ ! -s "$scratch/gh_calls" ]] || fail "Release was created though the registries' SBOMs differ."
+# An existing Release predates SBOM assets and is checked as before.
+want_release "existing Release without SBOMs" "$(gh_release 3.1.0 "$ours" SBOM_MISSING=arm64 LATEST_TAG=3.1.0 EXISTING="$(existing 3.1.0 3.1.0 false false "$notes_final")")" "none"
 want_release "candidate needs no alias qualification" "$(gh_release 3.1.0-rc.1 "$ours" PROMOTION_EVIDENCE= QUALIFICATION_STATUS=1)" "--prerelease --latest=false"
 
 for failure in "${read_failures[@]}"; do
@@ -724,6 +770,41 @@ got:
 $job_conditions"
 grep -q 'run: scripts/ci/verify-native-release-dispatch.sh' .github/workflows/native-release.yml \
   || fail "the plan job must run the dispatch verifier."
+# Server #1012: the publish job generates both platform SBOMs from the
+# smoked digests before it tags anything, and attests both to the index in
+# both registries as SPDX predicates, so the step cannot silently disappear.
+native_release=.github/workflows/native-release.yml
+publish_job=$(sed -n '/^  publish:$/,/^  [a-z0-9-]*:$/p' "$native_release")
+attest_steps=$(awk '
+  /uses: actions\/attest-build-provenance@/ { step = 1; type = ""; sbom = ""; name = ""; next }
+  step && /subject-name:/ { name = $2 " " $3 " " $4 }
+  step && /subject-digest:/ { digest = $2 " " $3 " " $4 }
+  step && /predicate-type:/ { type = $2 }
+  step && /predicate-path:/ { sbom = $2 }
+  step && /push-to-registry:/ { push = $2 }
+  step && /create-storage-record:/ { if (sbom != "") print type, name, digest, sbom, push; step = 0 }
+' <<<"$publish_job" | sort || true)
+expected_attest=$(printf 'https://spdx.dev/Document/v2.3 %s ${{ steps.index.outputs.digest }} native-sbom/server-linux-%s.spdx.json true\n' \
+  '${{ env.GHCR_IMAGE }}' amd64 '${{ env.GHCR_IMAGE }}' arm64 \
+  'index.docker.io/${{ env.DOCKERHUB_IMAGE }}' amd64 'index.docker.io/${{ env.DOCKERHUB_IMAGE }}' arm64 | sort)
+[[ "$attest_steps" == "$expected_attest" ]] \
+  || fail "the publish job must attest both platform SBOMs to the index in both registries; got:
+$attest_steps"
+generate=$(grep -n '^      - name: Generate both platform SBOMs from the smoked digests$' <<<"$publish_job" | cut -d: -f1 || true)
+tagging=$(grep -n '^      - name: Tag and verify the index in each registry$' <<<"$publish_job" | cut -d: -f1 || true)
+[[ -n "$generate" && -n "$tagging" ]] && ((generate < tagging)) \
+  || fail "the publish job must generate both SBOMs before it tags the index."
+for arch in amd64 arm64; do
+  upper=$(tr a-z A-Z <<<"$arch")
+  grep -q "^          DIGEST_$upper: \${{ needs.build-$arch.outputs.digest }}$" <<<"$publish_job" \
+    && grep -qF "native-release-sbom.sh \"\$GHCR_IMAGE@\$DIGEST_$upper\" linux/$arch \"\$VERSION\" native-sbom" <<<"$publish_job" \
+    || fail "the publish job must generate the linux/$arch SBOM from the smoked digest."
+done
+sbom=scripts/ci/native-release-sbom.sh
+expect "name the image by digest" bash "$sbom" ghcr.io/example/native:3.1.0 linux/amd64 3.1.0 out
+expect "unsupported platform" bash "$sbom" "ghcr.io/example/native@$index" linux/s390x 3.1.0 out
+expect "VERSION must be" bash "$sbom" "ghcr.io/example/native@$index" linux/amd64 native-3.1.0 out
+expect "a local image must be" NATIVE_SBOM_LOCAL_IMAGE=true bash "$sbom" ghcr.io/example/native:3.1.0 linux/amd64 3.1.0 out
 # The PHP Release workflow refuses a native tag, pushed or dispatched, and only
 # the native Release job may write releases.
 grep -q 'name: Refuse a native release tag' .github/workflows/release.yml \

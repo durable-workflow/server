@@ -2414,6 +2414,42 @@ docker run --rm --entrypoint sh "ghcr.io/durable-workflow/server:$SERVER_VERSION
   'cat /app/.package-provenance && grep -n "serializer" /app/vendor/durable-workflow/workflow/src/config/workflows.php'
 ```
 
+### Native image SBOMs
+
+Each native Server release publishes an SPDX 2.3 software bill of materials
+for each platform, `linux/amd64` and `linux/arm64`. The release workflow
+generates it with Syft from the platform digest that passed the release smoke
+test. It then attests both documents to the multi-arch image index in Docker
+Hub and GHCR, alongside the build provenance. The GitHub Release verifies
+those attestations before it is created and attaches the verified documents
+as `server-linux-amd64.spdx.json` and `server-linux-arm64.spdx.json`.
+Releases built before this, including 3.28.0 and 3.29.0, have no SBOM.
+
+Verify the attestations and extract a platform's document with the GitHub CLI:
+
+```bash
+SERVER_VERSION=3.30.0
+IMAGE=ghcr.io/durable-workflow/server   # or durableworkflow/server
+gh attestation verify "oci://$IMAGE:$SERVER_VERSION" \
+  --repo durable-workflow/server \
+  --signer-workflow github.com/durable-workflow/server/.github/workflows/native-release.yml \
+  --source-ref "refs/tags/$SERVER_VERSION" \
+  --predicate-type https://spdx.dev/Document/v2.3 \
+  --format json \
+  --jq '.[].verificationResult.statement.predicate
+        | select(.name == "durable-workflow-server-linux-amd64")' > server-linux-amd64.spdx.json
+```
+
+The command fails unless an attestation signed by the release workflow from
+that tag verifies. The attestations are also stored in each registry as
+referrers of the index, so `--bundle-from-oci` reads them from the registry
+instead of from GitHub. Download the same documents from the Release with
+`gh release download "$SERVER_VERSION" --repo durable-workflow/server --pattern '*.spdx.json'`.
+
+The SBOM lists the operating-system packages in the image. The Server binary's
+Rust dependencies are not listed yet, because the binary does not embed its
+dependency metadata.
+
 ### Kubernetes
 
 The published Helm chart in [`k8s/helm/durable-workflow/`](../k8s/helm/durable-workflow/)
