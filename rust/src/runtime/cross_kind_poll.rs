@@ -10,7 +10,7 @@ pub(super) struct PollWakeSnapshot {
 
 macro_rules! poll_wake_tasks_sql {
     ($tables:literal) => {
-        concat!("SELECT t.id,t.namespace,t.queue ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type!=$3 AND t.task_type IN ('workflow','activity') AND t.status IN ('ready','leased') AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) ORDER BY t.available_at,t.id LIMIT 100")
+        concat!("SELECT t.id,t.namespace,t.queue ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type!=$3 AND t.task_type IN ('workflow','activity') AND t.status IN ('ready','leased') AND (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity')) AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) ORDER BY t.available_at,t.id LIMIT 100")
     };
 }
 pub(super) use poll_wake_tasks_sql;

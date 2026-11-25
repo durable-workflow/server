@@ -109,9 +109,13 @@ pub(super) struct SignalWrite<'a> {
 }
 /// The runtime-owned message-stream delivery signal (`WorkflowStub::MESSAGE_STREAM_RUNTIME_SIGNAL`).
 const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
+// A cancelled run's activity task stays a candidate: an activity abandoned
+// at the run's cooperative close keeps its own lifetime (Server #971). Its
+// eligibility admits only that activity, and such a run normally has no
+// other open task.
 macro_rules! task_candidates_sql {
     ($tables:literal, $limit:literal) => {
-        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND r.status IN ('pending','running','waiting') AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit)
+        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity')) AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit)
     };
 }
 #[cfg(test)]
@@ -2951,7 +2955,14 @@ where
         protocol_version: &str,
     ) -> Result<Option<TaskEligibility<DB::Row>>> {
         let run_id = DB::string(task, "workflow_run_id")?;
-        let cancellation = Self::cancellation_request(run)?;
+        // A closed run offers only an activity that keeps its abandon
+        // authority, checked below. Its claim takes an ordinary activity
+        // lease, past the closed request's cleanup deadline.
+        let open = matches!(DB::string(run, "status")?.as_str(), "pending" | "running" | "waiting");
+        if !open && kind != "activity" {
+            return Ok(None);
+        }
+        let cancellation = if open { Self::cancellation_request(run)? } else { None };
         if cancellation.is_some()
             && (DB::optional_instant(run, "cancellation_deadline_at")?
                 .is_none_or(|deadline| deadline <= now())
@@ -3014,6 +3025,14 @@ where
             {
                 // The timeout sweep owns this original deadline. A claim
                 // cannot erase it by starting another attempt.
+                return Ok(None);
+            }
+        }
+        if !open {
+            let Some(activity) = activity.as_ref() else {
+                return Ok(None);
+            };
+            if !Self::abandoned_activity_allowed(&mut *connection, run, activity).await? {
                 return Ok(None);
             }
         }
@@ -3151,7 +3170,7 @@ where
         // A carried continuation can only take its ready resumed task.
         let first = match tx.claim_only.clone() {
             Some(target) => {
-                let candidate = Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$1 AND t.namespace=$2 AND t.queue=$3 AND t.task_type=$4 AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$5)) AND r.status IN ('pending','running','waiting') AND (t.available_at IS NULL OR t.available_at<=$6) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$7)")
+                let candidate = Self::query("SELECT t.*,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.id=$1 AND t.namespace=$2 AND t.queue=$3 AND t.task_type=$4 AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$5)) AND (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity')) AND (t.available_at IS NULL OR t.available_at<=$6) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$7)")
                     .bind(&target.task_id).bind(self.namespace.as_ref()).bind(queue).bind(kind)
                     .bind(DB::optional_time(target.observed_attempt.map(|_| lease_at)))
                     .bind(DB::bind_time(ready_at)).bind(build.as_deref()).fetch_optional(&mut **tx).await?;
@@ -4237,19 +4256,30 @@ where
             cooperative_child |= super::children::policies(command)?.cooperative();
         }
         if cooperative_child {
-            Self::cancellation_policy_guard(&task, task_id, &body, protocol, false, None, "child_cancellation_policy_not_supported",
+            Self::cancellation_policy_guard(&task, task_id, &body, protocol, false, "child_cancellation_policy_not_supported",
                 "Use a runtime with child cancellation policies and a claim from a cooperative worker on protocol 1.20 or newer.")?;
         }
         // `guardRemoteActivityCancellationPoliciesAvailable`: an explicit
         // activity cancellation policy, any value, needs protocol 1.20 and a
         // cooperative claim (Server #958).
         if commands.iter().any(|command| command["type"] == "schedule_activity" && !command["cancellation_policy"].is_null()) {
-            // Native has no post-run authority for an abandoned activity yet:
-            // its task would be stranded once the run closes (Server #971).
-            let abandon = commands.iter().any(|command| command["type"] == "schedule_activity" && command["cancellation_policy"] == "abandon");
-            Self::cancellation_policy_guard(&task, task_id, &body, protocol, true,
-                abandon.then_some("installed_runtime_activity_policy"), "activity_cancellation_policy_not_supported",
+            Self::cancellation_policy_guard(&task, task_id, &body, protocol, true, "activity_cancellation_policy_not_supported",
                 "Use a runtime with remote activity cancellation policies and a cooperative worker claim on protocol 1.20 or newer.")?;
+            // The normalizer: a remote activity abandoned on cancellation
+            // outlives its run only until its own finite schedule-to-close
+            // deadline (Server #971).
+            let mut errors = vec![];
+            for (index, command) in commands.iter().enumerate() {
+                if command["type"] == "schedule_activity" && command["cancellation_policy"] == "abandon"
+                    && !command["schedule_to_close_timeout"].as_i64().is_some_and(|timeout| timeout >= 1)
+                {
+                    errors.push((format!("commands.{index}.schedule_to_close_timeout"),
+                        vec!["An abandoned remote activity requires a finite schedule_to_close_timeout.".to_owned()]));
+                }
+            }
+            if let Some(error) = super::laravel_validation::failure_messages(errors) {
+                return Err(error);
+            }
         }
         // `guardPortableWorkerAffinityCompletion`, then the normalizer's
         // local activity rules inside the transaction.
@@ -5153,7 +5183,6 @@ where
         Self::closed_run_outcome(tx, &task, &body, "completed").await?;
         Self::fence(&task, &body)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        let run = Self::active_run(tx, &run_id).await?;
         let activity_id = DB::string(&attempt, "activity_execution_id")?;
         let activity =
             Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
@@ -5161,6 +5190,7 @@ where
                 .bind(&run_id)
                 .fetch_one(&mut **tx)
                 .await?;
+        let (run, run_closed) = Self::activity_run(tx, &run_id, &activity).await?;
         if DB::optional_string(&activity, "current_attempt_id")?.as_deref() != Some(attempt_id)
             || DB::number(&activity, "attempt_count")? != DB::number(&attempt, "attempt_number")?
             || DB::string(&activity, "status")? != "running"
@@ -5205,15 +5235,19 @@ where
             None,
         )
         .await?;
-        Self::resolve_selection(
-            tx,
-            &run_id,
-            &metadata,
-            "activity",
-            &activity_id,
-            "ActivityCompleted",
-        )
-        .await?;
+        // An abandoned activity's outcome after its run closed is history
+        // only: it resolves nothing and resumes nothing.
+        if !run_closed {
+            Self::resolve_selection(
+                tx,
+                &run_id,
+                &metadata,
+                "activity",
+                &activity_id,
+                "ActivityCompleted",
+            )
+            .await?;
+        }
         Self::query("UPDATE activity_attempts SET status='completed',lease_expires_at=NULL,closed_at=$1 WHERE id=$2")
             .bind(DB::bind_time(now()))
             .bind(attempt_id)
@@ -5225,7 +5259,8 @@ where
             .await?;
         Self::record_completion(tx, task_id, &body).await?;
         // A standalone activity's host run closes with its result.
-        let closed = Self::close_standalone_host(tx, &run_id, super::standalone_activities::HostClose::Completed { output: &result }).await?;
+        let closed = run_closed
+            || Self::close_standalone_host(tx, &run_id, super::standalone_activities::HostClose::Completed { output: &result }).await?;
         let next_task_id = if closed {
             None
         } else {

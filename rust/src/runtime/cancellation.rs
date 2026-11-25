@@ -493,9 +493,10 @@ where
     /// `cancellation_reason: run_closed`, which replay never treats as an
     /// outcome the workflow observed. Only the run's open activity and timer
     /// tasks are cancelled; the closing workflow task is the caller's.
-    /// Native refuses the abandon cancellation policy at scheduling (#971),
-    /// so no activity is left running and no `abandoned_activities` list is
-    /// written. Children follow their parent-close policy as before.
+    /// An activity under the abandon cancellation policy is cancelled here
+    /// too. Native keeps one running only past a cooperative cancellation's
+    /// close (#971), so no `abandoned_activities` list is written. Children
+    /// follow their parent-close policy as before.
     pub(super) async fn settle_closing_open_work(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,

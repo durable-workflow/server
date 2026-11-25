@@ -1202,11 +1202,15 @@ support is not evidence of multi-node safety.
   The policy is kept in the activity's options and its `ActivityScheduled`
   snapshot. On delivery, `wait_cancellation_completed` holds until the live
   attempt's worker acknowledges the stop, and the acknowledgement resumes the
-  run (`ActivityCancellationWait`). An explicit `abandon` is refused with the
-  same 409 and `unavailable: ["installed_runtime_activity_policy"]`, because
-  native has no post-run authority for an abandoned activity yet. It would be
-  stranded once its run closes. #971 tracks that lifecycle; this is a recorded
-  difference from published PHP until then.
+  run (`ActivityCancellationWait`). An explicit `abandon` was first refused
+  with the same 409 and `unavailable: ["installed_runtime_activity_policy"]`,
+  because an abandoned activity would have been stranded once its run closed.
+  #971 admits it again with Core's lifetime. It needs a finite
+  `schedule_to_close_timeout` (422 otherwise). The run's canonical cooperative
+  cancelled close leaves the activity open. It can still be claimed,
+  heartbeat, retry, complete or fail, and it times out at its original
+  schedule-to-close deadline. Its outcome is recorded in the closed run's
+  history and resumes nothing. Any other close cancels it as before.
 
 - **November 2: schedules follow Core 2.15.13's daylight-saving rule, not
   PHP 2.11.8 (#938).** General fixed daily cron schedules admitting twice

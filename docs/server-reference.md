@@ -1607,9 +1607,10 @@ is refused with `409`, `outcome: "ignored"`, `recorded: false`,
 it as final and not retry. Replay must ignore an `ActivityCancelled` whose
 `cancellation_reason` is `run_closed`: the workflow never observed it, so it
 never resolves a selection, a parallel group member or an activity outcome.
-Native refuses the `abandon` activity cancellation policy, so it never keeps
-an activity running past its run's close and never writes the
-`abandoned_activities` list that Core writes for one. Children are not
+This close also cancels an activity scheduled with the `abandon` cancellation
+policy. Native keeps such an activity running only past a cooperative
+cancellation's close, and never writes the `abandoned_activities` list that
+Core writes for one. Children are not
 settled: they follow their parent-close policy. Published PHP 2.x left this
 work open, so a workflow that needs a loser's effect must await it before
 returning.

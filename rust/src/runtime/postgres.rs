@@ -21,7 +21,7 @@ macro_rules! status_candidates {
     ($status:literal, $limit:literal) => {
         concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t ",
             "JOIN LATERAL (SELECT r.workflow_type FROM workflow_runs r ",
-            "WHERE r.id=t.workflow_run_id AND r.status IN ('pending','running','waiting') ",
+            "WHERE r.id=t.workflow_run_id AND (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity')) ",
             "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) LIMIT 1) r ON true ",
             "WHERE t.namespace COLLATE \"C\"=$1 AND t.queue COLLATE \"C\"=$2 AND t.task_type COLLATE \"C\"=$3 AND t.status COLLATE \"C\"='", $status, "' ",
             "AND (t.status='ready' OR (t.task_type='workflow' AND t.lease_expires_at<=$4)) ",

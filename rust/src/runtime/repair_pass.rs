@@ -641,8 +641,12 @@ store_methods! {
         };
         let execution_status = execution.as_ref().map(|row| DB::string(row, "status")).transpose()?;
         // Native leaves an activity open after its run closes only when the
-        // run completed without waiting for it (`ActivityAbandonment::allows`).
-        let abandoned = closed && matches!(execution_status.as_deref(), Some("pending" | "running"));
+        // run's cooperative close abandoned it (`ActivityAbandonment::allows`).
+        let abandoned = closed
+            && match &execution {
+                Some(execution) => Self::abandoned_activity_allowed(&mut **tx, run, execution).await?,
+                None => false,
+            };
         if closed && !abandoned {
             // `settleTerminalTask`, closing a cancelled or terminated run's
             // running attempt.

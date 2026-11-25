@@ -269,25 +269,52 @@ async fn a_waiting_activity_holds_the_run_delivery_until_its_stop_is_acknowledge
     database.remove().await;
 }
 
-// Native refuses an explicit `abandon` until abandoned activities can
-// outlive their run (Server #971), with PHP's refusal for a runtime that
-// lacks the policy. An explicit policy on protocol 1.19 is refused too.
+// An explicit `abandon` is admitted with a finite schedule_to_close_timeout
+// (Server #971), and refused without one, as Core's normalizer refuses it.
+// An explicit policy on protocol 1.19, or from a claim without the
+// cooperative capability, is refused before anything else.
 #[tokio::test]
-async fn an_explicit_abandon_or_a_pre_1_20_policy_is_refused_at_scheduling() {
+async fn an_explicit_abandon_needs_a_deadline_and_a_1_20_cooperative_claim() {
     let database = TestDatabase::new().await;
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     register_cooperative(&app).await;
-    start(&app, "abandon-refused").await;
+    start(&app, "abandon-admitted").await;
     let task = cooperative_poll(&app, "workflow").await;
-    let refused = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
-        completion(&task, json!([{"type":"schedule_activity","activity_type":"stop-activity","arguments":envelope(Payload::Array(vec![])),
-            "start_to_close_timeout":300,"schedule_to_close_timeout":600,"cancellation_policy":"abandon"}])), "1.20").await;
-    assert_eq!((refused.0, refused.1["reason"].clone(), refused.1["unavailable"].clone()),
-        (StatusCode::CONFLICT, json!("activity_cancellation_policy_not_supported"), json!(["installed_runtime_activity_policy"])), "{}", refused.1);
-    let old = finish_task(&app, &task, json!([{"type":"schedule_activity","activity_type":"stop-activity",
-        "arguments":envelope(Payload::Array(vec![])),"cancellation_policy":"try_cancel"}])).await;
-    assert_eq!((old.0, old.1["unavailable"].clone()), (StatusCode::CONFLICT, json!(["request_protocol"])), "{}", old.1);
+    let abandon = |schedule_to_close: Value| {
+        let mut command = json!({"type":"schedule_activity","activity_type":"stop-activity",
+            "arguments":envelope(Payload::Array(vec![])),"start_to_close_timeout":300,"cancellation_policy":"abandon"});
+        if !schedule_to_close.is_null() {
+            command["schedule_to_close_timeout"] = schedule_to_close;
+        }
+        json!([command])
+    };
+    let old = finish_task(&app, &task, abandon(json!(600))).await;
+    assert_eq!((old.0, old.1["reason"].clone(), old.1["unavailable"].clone()),
+        (StatusCode::CONFLICT, json!("activity_cancellation_policy_not_supported"), json!(["request_protocol"])), "{}", old.1);
+    let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+    let unbounded = request_protocol(&app, "POST", &path, completion(&task, abandon(Value::Null)), "1.20").await;
+    assert_eq!((unbounded.0, unbounded.1["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("validation_failed")), "{}", unbounded.1);
+    assert_eq!(unbounded.1["errors"]["commands.0.schedule_to_close_timeout"],
+        json!(["An abandoned remote activity requires a finite schedule_to_close_timeout."]));
+    let admitted = request_protocol(&app, "POST", &path, completion(&task, abandon(json!(600))), "1.20").await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+    assert_eq!(task_retry::rows(&database,
+        "SELECT COUNT(*) FROM activity_executions WHERE status='pending' AND schedule_to_close_deadline_at IS NOT NULL").await, 1);
+
+    // A worker without the capability claims on protocol 1.20.
+    let registered = request_protocol(&app, "POST", "/api/worker/register",
+        json!({"worker_id":"plain-worker","task_queue":"test","runtime":"php",
+            "supported_workflow_types":["echo"],"supported_activity_types":["stop-activity"]}), "1.20").await;
+    assert_eq!(registered.0, StatusCode::CREATED, "{}", registered.1);
+    start(&app, "abandon-uncapable").await;
+    let (status, claimed) = request_protocol(&app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"plain-worker","task_queue":"test","timeout_seconds":0}), "1.20").await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    let task = &claimed["task"];
+    let uncapable = request_protocol(&app, "POST", &format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap()),
+        completion(task, abandon(json!(600))), "1.20").await;
+    assert_eq!((uncapable.0, uncapable.1["unavailable"].clone()), (StatusCode::CONFLICT, json!(["worker_claim_capability"])), "{}", uncapable.1);
     runtime.close().await;
     database.remove().await;
 }

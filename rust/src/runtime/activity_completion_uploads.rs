@@ -188,7 +188,6 @@ where
                 .await?
                 .ok_or_else(rejected)?;
         let run_id = DB::string(&task, "workflow_run_id")?;
-        Self::active_run(tx, &run_id).await.map_err(lease_error)?;
         let activity =
             Self::query("SELECT * FROM activity_executions WHERE id=$1 AND workflow_run_id=$2")
                 .bind(DB::string(&attempt, "activity_execution_id")?)
@@ -196,6 +195,9 @@ where
                 .fetch_optional(&mut **tx)
                 .await?
                 .ok_or_else(rejected)?;
+        // An abandoned activity may still upload its result after its run's
+        // cooperative close (Server #971).
+        Self::activity_run(tx, &run_id, &activity).await.map_err(lease_error)?;
         if DB::string(&attempt, "status")? != "running"
             || DB::string(&attempt, "id")? != context.attempt
             || DB::number(&attempt, "attempt_number")? != DB::number(&task, "attempt_count")?
