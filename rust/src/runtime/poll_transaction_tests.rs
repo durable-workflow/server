@@ -142,6 +142,58 @@ store_methods! {
         }
     }
 
+    /// Server #1282: a workflow task whose run holds another live lease is
+    /// never offered, claimed or counted in a candidate page, so it cannot
+    /// make offer-mode workers spin on an unclaimable packet or hide another
+    /// run's work. It is offered once that lease ends.
+    pub(super) async fn qualify_same_run_offer_fence(&self) {
+        self.register(json!({"worker_id":"fence-worker","task_queue":"fenced","runtime":"php",
+            "supported_workflow_types":["counted"],"supported_activity_types":[]}),
+            &QueryTaskConfig::default(), Some("1.20")).await.unwrap();
+        let started = self.start(json!({"workflow_id":"offer-fence","workflow_type":"counted","task_queue":"fenced","input":input()}),
+            BTreeMap::new(), None, None).await.unwrap();
+        let run_id = started["run_id"].as_str().unwrap();
+        let body = json!({"worker_id":"fence-worker","task_queue":"fenced","timeout_seconds":0});
+        let leased = self.poll(body.clone(), "workflow", "1.20").await.unwrap();
+        let leased_id = leased["task"]["task_id"].as_str().unwrap().to_owned();
+        // More waiting turns of the same run than a first candidate page
+        // holds, as signals and activity results would create.
+        let mut waiting = Vec::new();
+        let mut tx = self.begin().await.unwrap();
+        for _ in 0..=super::priority_fairness::FAIRNESS_BATCH {
+            waiting.push(Self::create_task(&mut tx, run_id, "fenced", "workflow", json!({})).await.unwrap());
+        }
+        tx.commit().await.unwrap();
+        let super::worker_poll_fence::PollAdmission::Fenced(fence) = self.admit_worker_poll("fence-worker", "fenced").await.unwrap()
+        else { panic!("the registered fixture worker must be fenced"); };
+        for _ in 0..3 {
+            assert!(self.peek_execution_offer("fence-worker", "fenced", "workflow", "1.20", &fence).await.unwrap().is_none(),
+                "a fenced task is never offered");
+        }
+        assert!(self.poll(body.clone(), "workflow", "1.20").await.unwrap()["task"].is_null());
+
+        // The fenced turns do not hide another run's ready task.
+        let other = self.start(json!({"workflow_id":"offer-fence-other","workflow_type":"counted","task_queue":"fenced","input":input()}),
+            BTreeMap::new(), None, None).await.unwrap();
+        let at = super::store::now();
+        let first = self.task_candidate_query("fenced","workflow",None,at,at,true).fetch_all(&self.pool).await.unwrap();
+        assert_eq!(first.iter().map(|row| DB::string(row,"workflow_run_id").unwrap()).collect::<Vec<_>>(),
+            vec![other["run_id"].as_str().unwrap().to_owned()]);
+        let offer = self.peek_execution_offer("fence-worker", "fenced", "workflow", "1.20", &fence).await.unwrap().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(offer.task_id, DB::string(&first[0], "id").unwrap());
+        Self::query("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1")
+            .bind(other["run_id"].as_str().unwrap()).execute(&self.pool).await.unwrap();
+
+        // Once the lease ends, the run's next turn is offered.
+        Self::query("UPDATE workflow_tasks SET status='completed',lease_expires_at=NULL WHERE id=$1")
+            .bind(&leased_id).execute(&self.pool).await.unwrap();
+        let offer = self.peek_execution_offer("fence-worker", "fenced", "workflow", "1.20", &fence).await.unwrap().unwrap();
+        assert_eq!(offer.task_id, waiting[0]);
+        Self::query("UPDATE workflow_tasks SET status='completed' WHERE workflow_run_id=$1")
+            .bind(run_id).execute(&self.pool).await.unwrap();
+    }
+
     pub(super) async fn qualify_first_candidate_batch(&self) {
         self.count_worker().await;
         let mut runs = Vec::new();
@@ -440,6 +492,7 @@ async fn sqlite_workflow_and_query_poll_transaction_counts() {
     let store = Store::<sqlx::Sqlite>::new(super::sqlite::open(dir.path().join("counts.sqlite").to_str().unwrap()).await.unwrap());
     store.qualify_workflow_poll_transactions().await;
     store.qualify_first_candidate_batch().await;
+    store.qualify_same_run_offer_fence().await;
     store.qualify_claim_history_sequence().await;
     store.qualify_fenced_registration_reuse().await;
     store.qualify_query_poll_transactions().await;

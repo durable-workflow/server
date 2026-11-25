@@ -5,7 +5,8 @@ use sqlx::AssertSqlSafe;
 
 fn empty_range_message(range: &Value) -> Option<&str> {
     let block = range.get("query_block")?.as_object()?;
-    if block.keys().all(|key| matches!(key.as_str(), "select_id" | "message")) {
+    // A pruned branch also optimizes away the same-run fence subquery.
+    if block.keys().all(|key| matches!(key.as_str(), "select_id" | "message" | "optimized_away_subqueries")) {
         return block.get("message")?.as_str();
     }
     // MariaDB wraps a pruned UNION branch's message in an empty table node.
@@ -73,6 +74,19 @@ fn ordered_ranges(plan: &Value, activity: bool) -> bool {
     ordered && scans > 0
 }
 
+/// Every probe of Server #1282's same-run lease fence seeks its run.
+fn fence_seeks_run(plan: &Value) -> bool {
+    match plan {
+        Value::Object(fields) => {
+            (fields.get("table_name").and_then(Value::as_str) != Some("o")
+                || fields.get("key").and_then(Value::as_str) == Some("workflow_tasks_workflow_run_id_index"))
+                && fields.values().all(fence_seeks_run)
+        }
+        Value::Array(items) => items.iter().all(fence_seeks_run),
+        _ => true,
+    }
+}
+
 #[test]
 fn the_plan_guard_rejects_a_queue_sort_even_when_another_range_uses_the_index() {
     let range = json!({"query_block":{"table":{"table_name":"t","key":"dw_workflow_tasks_scoped_dispatch",
@@ -122,20 +136,38 @@ store_methods! {
     }
 
     async fn mysql_candidate_scope_work(&self, queue: &str, at: chrono::DateTime<chrono::Utc>) {
+        // This measures the dispatch range alone. The same-run lease fence
+        // (Server #1282) probes each candidate's run through its run index,
+        // which reads that run's task rows; this fixture puts thousands of
+        // tasks on one run. The fence is kept as a bound no-op so the
+        // parameters keep their positions.
+        fn dispatch_range(sql: &str) -> String {
+            let start = "AND (t.task_type<>'workflow' OR ";
+            let end = "<>'workflow_update')) ";
+            let mut sql = sql.to_owned();
+            while let Some(from) = sql.find(start) {
+                let to = from + sql[from..].find(end).expect("the fence ends") + end.len();
+                sql.replace_range(from..to, "AND ? IS NOT NULL ");
+            }
+            sql
+        }
+        let bind = |sql: String| {
+            let mut query = sqlx::query::<DB>(AssertSqlSafe(sql));
+            for _ in 0..2 {
+                query = query.bind(self.namespace.as_ref()).bind(queue.to_owned()).bind("workflow")
+                    .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(None::<&str>).bind(DB::bind_time(at));
+            }
+            query
+        };
         let mut connection = self.pool.acquire().await.unwrap();
         let before = Self::mysql_candidate_read_next(&mut connection).await;
-        let expected = self.task_candidate_query(queue,"workflow",None,at,at,false)
+        let expected = bind(dispatch_range(&DB::statement(DB::TASK_CANDIDATES_SQL)))
             .fetch_all(&mut *connection).await.unwrap();
         let bounded = Self::mysql_candidate_read_next(&mut connection).await - before;
         // Reproduce the rejected cross-tenant index choice with the same
         // query/filter/page shape and the corrected positional parameters.
-        let sql = DB::statement(DB::TASK_CANDIDATES_SQL).replace("FORCE INDEX (dw_workflow_tasks_scoped_dispatch)",
-            "FORCE INDEX (workflow_tasks_dispatch_order_index)");
-        let mut old = sqlx::query::<DB>(AssertSqlSafe(sql));
-        for _ in 0..2 {
-            old = old.bind(self.namespace.as_ref()).bind(queue).bind("workflow")
-                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(None::<&str>);
-        }
+        let old = bind(dispatch_range(&DB::statement(DB::TASK_CANDIDATES_SQL)).replace("FORCE INDEX (dw_workflow_tasks_scoped_dispatch)",
+            "FORCE INDEX (workflow_tasks_dispatch_order_index)"));
         let before = Self::mysql_candidate_read_next(&mut connection).await;
         let actual = old.fetch_all(&mut *connection).await.unwrap();
         let cross_tenant = Self::mysql_candidate_read_next(&mut connection).await - before;
@@ -180,11 +212,16 @@ store_methods! {
                 let available = if index % 5 == 0 {None} else {Some(if index % 11 == 0 {future} else {past})};
                 let lease = if index % 16 == 0 {None} else {Some(if index % 8 == 0 {past} else {future})};
                 let build = match index % 7 { 0 => Some("other"), 1 => Some("build"), 2 => Some(""), _ => None };
-                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at,lease_expires_at,compatibility) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+                // A live lease that the lease condition excludes is an
+                // update task, so it does not also fence the run's other
+                // workflow tasks (Server #1282) and the ranges stay populated.
+                let live = index % 4 == 0 && lease.is_some_and(|lease| lease > at);
+                Self::query("INSERT INTO workflow_tasks(id,workflow_run_id,namespace,queue,task_type,status,priority,available_at,lease_expires_at,compatibility,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
                     .bind(id()).bind(&runs[index % runs.len()]).bind(self.namespace.as_ref())
                     .bind(if index % 19 == 0 {"elsewhere"} else {queue.as_str()}).bind(kind)
                     .bind(if index % 4 == 0 {"leased"} else {"ready"}).bind(if index == 24 {1} else {5 + (index % 3) as i64})
                     .bind(DB::optional_time(available)).bind(DB::optional_time(lease)).bind(build)
+                    .bind(DB::document(&if live { json!({"resume_source_kind":"workflow_update"}) } else { json!({}) }))
                     .execute(&mut *transaction).await.unwrap();
             }
         }
@@ -204,6 +241,11 @@ store_methods! {
         }
         transaction.commit().await.unwrap();
         let predecessor = super::store::task_candidates_sql!("FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_poll) STRAIGHT_JOIN workflow_runs r", "100");
+        // The shared template reads JSON with PostgreSQL's operator.
+        let predecessor: &'static str = Box::leak(predecessor
+            .replace("t.payload->>'resume_source_kind'", "JSON_UNQUOTE(JSON_EXTRACT(t.payload,'$.resume_source_kind'))")
+            .replace("o.payload->>'resume_source_kind'", "JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.resume_source_kind'))")
+            .into_boxed_str());
         for statistics in ["before", "after"] {
             if statistics == "after" {
                 Self::query("ANALYZE TABLE workflow_tasks,workflow_runs").execute(&self.pool).await.unwrap();
@@ -212,7 +254,7 @@ store_methods! {
             for kind in ["workflow", "activity"] {
                 for build in [None,Some("build"),Some("other")] {
                     let old = Self::query(predecessor).bind(self.namespace.as_ref()).bind(&queue).bind(kind)
-                        .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(build).fetch_all(&self.pool).await.unwrap();
+                        .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(build).bind(DB::bind_time(at)).fetch_all(&self.pool).await.unwrap();
                     let new = self.task_candidate_query(&queue, kind, build, at, at, false).fetch_all(&self.pool).await.unwrap();
                     let identities = |rows: &[DB::Row]| rows.iter().map(|row|
                         (DB::string(row,"id").unwrap(),DB::string(row,"workflow_type").unwrap())).collect::<Vec<_>>();
@@ -231,12 +273,13 @@ store_methods! {
                         let mut explain = sqlx::query::<DB>(AssertSqlSafe(format!("EXPLAIN FORMAT=JSON {}",DB::statement(sql))));
                         for _ in 0..2 {
                             explain = explain.bind(self.namespace.as_ref()).bind(&queue).bind(kind)
-                                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(build);
+                                .bind(DB::bind_time(at)).bind(DB::bind_time(at)).bind(build).bind(DB::bind_time(at));
                         }
                         let row = explain.fetch_one(&self.pool).await.unwrap();
                         let plan: Value = serde_json::from_str(&DB::string(&row,"EXPLAIN").unwrap()).unwrap();
                         println!("mysql_status_candidate_plan statistics={statistics} kind={kind} build={build:?} first={first}: {plan}");
                         assert!(ordered_ranges(&plan, kind == "activity"), "each status range must arrive in dispatch order: {plan}");
+                        assert!(fence_seeks_run(&plan), "the same-run fence must seek its run: {plan}");
                     }
                 }
             }

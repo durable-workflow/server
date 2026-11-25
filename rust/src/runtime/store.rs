@@ -115,7 +115,7 @@ const MESSAGE_STREAM_SIGNAL: &str = super::message_streams::INTERNAL_SIGNAL;
 // other open task.
 macro_rules! task_candidates_sql {
     ($tables:literal, $limit:literal) => {
-        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity')) AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit)
+        concat!("SELECT t.*,r.workflow_type ", $tables, " ON r.id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type=$3 AND t.status IN ('ready','leased') AND (r.status IN ('pending','running','waiting') OR (r.status='cancelled' AND t.task_type='activity')) AND (t.status='ready' OR (t.status='leased' AND t.task_type='workflow' AND t.lease_expires_at<=$4)) AND (t.available_at IS NULL OR t.available_at<=$5) AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=$6) AND (t.task_type<>'workflow' OR COALESCE(t.payload->>'resume_source_kind','')='workflow_update' OR NOT EXISTS (SELECT 1 FROM workflow_tasks o WHERE o.workflow_run_id=t.workflow_run_id AND o.task_type='workflow' AND o.status='leased' AND o.id<>t.id AND o.lease_expires_at>$7 AND COALESCE(o.payload->>'resume_source_kind','')<>'workflow_update')) ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit)
     };
 }
 #[cfg(test)]
@@ -2670,36 +2670,22 @@ where
             return Ok(false);
         }
         let at = now();
-        if kind != "workflow" {
-            return Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
-                .fetch_optional(&self.pool)
-                .await?
-                .is_some());
-        }
-        let candidates = self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
-            .fetch_all(&self.pool)
-            .await?;
-        // A workflow task whose run holds another live lease cannot be
-        // claimed (Server #1282), so it does not wake the claim. A full first
-        // page may hide claimable tasks behind fenced ones; the claim reads on.
-        for task in &candidates {
-            if update_task(&DB::document_row(task, "payload")?)
-                || !Self::same_run_lease_held(&self.pool, &DB::string(task, "workflow_run_id")?, &DB::string(task, "id")?, at).await?
-            {
-                return Ok(true);
-            }
-        }
-        Ok(candidates.len() >= super::priority_fairness::FAIRNESS_BATCH)
+        Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some())
     }
 
     /// Server #1282: whether another workflow task of the run holds a live
     /// lease. Both tasks would replay the same history and author the same
     /// next commands, so the run's other workflow tasks stay ready until that
     /// lease completes or expires. Update tasks keep their own authority and
-    /// neither wait for nor hold back the run's other tasks. Expiry is
-    /// compared after decoding, so each backend's stored timestamp shapes
-    /// compare alike. A lease without an expiry never fences, so it cannot
-    /// strand the run's later work.
+    /// neither wait for nor hold back the run's other tasks. A lease without
+    /// an expiry never fences, so it cannot strand the run's later work.
+    /// Every candidate query applies the same fence in SQL (`NOT EXISTS`), so
+    /// a fenced task is never claimed, offered or reported ready, and never
+    /// fills a candidate page ahead of other runs' work. This check covers the
+    /// scoped claim, which selects one task by id.
     pub(super) async fn same_run_lease_held<'e, E>(executor: E, run_id: &str, task_id: &str, at: DateTime<Utc>) -> Result<bool>
     where
         E: Executor<'e, Database = DB>,
@@ -2723,7 +2709,7 @@ where
         // MySQL's positional protocol needs the same values for both ranges.
         for _ in 0..DB::TASK_CANDIDATE_BIND_SETS {
             query = query.bind(self.namespace.as_ref()).bind(queue).bind(kind)
-                .bind(DB::bind_time(lease_at)).bind(DB::bind_time(ready_at)).bind(build);
+                .bind(DB::bind_time(lease_at)).bind(DB::bind_time(ready_at)).bind(build).bind(DB::bind_time(lease_at));
         }
         query
     }
@@ -3271,9 +3257,10 @@ where
             DB::optional_instant(&task, "lease_expires_at")?;
             let run_id = DB::string(&task, "workflow_run_id")?;
             let mut task_payload = DB::document_row(&task, "payload")?;
-            // Server #1282: one live workflow task lease per run. The check
-            // runs under the transition lock, which every node shares.
-            if kind == "workflow" && !update_task(&task_payload)
+            // Server #1282: one live workflow task lease per run, under the
+            // transition lock every node shares. Candidate pages are fenced in
+            // SQL. A scoped claim selects its task by id, so it checks here.
+            if kind == "workflow" && tx.claim_only.is_some() && !update_task(&task_payload)
                 && Self::same_run_lease_held(&mut **tx, &run_id, &DB::string(&task, "id")?, lease_at).await?
             {
                 continue;
