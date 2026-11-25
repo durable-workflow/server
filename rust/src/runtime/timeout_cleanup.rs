@@ -126,6 +126,9 @@ pub(super) fn observation_event(status: &str) -> Option<&'static str> {
 /// terminal event. Only string fields are kept; nothing is reported when
 /// cleanup was never recorded.
 pub(super) fn observation(event_type: &str, payload: &Value) -> Option<Value> {
+    if !payload.is_object() {
+        return None;
+    }
     let mut observed = serde_json::Map::new();
     if event_type == "WorkflowTimeoutCleanupStarted" {
         observed.insert("outcome".into(), json!("running"));
@@ -579,7 +582,11 @@ mod tests {
     fn the_observation_follows_embedded() {
         assert_eq!(observation_event("waiting"), Some("WorkflowTimeoutCleanupStarted"));
         assert_eq!(observation_event("failed"), Some("WorkflowTimedOut"));
-        assert_eq!(observation_event("completed"), None);
+        assert_eq!(observation_event("completed"), None, "completed and continued-as-new runs report nothing");
+        assert_eq!(observation_event("cancelled"), Some("WorkflowCancelled"));
+        assert_eq!(observation_event("terminated"), Some("WorkflowTerminated"));
+        assert_eq!(observation_event("pending"), Some("WorkflowTimeoutCleanupStarted"));
+        assert_eq!(observation("WorkflowTimeoutCleanupStarted", &Value::Null), None);
         let entered = json!({"timeout_kind": "run", "work_deadline_at": "w", "cleanup_deadline_at": "c",
             "hard_deadline_at": "h", "detected_at": "d", "workflow_command_id": "x"});
         assert_eq!(observation("WorkflowTimeoutCleanupStarted", &entered), Some(json!({"outcome": "running",

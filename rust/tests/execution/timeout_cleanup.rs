@@ -393,6 +393,8 @@ async fn terminate_and_hard_cancel_preempt_cleanup() {
         let closed = terminal(&history, event);
         assert_eq!(closed["timeout_cleanup"]["outcome"], "preempted", "{closed}");
         assert_eq!(closed["timeout_cleanup"]["timeout_kind"], "execution");
+        let (_, observed) = request(&app, "GET", &format!("/api/workflows/{workflow}/runs/{}/observation", run.as_str().unwrap()), Value::Null).await;
+        assert_eq!(observed["timeout_cleanup"], closed["timeout_cleanup"], "{observed}");
     }
 }
 
