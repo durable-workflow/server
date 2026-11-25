@@ -13,6 +13,8 @@ mod signal_apply;
 mod completion_uploads;
 #[path = "external_payloads/retention.rs"]
 mod retention;
+#[path = "external_payloads/retention_plan_holds.rs"]
+mod retention_plan_holds;
 #[path = "external_payloads/namespace_delete.rs"]
 mod namespace_delete;
 #[path = "external_payloads/carried_polls.rs"]
