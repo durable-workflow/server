@@ -2520,8 +2520,9 @@ components:
       description: >-
         The instant this run's replay starts from, for a replay-safe workflow
         clock at ordinary entry (.github#215). Workflow tasks, query tasks and
-        update-validation tasks of a run carry the same value. Optional: absent when the
-        server cannot prove it. started_at is not lease, dispatch or history
+        update-validation tasks of a run carry the same value. On workflow
+        tasks absent when unproved; query and update-validation tasks send
+        null instead. started_at is not lease, dispatch or history
         insertion time. An ordinary, continued or child run uses its own
         start; a redrive successor uses the replay anchor its WorkflowStarted
         recorded, only when the redrive command and link agree. A later lease
