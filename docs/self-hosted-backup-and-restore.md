@@ -10,6 +10,10 @@ restored hold before any Server process starts, run the image's offline
 (`backup-hold inspect` reads the hold without changing anything). The
 owner UUID, TTL limits and status checks are the same; see
 [coordinating online backups](contracts/external-payload-storage.md#coordinating-online-backups).
+To keep one run's history and its external payload bytes beyond retention, use
+a [self-contained verified history archive](history-archives.md) instead of a
+database recovery point. Archives use the same hold, so do not run one during a
+backup.
 
 This procedure applies to the published single-node Compose stack with MySQL,
 Redis, and a shared S3-compatible external-payload store. A backup is a recovery

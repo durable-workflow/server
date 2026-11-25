@@ -4,6 +4,7 @@ pub mod codec;
 pub mod config_audit;
 pub mod database_tls;
 pub mod external_payload;
+pub mod history_archive;
 pub mod runtime;
 pub mod statement_cache;
 

@@ -356,6 +356,28 @@ async fn backup_hold_command() -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// `history-archive verify <dir>` (Server #520): verify a self-contained
+/// history archive from its files alone, with no database, payload store or
+/// network. Prints the v1 verification report; exits non-zero unless the
+/// outcome is `verified`.
+fn history_archive_command() -> Result<(), Box<dyn Error>> {
+    use durable_workflow_server::history_archive;
+    let args: Vec<String> = env::args().skip(2).collect();
+    let [action, dir] = args.as_slice() else {
+        return Err("usage: history-archive verify <archive-directory>".into());
+    };
+    if action != "verify" {
+        return Err("usage: history-archive verify <archive-directory>".into());
+    }
+    let report = history_archive::verify(std::path::Path::new(dir));
+    println!("{report}");
+    if report["outcome"] == "verified" {
+        Ok(())
+    } else {
+        Err(format!("history archive {}", report["outcome"].as_str().unwrap_or("refused")).into())
+    }
+}
+
 /// A release build carries the version of its `native-` tag, built in as
 /// `DW_SERVER_VERSION`, and starts without the opt-in. A development build
 /// (no release version) still requires `DW_RUST_EXPERIMENTAL=1`, so an
@@ -370,6 +392,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     }
     if env::args().nth(1).as_deref() == Some("backup-hold") {
         return backup_hold_command().await;
+    }
+    if env::args().nth(1).as_deref() == Some("history-archive") {
+        return history_archive_command();
     }
     if let Some(command) = env::args().nth(1) {
         if env::args().count() != 2
