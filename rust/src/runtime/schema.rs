@@ -11,13 +11,50 @@ use tokio::sync::OnceCell;
 
 use super::{Result, refuse};
 
-pub(super) const VERSION: i64 = 19;
+pub(super) const VERSION: i64 = 20;
 
 fn migrator() -> &'static Migrator {
     static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
     MIGRATOR.get_or_init(|| {
         Migrator::with_migrations(vec![Migration::new(
             VERSION,
+            "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index".into(),
+            MigrationType::Simple,
+            concat!(
+                include_str!("../../migrations/sqlite/0003_full_schema.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0004_worker_incarnations.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0011_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/sqlite/0013_command_intents.sql"), "\n", include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/sqlite/0015_external_storage_bindings.sql"), "\n", include_str!("../../migrations/sqlite/0016_child_supervisions.sql"), "\n", include_str!("../../migrations/sqlite/0017_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/sqlite/0018_workflow_task_lease_loss.sql"), "\n", include_str!("../../migrations/sqlite/0019_child_summary_checkpoints.sql"), "\n", include_str!("../../migrations/sqlite/0020_same_run_fence_index.sql")
+            )
+            .into_sql_str(),
+            false,
+        )])
+    })
+}
+
+// Retain the released schema-19 bootstrap and checksum (3.29.0).
+fn retained_v19_migrator() -> &'static Migrator {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    MIGRATOR.get_or_init(|| {
+        Migrator::with_migrations(vec![Migration::new(
+            19,
             "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints".into(),
             MigrationType::Simple,
             concat!(
@@ -246,6 +283,7 @@ fn earlier_migration(version: i64) -> Option<&'static Migration> {
     static V12: OnceLock<Migration> = OnceLock::new();
     static V13: OnceLock<Migration> = OnceLock::new();
     match version {
+        19 => retained_v19_migrator().iter().next(),
         18 => retained_v18_migrator().iter().next(),
         17 => retained_v17_migrator().iter().next(),
         16 => retained_v16_migrator().iter().next(),
@@ -436,6 +474,7 @@ fn earlier_migration(version: i64) -> Option<&'static Migration> {
 /// Each ends by moving the ownership marker to its own version.
 fn step(version: i64) -> Option<&'static str> {
     match version {
+        19 => Some(include_str!("../../migrations/sqlite/0020_same_run_fence_index.sql")),
         18 => Some(include_str!("../../migrations/sqlite/0019_child_summary_checkpoints.sql")),
         17 => Some(include_str!("../../migrations/sqlite/0018_workflow_task_lease_loss.sql")),
         16 => Some(include_str!("../../migrations/sqlite/0017_maintenance_scan_indexes.sql")),
@@ -558,7 +597,7 @@ pub(super) fn native_relations_sql() -> Result<String> {
                 "\n",
                 include_str!("../../migrations/sqlite/0012_task_queue_pauses.sql"),
                 "\n",
-                include_str!("../../migrations/sqlite/0013_command_intents.sql"), "\n", include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/sqlite/0015_external_storage_bindings.sql"), "\n", include_str!("../../migrations/sqlite/0016_child_supervisions.sql"), "\n", include_str!("../../migrations/sqlite/0017_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/sqlite/0018_workflow_task_lease_loss.sql"), "\n", include_str!("../../migrations/sqlite/0019_child_summary_checkpoints.sql")
+                include_str!("../../migrations/sqlite/0013_command_intents.sql"), "\n", include_str!("../../migrations/sqlite/0014_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/sqlite/0015_external_storage_bindings.sql"), "\n", include_str!("../../migrations/sqlite/0016_child_supervisions.sql"), "\n", include_str!("../../migrations/sqlite/0017_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/sqlite/0018_workflow_task_lease_loss.sql"), "\n", include_str!("../../migrations/sqlite/0019_child_summary_checkpoints.sql"), "\n", include_str!("../../migrations/sqlite/0020_same_run_fence_index.sql")
         ),
     )
 }
@@ -687,6 +726,45 @@ pub(super) async fn bootstrap(connection: &mut SqliteConnection) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn run_fence_predecessor_keeps_its_released_checksum() {
+        let hex: String = earlier_migration(19).unwrap().checksum.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(hex, include_str!("../../migrations/sqlite/0019_checksum.txt").trim());
+        assert!(!earlier_migration(19).unwrap().sql.as_ref().contains("dw_workflow_tasks_run_fence"));
+        let sql: &str = migrator().iter().next().unwrap().sql.as_ref();
+        assert_eq!(sql.matches("CREATE INDEX dw_workflow_tasks_run_fence ON workflow_tasks (workflow_run_id, task_type, status);").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn version_19_upgrade_adds_the_run_fence_index_and_keeps_tasks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("v19.sqlite");
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new().filename(&path).create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        retained_v19_migrator().run(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,attempt_count) VALUES ('kept-task','run','workflow','leased',3)")
+            .execute(&mut connection).await.unwrap();
+        connection.close().await.unwrap();
+        assert_eq!(reason(super::super::sqlite::open(path.to_str().unwrap()).await).await, "native_schema_upgrade_required");
+
+        let report = super::super::schema_upgrade::upgrade_sqlite(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(report["from_schema_version"], 19);
+        assert_eq!(report["schema_version"], 20);
+        let pool = super::super::sqlite::open(path.to_str().unwrap()).await.unwrap();
+        let kept: (String, i64) = sqlx::query_as("SELECT status,attempt_count FROM workflow_tasks WHERE id='kept-task'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(kept, ("leased".into(), 3));
+        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as("EXPLAIN QUERY PLAN SELECT id FROM workflow_tasks WHERE workflow_run_id='run' AND task_type='workflow' AND status='leased'")
+            .fetch_all(&pool).await.unwrap();
+        assert!(plan.iter().any(|row| row.3.contains("USING INDEX dw_workflow_tasks_run_fence (workflow_run_id=? AND task_type=? AND status=?)")), "{plan:?}");
+        sqlx::query("DROP INDEX dw_workflow_tasks_run_fence").execute(&pool).await.unwrap();
+        pool.close().await;
+        assert_eq!(reason(super::super::sqlite::open(path.to_str().unwrap()).await).await, "native_schema_catalog_mismatch");
+    }
 
     #[tokio::test]
     async fn version_18_upgrade_installs_child_checkpoint_guards_without_inventing_evidence() {

@@ -10,9 +10,16 @@ fn status_index(line: &str) -> bool {
         "workflow_tasks_status_available_at_index", "dw_workflow_tasks_scoped_dispatch"].iter().any(|name| line.contains(name))
 }
 
+/// The same-run fence probe (Server #1282) on its own index (Server #1327).
+const FENCE_INDEX: &str = "dw_workflow_tasks_run_fence";
+
 fn postgres_live_status_seek(plan: &[String]) -> bool {
     let mut found = false;
     for (index, line) in plan.iter().enumerate() {
+        // The fence probe reads one run's tasks, not a status range.
+        if line.contains(FENCE_INDEX) || line.contains(" on workflow_tasks o ") || line.contains(" on workflow_tasks o_") {
+            continue;
+        }
         if line.contains("Index Scan") && (line.contains("workflow_tasks_") || line.contains("dw_workflow_tasks_")) {
             if !status_index(line) || !plan.get(index + 1).is_some_and(|next| next.contains("Index Cond:") && next.contains("status")) {
                 return false;
@@ -36,6 +43,20 @@ fn mysql_live_status_seek(plan: &serde_json::Value) -> bool {
         serde_json::Value::Object(fields) => fields.values().any(mysql_live_status_seek),
         serde_json::Value::Array(values) => values.iter().any(mysql_live_status_seek),
         _ => false,
+    }
+}
+
+/// The index each MySQL fence probe (`o`) reads.
+fn mysql_fence_keys(plan: &serde_json::Value, keys: &mut Vec<String>) {
+    match plan {
+        serde_json::Value::Object(fields) => {
+            if fields.get("table_name").and_then(serde_json::Value::as_str) == Some("o") {
+                keys.push(fields.get("key").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned());
+            }
+            for child in fields.values() { mysql_fence_keys(child, keys); }
+        }
+        serde_json::Value::Array(values) => for value in values { mysql_fence_keys(value, keys); },
+        _ => {}
     }
 }
 
@@ -244,6 +265,22 @@ store_methods! {
                     _ => unreachable!(),
                 }
                 assert!(!plan.iter().any(|line| line.contains("Seq Scan on workflow_tasks") || line == "SCAN t"), "{plan:?}");
+                if !wake {
+                    // The fence probe never walks every task of the run.
+                    match DB::NAME {
+                        "SQLite" => {
+                            let probe = format!("INDEX {FENCE_INDEX} (workflow_run_id=? AND task_type=? AND status=?)");
+                            assert!(plan.iter().any(|line| line.starts_with("SEARCH o USING ") && line.ends_with(&probe)), "{plan:?}");
+                            assert!(!plan.iter().any(|line| line.contains("workflow_tasks_workflow_run_id_index") || line == "SCAN o"), "{plan:?}");
+                        }
+                        "PostgreSQL" => assert!(!plan.iter().any(|line| line.contains("workflow_tasks_workflow_run_id_index")), "{plan:?}"),
+                        _ => {
+                            let mut keys = Vec::new();
+                            for line in &plan { mysql_fence_keys(&serde_json::from_str(line).unwrap(), &mut keys); }
+                            assert!(!keys.is_empty() && keys.iter().all(|key| key == FENCE_INDEX), "{plan:?}");
+                        }
+                    }
+                }
             }
         }
     }

@@ -202,6 +202,7 @@ pub(super) fn native_object(name: &str) -> bool {
                 | "dw_workflow_runs_status_deadline"
                 | "dw_activity_executions_status"
                 | "dw_workflow_run_summaries_retention"
+                | "dw_workflow_tasks_run_fence"
         )
 }
 

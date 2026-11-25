@@ -137,6 +137,7 @@ mod repair_candidates;
 mod repair_pass;
 mod retention;
 mod retention_payloads;
+mod retention_plan;
 mod runtime_credentials;
 mod run_observation;
 mod run_observation_store;

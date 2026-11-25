@@ -32,13 +32,13 @@ pub(super) const INTERRUPTION: &str = "timeout_cleanup";
 /// The largest admitted allowance.
 pub(super) const MAX_ALLOWANCE_SECONDS: i64 = 86_400;
 /// Whether `/api/cluster/info` and worker responses advertise
-/// `timeout_cleanup: {supported: true, version: 1}`. Off until installed
-/// cross-language acceptance against native passes every #1201 item: an SDK
-/// worker that advertises the capability and delivers the typed timeout
-/// interruption, the shared vectors 1-12 on every backend, and a published
-/// SDK/Server tuple. Admission does not depend on it: a start is refused
-/// unless an eligible worker on its queue advertises support.
-pub(super) const ADVERTISED: bool = false;
+/// `timeout_cleanup: {supported: true, version: 1}`. On since installed
+/// acceptance of the contract vectors 1-12 passed against published native
+/// with the published PHP SDK 3.31.0 worker, the first SDK that advertises
+/// the capability and sends the interruption marker. Admission does not
+/// depend on it: a start is refused unless an eligible worker on its queue
+/// advertises support.
+pub(super) const ADVERTISED: bool = true;
 
 const REASON: &str = "Workflow work deadline passed; timeout cleanup requested.";
 
@@ -113,7 +113,7 @@ pub(super) fn worker_supports(capabilities: &Value, manifest: &Value) -> bool {
     listed && entry["supported"] == Value::Bool(true) && entry.get("version").is_none_or(|version| version == 1)
 }
 
-/// The server's advertisement, when enabled.
+/// The server's advertisement.
 pub(super) fn advertisement() -> Option<Value> {
     ADVERTISED.then(|| json!({"supported": true, "version": 1}))
 }
@@ -379,13 +379,15 @@ store_methods! {
         Ok(())
     }
 
-    /// Describe's `timeout_cleanup` (a native addition, registered as the
-    /// `describe-timeout-cleanup-state` divergence: embedded describe shows
-    /// neither the state nor the outcome). Only an opted-in run has it:
+    /// Describe's `timeout_cleanup`, registered as the
+    /// `describe-timeout-cleanup-state` divergence: embedded Workflow 2.40.0
+    /// reports only entered or finished cleanup, with the same `outcome`
+    /// values. Only an opted-in run has it:
     /// `armed` before the work deadline is noticed,
-    /// `cancellation_cleanup_running` with `cause: timeout` while the
-    /// engine's request is open, then `finished` with the recorded outcome,
-    /// or `not_entered` when the run closed without entering cleanup.
+    /// `cancellation_cleanup_running` with `cause: timeout` and the portable
+    /// `outcome: running` while the engine's request is open, then
+    /// `finished` with the recorded outcome, or `not_entered` when the run
+    /// closed without entering cleanup.
     pub(super) async fn timeout_cleanup_view(executor: &mut DB::Connection, run: &DB::Row) -> Result<Option<Value>> {
         let execution = DB::optional_instant(run, "execution_deadline_at")?;
         let run_deadline = DB::optional_instant(run, "run_deadline_at")?;
@@ -422,7 +424,7 @@ store_methods! {
             "work_deadline_at": entered.get("work_deadline_at").cloned().unwrap_or_else(|| json!(iso(hard - chrono::Duration::seconds(allowance)))),
             "cleanup_deadline_at": entered.get("cleanup_deadline_at").cloned().unwrap_or_else(|| json!(iso(hard))),
             "started_at": entered.get("detected_at").cloned().unwrap_or(Value::Null),
-            "outcome": outcome.get("outcome").cloned().unwrap_or(Value::Null),
+            "outcome": if state == "cancellation_cleanup_running" { json!("running") } else { outcome.get("outcome").cloned().unwrap_or(Value::Null) },
             "failure_id": outcome.get("failure_id").cloned().unwrap_or(Value::Null)})))
     }
 
@@ -515,7 +517,7 @@ mod tests {
         assert!(!worker_supports(&json!([]), &manifest));
         assert!(!worker_supports(&json!(["timeout_cleanup"]), &json!({"timeout_cleanup": {"supported": false}})));
         assert!(!worker_supports(&json!(["timeout_cleanup"]), &json!({"timeout_cleanup": {"supported": true, "version": 2}})));
-        assert!(advertisement().is_none(), "advertisement stays off until installed cross-language acceptance");
+        assert_eq!(advertisement(), Some(json!({"supported": true, "version": 1})));
     }
 
     #[test]

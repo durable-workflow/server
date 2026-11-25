@@ -1,6 +1,8 @@
 use super::*;
 #[path = "external_payloads/backup_hold.rs"]
 mod backup_hold;
+#[path = "external_payloads/history_archive.rs"]
+mod history_archive;
 #[path = "external_payloads/cleanup.rs"]
 mod cleanup;
 #[path = "external_payloads/claim_prune_race.rs"]
@@ -13,6 +15,8 @@ mod signal_apply;
 mod completion_uploads;
 #[path = "external_payloads/retention.rs"]
 mod retention;
+#[path = "external_payloads/retention_plan_holds.rs"]
+mod retention_plan_holds;
 #[path = "external_payloads/namespace_delete.rs"]
 mod namespace_delete;
 #[path = "external_payloads/carried_polls.rs"]

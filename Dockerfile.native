@@ -24,8 +24,14 @@ ENV DW_SERVER_VERSION=${DW_SERVER_VERSION} \
     CARGO_PROFILE_RELEASE_DEBUG=0
 WORKDIR /source/rust
 COPY rust/ /source/rust/
+# cargo-auditable embeds the crate dependency list in the binary, so the
+# release SBOM lists the Rust crates as well as the Debian packages
+# (Server #1012). It is installed at an exact version with its own lock file
+# and does not change the compiled code. Its tool directory stays in this
+# build stage; only the server binary is copied into the runtime image.
+RUN cargo install cargo-auditable --version 0.7.7 --locked --root /opt/cargo-auditable
 # --locked: every crate is the one Cargo.lock names, checksum included.
-RUN cargo build --release --locked \
+RUN PATH=/opt/cargo-auditable/bin:$PATH cargo auditable build --release --locked \
     && install -m 0755 target/release/durable-workflow-server /durable-workflow-server
 
 # A digest-pinned slim runtime: glibc for the binary, nothing else. TLS uses

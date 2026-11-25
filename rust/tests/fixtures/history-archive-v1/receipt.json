@@ -1,0 +1,18 @@
+{
+  "schema": "durable-workflow.history-archive.receipt.v1",
+  "format_version": 1,
+  "outcome": "verified",
+  "verification": "cold",
+  "verified_at": "2026-11-25T00:00:02Z",
+  "manifest_sha256": "585d1247773ab074879d5f995437339d756d3ef7209f04fe78b1e666ab8bb259",
+  "history_sha256": "8ee504c13e14f0a5b1c2c040dea29c9e2f128c2a6288e3eac7ffcf4d6b35fae3",
+  "object_count": 2,
+  "object_bytes": 11,
+  "hold": {
+    "kind": "durable-workflow.external-payload-backup-hold.v1",
+    "owner": "7f1c3a1e-0000-4000-8000-000000000001",
+    "acquired_at": "2026-11-25 00:00:00",
+    "expires_at": "2026-11-25 00:15:00",
+    "confirmed_at": "2026-11-25 00:00:02"
+  }
+}

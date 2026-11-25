@@ -206,6 +206,8 @@ mod input_envelopes;
 mod workflow_repair;
 #[path = "execution/history_retention.rs"]
 mod history_retention;
+#[path = "execution/retention_plan.rs"]
+mod retention_plan;
 #[path = "execution/repair_status.rs"]
 mod repair_status;
 #[path = "execution/repair_pass.rs"]
