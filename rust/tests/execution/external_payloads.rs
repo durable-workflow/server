@@ -3,6 +3,8 @@ use super::*;
 mod backup_hold;
 #[path = "external_payloads/cleanup.rs"]
 mod cleanup;
+#[path = "external_payloads/claim_prune_race.rs"]
+mod claim_prune_race;
 #[path = "external_payloads/commands.rs"]
 mod commands;
 #[path = "external_payloads/signal_apply.rs"]
