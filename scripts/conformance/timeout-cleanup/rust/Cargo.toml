@@ -1,0 +1,20 @@
+[package]
+name = "tc-worker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Installed timeout-cleanup worker (Server #1201) on the published Rust SDK"
+
+[[bin]]
+name = "tc-worker"
+path = "src/main.rs"
+
+[dependencies]
+# run.sh rewrites this line to the exact published version or a source path.
+durable-workflow = "4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+libc = "0.2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[profile.release]
+debug = false
