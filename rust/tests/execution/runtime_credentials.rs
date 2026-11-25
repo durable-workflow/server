@@ -130,3 +130,29 @@ async fn a_failed_credential_lookup_refuses_without_falling_back() {
     runtime.close().await;
     database.remove().await;
 }
+
+// A credential lookup the database cannot answer for now, as during a
+// failover, is a retryable 503 with Retry-After on both planes, not a 500.
+// Configured tokens never need the database and still authenticate.
+#[tokio::test]
+async fn an_unreachable_credential_store_answers_a_retryable_503() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone().with_auth_options(false, true));
+    assert_eq!(admin(&app, "PUT", "/api/runtime-credentials/worker-a", credential(WORKER_TOKEN, json!(["worker"]), "default")).await.0, StatusCode::CREATED);
+    // Closing the pool makes every lookup fail as a lost database connection does.
+    runtime.close().await;
+    for (worker, path, version) in [(false, "/api/cluster/info", "2"), (true, "/api/worker/heartbeat", "1.20")] {
+        let (status, headers, body) = admission_http(&app, if worker { "POST" } else { "GET" }, path, worker, Some(WORKER_TOKEN), Some(version), None, json!({})).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}: {body}");
+        assert_eq!((body["reason"].clone(), body["retryable"].clone(), body["retry_after_seconds"].clone()),
+            (json!("backend_unavailable"), json!(true), json!(1)), "{path}: {body}");
+        assert_eq!(headers.get("retry-after").and_then(|value| value.to_str().ok()), Some("1"), "{path}");
+        assert!(!body.to_string().contains(WORKER_TOKEN), "{body}");
+        if worker {
+            assert_eq!(body["protocol_version"], "1.20", "{body}");
+        }
+    }
+    assert_ne!(admin(&app, "GET", "/api/cluster/info", Value::Null).await.0, StatusCode::UNAUTHORIZED, "a configured token needs no lookup");
+    database.remove().await;
+}

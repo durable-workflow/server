@@ -537,6 +537,21 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     } else if let (true, Some(provided)) = (runtime.auth.runtime_credentials, provided) {
         match runtime.runtime_credential_principal(provided).await {
             Ok(principal) => principal.map(|principal| (principal, false)),
+            // A database that cannot be reached for now, as during a failover,
+            // is retryable: the same 503 shape and Retry-After as other
+            // transient storage refusals. Only bounded driver codes reach the
+            // log, never the token or the error text.
+            Err(error) if super::worker_incarnations::transient_reason(&error).is_some() => {
+                if let Some(diagnostic) = error.storage_diagnostic() {
+                    eprintln!("{diagnostic}");
+                }
+                let reason = super::worker_incarnations::transient_reason(&error).expect("checked transient");
+                let mut response = admission_error(request, worker, StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"reason":reason,"retryable":true,"retry_after_seconds":CREDENTIAL_RETRY_AFTER_SECONDS,
+                        "message":"Database runtime credential authentication is temporarily unavailable. Retry the request."})).await;
+                response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(CREDENTIAL_RETRY_AFTER_SECONDS));
+                return response;
+            }
             Err(_) => {
                 return admission_error(request, worker, StatusCode::INTERNAL_SERVER_ERROR,
                     json!({"reason":"server_error",
@@ -1206,6 +1221,9 @@ async fn delete_search_attribute(
 ) -> Result<Json<Value>> {
     Ok(Json(runtime.delete_search_attribute(&name).await?))
 }
+
+/// The retry delay a transient runtime credential lookup failure advertises.
+const CREDENTIAL_RETRY_AFTER_SECONDS: u64 = 1;
 
 pub(super) async fn admission_error(
     request: Request,
