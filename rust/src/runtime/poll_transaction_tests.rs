@@ -7,39 +7,44 @@ use tokio::sync::Semaphore;
 #[cfg(debug_assertions)]
 use futures_util::FutureExt;
 
-/// Catches the panic `future` is expected to raise, without the panic report.
+/// Catches the panic `future` is expected to raise, without its panic report.
 ///
 /// The claimed-history negative control trips a debug assertion on purpose
 /// and asserts its message. Reported normally, that caught panic printed
 /// `thread ... panicked at src/runtime/store.rs ... claimed run history
 /// sequence changed before its first page` in every passing run, which read
-/// as a failure. Only a panic raised while this future itself is polled, on
-/// this thread, is silenced; every other panic reaches the previous hook.
+/// as a failure. Only a panic whose message contains `expected`, raised while
+/// this future itself is polled on this thread, is silenced; every other
+/// panic still reaches the previous hook with its location.
 #[cfg(debug_assertions)]
-async fn expected_panic<F: std::future::Future>(future: F) -> std::thread::Result<F::Output> {
+async fn expected_panic<F: std::future::Future>(expected: &'static str, future: F) -> std::thread::Result<F::Output> {
     use std::cell::Cell;
     thread_local! {
-        static EXPECTED: Cell<bool> = const { Cell::new(false) };
+        static EXPECTED: Cell<Option<&'static str>> = const { Cell::new(None) };
     }
-    struct Polling;
+    struct Polling(Option<&'static str>);
     impl Drop for Polling {
         fn drop(&mut self) {
-            EXPECTED.with(|expected| expected.set(false));
+            EXPECTED.with(|current| current.set(self.0));
         }
     }
     static HOOK: std::sync::Once = std::sync::Once::new();
     HOOK.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if !EXPECTED.with(Cell::get) {
+            let payload = info.payload();
+            let message = payload.downcast_ref::<String>().map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied());
+            let silenced = EXPECTED.with(Cell::get)
+                .is_some_and(|expected| message.is_some_and(|message| message.contains(expected)));
+            if !silenced {
                 previous(info);
             }
         }));
     });
     let mut future = std::pin::pin!(future);
     std::panic::AssertUnwindSafe(std::future::poll_fn(move |context| {
-        EXPECTED.with(|expected| expected.set(true));
-        let _polling = Polling;
+        let _polling = Polling(EXPECTED.with(|current| current.replace(Some(expected))));
         future.as_mut().poll(context)
     }))
     .catch_unwind()
@@ -423,6 +428,7 @@ store_methods! {
             Self::append(&mut tx,run_id,"SideEffectRecorded",json!({"sequence":3,"result":null}),None,None)
                 .await.unwrap();
             let refused = expected_panic(
+                "claimed run history sequence changed before its first page",
                 Self::history_page_connection_with_total(&mut *tx,run_id,0,1,Some(last)),
             ).await.expect_err("an intervening history write must trip the debug assertion");
             let message = refused.downcast_ref::<String>().map(String::as_str)
