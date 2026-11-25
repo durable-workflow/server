@@ -9,8 +9,9 @@ fn empty_range_message(range: &Value) -> Option<&str> {
     if block.keys().all(|key| matches!(key.as_str(), "select_id" | "message" | "optimized_away_subqueries")) {
         return block.get("message")?.as_str();
     }
-    // MariaDB wraps a pruned UNION branch's message in an empty table node.
-    if block.keys().any(|key| !matches!(key.as_str(), "select_id" | "operation" | "table"))
+    // MariaDB wraps a pruned UNION branch's message in an empty table node,
+    // and still lists the branch's same-run fence subquery.
+    if block.keys().any(|key| !matches!(key.as_str(), "select_id" | "operation" | "table" | "subqueries"))
         || block.get("operation")?.as_str()? != "UNION"
     { return None; }
     let table = block.get("table")?.as_object()?;
