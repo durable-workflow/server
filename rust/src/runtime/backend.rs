@@ -582,7 +582,10 @@ impl Backend for Postgres {
 }
 
 // Equality on the dispatch index's status prefix preserves each range's
-// order. The outer sort sees at most two bounded candidate pages.
+// order. The outer sort sees at most two bounded candidate pages. The
+// same-run fence probe reads only the run's leased workflow tasks through
+// dw_workflow_tasks_run_fence (Server #1327). MySQL 8.0 otherwise probes
+// through the run index or the global status index.
 macro_rules! mysql_status_candidates {
     ($status:literal, $namespace:literal, $queue:literal, $kind:literal, $lease_at:literal, $ready_at:literal, $build:literal, $fence_at:literal, $limit:literal) => {
         concat!("(SELECT t.*,r.workflow_type FROM workflow_tasks t FORCE INDEX (dw_workflow_tasks_scoped_dispatch) STRAIGHT_JOIN workflow_runs r FORCE INDEX (PRIMARY) ON r.id=t.workflow_run_id ",
@@ -592,7 +595,7 @@ macro_rules! mysql_status_candidates {
             "AND (t.available_at IS NULL OR t.available_at<=", $ready_at, ") ",
             "AND (COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,'')) IS NULL OR COALESCE(NULLIF(t.compatibility,''),NULLIF(r.compatibility,''))=", $build, ") ",
             "AND (t.task_type<>'workflow' OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(t.payload,'$.resume_source_kind')),'')='workflow_update' OR NOT EXISTS (",
-            "SELECT 1 FROM workflow_tasks o FORCE INDEX (workflow_tasks_workflow_run_id_index) WHERE o.workflow_run_id=t.workflow_run_id AND o.task_type='workflow' AND o.status='leased' AND o.id<>t.id ",
+            "SELECT 1 FROM workflow_tasks o FORCE INDEX (dw_workflow_tasks_run_fence) WHERE o.workflow_run_id=t.workflow_run_id AND o.task_type='workflow' AND o.status='leased' AND o.id<>t.id ",
             "AND o.lease_expires_at>", $fence_at, " AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.resume_source_kind')),'')<>'workflow_update')) ",
             "ORDER BY t.priority,t.available_at,t.id LIMIT ", $limit, ")")
     };

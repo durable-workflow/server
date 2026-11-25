@@ -22,14 +22,16 @@ fn require_index_ranges(node: &Value, tasks: &mut usize, runs: &mut usize, in_ra
     assert!(!in_range || !matches!(node["Node Type"].as_str(), Some("Sort" | "Incremental Sort")),
         "a status range must retain index order: {node}");
     match node["Relation Name"].as_str() {
-        // Server #1282's same-run lease fence probes one run's tasks.
+        // Server #1282's same-run lease fence probes only one run's leased
+        // workflow tasks through its own index (Server #1327).
         Some("workflow_tasks") if node["Alias"].as_str().is_some_and(|alias| alias == "o" || alias.starts_with("o_")) => {
-            fn seeks_run(node: &Value) -> bool {
-                (node["Index Name"] == "workflow_tasks_workflow_run_id_index"
-                    && node["Index Cond"].as_str().is_some_and(|condition| condition.contains("workflow_run_id")))
-                    || node["Plans"].as_array().is_some_and(|children| children.iter().any(seeks_run))
+            fn seeks_leases(node: &Value) -> bool {
+                (node["Index Name"] == "dw_workflow_tasks_run_fence"
+                    && node["Index Cond"].as_str().is_some_and(|condition|
+                        ["workflow_run_id", "task_type", "status"].iter().all(|key| condition.contains(key))))
+                    || node["Plans"].as_array().is_some_and(|children| children.iter().any(seeks_leases))
             }
-            assert!(seeks_run(node), "the fence must seek its run: {node}");
+            assert!(seeks_leases(node), "the fence must seek its run's leased workflow tasks: {node}");
             return;
         }
         Some("workflow_tasks") => {

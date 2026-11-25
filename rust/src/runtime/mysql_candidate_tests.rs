@@ -75,17 +75,45 @@ fn ordered_ranges(plan: &Value, activity: bool) -> bool {
     ordered && scans > 0
 }
 
-/// Every probe of Server #1282's same-run lease fence seeks its run.
-fn fence_seeks_run(plan: &Value) -> bool {
-    match plan {
-        Value::Object(fields) => {
-            (fields.get("table_name").and_then(Value::as_str) != Some("o")
-                || fields.get("key").and_then(Value::as_str) == Some("workflow_tasks_workflow_run_id_index"))
-                && fields.values().all(fence_seeks_run)
+/// Every probe of Server #1282's same-run lease fence seeks only its run's
+/// leased workflow tasks, through the fence index (Server #1327). A workflow
+/// candidate plan must contain the probe.
+fn fence_seeks_run(plan: &Value, required: bool) -> bool {
+    fn probes(value: &Value, found: &mut Vec<bool>) {
+        match value {
+            Value::Object(fields) => {
+                if fields.get("table_name").and_then(Value::as_str) == Some("o") {
+                    found.push(fields.get("key").and_then(Value::as_str) == Some("dw_workflow_tasks_run_fence")
+                        && fields.get("used_key_parts").and_then(Value::as_array)
+                            .is_some_and(|parts| ["workflow_run_id", "task_type", "status"].iter()
+                                .all(|part| parts.iter().any(|value| value.as_str() == Some(*part)))));
+                }
+                for child in fields.values() { probes(child, found); }
+            }
+            Value::Array(items) => for item in items { probes(item, found); },
+            _ => {}
         }
-        Value::Array(items) => items.iter().all(fence_seeks_run),
-        _ => true,
     }
+    let mut found = Vec::new();
+    probes(plan, &mut found);
+    found.iter().all(|seek| *seek) && (!required || !found.is_empty())
+}
+
+#[test]
+fn the_fence_guard_requires_the_run_lease_seek() {
+    let probe = json!({"table":{"table_name":"o","key":"dw_workflow_tasks_run_fence",
+        "used_key_parts":["workflow_run_id","task_type","status"]}});
+    let plan = |probe: Value| json!({"query_block":{"table":{"table_name":"t"},"subqueries":[{"query_block":probe}]}});
+    assert!(fence_seeks_run(&plan(probe.clone()), true));
+    assert!(fence_seeks_run(&json!({"query_block":{}}), false));
+    assert!(!fence_seeks_run(&json!({"query_block":{}}), true), "a workflow plan must probe");
+    let mut run_only = probe.clone();
+    run_only["table"]["key"] = json!("workflow_tasks_workflow_run_id_index");
+    run_only["table"]["used_key_parts"] = json!(["workflow_run_id"]);
+    assert!(!fence_seeks_run(&plan(run_only), false));
+    let mut partial = probe.clone();
+    partial["table"]["used_key_parts"] = json!(["workflow_run_id","task_type"]);
+    assert!(!fence_seeks_run(&plan(partial), false));
 }
 
 #[test]
@@ -137,21 +165,6 @@ store_methods! {
     }
 
     async fn mysql_candidate_scope_work(&self, queue: &str, at: chrono::DateTime<chrono::Utc>) {
-        // This measures the dispatch range alone. The same-run lease fence
-        // (Server #1282) probes each candidate's run through its run index,
-        // which reads that run's task rows; this fixture puts thousands of
-        // tasks on one run. The fence is kept as a bound no-op so the
-        // parameters keep their positions.
-        fn dispatch_range(sql: &str) -> String {
-            let start = "AND (t.task_type<>'workflow' OR ";
-            let end = "<>'workflow_update')) ";
-            let mut sql = sql.to_owned();
-            while let Some(from) = sql.find(start) {
-                let to = from + sql[from..].find(end).expect("the fence ends") + end.len();
-                sql.replace_range(from..to, "AND ? IS NOT NULL ");
-            }
-            sql
-        }
         let bind = |sql: String| {
             let mut query = sqlx::query::<DB>(AssertSqlSafe(sql));
             for _ in 0..2 {
@@ -160,23 +173,39 @@ store_methods! {
             }
             query
         };
+        let candidates = DB::statement(DB::TASK_CANDIDATES_SQL).into_owned();
         let mut connection = self.pool.acquire().await.unwrap();
         let before = Self::mysql_candidate_read_next(&mut connection).await;
-        let expected = bind(dispatch_range(&DB::statement(DB::TASK_CANDIDATES_SQL)))
-            .fetch_all(&mut *connection).await.unwrap();
+        let expected = bind(candidates.clone()).fetch_all(&mut *connection).await.unwrap();
         let bounded = Self::mysql_candidate_read_next(&mut connection).await - before;
         // Reproduce the rejected cross-tenant index choice with the same
         // query/filter/page shape and the corrected positional parameters.
-        let old = bind(dispatch_range(&DB::statement(DB::TASK_CANDIDATES_SQL)).replace("FORCE INDEX (dw_workflow_tasks_scoped_dispatch)",
+        let old = bind(candidates.replace("FORCE INDEX (dw_workflow_tasks_scoped_dispatch)",
             "FORCE INDEX (workflow_tasks_dispatch_order_index)"));
         let before = Self::mysql_candidate_read_next(&mut connection).await;
         let actual = old.fetch_all(&mut *connection).await.unwrap();
         let cross_tenant = Self::mysql_candidate_read_next(&mut connection).await - before;
+        // The same-run fence (Server #1282) before its own index (Server
+        // #1327) probed every task of the candidate's run.
+        let run_scan = bind(candidates.replace("FORCE INDEX (dw_workflow_tasks_run_fence)",
+            "FORCE INDEX (workflow_tasks_workflow_run_id_index)"));
+        let before = Self::mysql_candidate_read_next(&mut connection).await;
+        let probed = run_scan.fetch_all(&mut *connection).await.unwrap();
+        let run_probes = Self::mysql_candidate_read_next(&mut connection).await - before;
         let identities = |rows: &[DB::Row]| rows.iter().map(|row| DB::string(row,"id").unwrap()).collect::<Vec<_>>();
         assert_eq!(identities(&actual),identities(&expected));
-        assert!(bounded <= 840, "the new range must exclude foreign namespace/kind/queue rows: {bounded}");
+        assert_eq!(identities(&probed),identities(&expected));
+        // Each examined candidate's fence probe reads at most its run's
+        // leased workflow tasks, and through the run index every task of the
+        // run. This fixture parks 1,200 expired leases of a foreign namespace
+        // on one run, so the bound sums those per candidate in the range.
+        let leases = Self::query("SELECT CAST(COALESCE(SUM(l.rows_read),0) AS SIGNED) AS rows_read FROM workflow_tasks t JOIN (SELECT workflow_run_id,COUNT(*) AS rows_read FROM workflow_tasks WHERE task_type='workflow' AND status='leased' GROUP BY workflow_run_id) l ON l.workflow_run_id=t.workflow_run_id WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type='workflow' AND t.status IN ('ready','leased')")
+            .bind(self.namespace.as_ref()).bind(queue.to_owned()).fetch_one(&mut *connection).await.unwrap();
+        let leases = u64::try_from(DB::number(&leases, "rows_read").unwrap()).unwrap();
+        assert!(bounded <= 840 + leases, "the scoped range and fence probes must stay bounded: {bounded} > 840 + {leases}");
+        assert!(run_probes > bounded * 2, "the run index exposes every task of the run: run={run_probes}, fence={bounded}");
         assert!(cross_tenant > bounded + 2000, "the rejected index must expose the foreign prefix: old={cross_tenant}, new={bounded}");
-        println!("mysql_candidate_scope_work old_cross_tenant_next={cross_tenant} new_scoped_next={bounded}");
+        println!("mysql_candidate_scope_work old_cross_tenant_next={cross_tenant} run_index_fence_next={run_probes} new_scoped_next={bounded} lease_bound={leases}");
     }
 
     pub(super) async fn qualify_mysql_candidate_ranges(&self) {
@@ -280,7 +309,7 @@ store_methods! {
                         let plan: Value = serde_json::from_str(&DB::string(&row,"EXPLAIN").unwrap()).unwrap();
                         println!("mysql_status_candidate_plan statistics={statistics} kind={kind} build={build:?} first={first}: {plan}");
                         assert!(ordered_ranges(&plan, kind == "activity"), "each status range must arrive in dispatch order: {plan}");
-                        assert!(fence_seeks_run(&plan), "the same-run fence must seek its run: {plan}");
+                        assert!(fence_seeks_run(&plan, kind == "workflow"), "the same-run fence must seek its run's leased workflow tasks: {plan}");
                     }
                 }
             }
