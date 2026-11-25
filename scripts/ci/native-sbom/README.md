@@ -210,3 +210,14 @@ that call and recomputes the complete archive hash before returning the result.
 The caller runs the scanner as the archive's nonroot owner and gives it a
 read-only bind mount. Exporter custody before the call, scanner confinement
 and terminal resource cleanup stay with the caller.
+
+The scanner component uses the held archive and the pinned Syft child for the
+same platform. It checks the actual version, enforces read-only container
+settings and mounts before startup, and gives the scanner UID and GID a private
+memory-backed working directory for home and temporary files. It checks cleanup
+before returning raw SPDX bytes. Cleanup binds the two scanner names to the
+exact scope owner label and verifies the absence of any anonymous volumes on them
+by name. The source tests check the complete Docker arguments for both
+platforms and refuse changed confinement or ownership. The component returns
+raw bytes for the separate validator. Release wiring, authorization and tool
+qualification remain open.
