@@ -233,8 +233,10 @@ mod tests {
         // occurrence deadline, update outcome reads, task queue pauses and
         // command request keys, open-run version usage, guarded build
         // retirement, the Prometheus text scrape, signal-with-start,
-        // signal-external and the task-attention workflow list filter.
-        assert_eq!(caps.as_object().unwrap().len(), 69);
+        // signal-external, the task-attention workflow list filter and
+        // timeout cleanup.
+        assert_eq!(caps.as_object().unwrap().len(), 70);
+        assert_eq!(caps[super::super::timeout_cleanup::CAPABILITY], json!({"supported": true, "version": 1}));
         assert_eq!(caps[super::super::task_attention::VISIBILITY_FILTER_CAPABILITY], json!(true));
         assert_eq!(caps[super::super::external_signals::CAPABILITY], json!(true));
         assert_eq!(caps[super::super::version_usage::CAPABILITY], json!(true));
