@@ -20,10 +20,11 @@ use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 /// Immutable external storage bindings are MySQL 17 / MariaDB 16, child
 /// supervisions MySQL 18 / MariaDB 17, and the maintenance scan indexes
 /// (server#1256) MySQL 19 / MariaDB 18. Workflow task lease loss uses
-/// MySQL 20 / MariaDB 19. Child summary checkpoints use MySQL 21 / MariaDB 20.
+/// MySQL 20 / MariaDB 19. Child summary checkpoints use MySQL 21 / MariaDB 20,
+/// and the same-run fence index (server#1327) MySQL 22 / MariaDB 21.
 /// `Flavor::version` selects the one a server needs.
-pub const MYSQL_VERSION: i64 = 21;
-pub const MARIADB_VERSION: i64 = 20;
+pub const MYSQL_VERSION: i64 = 22;
+pub const MARIADB_VERSION: i64 = 21;
 type Catalog = Vec<(String, String)>;
 const CHILD_SUMMARY_CHECKPOINT_SCHEMA: &str = include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql");
 const CHILD_SUMMARY_CALL_INDEX: &str = "CREATE INDEX dw_child_calls_run_status_sequence ON workflow_child_calls(parent_workflow_run_id,status,sequence);";
@@ -92,6 +93,89 @@ impl Flavor {
                 "\n",
                 include_str!("../../migrations/mysql/0014_task_queue_pauses.sql"),
                 "\n",
+                include_str!("../../migrations/mysql/0015_command_intents.sql"), "\n", include_str!("../../migrations/mysql/0016_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mysql/0017_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mysql/0018_child_supervisions.sql"), "\n", include_str!("../../migrations/mysql/0019_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/mysql/0020_workflow_task_lease_loss.sql"), "\n", include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql"), "\n", include_str!("../../migrations/mysql/0022_same_run_fence_index.sql")
+                ),
+            ),
+            Self::MariaDb => (
+                &MARIA,
+                concat!(
+                    include_str!("../../migrations/mariadb/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mariadb/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0013_task_queue_pauses.sql"),
+                "\n",
+                include_str!("../../migrations/mariadb/0014_command_intents.sql"), "\n", include_str!("../../migrations/mariadb/0015_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mariadb/0016_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mariadb/0017_child_supervisions.sql"), "\n", include_str!("../../migrations/mariadb/0018_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/mariadb/0019_workflow_task_lease_loss.sql"), "\n", include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql"), "\n", include_str!("../../migrations/mariadb/0021_same_run_fence_index.sql")
+                ),
+            ),
+        };
+        slot.get_or_init(|| {
+            let description = match self {
+                Self::MySql => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and exact JSON text documents and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index",
+                Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints and same-run fence index",
+            };
+            let mut migrations = Migrator::with_migrations(vec![Migration::new(
+                self.version(),
+                description.into(),
+                MigrationType::Simple,
+                AssertSqlSafe(child_summary_checkpoint_bootstrap_sql(self.bootstrap_sql(sql))).into_sql_str(),
+                false,
+            )]);
+            // A bounded named lock on this dedicated initialization connection
+            // covers preflight, DDL, resumption and final marking.
+            migrations.set_locking(false);
+            migrations
+        })
+    }
+
+    // Keep the exact released schema bootstraps before the same-run fence index (3.29.0).
+    fn retained_fence_predecessor(self) -> &'static Migrator {
+        static MYSQL: OnceLock<Migrator> = OnceLock::new();
+        static MARIA: OnceLock<Migrator> = OnceLock::new();
+        let (slot, sql) = match self {
+            Self::MySql => (
+                &MYSQL,
+                concat!(
+                    include_str!("../../migrations/mysql/0003_full_schema.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0004_worker_incarnations.sql"),
+                    "\n",
+                    include_str!("../../migrations/mysql/0005_worker_session_holders.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0006_stream_reclaims.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0007_service_calls.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0008_external_payload_deletions.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0009_task_ready_origin.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0010_poll_expiry_indexes.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0011_scoped_dispatch_index.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0012_run_command_contracts.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0013_json_text.sql"),
+                "\n",
+                include_str!("../../migrations/mysql/0014_task_queue_pauses.sql"),
+                "\n",
                 include_str!("../../migrations/mysql/0015_command_intents.sql"), "\n", include_str!("../../migrations/mysql/0016_schedule_dispatch_summary.sql"), "\n", include_str!("../../migrations/mysql/0017_external_storage_bindings.sql"), "\n", include_str!("../../migrations/mysql/0018_child_supervisions.sql"), "\n", include_str!("../../migrations/mysql/0019_maintenance_scan_indexes.sql"), "\n", include_str!("../../migrations/mysql/0020_workflow_task_lease_loss.sql"), "\n", include_str!("../../migrations/mysql/0021_child_summary_checkpoints.sql")
                 ),
             ),
@@ -130,7 +214,7 @@ impl Flavor {
                 Self::MariaDb => "full frozen PHP schema, native worker incarnations, session holders, stream reclaim deadlines, service call deadlines, service admission counters and committed external payload deletions and task ready origins and poll expiry indexes and scoped dispatch index and bound run command contracts and task queue activity dispatch pauses and keyed command intents and bounded schedule dispatch summaries and immutable external storage bindings and child supervisions across continue-as-new and maintenance scan indexes and workflow task lease loss and child summary checkpoints",
             };
             let mut migrations = Migrator::with_migrations(vec![Migration::new(
-                self.version(),
+                match self { Self::MySql => 21, Self::MariaDb => 20 },
                 description.into(),
                 MigrationType::Simple,
                 AssertSqlSafe(child_summary_checkpoint_bootstrap_sql(self.bootstrap_sql(sql))).into_sql_str(),
@@ -560,8 +644,8 @@ impl Flavor {
     }
     fn expected(self) -> Result<Catalog> {
         Ok(serde_json::from_str(&canonical(match self {
-            Self::MySql => include_str!("../../migrations/mysql/0021_catalog.json"),
-            Self::MariaDb => include_str!("../../migrations/mariadb/0020_catalog.json"),
+            Self::MySql => include_str!("../../migrations/mysql/0022_catalog.json"),
+            Self::MariaDb => include_str!("../../migrations/mariadb/0021_catalog.json"),
         }))?)
     }
     /// The single native migration, which a takeover records as applied.
@@ -667,6 +751,8 @@ impl Flavor {
     static DISPATCH_MYSQL: OnceLock<Migration> = OnceLock::new();
     static DISPATCH_MARIADB: OnceLock<Migration> = OnceLock::new();
         match (self, version) {
+            (Self::MySql, 21) => self.retained_fence_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0021_catalog.json"))),
+            (Self::MariaDb, 20) => self.retained_fence_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0020_catalog.json"))),
             (Self::MySql, 20) => self.retained_checkpoint_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0020_catalog.json"))),
             (Self::MariaDb, 19) => self.retained_checkpoint_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mariadb/0019_catalog.json"))),
             (Self::MySql, 19) => self.retained_lease_loss_predecessor().iter().next().map(|migration| (migration, include_str!("../../migrations/mysql/0019_catalog.json"))),
@@ -1085,6 +1171,8 @@ impl Flavor {
     /// The step file that moves a native database from `version` to the next.
     fn step(self, version: i64) -> Option<&'static str> {
         match (self, version) {
+            (Self::MySql, 21) => Some(include_str!("../../migrations/mysql/0022_same_run_fence_index.sql")),
+            (Self::MariaDb, 20) => Some(include_str!("../../migrations/mariadb/0021_same_run_fence_index.sql")),
             (Self::MySql, 20) | (Self::MariaDb, 19) => Some(CHILD_SUMMARY_CHECKPOINT_SCHEMA),
             (Self::MySql, 19) => Some(include_str!("../../migrations/mysql/0020_workflow_task_lease_loss.sql")),
             (Self::MariaDb, 18) => Some(include_str!("../../migrations/mariadb/0019_workflow_task_lease_loss.sql")),
@@ -1167,8 +1255,26 @@ impl Flavor {
             Self::MariaDb => bootstrap_sql_v11(sql),
         };
         let sql = maintenance_scan_bootstrap_sql(external_storage_bootstrap_sql(dispatch_summary_bootstrap_sql(sql)));
-        task_lease_loss_bootstrap_sql(sql)
+        run_fence_bootstrap_sql(task_lease_loss_bootstrap_sql(sql))
     }
+}
+
+/// The same-run fence index (server#1327), in the step's statement text and
+/// as the task table's catalog line.
+const RUN_FENCE_INDEX: &str = "CREATE INDEX dw_workflow_tasks_run_fence ON workflow_tasks (workflow_run_id,task_type,status);";
+const RUN_FENCE_KEY: &str = "  KEY `dw_workflow_tasks_run_fence` (`workflow_run_id`,`task_type`,`status`)";
+
+/// A fresh or resumed initialization creates the task table with the index,
+/// so it never repeats a CREATE INDEX that already committed. Retained
+/// predecessor bootstraps do not contain the step and stay exact.
+fn run_fence_bootstrap_sql(mut sql: String) -> String {
+    if !sql.contains(RUN_FENCE_INDEX) {
+        return sql;
+    }
+    let start = sql.find("CREATE TABLE IF NOT EXISTS `workflow_tasks` (").expect("compiled workflow tasks");
+    let end = start + sql[start..].find("\n) ENGINE=").expect("compiled workflow task end");
+    sql.insert_str(end, &format!(",\n{RUN_FENCE_KEY}"));
+    sql.replace(RUN_FENCE_INDEX, "")
 }
 
 /// Init creates the final table directly so a lost bootstrap acknowledgement
@@ -1293,12 +1399,16 @@ pub(super) async fn ensure_json_text(connection: &mut MySqlConnection, flavor: F
     let actual: BTreeMap<String, String> = catalog(connection).await?.into_iter().collect();
     let pre_binding: BTreeMap<_, _> = serde_json::from_str::<Catalog>(&canonical(flavor.earlier(storage_binding_step(flavor)).expect("retained storage predecessor").1))?.into_iter().collect();
     let pre_scan = pre_scan_index_tables(flavor)?;
+    // A resumed upgrade may find the task table past this step, before task
+    // lease loss or before the same-run fence index.
+    let later_tasks = [pre_lease_loss_task_table(flavor)?, pre_fence_task_table(flavor)?];
     for statement in flavor.step(12).expect("compiled json text step").split(";\n").map(str::trim) {
         let Some(rest) = statement.lines().find(|line| line.starts_with("ALTER TABLE `")) else { continue };
         let name = rest.trim_start_matches("ALTER TABLE `").trim_end_matches('`').to_owned();
         match actual.get(&name) {
             found if found == expected.get(&name) || (name == "workflow_namespaces" && found == pre_binding.get(&name))
-                || (found.is_some() && found == pre_scan.get(&name)) => continue,
+                || (found.is_some() && found == pre_scan.get(&name))
+                || (name == "workflow_tasks" && later_tasks.iter().flatten().any(|(_, ddl)| found == Some(ddl))) => continue,
             found if found.is_some() && found == old.get(&name) => {
                 let alter = statement[statement.find("ALTER TABLE").expect("alter")..].to_owned();
                 connection.execute(AssertSqlSafe(alter)).await?;
@@ -1440,8 +1550,9 @@ fn pre_lease_loss_task_table(flavor: Flavor) -> Result<Option<(String, String)>>
 
 pub(super) async fn ensure_task_lease_loss(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
     let found = workflow_task_table(catalog(connection).await?);
-    let expected = workflow_task_table(flavor.expected()?);
-    if found == expected {
+    // The task table this step produces, before the same-run fence index.
+    let expected = pre_fence_task_table(flavor)?;
+    if found == expected || found == workflow_task_table(flavor.expected()?) {
         return Ok(());
     }
     if found != pre_lease_loss_task_table(flavor)? {
@@ -1454,10 +1565,16 @@ pub(super) async fn ensure_task_lease_loss(connection: &mut MySqlConnection, fla
     Ok(())
 }
 
+/// The step that installs child summary checkpoints: MySQL's from 20,
+/// MariaDB's from 19.
+fn child_summary_checkpoint_step(flavor: Flavor) -> i64 {
+    match flavor { Flavor::MySql => 20, Flavor::MariaDb => 19 }
+}
+
 pub(super) async fn ensure_child_summary_checkpoints(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
     let actual: BTreeMap<_, _> = catalog(connection).await?.into_iter().collect();
     let current: BTreeMap<_, _> = flavor.expected()?.into_iter().collect();
-    let (_, earlier) = flavor.earlier(flavor.version() - 1).expect("retained checkpoint predecessor");
+    let (_, earlier) = flavor.earlier(child_summary_checkpoint_step(flavor)).expect("retained checkpoint predecessor");
     let earlier: BTreeMap<_, _> = serde_json::from_str::<Catalog>(&canonical(earlier))?.into_iter().collect();
     let table = "dw_child_summary_checkpoints";
     let indexed = "workflow_child_calls";
@@ -1500,6 +1617,49 @@ async fn ensure_child_summary_code(connection: &mut MySqlConnection) -> Result<(
     Ok(())
 }
 
+/// The step that adds the same-run fence index (server#1327): MySQL's from
+/// 21, MariaDB's from 20.
+fn run_fence_step(flavor: Flavor) -> i64 {
+    match flavor { Flavor::MySql => 21, Flavor::MariaDb => 20 }
+}
+
+/// The task table before the same-run fence index, which every step since
+/// task lease loss leaves in place.
+fn pre_fence_task_table(flavor: Flavor) -> Result<Option<(String, String)>> {
+    let (_, old) = flavor.earlier(run_fence_step(flavor)).expect("retained run fence predecessor");
+    Ok(workflow_task_table(serde_json::from_str(&canonical(old))?))
+}
+
+/// A catalog in which the task table still lacks the same-run fence index.
+fn before_run_fence(flavor: Flavor, mut rows: Catalog) -> Result<Catalog> {
+    let Some((_, old)) = pre_fence_task_table(flavor)? else { return Ok(rows) };
+    for (table, ddl) in &mut rows {
+        if table == "workflow_tasks" {
+            *ddl = old.clone();
+        }
+    }
+    Ok(rows)
+}
+
+/// CREATE INDEX commits on its own, and InnoDB builds it in place without
+/// blocking writes. A resumed upgrade or takeover accepts the task table only
+/// in its exact predecessor or exact current definition, never by index name.
+pub(super) async fn ensure_run_fence_index(connection: &mut MySqlConnection, flavor: Flavor) -> Result<()> {
+    let found = workflow_task_table(catalog(connection).await?);
+    let expected = workflow_task_table(flavor.expected()?);
+    if found == expected {
+        return Ok(());
+    }
+    if found != pre_fence_task_table(flavor)? {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    connection.execute(flavor.step(run_fence_step(flavor)).expect("compiled run fence step")).await?;
+    if workflow_task_table(catalog(connection).await?) != expected {
+        return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
+    }
+    Ok(())
+}
+
 fn child_summary_trigger_privilege_required(error: &sqlx::Error) -> bool {
     error.as_database_error().is_some_and(|error| {
         error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>().is_some_and(|error| error.number() == 1419)
@@ -1537,7 +1697,8 @@ pub(super) async fn ensure_ready_origin(connection: &mut MySqlConnection, flavor
     let actual = catalog(connection).await?;
     let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
     let found = task(actual.clone());
-    if found == task(flavor.v12_catalog()?) || found == task(flavor.expected()?) || found == pre_lease_loss_task_table(flavor)? { return Ok(()); }
+    if found == task(flavor.v12_catalog()?) || found == task(flavor.expected()?) || found == pre_lease_loss_task_table(flavor)?
+        || found == pre_fence_task_table(flavor)? { return Ok(()); }
     let (_, ready) = flavor.earlier(10).expect("retained v10 schema");
     let expected = task(serde_json::from_str(&canonical(ready))?);
     match task(actual) {
@@ -1584,7 +1745,8 @@ pub(super) async fn ensure_scoped_dispatch_index(connection: &mut MySqlConnectio
     let task = |rows: Catalog| rows.into_iter().find(|(name, _)| name == "workflow_tasks");
     let expected = task(flavor.v12_catalog()?);
     let found = task(catalog(connection).await?);
-    if found == expected || found == task(flavor.expected()?) || found == pre_lease_loss_task_table(flavor)? { return Ok(()); }
+    if found == expected || found == task(flavor.expected()?) || found == pre_lease_loss_task_table(flavor)?
+        || found == pre_fence_task_table(flavor)? { return Ok(()); }
     if found != task(old) { return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch")); }
     connection.execute(flavor.step(10).expect("compiled scoped dispatch index")).await?;
     if task(catalog(connection).await?) != expected {
@@ -1939,7 +2101,10 @@ pub(super) async fn child_summary_checkpoint_ddl(connect_options: MySqlConnectOp
         }
         _ => return Err(refused()),
     }
-    if catalog(&mut tx).await? != expected {
+    // An upgrade or takeover pauses for this code before it adds the
+    // same-run fence index, which a fresh bootstrap creates with its table.
+    let actual = catalog(&mut tx).await?;
+    if actual != expected && actual != before_run_fence(flavor, expected)? {
         return Err(refused());
     }
     let (database, account): (String, String) =
@@ -2129,7 +2294,13 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         let earlier_catalog: Catalog = serde_json::from_str(&canonical(earlier_catalog))?;
         let actual = catalog(&mut connection).await?;
         if engine == DEVELOPMENT_ENGINE {
-            if !installed_code.empty() || actual != earlier_catalog {
+            // Checkpoint code exists exactly from the checkpoint schema on.
+            let code_matches = if from > child_summary_checkpoint_step(flavor) {
+                installed_code.complete()
+            } else {
+                installed_code.empty()
+            };
+            if !code_matches || actual != earlier_catalog {
                 return Err(refuse(StatusCode::CONFLICT, "native_schema_catalog_mismatch"));
             }
             let fenced = sqlx::query("UPDATE dw_server_schema SET engine=? WHERE engine=? AND version=? AND bootstrap_checksum=?")
@@ -2159,10 +2330,11 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
             // maintenance scan step, after an earlier step changed it.
             let pre_scan = pre_scan_index_tables(flavor)?;
             let pre_lease_loss = pre_lease_loss_task_table(flavor)?;
+            let pre_fence = pre_fence_task_table(flavor)?;
             let partial = actual.iter().all(|(name, ddl)| {
                 earlier_tables.get(name) == Some(ddl) || current.get(name) == Some(ddl) || v12.get(name) == Some(ddl) || (["runtime_external_payloads", "workflow_namespaces"].contains(&name.as_str()) && pre_binding.get(name) == Some(ddl))
                     || pre_scan.get(name) == Some(ddl)
-                    || name == "workflow_tasks" && [intermediate_task.as_ref(), pre_lease_loss.as_ref()]
+                    || name == "workflow_tasks" && [intermediate_task.as_ref(), pre_lease_loss.as_ref(), pre_fence.as_ref()]
                         .into_iter().flatten().any(|(_, task)| task == ddl)
             }) && earlier_tables
                 .keys()
@@ -2174,7 +2346,11 @@ pub(super) async fn upgrade(connect_options: MySqlConnectOptions) -> Result<(&'s
         // Each step's own marker update names the development engine, so it
         // changes nothing while the marker fences the upgrade.
         for version in from..flavor.version() {
-            if version == flavor.version() - 1 {
+            if version == run_fence_step(flavor) {
+                ensure_run_fence_index(&mut connection, flavor).await?;
+                continue;
+            }
+            if version == child_summary_checkpoint_step(flavor) {
                 ensure_child_summary_checkpoints(&mut connection, flavor).await?;
                 continue;
             }
@@ -4197,8 +4373,60 @@ mod tests {
     }
 
     #[test]
+    fn run_fence_predecessors_keep_their_released_checksums() {
+        for (flavor, version, pinned) in [
+            (Flavor::MySql, 21, include_str!("../../migrations/mysql/0021_checksum.txt")),
+            (Flavor::MariaDb, 20, include_str!("../../migrations/mariadb/0020_checksum.txt")),
+        ] {
+            assert_eq!(run_fence_step(flavor), version);
+            assert_eq!(checksum_hex(flavor.earlier(version).unwrap().0), pinned.trim());
+            let previous: &str = flavor.earlier(version).unwrap().0.sql.as_ref();
+            assert!(!previous.contains("dw_workflow_tasks_run_fence"));
+            // A fresh or resumed bootstrap creates the task table with its index.
+            let sql: &str = flavor.migration().sql.as_ref();
+            assert!(!sql.contains(RUN_FENCE_INDEX));
+            assert_eq!(sql.matches(RUN_FENCE_KEY.trim()).count(), 1);
+            assert!(flavor.step(version).unwrap().contains(RUN_FENCE_INDEX));
+            let (_, catalog) = flavor.earlier(version).unwrap();
+            let catalog: Catalog = serde_json::from_str(&canonical(catalog)).unwrap();
+            assert_eq!(before_run_fence(flavor, flavor.expected().unwrap()).unwrap(), catalog);
+        }
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (22, 21));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_run_fence_index_upgrade_preserves_tasks_and_resumes() {
+        for index_committed in [false, true] {
+            let db = Database::new().await;
+            let mut connection = db.connection().await;
+            let flavor = Flavor::detect(&mut connection).await.unwrap();
+            connection.close().await.unwrap();
+            let from = run_fence_step(flavor);
+            retained_version_database(&db, from).await;
+            let mut connection = db.connection().await;
+            connection.execute("INSERT INTO workflow_tasks(id,workflow_run_id,task_type,status,attempt_count) VALUES ('kept-task','run','workflow','leased',3)").await.unwrap();
+            if index_committed {
+                connection.execute("UPDATE dw_server_schema SET engine='rust-upgrading'").await.unwrap();
+                connection.execute(flavor.step(from).unwrap()).await.unwrap();
+            }
+            connection.close().await.unwrap();
+            assert_eq!(upgrade(db.options.clone()).await.unwrap(), (flavor.name(), from, flavor.version()));
+            MySqlStorage::check(db.options.clone()).await.unwrap();
+            let mut connection = db.connection().await;
+            let task: (String, u32) = sqlx::query_as("SELECT status,attempt_count FROM workflow_tasks WHERE id='kept-task'")
+                .fetch_one(&mut connection).await.unwrap();
+            assert_eq!(task, ("leased".into(), 3));
+            connection.execute("DROP INDEX dw_workflow_tasks_run_fence ON workflow_tasks").await.unwrap();
+            connection.close().await.unwrap();
+            refused(MySqlStorage::open(db.options.clone()).await, "native_schema_catalog_mismatch");
+            db.remove().await;
+        }
+    }
+
+    #[test]
     fn current_bootstraps_create_the_lease_loss_columns_once() {
-        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (21, 20));
+        assert_eq!((Flavor::MySql.version(), Flavor::MariaDb.version()), (22, 21));
         for flavor in [Flavor::MySql, Flavor::MariaDb] {
             let predecessor = task_lease_loss_step(flavor);
             let (retained, _) = flavor.earlier(predecessor).unwrap();
@@ -4219,7 +4447,7 @@ mod tests {
         let mut connection = db.connection().await;
         let flavor = Flavor::detect(&mut connection).await.unwrap();
         connection.close().await.unwrap();
-        let from = flavor.version() - 1;
+        let from = child_summary_checkpoint_step(flavor);
         retained_version_database(&db, from).await;
         let mut connection = db.connection().await;
         connection.execute("INSERT INTO dw_query_cache VALUES ('kept','original',1)").await.unwrap();
@@ -4264,7 +4492,7 @@ mod tests {
             connection.execute(AssertSqlSafe(format!("CREATE USER '{account}'@'%' IDENTIFIED BY '{password}'"))).await.unwrap();
             connection.execute(AssertSqlSafe(format!("GRANT ALL PRIVILEGES ON \x60{database}\x60.* TO '{account}'@'%'"))).await.unwrap();
             connection.close().await.unwrap();
-            let from = flavor.version() - 1;
+            let from = child_summary_checkpoint_step(flavor);
             if upgrading {
                 retained_version_database(&db, from).await;
             }

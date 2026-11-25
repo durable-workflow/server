@@ -131,7 +131,7 @@ $pdo->exec('ROLLBACK');
 // constraint definitions in the comparison.
 $native = array_map(static function (array $row): array {
     $row[1] = preg_replace('/,\n  KEY `dw_workflow_tasks_poll`[^\n]+/', '', $row[1]);
-    $row[1] = preg_replace('/,\n  KEY `(dw_workflow_runs_status_deadline|dw_activity_executions_status|dw_workflow_run_summaries_retention)`[^\n]+/', '', $row[1]);
+    $row[1] = preg_replace('/,\n  KEY `(dw_workflow_runs_status_deadline|dw_activity_executions_status|dw_workflow_run_summaries_retention|dw_workflow_tasks_run_fence)`[^\n]+/', '', $row[1]);
 
     return $row;
 }, $native);
