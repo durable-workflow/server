@@ -7,6 +7,45 @@ use tokio::sync::Semaphore;
 #[cfg(debug_assertions)]
 use futures_util::FutureExt;
 
+/// Catches the panic `future` is expected to raise, without the panic report.
+///
+/// The claimed-history negative control trips a debug assertion on purpose
+/// and asserts its message. Reported normally, that caught panic printed
+/// `thread ... panicked at src/runtime/store.rs ... claimed run history
+/// sequence changed before its first page` in every passing run, which read
+/// as a failure. Only a panic raised while this future itself is polled, on
+/// this thread, is silenced; every other panic reaches the previous hook.
+#[cfg(debug_assertions)]
+async fn expected_panic<F: std::future::Future>(future: F) -> std::thread::Result<F::Output> {
+    use std::cell::Cell;
+    thread_local! {
+        static EXPECTED: Cell<bool> = const { Cell::new(false) };
+    }
+    struct Polling;
+    impl Drop for Polling {
+        fn drop(&mut self) {
+            EXPECTED.with(|expected| expected.set(false));
+        }
+    }
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !EXPECTED.with(Cell::get) {
+                previous(info);
+            }
+        }));
+    });
+    let mut future = std::pin::pin!(future);
+    std::panic::AssertUnwindSafe(std::future::poll_fn(move |context| {
+        EXPECTED.with(|expected| expected.set(true));
+        let _polling = Polling;
+        future.as_mut().poll(context)
+    }))
+    .catch_unwind()
+    .await
+}
+
 fn input() -> Value {
     json!({"codec":"avro","blob":ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap()})
 }
@@ -383,9 +422,9 @@ store_methods! {
         {
             Self::append(&mut tx,run_id,"SideEffectRecorded",json!({"sequence":3,"result":null}),None,None)
                 .await.unwrap();
-            let refused = std::panic::AssertUnwindSafe(
+            let refused = expected_panic(
                 Self::history_page_connection_with_total(&mut *tx,run_id,0,1,Some(last)),
-            ).catch_unwind().await.expect_err("an intervening history write must trip the debug assertion");
+            ).await.expect_err("an intervening history write must trip the debug assertion");
             let message = refused.downcast_ref::<String>().map(String::as_str)
                 .or_else(|| refused.downcast_ref::<&str>().copied()).unwrap_or("");
             assert!(message.contains("claimed run history sequence changed before its first page"),"{message}");
