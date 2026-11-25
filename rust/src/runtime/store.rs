@@ -6852,7 +6852,7 @@ fn capabilities_template() -> Value {
         .expect("commands")
         .push(json!(super::wait_timeouts::RESOLVE_CONDITION_WAIT));
     value[super::continuation::CAPABILITY] = super::continuation::capability();
-    // Gated off until installed acceptance (Server #1201).
+    // Deadline-triggered timeout cleanup, version 1 (Server #1201).
     if let Some(advertised) = super::timeout_cleanup::advertisement() {
         value[super::timeout_cleanup::CAPABILITY] = advertised;
     }

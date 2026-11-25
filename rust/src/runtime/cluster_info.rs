@@ -126,7 +126,7 @@ pub(super) fn capabilities() -> Value {
     for name in unpublished {
         map.insert(name.into(), Value::Bool(false));
     }
-    // Server #1201: published only once native passes installed acceptance.
+    // Server #1201: deadline-triggered timeout cleanup, version 1.
     if let Some(advertised) = super::timeout_cleanup::advertisement() {
         map.insert(super::timeout_cleanup::CAPABILITY.into(), advertised);
     }

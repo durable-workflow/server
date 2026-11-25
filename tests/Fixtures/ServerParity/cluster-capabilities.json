@@ -484,6 +484,13 @@
       "capabilities.worker_build_retirement": {
         "value": true,
         "reason": "Native serves guarded worker build and task queue retirement (Server #519): GET /api/deployments/{name}/retirement and /api/task-queues/{queue}/retirement inventory live dependencies, and POST .../retire records the terminal drained intent only when the same inventory, taken inside the serialized transition, is complete and empty. Published PHP has no such routes; its drain keeps the same emergency-stop contract on both servers."
+      },
+      "capabilities.timeout_cleanup": {
+        "value": {
+          "supported": true,
+          "version": 1
+        },
+        "reason": "Native serves opt-in deadline-triggered timeout cleanup version 1 (Server #1201): a start or child start with timeout_cleanup_seconds reserves the end of its hard timeout, is admitted only on a queue with a live worker that advertises timeout_cleanup, enters cleanup once at the work deadline through the cooperative cancellation path with cause timeout, and closes WorkflowTimedOut with a timeout_cleanup outcome. Published PHP does not admit timeout cleanup on service starts."
       }
     }
   }

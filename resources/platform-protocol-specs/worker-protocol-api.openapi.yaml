@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "68"
+  version: "69"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -1881,6 +1881,22 @@ components:
             This Server can replay history marked for durable input ordering.
             Workers that understand the marker register condition_wait_input_order.
             A separate field on the workflow lease permits opening a new marked wait.
+        timeout_cleanup:
+          type: object
+          required: [supported, version]
+          properties:
+            supported: { type: boolean, const: true }
+            version: { type: integer, const: 1 }
+          description: >
+            Present when the server implements opt-in deadline-triggered timeout
+            cleanup version 1 (server#1201). A start with timeout_cleanup_seconds
+            is admitted only on a queue with a live worker that lists
+            timeout_cleanup and sends capability_manifest.timeout_cleanup
+            {supported: true, version: 1}. Cleanup is delivered through the
+            cooperative cancellation path with a root context cause "timeout".
+            A worker reports an uncaught timeout-cleanup interruption with
+            fail_workflow failure.interruption "timeout_cleanup"; any other
+            failure records failed cleanup. The run always closes timed out.
         condition_wait_occurrence_deadline:
           type: boolean
           description: >
