@@ -433,6 +433,8 @@ mod workflow_poll_clock;
 mod prometheus_exposition;
 #[path = "execution/signal_with_start.rs"]
 mod signal_with_start;
+#[path = "execution/update_deadlocks.rs"]
+mod update_deadlocks;
 
 enum TestDatabase {
     Sqlite(tempfile::TempDir),
