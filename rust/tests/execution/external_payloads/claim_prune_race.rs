@@ -7,8 +7,9 @@
 //!
 //! The order is forced with a held row lock, not with sleeps. The first
 //! operation takes the transition lock and waits on a row the test
-//! connection holds. The second then waits on the transition lock. Both waits
-//! are read from the engine's lock tables before the test releases its row.
+//! connection holds, which the test reads from the engine's lock tables
+//! before it starts the second. The second then waits on the transition lock,
+//! or finds the first one's outcome if it reaches the database later.
 //! The start is held at its claim's write to the registration row, after its
 //! checks outside the transaction. The prune is held at its object lock.
 //! SQLite has one database-wide write lock and no lock tables to observe, so
@@ -87,22 +88,35 @@ impl HeldRows {
         }
     }
 
-    /// Returns once the `count`th lock wait, at `statement`, is observed. A
-    /// MySQL or MariaDB session of the runtime stops waiting for a row lock
-    /// after five seconds, so the barrier must be reached before that there.
-    /// PostgreSQL sessions wait without a bound, so a slow runner gets longer.
-    async fn until_waiting(&mut self, count: i64, statement: &str, requests: &mut [&mut tokio::task::JoinHandle<(StatusCode, Value)>]) {
-        let bound = match self { Self::Postgres(_) => Duration::from_secs(30), Self::MySql(_) => Duration::from_millis(4500) };
-        let deadline = tokio::time::Instant::now() + bound;
-        while !self.waiting(count, statement).await {
-            for request in requests.iter_mut() {
-                if request.is_finished() {
-                    panic!("a request answered without waiting: {:?}", (&mut **request).await.unwrap());
-                }
+    /// Waits for the first operation's lock wait, which fixes the order:
+    /// that operation already holds the transition lock, so the second one
+    /// cannot overtake it.
+    async fn until_first_waits(&mut self, statement: &str, request: &mut tokio::task::JoinHandle<(StatusCode, Value)>) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !self.waiting(1, statement).await {
+            if request.is_finished() {
+                panic!("the first operation answered without waiting: {:?}", (&mut *request).await.unwrap());
             }
-            assert!(tokio::time::Instant::now() < deadline, "{count} lock waits were not observed");
+            assert!(tokio::time::Instant::now() < deadline, "the first operation never waited");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// Gives the second operation time to reach its own wait behind the first.
+    /// The first operation's lock wait ends after five seconds (`lock_timeout`
+    /// on PostgreSQL, `innodb_lock_wait_timeout` on MySQL and MariaDB), so this
+    /// returns after three seconds even on a slow runner. The order does not
+    /// depend on it. A second operation still before its own wait then reads
+    /// the first one's committed outcome.
+    async fn until_second_waits(&mut self, statement: &str) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            if self.waiting(2, statement).await {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
     }
 
     async fn release(self) {
@@ -168,9 +182,9 @@ async fn a_start_that_claims_first_keeps_the_object_from_a_concurrent_prune() {
             // waits to claim the registration. The prune then waits on the
             // transition lock.
             let mut start = spawn_start(&start_router, "start-wins", &reference);
-            locks.until_waiting(1, CLAIM, &mut [&mut start]).await;
-            let mut prune = spawn_prune(&prune_router, &holder);
-            locks.until_waiting(2, TRANSITION, &mut [&mut start, &mut prune]).await;
+            locks.until_first_waits(CLAIM, &mut start).await;
+            let prune = spawn_prune(&prune_router, &holder);
+            locks.until_second_waits(TRANSITION).await;
             locks.release().await;
             (start.await.unwrap(), prune.await.unwrap())
         }
@@ -210,9 +224,9 @@ async fn a_prune_that_commits_first_refuses_the_concurrent_start_and_commits_not
             // lock. The start reads the still-registered payload, then waits
             // on the transition lock.
             let mut prune = spawn_prune(&prune_router, &holder);
-            locks.until_waiting(1, OBJECT_LOCK, &mut [&mut prune]).await;
-            let mut start = spawn_start(&start_router, "prune-wins", &reference);
-            locks.until_waiting(2, TRANSITION, &mut [&mut prune, &mut start]).await;
+            locks.until_first_waits(OBJECT_LOCK, &mut prune).await;
+            let start = spawn_start(&start_router, "prune-wins", &reference);
+            locks.until_second_waits(TRANSITION).await;
             locks.release().await;
             (prune.await.unwrap(), start.await.unwrap())
         }
