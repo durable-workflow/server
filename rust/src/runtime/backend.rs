@@ -70,10 +70,23 @@ macro_rules! stream_references {
 /// `STREAM_REFERENCES` for backends that store JSON as text.
 const PLAIN_STREAM_REFERENCES: &str = stream_references!("payload", "metadata");
 
+/// How long a pre-checkout ping waits for the database (Server #1355).
+pub(super) const CHECKOUT_PING_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// SQLx 0.9 checks connections before returning them to the idle queue.
 /// Recheck after one second idle instead of repeating that check immediately.
 /// A connection lost during the shorter window can fail its first statement;
 /// this hook never retries a statement or an uncertain commit.
+///
+/// The ping runs inside SQLx's acquisition deadline, so during a database
+/// stall an unbounded ping turned a free connection into a typed pool timeout
+/// (Server #1355). A dead connection fails its ping at once and is replaced
+/// as before. A ping the database has not answered within
+/// [`CHECKOUT_PING_BUDGET`] hands the connection out: the request then waits
+/// on its own statements, as a request already in flight does, and the
+/// acquisition deadline keeps counting only the wait for a free connection.
+/// The unanswered ping stays a pending reply that the connection's next
+/// command reads first (each driver tracks it), so the session stays in step.
 pub(super) fn test_idle_connections<DB: Database>(
     options: sqlx::pool::PoolOptions<DB>,
 ) -> sqlx::pool::PoolOptions<DB> {
@@ -81,8 +94,11 @@ pub(super) fn test_idle_connections<DB: Database>(
         .test_before_acquire(false)
         .before_acquire(|connection, metadata| {
             Box::pin(async move {
-                if metadata.idle_for >= std::time::Duration::from_secs(1) {
-                    sqlx::Connection::ping(connection).await?;
+                if metadata.idle_for >= std::time::Duration::from_secs(1)
+                    && let Ok(answered) =
+                        tokio::time::timeout(CHECKOUT_PING_BUDGET, sqlx::Connection::ping(connection)).await
+                {
+                    answered?;
                 }
                 Ok(true)
             })

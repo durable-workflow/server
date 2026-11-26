@@ -126,9 +126,14 @@ impl Connection for MySqlConnection {
 
     async fn ping(&mut self) -> Result<(), Error> {
         self.inner.stream.wait_until_ready().await?;
+        // Registered before it is sent, so a ping cancelled before its reply
+        // arrives leaves a pending reply the next command drains first
+        // (Durable Workflow Server #1355).
+        self.inner.stream.waiting.push_back(Waiting::Result);
         self.inner.stream.send_packet(Ping).await?;
         // The OK packet carries the session's current server status.
         let status = self.inner.stream.recv_ok().await?.status;
+        self.inner.stream.waiting.pop_front();
         self.inner.stream.record_status(status);
 
         Ok(())

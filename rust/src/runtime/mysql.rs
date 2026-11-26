@@ -2676,6 +2676,10 @@ impl MySqlStorage {
 mod pool_tests;
 
 #[cfg(test)]
+#[path = "mysql_stall_tests.rs"]
+mod stall_tests;
+
+#[cfg(test)]
 mod tests {
 
     #[test]
