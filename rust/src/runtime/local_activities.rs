@@ -44,10 +44,12 @@ const ATTEMPT_FIELDS: [&str; 11] = ["attempt_id", "attempt_number", "outcome", "
 const HEARTBEAT_FIELDS: [&str; 2] = ["elapsed_ms", "details"];
 /// `PARALLEL_METADATA_FIELDS` and the group path, which belong only to the
 /// scheduling commands.
-const PARALLEL_FIELDS: [&str; 12] = ["parallel_group_id", "parallel_group_kind", "parallel_group_mode",
+/// A local activity has no atomic group admission, so a failure policy is
+/// refused on it as well.
+const PARALLEL_FIELDS: [&str; 13] = ["parallel_group_id", "parallel_group_kind", "parallel_group_mode",
     "parallel_group_base_sequence", "parallel_group_size", "parallel_group_index", "selection_member_key",
     "selection_member_index", "selection_member_base_sequence", "selection_member_size", "selection_member_kind",
-    "parallel_group_path"];
+    "parallel_group_path", "parallel_group_policy"];
 const TIMEOUT_EXCEPTION: &str = "Workflow\\V2\\Exceptions\\ActivityTimeoutException";
 
 /// `server_capabilities.local_activities`: `LocalActivityContract::manifest`
@@ -728,7 +730,10 @@ pub(super) fn normalize(commands: &[Value], protocol: Option<&str>) -> Result<BT
                 errors.set(field.clone(), message);
             }
         }
-        for field in PARALLEL_FIELDS.iter().filter(|field| present(command, field)) {
+        // A null failure policy is refused too, never read as absence.
+        for field in PARALLEL_FIELDS.iter()
+            .filter(|field| present(command, field) || **field == "parallel_group_policy" && command.get(**field).is_some())
+        {
             errors.set(format!("commands.{index}.{field}"),
                 format!("{field} is only supported for activity, timer, and child-workflow scheduling commands."));
         }
@@ -1648,6 +1653,13 @@ mod tests {
         assert!(response["message"].as_str().unwrap().starts_with("Workflow task command field [schedule_to_start_timeout]"));
         assert_eq!(response["errors"]["commands.1.parallel_group_id"],
             json!(["parallel_group_id is only supported for activity, timer, and child-workflow scheduling commands."]));
+        // A local activity has no group admission, so a failure policy is
+        // refused on it, a null one included.
+        for policy in [json!("propagate"), Value::Null] {
+            let response = refusal(json!([record(json!({"parallel_group_policy": policy}))]), "1.20");
+            assert_eq!(response["errors"]["commands.0.parallel_group_policy"],
+                json!(["parallel_group_policy is only supported for activity, timer, and child-workflow scheduling commands."]), "{response}");
+        }
     }
 
     #[test]

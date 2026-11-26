@@ -29,6 +29,7 @@ fn unqualified() -> super::RuntimeError {
 
 fn present(value: &Value) -> bool {
     value.get("parallel_group_path").is_some()
+        || value.get(super::all_groups::POLICY).is_some()
         || FIELDS.iter().any(|field| value.get(*field).is_some())
 }
 
@@ -167,6 +168,11 @@ pub(super) fn metadata(value: &Value, kind: &str) -> Result<Value> {
     let Some(entry) = selection(value) else {
         return super::all_groups::metadata(value, kind);
     };
+    // A selection has its own winner and handle contract: a failure policy
+    // is refused on it, never dropped. Its frames are checked below.
+    if value.get(super::all_groups::POLICY).is_some() {
+        return Err(unqualified());
+    }
     let path = value["parallel_group_path"].as_array().ok_or_else(unqualified)?;
     let outer = selection_entry(entry, kind)?;
     if path.first() != Some(&outer) {
@@ -242,6 +248,7 @@ pub(super) fn fields(command: &Value, ordinary: &[&str]) -> Result<()> {
     let mut allowed = ordinary.to_vec();
     allowed.extend(FIELDS);
     allowed.push("parallel_group_path");
+    allowed.push(super::all_groups::POLICY);
     super::store::reject_fields(command, &allowed)
 }
 
@@ -354,6 +361,7 @@ pub(super) fn replace_group(payload: &mut Value, metadata: &Value) {
         object.remove(field);
     }
     object.remove("parallel_group_path");
+    object.remove(super::all_groups::POLICY);
     merge(payload, metadata);
 }
 

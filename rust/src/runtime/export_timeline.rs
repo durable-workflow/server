@@ -106,6 +106,10 @@ fn single_parallel_metadata(payload: &Value) -> Option<Value> {
     metadata.insert("parallel_group_kind".into(), json!(kind));
     if select {
         metadata.insert("parallel_group_mode".into(), json!("select"));
+    } else if let Some(policy) = super::activity_metadata::recorded_policy(payload) {
+        // Workflow's `singleMetadataFromPayload` keeps an all-group policy
+        // here, between the mode and the base.
+        metadata.insert(super::all_groups::POLICY.into(), json!(policy));
     }
     metadata.insert("parallel_group_base_sequence".into(), json!(base));
     metadata.insert("parallel_group_size".into(), json!(size));
@@ -1227,5 +1231,12 @@ mod tests {
             "parallel_group_kind": "activity", "parallel_group_base_sequence": 3, "parallel_group_size": 2,
             "parallel_group_index": 1})]);
         assert!(parallel_path(&json!({"parallel_group_id": "x"})).is_empty());
+        // An all-group's recorded policy sits where Workflow's metadata puts it.
+        let explicit = json!({"parallel_group_id": "parallel-activities:3:2", "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2, "parallel_group_index": 1, "parallel_group_policy": "propagate"});
+        let path = parallel_path(&explicit);
+        let keys: Vec<_> = path[0].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["parallel_group_id", "parallel_group_kind", "parallel_group_policy", "parallel_group_base_sequence",
+            "parallel_group_size", "parallel_group_index"]);
     }
 }

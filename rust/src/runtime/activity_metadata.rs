@@ -165,7 +165,18 @@ fn group(entry: &Value) -> Option<Value> {
         ],
     );
     copy_strings(&mut result, entry, &["selection_member_kind"]);
+    // .github#232: an ordinary group frame keeps its recorded failure policy,
+    // so no event rebuilt from an opening strips it.
+    if let Some(policy) = recorded_policy(entry).filter(|_| !select) {
+        result[super::all_groups::POLICY] = json!(policy);
+    }
     Some(result)
+}
+
+/// A frame's recorded version 1 failure policy, when it names one.
+pub(super) fn recorded_policy(entry: &Value) -> Option<&str> {
+    entry[super::all_groups::POLICY].as_str()
+        .filter(|policy| super::worker_admission::GROUP_POLICIES.contains(policy))
 }
 
 /// `ParallelChildGroup::payloadForPath(metadataPathFromPayload($payload))`:
@@ -175,8 +186,13 @@ pub(super) fn payload_for_path(payload: &Value) -> serde_json::Map<String, Value
     let Some(Value::Object(innermost)) = path.last().cloned() else {
         return serde_json::Map::new();
     };
+    // The flattened policy follows the path, as admission records it.
     let mut metadata = innermost;
+    let policy = metadata.shift_remove(super::all_groups::POLICY);
     metadata.insert("parallel_group_path".into(), Value::Array(path));
+    if let Some(policy) = policy {
+        metadata.insert(super::all_groups::POLICY.into(), policy);
+    }
     metadata
 }
 
@@ -810,6 +826,37 @@ fn progress(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // .github#232: events rebuilt from an opening (a condition's
+    // satisfaction or timeout decision, an applied signal, a condition's
+    // timeout timer) keep the recorded policy on every ordinary frame.
+    #[test]
+    fn rebuilt_group_fields_keep_the_recorded_policy() {
+        let frame = |base: i64, size: i64, policy: Option<&str>| {
+            let mut frame = json!({"parallel_group_id": format!("parallel-calls:{base}:{size}"), "parallel_group_kind": "mixed",
+                "parallel_group_base_sequence": base, "parallel_group_size": size, "parallel_group_index": 0});
+            if let Some(policy) = policy {
+                frame["parallel_group_policy"] = json!(policy);
+            }
+            frame
+        };
+        let mut opening = frame(1, 2, Some("propagate"));
+        opening["parallel_group_path"] = json!([frame(1, 3, Some("propagate")), frame(1, 2, Some("propagate"))]);
+        let rebuilt = Value::Object(payload_for_path(&opening));
+        assert_eq!(rebuilt["parallel_group_policy"], "propagate", "{rebuilt}");
+        assert_eq!(rebuilt["parallel_group_path"], opening["parallel_group_path"], "{rebuilt}");
+        let keys: Vec<_> = rebuilt.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(&keys[keys.len() - 2..], ["parallel_group_path", "parallel_group_policy"]);
+        // Legacy frames stay legacy, and a selection frame never gains one.
+        let mut legacy = frame(1, 2, None);
+        legacy["parallel_group_path"] = json!([frame(1, 2, None)]);
+        assert!(payload_for_path(&legacy).get("parallel_group_policy").is_none());
+        let mut select = json!({"parallel_group_id": "select-calls:1:2", "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select", "parallel_group_base_sequence": 1, "parallel_group_size": 2,
+            "parallel_group_index": 0, "selection_member_key": "a", "parallel_group_policy": "propagate"});
+        select["parallel_group_path"] = json!([select.clone()]);
+        assert!(path(&select).iter().all(|frame| frame.get("parallel_group_policy").is_none()));
+    }
 
     #[test]
     fn released_php_metadata_projection_corpus() {

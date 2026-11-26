@@ -164,6 +164,10 @@ fn parallel_path_json(payload: &Value) -> String {
         let mut fields = vec![("parallel_group_id", json!(group)), ("parallel_group_kind", json!(kind))];
         if select {
             fields.push(("parallel_group_mode", json!("select")));
+        } else if let Some(policy) = super::activity_metadata::recorded_policy(payload) {
+            // Workflow's `singleMetadataFromPayload` keeps an all-group
+            // policy in this position.
+            fields.push(("parallel_group_policy", json!(policy)));
         }
         fields.extend([("parallel_group_base_sequence", json!(base)), ("parallel_group_size", json!(size)),
             ("parallel_group_index", json!(index))]);
@@ -2500,5 +2504,27 @@ mod history_cache {
         assert_eq!(again["timer_cancellations"], delivered["timer_cancellations"]);
         assert_eq!(history().await, after_delivery);
         assert!(read() - start <= 2 * after_delivery);
+    }
+}
+
+#[cfg(test)]
+mod parallel_path_encoding {
+    use serde_json::json;
+
+    // A scope member's encoded group path keeps an all-group's recorded
+    // policy, in the position Workflow's metadata gives it.
+    #[test]
+    fn an_all_group_policy_is_encoded_after_the_kind() {
+        let frame = json!({"parallel_group_id": "parallel-activities:1:2", "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": 0,
+            "parallel_group_policy": "propagate"});
+        let mut payload = frame.clone();
+        payload["parallel_group_path"] = json!([frame]);
+        assert_eq!(super::parallel_path_json(&payload), concat!(r#"[{"parallel_group_id":"parallel-activities:1:2","#,
+            r#""parallel_group_kind":"activity","parallel_group_policy":"propagate","parallel_group_base_sequence":1,"#,
+            r#""parallel_group_size":2,"parallel_group_index":0}]"#));
+        let mut legacy = payload.clone();
+        legacy["parallel_group_path"][0].as_object_mut().unwrap().remove("parallel_group_policy");
+        assert!(!super::parallel_path_json(&legacy).contains("policy"));
     }
 }

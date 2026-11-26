@@ -22,7 +22,8 @@ const METADATA: &[(&str, &str)] = &[("memo_upserts", "1.14"), ("typed_search_att
 /// `MessageStreamsContract`.
 const MESSAGE_STREAMS: (&str, &str) = ("message_streams", "1.15");
 pub(super) const PARALLEL_GROUP_POLICIES: &str = "parallel_group_policies";
-const GROUP_POLICIES: &[&str] = &["propagate", "cancel_remaining", "settle"];
+/// The version 1 policy names, in canonical order.
+pub(super) const GROUP_POLICIES: &[&str] = &["propagate", "cancel_remaining", "settle"];
 
 const RUNTIMES: &[&str] = &["php", "python", "rust", "typescript", "go", "java", "external"];
 const MANIFEST_REQUIRED: &[Rule] = &[Required, Array, RequiredArrayKeys(AFFINITY)];
