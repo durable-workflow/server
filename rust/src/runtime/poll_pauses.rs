@@ -18,6 +18,10 @@ pub enum PollPoint {
     /// After the poll's last probe and its decision to answer without a
     /// task, before it records that answer under the request ID.
     Terminal,
+    /// A workflow or activity poll's claim, after its transaction began
+    /// (holding the transition queue and a connection) and before its first
+    /// statement (Server #1355).
+    Claiming,
 }
 
 /// A registered stop. `reached` resolves when the poll arrives; sending on

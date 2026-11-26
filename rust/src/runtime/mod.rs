@@ -283,6 +283,10 @@ pub enum RuntimeError {
     },
     #[error("protocol operation refused")]
     Protocol { status: StatusCode, response: Value },
+    /// A transition waited longer than the transition queue deadline for its
+    /// turn (Server #1355). Answered like any unavailable storage.
+    #[error("transition queue deadline exceeded")]
+    TransitionQueueTimeout,
 }
 
 fn diagnostic_database_code(code: &str) -> Option<&str> {
@@ -312,6 +316,7 @@ impl RuntimeError {
             Self::Io(_) => "io",
             Self::Json(_) => "json",
             Self::Migration(_) => "migration",
+            Self::TransitionQueueTimeout => "transition_queue_timeout",
             Self::Refused { .. } | Self::Protocol { .. } => return None,
         };
         let (code, number) = match self {

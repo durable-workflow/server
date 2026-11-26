@@ -189,3 +189,23 @@ async fn qualification_registration_survives_a_stall_on_an_idle_last_connection(
     .await
     .expect("bounded idle-connection stall qualification");
 }
+
+/// Server #1355, stuck transition: a held activity poll's claim holds the
+/// transition queue and its connection when the database stops answering.
+/// The registration queued behind it waits out the stall with it instead of
+/// being refused at the pool's five-second acquisition deadline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_registration_waits_out_a_transition_stuck_in_a_stall() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let mut stall = Stall::open().await;
+        stall.register("stall-claim").await.unwrap();
+        stall.hold_poll("stall-claim", PollPoint::Claiming).await;
+        // The paused claim keeps its connection.
+        stall.warm(1).await;
+        let stalled = stall.stall().await;
+        register_through(stall, stalled, "stall-other").await;
+    })
+    .await
+    .expect("bounded stuck-transition stall qualification");
+}

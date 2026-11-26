@@ -229,6 +229,7 @@ fn offer_refresh_failure(error: &super::RuntimeError) -> &'static str {
         super::RuntimeError::Json(_) => "json",
         super::RuntimeError::Migration(_) => "migration",
         super::RuntimeError::Protocol { .. } => "protocol",
+        super::RuntimeError::TransitionQueueTimeout => "transition_queue_timeout",
     }
 }
 

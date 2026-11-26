@@ -180,6 +180,25 @@ enum FirstProbe {
     Claimed(Result<Option<Value>>),
 }
 
+/// The ID a test pause seam stops a poll by: a workflow poll's request ID,
+/// or an activity poll's `poll_request_id`.
+#[cfg(debug_assertions)]
+fn poll_pause_id<'a>(
+    kind: &str,
+    body: &'a Value,
+    request: Option<&'a super::workflow_poll_requests::WorkflowPollRequest>,
+) -> Option<&'a str> {
+    request.map(|request| request.id.as_str())
+        .or_else(|| body.get("poll_request_id").and_then(Value::as_str).filter(|_| kind == "activity"))
+}
+
+/// How long a transition waits its turn on the transition queue before it is
+/// refused with HTTP 503 `storage_unavailable` (`transition_queue_timeout`).
+/// Longer than the pool's acquisition deadline, so a transition ahead that is
+/// waiting out a database stall (an HA failover) is waited for, not reported
+/// as a pool timeout (Server #1355).
+pub(super) const TRANSITION_QUEUE_DEADLINE: Duration = Duration::from_secs(30);
+
 pub(super) struct Store<DB: Backend> {
     pub(super) pool: Pool<DB>,
     transitions: Arc<Mutex<()>>,
@@ -221,6 +240,9 @@ pub(super) struct Store<DB: Backend> {
     pub(super) poll_capacity: Arc<super::poll_capacity::PollCapacity>,
     /// Held-poll probe slots: the pool size less one (Server #1204).
     pub(super) probe_slots: Arc<Semaphore>,
+    /// How long a transition waits its turn on the transition queue
+    /// ([`TRANSITION_QUEUE_DEADLINE`]; Server #1355).
+    pub(super) transition_queue_deadline: Duration,
     // A per-store source-test clock for deterministic claim arithmetic. All
     // production claims continue to sample the existing canonical clock.
     #[cfg(test)]
@@ -401,6 +423,7 @@ where
             storage_admission: Arc::default(),
             poll_capacity: Arc::default(),
             probe_slots,
+            transition_queue_deadline: TRANSITION_QUEUE_DEADLINE,
             #[cfg(test)]
             test_claim_at: None,
             #[cfg(test)]
@@ -437,6 +460,7 @@ where
             storage_admission: self.storage_admission.clone(),
             poll_capacity: self.poll_capacity.clone(),
             probe_slots: self.probe_slots.clone(),
+            transition_queue_deadline: self.transition_queue_deadline,
             #[cfg(test)]
             test_claim_at: self.test_claim_at,
             #[cfg(test)]
@@ -492,18 +516,30 @@ where
     pub(super) async fn close(&self) {
         self.pool.close().await;
     }
-    pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
-        // Queue before borrowing a connection so readers keep the other pool
-        // slots. A timed-out waiter returns the existing typed pool refusal;
-        // it never abandons FIFO and continues to the database anyway.
-        let queued = tokio::time::timeout(
-            self.pool.options().get_acquire_timeout(),
-            self.transitions.clone().lock_owned(),
-        )
-        .await
-        .map_err(|_| sqlx::Error::PoolTimedOut)?;
+    /// Wait for this transition's turn on the transition queue (FIFO).
+    ///
+    /// Waiting for the turn is waiting for the transition ahead to finish,
+    /// which during a database stall means waiting out the stall with it
+    /// (Server #1355). It is bounded by the transition queue deadline, not
+    /// by the pool's five-second acquisition deadline, and running out of
+    /// it is reported as `transition_queue_timeout`, not as a pool timeout.
+    /// A timed-out waiter never abandons FIFO and continues to the database
+    /// anyway.
+    pub(super) async fn queue_transition(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        let queued = tokio::time::timeout(self.transition_queue_deadline, self.transitions.clone().lock_owned())
+            .await
+            .map_err(|_| super::RuntimeError::TransitionQueueTimeout)?;
         #[cfg(test)]
         self.test_transitions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(queued)
+    }
+
+    pub(super) async fn begin(&self) -> Result<Transaction<'static, DB>> {
+        // Queue before borrowing a connection so readers keep the other pool
+        // slots. Once it is this transition's turn, borrowing the connection
+        // keeps the pool's acquisition deadline: a pool that has no free
+        // connection then is a real pool timeout.
+        let queued = self.queue_transition().await?;
         DB::begin(&self.pool)
             .await
             .map(|inner| {
@@ -2648,9 +2684,7 @@ where
                 &self.namespace, text(&body, "task_queue")?, task_kind)?;
             drop(probe);
             #[cfg(debug_assertions)]
-            if let Some(id) = poll_request.as_ref().map(|request| request.id.as_str())
-                .or_else(|| body.get("poll_request_id").and_then(Value::as_str).filter(|_| kind == "activity"))
-            {
+            if let Some(id) = poll_pause_id(kind, &body, poll_request.as_ref()) {
                 super::poll_pauses::stop_at(id, super::poll_pauses::PollPoint::Waiting).await;
             }
             pace.wait(wake, deadline).await;
@@ -2805,6 +2839,10 @@ where
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
     ) -> Result<Option<Value>> {
         let mut tx = self.begin().await?;
+        #[cfg(debug_assertions)]
+        if let Some(id) = poll_pause_id(kind, body, poll_request) {
+            super::poll_pauses::stop_at(id, super::poll_pauses::PollPoint::Claiming).await;
+        }
         let registration = match fence {
             Some(fence) => Some(self.fenced_claim_registration(&mut tx,fence,text(body,"worker_id")?).await?
                 .ok_or_else(super::worker_poll_fence::stale_claim)?),
