@@ -3110,7 +3110,8 @@ where
         {
             return Ok(false);
         }
-        Ok(true)
+        // .github#232: and every explicit group policy the run recorded.
+        Self::group_policies_supported(connection, worker, run_id).await
     }
 
     fn execution_offer_digest(
