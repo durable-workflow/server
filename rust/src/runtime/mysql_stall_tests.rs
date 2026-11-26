@@ -4,6 +4,12 @@
 //! a registration that arrives during the stall must wait it out and
 //! succeed, never be refused with the typed pool timeout (HTTP 503
 //! `pool_timeout`) after the five-second acquisition deadline.
+//!
+//! They show that the registration survives, not which path is budgeted:
+//! with a read budget of one, a single path that borrows from the pool
+//! directly still leaves the registration a connection.
+//! `probe_connections::tests::sqlite_held_poll_work_borrows_only_budgeted_connections`
+//! fails when any held-poll path leaves the budget.
 #![cfg(debug_assertions)]
 use super::super::test_reply_gate::{ReplyGate, forward};
 use super::*;

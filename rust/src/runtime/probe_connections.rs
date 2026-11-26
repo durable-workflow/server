@@ -172,6 +172,107 @@ mod tests {
         writer.close().await;
     }
 
+    /// A store whose one request connection counts each checkout made while
+    /// neither the read budget's slot nor the transition slot is held.
+    async fn counted_store(path: &std::path::Path) -> (Store<sqlx::Sqlite>, Arc<AtomicUsize>) {
+        let unbudgeted = Arc::new(AtomicUsize::new(0));
+        let (reads, transition) = (super::slots(1), Arc::new(tokio::sync::Semaphore::new(1)));
+        let options = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).min_connections(1)
+            .acquire_timeout(Duration::from_secs(2))
+            .before_acquire({
+                let (unbudgeted, reads, transition) = (unbudgeted.clone(), reads.clone(), transition.clone());
+                move |_, _| {
+                    if reads.available_permits() > 0 && transition.available_permits() > 0 {
+                        unbudgeted.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Box::pin(async { Ok(true) })
+                }
+            });
+        let pool = options.connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(path)
+            .busy_timeout(Duration::from_secs(5))).await.unwrap();
+        let mut store = Store::new(pool);
+        store.probe_slots = reads;
+        store.transition_slot = transition;
+        (store, unbudgeted)
+    }
+
+    /// Server #1355: every connection a held poll borrows, from admission to
+    /// its answer, comes from the budget: its admission and replay reads,
+    /// a workflow claim, query readiness reads and an update-validation
+    /// poll's probe transactions. Each case fails if its path borrows from
+    /// the pool directly. A stall qualification cannot tell: with a read
+    /// budget of one, one stray connection still leaves producers the last.
+    #[tokio::test]
+    async fn sqlite_held_poll_work_borrows_only_budgeted_connections() {
+        use super::super::poll_pauses::{PollPoint, pause_workflow_poll};
+        use crate::codec::{Value as Payload, ValueCodec};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budgeted.sqlite");
+        let writer = Store::<sqlx::Sqlite>::new(super::super::sqlite::open(path.to_str().unwrap()).await.unwrap());
+        let (store, unbudgeted) = counted_store(&path).await;
+        let config = QueryTaskConfig::default();
+        let register = |worker: &str, capabilities: serde_json::Value| json!({"worker_id":worker,"task_queue":worker,
+            "runtime":"php","supported_workflow_types":["probe"],"supported_activity_types":["act"],
+            "capabilities":capabilities,
+            "workflow_command_contracts":{"probe":{"queries":["probe"],"query_contracts":[{"name":"probe","parameters":[]}]}}});
+        let blob = ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap();
+        let start = |queue: &str| json!({"workflow_id":format!("{queue}-run"),"workflow_type":"probe","task_queue":queue,
+            "input":{"codec":"avro","blob":blob}});
+
+        // Admission, request replay and an activity poll's first claim
+        // attempt: up to the poll's first wait.
+        writer.register(register("admitted", json!([])), &config, Some("1.20")).await.unwrap();
+        let request = format!("admitted-{}", ulid::Ulid::new());
+        let waiting = pause_workflow_poll(&request, PollPoint::Waiting);
+        let body = json!({"worker_id":"admitted","task_queue":"admitted","timeout_seconds":1,"poll_request_id":request});
+        unbudgeted.store(0, Ordering::SeqCst);
+        let (answer, admitted) = tokio::join!(store.poll(body, "activity", "1.20"), async {
+            waiting.reached.await.unwrap();
+            let admitted = unbudgeted.load(Ordering::SeqCst);
+            waiting.release.send(()).unwrap();
+            admitted
+        });
+        assert_eq!(answer.unwrap()["poll_status"], "empty");
+        assert_eq!(admitted, 0, "admission and the first probe borrow only budgeted connections");
+
+        // A workflow poll's first probe under a request ID, which replays an
+        // earlier answer or claims.
+        writer.register(register("claiming", json!([])), &config, Some("1.20")).await.unwrap();
+        writer.start(start("claiming"), Default::default(), None, None).await.unwrap();
+        unbudgeted.store(0, Ordering::SeqCst);
+        let answer = store.poll(json!({"worker_id":"claiming","task_queue":"claiming","timeout_seconds":1,
+            "poll_request_id":format!("claiming-{}", ulid::Ulid::new())}), "workflow", "1.20").await.unwrap();
+        assert_eq!(answer["poll_status"], "leased");
+        assert_eq!(unbudgeted.load(Ordering::SeqCst), 0, "a claim borrows only the transition slot's connection");
+
+        // Query readiness reads, from the first readiness check (after the
+        // poll's first, unbudgeted query-task claim) to a poll that found
+        // nothing.
+        writer.register(register("querying", json!(["query_tasks"])), &config, Some("1.20")).await.unwrap();
+        let readiness = pause_workflow_poll("querying", PollPoint::QueryReadiness);
+        let (answer, ()) = tokio::join!(
+            store.poll_query(json!({"worker_id":"querying","task_queue":"querying","timeout_seconds":1}), &config),
+            async {
+                readiness.reached.await.unwrap();
+                unbudgeted.store(0, Ordering::SeqCst);
+                readiness.release.send(()).unwrap();
+            });
+        answer.unwrap();
+        assert_eq!(unbudgeted.load(Ordering::SeqCst), 0, "query readiness borrows only budgeted connections");
+
+        // An update-validation poll's admission and probe transactions.
+        writer.register(register("validating", json!([])), &config, Some("1.20")).await.unwrap();
+        writer.start(start("validating"), Default::default(), None, None).await.unwrap();
+        unbudgeted.store(0, Ordering::SeqCst);
+        let leased = store.poll_task_kinds(&json!({"worker_id":"validating","task_queue":"validating","timeout_seconds":1}),
+            &["workflow", "update_validation"], "1.20", Default::default(), 1, 30).await.unwrap();
+        assert!(matches!(&leased, super::super::update_validation::Leased::Workflow(answer) if answer["poll_status"] == "leased"));
+        assert_eq!(unbudgeted.load(Ordering::SeqCst), 0, "update validation borrows only budgeted connections");
+
+        store.close().await;
+        writer.close().await;
+    }
+
     #[test]
     fn the_read_budget_leaves_two_slots_and_never_reaches_zero() {
         for (connections, budget) in [(0, 1), (1, 1), (2, 1), (3, 1), (4, 2), (10, 8)] {

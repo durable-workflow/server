@@ -193,7 +193,8 @@ fn poll_pause_id<'a>(
 }
 
 /// How long after its own deadline a held poll's claim still waits for its
-/// turn on the transition queue (Server #1355).
+/// turn on the transition queue, and never less than the pool's acquisition
+/// deadline (Server #1355).
 pub(super) const POLL_CLAIM_MARGIN: Duration = Duration::from_secs(2);
 
 /// How long a transition waits its turn on the transition queue before it is
@@ -575,13 +576,17 @@ where
 
     /// [`queue_transition`](Self::queue_transition), giving up at `until`
     /// when that comes first: a held poll's claim stops waiting when nobody
-    /// reads its answer any more (Server #1355).
+    /// reads its answer any more (Server #1355). It still waits at least the
+    /// pool's acquisition deadline, so a poll that is out of time (or never
+    /// had any, `timeout_seconds: 0`) queues no shorter than it used to.
     pub(super) async fn queue_transition_until(
         &self,
         until: Option<tokio::time::Instant>,
     ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
-        let deadline = tokio::time::Instant::now() + self.transition_queue_deadline;
-        let deadline = until.map_or(deadline, |until| until.min(deadline));
+        let now = tokio::time::Instant::now();
+        let deadline = now + self.transition_queue_deadline;
+        let floor = now + self.pool.options().get_acquire_timeout();
+        let deadline = until.map_or(deadline, |until| until.max(floor).min(deadline));
         let queued = tokio::time::timeout_at(deadline, self.transitions.clone().lock_owned())
             .await
             .map_err(|_| super::RuntimeError::TransitionQueueTimeout)?;

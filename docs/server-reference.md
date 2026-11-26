@@ -2443,7 +2443,8 @@ how many request workers are busy.
   A budgeted transaction takes its turn on the transition queue before its
   budget connection. A held poll's claim stops waiting for its turn two
   seconds after the poll's own deadline, so no lease is committed for an
-  answer nobody reads. Other work stays outside the budget and competes for
+  answer nobody reads, but never before the five-second acquisition
+  deadline. Other work stays outside the budget and competes for
   the last connection: ordinary requests, query-task claims and the shared
   answers of duplicate query polls, recording an empty or stale poll answer,
   workflow lease recovery transactions, and polls carried by a task

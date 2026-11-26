@@ -108,3 +108,31 @@ async fn sqlite_transition_queue_preserves_reads_fifo_and_timeout_admission() {
         store.close().await;
     }).await.expect("bounded SQLite transition queue qualification");
 }
+
+/// A held poll's claim stops queueing at its own deadline plus the margin,
+/// but never sooner than the pool's acquisition deadline, so a poll with no
+/// time left (`timeout_seconds: 0`) queues as long as it did before the cap
+/// (Server #1355).
+#[tokio::test]
+async fn sqlite_a_claim_queue_wait_is_capped_by_the_poll_and_floored_by_the_pool() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("claim-wait.sqlite");
+    let acquire = Duration::from_millis(400);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(3).acquire_timeout(acquire)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path).create_if_missing(true))
+        .await.unwrap();
+    let store = Store::<sqlx::Sqlite>::new(pool);
+    let holder = store.queue_transition().await.unwrap();
+    for (until, waits) in [
+        (Duration::ZERO, acquire),
+        (Duration::from_millis(900), Duration::from_millis(900)),
+    ] {
+        let started = tokio::time::Instant::now();
+        let error = store.queue_transition_until(Some(started + until)).await.err().expect("the queue is held");
+        let waited = started.elapsed();
+        assert!(matches!(error, RuntimeError::TransitionQueueTimeout), "{error:?}");
+        assert!(waited >= waits && waited < waits + Duration::from_millis(300), "{until:?}: waited {waited:?}");
+    }
+    drop(holder);
+    store.close().await;
+}
