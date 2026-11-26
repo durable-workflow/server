@@ -88,10 +88,14 @@ store_methods! {
     }
 
     /// A held poll's later probe reads: as [`probe_connection`](Self::probe_connection),
-    /// but `None` once the poll's own deadline (`answer_by`) passes before a
-    /// read slot is free. The poll then answers as at its deadline instead of
-    /// waiting on other polls' reads past it (Server #1355). The first probe,
-    /// admission and every claim keep the pool's acquisition deadline.
+    /// but the wait for a read slot lasts until the poll's own deadline
+    /// (`answer_by`), however long, and is `None` once that passes. The poll
+    /// then answers as at its deadline instead of waiting on other polls'
+    /// reads past it (Server #1355), and a long poll whose slot wait outlasts
+    /// the pool's acquisition deadline keeps waiting instead of failing
+    /// (Server #1372). The connection, once the slot is held, keeps the
+    /// acquisition deadline. The first probe, admission and every claim keep
+    /// it for the slot too.
     pub(super) async fn probe_connection_by(&self, answer_by: tokio::time::Instant) -> Result<Option<ProbeConnection<DB>>> {
         self.budgeted_connection_by(&self.probe_slots, Some(answer_by)).await
     }
@@ -111,18 +115,24 @@ store_methods! {
         Ok(self.budgeted_connection_by(budget, None).await?.expect("no answer-by deadline"))
     }
 
-    /// [`budgeted_connection`](Self::budgeted_connection), whose slot wait
-    /// also ends, with `None`, at `answer_by` when that comes first. A slot
+    /// [`budgeted_connection`](Self::budgeted_connection). With `answer_by`,
+    /// the slot wait ends there instead, with `None`, and the connection then
+    /// has the acquisition deadline from the moment the slot is held. A slot
     /// already free is taken even after `answer_by`.
     async fn budgeted_connection_by(
         &self, budget: &Arc<tokio::sync::Semaphore>, answer_by: Option<tokio::time::Instant>,
     ) -> Result<Option<ProbeConnection<DB>>> {
-        let deadline = tokio::time::Instant::now() + self.pool.options().get_acquire_timeout();
-        let slot = match answer_by.filter(|answer_by| *answer_by < deadline) {
-            Some(answer_by) => match tokio::time::timeout_at(answer_by, budget.clone().acquire_owned()).await {
-                Ok(slot) => slot,
-                Err(_) => return Ok(None),
-            },
+        let acquire = self.pool.options().get_acquire_timeout();
+        let mut deadline = tokio::time::Instant::now() + acquire;
+        let slot = match answer_by {
+            Some(answer_by) => {
+                let slot = tokio::time::timeout_at(answer_by, budget.clone().acquire_owned()).await;
+                deadline = tokio::time::Instant::now() + acquire;
+                match slot {
+                    Ok(slot) => slot,
+                    Err(_) => return Ok(None),
+                }
+            }
             None => tokio::time::timeout_at(deadline, budget.clone().acquire_owned())
                 .await
                 .map_err(|_| sqlx::Error::PoolTimedOut)?,
@@ -354,6 +364,53 @@ mod tests {
             assert!(answered >= Duration::from_millis(900) && answered < Duration::from_millis(1500),
                 "{kind}: answered at its deadline, not after waiting for the read slot: {answered:?}");
         }
+        store.close().await;
+        writer.close().await;
+    }
+
+    /// Server #1372: a long poll's later probe that waits longer than the
+    /// pool's acquisition deadline for a read slot, with time left, keeps
+    /// waiting instead of failing the poll with the typed pool timeout (HTTP
+    /// 503). Here the slot is held for longer than the two-second
+    /// acquisition deadline, then a workflow starts and the slot frees: the
+    /// poll leases it.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn sqlite_a_long_poll_keeps_waiting_for_a_read_slot_past_the_acquisition_deadline() {
+        use super::super::poll_pauses::{PollPoint, pause_workflow_poll};
+        use crate::codec::{Value as Payload, ValueCodec};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long-wait.sqlite");
+        let writer = Store::<sqlx::Sqlite>::new(super::super::sqlite::open(path.to_str().unwrap()).await.unwrap());
+        let (store, _) = counted_store(&path).await;
+        let acquire = store.pool.options().get_acquire_timeout();
+        assert_eq!(acquire, Duration::from_secs(2));
+        writer.register(json!({"worker_id":"long-wait","task_queue":"long-wait","runtime":"php",
+            "supported_workflow_types":["probe"],"supported_activity_types":[]}), &QueryTaskConfig::default(), Some("1.20")).await.unwrap();
+        let request = format!("long-wait-{}", ulid::Ulid::new());
+        let waiting = pause_workflow_poll(&request, PollPoint::Waiting);
+        let body = json!({"worker_id":"long-wait","task_queue":"long-wait","timeout_seconds":6,"poll_request_id":request});
+        let blob = ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap();
+        let started = tokio::time::Instant::now();
+        let poll = async {
+            let answer = store.poll(body, "workflow", "1.20").await;
+            (answer, started.elapsed())
+        };
+        let ((answer, answered), freed) = tokio::join!(poll, async {
+            waiting.reached.await.unwrap();
+            let held = store.probe_slots.clone().acquire_owned().await.unwrap();
+            waiting.release.send(()).unwrap();
+            tokio::time::sleep(acquire + Duration::from_millis(1500)).await;
+            writer.start(json!({"workflow_id":"long-wait-run","workflow_type":"probe","task_queue":"long-wait",
+                "input":{"codec":"avro","blob":blob}}), Default::default(), None, None).await.unwrap();
+            drop(held);
+            started.elapsed()
+        });
+        let answer = answer.expect("a slot wait past the acquisition deadline is not a pool timeout");
+        assert_eq!(answer["poll_status"], "leased", "{answer}");
+        assert!(freed > acquire + Duration::from_secs(1), "the slot was held past the acquisition deadline: {freed:?}");
+        assert!(answered >= freed, "the poll was still waiting for the slot when it freed: answered at {answered:?}, freed at {freed:?}");
+        assert!(answered < freed + Duration::from_secs(1), "and leased promptly once it freed: answered at {answered:?}, freed at {freed:?}");
         store.close().await;
         writer.close().await;
     }
