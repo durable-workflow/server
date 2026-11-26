@@ -95,12 +95,17 @@ check fails the job.
 
 The controller refuses to start when the worst-case cost could exceed
 `max_spend_usd`. The worst case is the VM lifetime cap (180 minutes, billed
-as 3 started hours) at the plans' published hourly prices. The race must end
-10 minutes before the cap, and the job's `timeout-minutes` is longer than the
-cap, so the trap still runs. If a runner dies before its trap runs, the next
-run deletes race VMs older than the cap, and the workflow's `cleanup_only`
-input (or `scripts/perf/run-vultr-temporal-compare.sh cleanup`) does the same
-on demand.
+as 3 started hours) at the plans' published hourly prices. The deadlines are
+fixed before any VM exists. Every SSH and scp call runs under `timeout`, so
+remote work stops 18 minutes before the cap. That leaves 3 minutes to copy
+the results and 15 minutes to delete and verify both VMs. The cap is also
+pulled in so deletion ends at least 10 minutes before the job's
+`timeout-minutes`, and the trap still runs. A failed instance or VPC listing
+fails the check: an unreadable listing never counts as empty. If a runner
+dies before its trap runs, the next run deletes race VMs older than the cap.
+The workflow's `cleanup_only` input, or
+`scripts/perf/run-vultr-temporal-compare.sh cleanup`, does the same on
+demand.
 
 `DW_RACE_DRY_RUN=1 scripts/perf/run-vultr-temporal-compare.sh` prints the
 cost computation and every Vultr call it would make, including the deletes

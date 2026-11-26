@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import re
 import tempfile
 import unittest
 
@@ -231,6 +232,9 @@ class ControllerTest(unittest.TestCase):
         output = result.stdout + result.stderr
         self.assertEqual(0, result.returncode, output)
         self.assertIn("worst case: VM lifetime cap 180 min -> 3 billed h -> $0.321 (limit $0.35)", output)
+        self.assertIn("deletion is verified by the cap and at least 10 min before the 210-min job timeout", output)
+        self.assertIn("Deadlines: race by", output)
+        self.assertLess(output.index("Deadlines: race by"), output.index("POST /vpcs"))
         self.assertIn("DRY-RUN Vultr API: POST /vpcs", output)
         self.assertEqual(2, output.count("DRY-RUN Vultr API: POST /instances "))
         self.assertIn('"plan":"vhp-2c-4gb-amd"', output)
@@ -267,6 +271,45 @@ class ControllerTest(unittest.TestCase):
             self.assertEqual(2, result.returncode, name)
             self.assertIn(message, result.stderr, name)
             self.assertNotIn("DRY-RUN Vultr API", result.stderr, name)
+
+    def test_refuses_duplicate_races_or_backends(self):
+        for name, value in (("DW_RACE_RACES", "five-steps,five-steps"), ("DW_RACE_BACKENDS", "sqlite,mysql,sqlite")):
+            result = self.run_controller(**{name: value})
+            self.assertEqual(2, result.returncode, name)
+            self.assertIn("Refusing duplicate entries", result.stderr)
+            self.assertNotIn("DRY-RUN Vultr API", result.stderr)
+
+    def test_refuses_a_job_timeout_that_would_cut_off_the_exit_trap(self):
+        result = self.run_controller(DW_RACE_JOB_TIMEOUT_MINUTES="185")
+        self.assertEqual(2, result.returncode)
+        self.assertIn("DW_RACE_JOB_TIMEOUT_MINUTES must be at least", result.stderr)
+
+    def test_a_failed_listing_fails_cleanup_loudly(self):
+        for failing in ("GET /instances?", "GET /vpcs?"):
+            with self.subTest(failing):
+                result = self.run_controller("cleanup", DW_RACE_CLEANUP_RUN="42-1", DW_RACE_DRY_RUN_FAIL=failing)
+                self.assertNotEqual(0, result.returncode, result.stderr)
+                self.assertIn("simulated failure", result.stderr)
+                self.assertIn("ERROR: Could not list Vultr instances and VPCs", result.stderr)
+                result = self.run_controller("cleanup", DW_RACE_DRY_RUN_FAIL=failing)
+                self.assertNotEqual(0, result.returncode, result.stderr)
+
+    def test_a_failed_listing_stops_a_race_before_any_vm_is_created(self):
+        result = self.run_controller(DW_RACE_DRY_RUN_FAIL="GET /instances?")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("not creating new VMs", result.stderr)
+        self.assertNotIn("POST", result.stderr)
+
+    def test_every_ssh_and_scp_call_is_bounded_by_a_deadline(self):
+        lines = CONTROLLER.read_text().splitlines()
+        unbounded = [
+            line for line in lines
+            if re.search(r"(^|[;&|(]\s*|\s)(ssh|scp)\s", line)
+            and not line.lstrip().startswith("#")
+            and "timeout" not in line
+            and "ssh-keygen" not in line
+        ]
+        self.assertEqual([], unbounded)
 
     def test_refuses_a_race_longer_than_the_lifetime_cap(self):
         result = self.run_controller(DW_RACE_WORKFLOWS="1000", DW_RACE_REPS="9")
@@ -305,6 +348,7 @@ class WorkflowTest(unittest.TestCase):
         timeout = int(text.split("timeout-minutes: ", 1)[1].split()[0])
         lifetime = int(text.split('DW_RACE_MAX_VM_MINUTES: "', 1)[1].split('"')[0])
         self.assertGreaterEqual(timeout - lifetime, 20)
+        self.assertIn(f'DW_RACE_JOB_TIMEOUT_MINUTES: "{timeout}"', text)
 
 
 if __name__ == "__main__":

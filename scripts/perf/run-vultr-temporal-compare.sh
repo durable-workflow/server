@@ -13,11 +13,13 @@
 # DW_RACE_DRY_RUN=1 makes no Vultr call: it prints every call it would make,
 # the cost computation, and the remote steps, then stops.
 #
-# Spend is capped before anything is created: each VM's lifetime is at most
-# DW_RACE_MAX_VM_MINUTES (the remote run is killed before it, and the
-# workflow's timeout-minutes is longer so this trap still runs), and the
-# controller refuses to start when that lifetime, billed in whole hours at
-# the plans' published hourly prices, could exceed DW_RACE_MAX_SPEND_USD.
+# Spend is capped before anything is created. Each VM must be deleted within
+# DW_RACE_MAX_VM_MINUTES of creation, and before the job's own timeout
+# (DW_RACE_JOB_TIMEOUT_MINUTES) less a margin, so this exit trap always runs.
+# Every SSH and scp call after creation runs under `timeout` against that
+# deadline less the teardown reserve. The controller refuses to start when
+# the cap, billed in whole hours at the plans' published hourly prices, could
+# exceed DW_RACE_MAX_SPEND_USD.
 set -Eeuo pipefail
 
 MODE="${1:-race}"
@@ -37,9 +39,16 @@ SERVER_REF="${DW_RACE_SERVER_REF:-}"
 ARTIFACT_DIR="${DW_RACE_ARTIFACT_DIR:-build/temporal-compare}"
 LABEL_PREFIX="dw-temporal-compare"
 SSH_USER="perf"
-# Minutes kept free at the end of a VM's lifetime for copying results and
-# deleting the VMs.
-TEARDOWN_MINUTES=10
+JOB_TIMEOUT_MINUTES="${DW_RACE_JOB_TIMEOUT_MINUTES:-210}"
+# Minutes reserved at the end of a VM's lifetime: deleting and verifying
+# both VMs takes at most about 11 minutes (per VM, 6 attempts of three calls
+# capped at 15 seconds, 10 seconds apart), and copying the results comes
+# before that.
+TEARDOWN_MINUTES=15
+COPY_MINUTES=3
+# The trap must finish this long before the job timeout, VPC included.
+JOB_MARGIN_MINUTES=10
+SCRIPT_START="$(date -u +%s)"
 
 : "${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 : "${GITHUB_RUN_ATTEMPT:?GITHUB_RUN_ATTEMPT is required}"
@@ -92,6 +101,11 @@ if [[ "$MODE" == race ]]; then
   if [[ ! "$BACKENDS" =~ ^(sqlite|mysql|pgsql)(,(sqlite|mysql|pgsql)){0,2}$ ]]; then
     fail_input "DW_RACE_BACKENDS must be a comma-separated subset of sqlite,mysql,pgsql."
   fi
+  for list in "$RACES" "$BACKENDS"; do
+    if [[ "$(tr ',' '\n' <<<"$list" | sort | uniq -d)" != "" ]]; then
+      fail_input "Refusing duplicate entries in '$list'."
+    fi
+  done
   if [[ ! "$REPS" =~ ^[0-9]+$ ]] || ((REPS < 1 || REPS > 9)); then
     fail_input "DW_RACE_REPS must be between 1 and 9."
   fi
@@ -104,6 +118,9 @@ if [[ "$MODE" == race ]]; then
   if [[ ! "$MAX_SPEND_USD" =~ ^[0-9]+(\.[0-9]{1,2})?$ ]]; then
     fail_input "DW_RACE_MAX_SPEND_USD must be a dollar amount such as 0.35."
   fi
+  if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[0-9]+$ ]] || ((JOB_TIMEOUT_MINUTES < MAX_VM_MINUTES + JOB_MARGIN_MINUTES + 5)); then
+    fail_input "DW_RACE_JOB_TIMEOUT_MINUTES must be at least DW_RACE_MAX_VM_MINUTES plus $((JOB_MARGIN_MINUTES + 5)), so the exit trap runs before the job is stopped."
+  fi
 
   # Expected minutes: provisioning and cloud-init (10), building the native
   # Server and the worker images on the driver (30), then per system 2
@@ -113,8 +130,8 @@ if [[ "$MODE" == race ]]; then
   backend_count=$(tr ',' '\n' <<<"$BACKENDS" | wc -l)
   EXPECTED_MINUTES=$(awk -v r="$race_count" -v b="$backend_count" -v reps="$REPS" -v w="$WORKFLOWS" \
     'BEGIN { m = 40 + r * (b + 2) * (2 + reps * 1.5 * w / 200); printf "%d", (m == int(m)) ? m : int(m) + 1 }')
-  if ((EXPECTED_MINUTES + TEARDOWN_MINUTES > MAX_VM_MINUTES)); then
-    fail_input "Expected ${EXPECTED_MINUTES} minutes plus ${TEARDOWN_MINUTES} for teardown exceeds DW_RACE_MAX_VM_MINUTES=${MAX_VM_MINUTES}."
+  if ((EXPECTED_MINUTES + COPY_MINUTES + TEARDOWN_MINUTES > MAX_VM_MINUTES)); then
+    fail_input "Expected ${EXPECTED_MINUTES} minutes plus $((COPY_MINUTES + TEARDOWN_MINUTES)) for copying and teardown exceeds DW_RACE_MAX_VM_MINUTES=${MAX_VM_MINUTES}."
   fi
   target_price="$(hourly_price "$TARGET_PLAN")"
   driver_price="$(hourly_price "$DRIVER_PLAN")"
@@ -128,6 +145,7 @@ Cost plan for $RUN_LABEL (prices: https://www.vultr.com/pricing/, read 2026-11-2
   target $TARGET_PLAN \$$target_price/h + driver $DRIVER_PLAN \$$driver_price/h in $REGION
   expected: $EXPECTED_MINUTES min (${RACES}; ${BACKENDS}; $REPS reps x $WORKFLOWS workflows) -> $expected_hours billed h -> \$$EXPECTED_USD
   worst case: VM lifetime cap $MAX_VM_MINUTES min -> $billed_hours billed h -> \$$WORST_CASE_USD (limit \$$MAX_SPEND_USD)
+  enforcement: remote work stops $((COPY_MINUTES + TEARDOWN_MINUTES)) min before the cap; deletion is verified by the cap and at least $JOB_MARGIN_MINUTES min before the ${JOB_TIMEOUT_MINUTES}-min job timeout
 EOF
   if awk -v w="$WORST_CASE_USD" -v m="$MAX_SPEND_USD" 'BEGIN { exit !(w > m) }'; then
     fail_input "Refusing to start: worst-case cost \$$WORST_CASE_USD exceeds DW_RACE_MAX_SPEND_USD=\$$MAX_SPEND_USD."
@@ -166,6 +184,12 @@ api() {
         body=" $(jq -c 'if .user_data then .user_data = "<cloud-init, base64>" else . end' "${arg#@}")"
       fi
     done
+    # DW_RACE_DRY_RUN_FAIL="METHOD /path-prefix" makes matching calls fail,
+    # to show how the controller handles an API failure.
+    if [[ -n "${DW_RACE_DRY_RUN_FAIL:-}" && "$method $path" == "$DW_RACE_DRY_RUN_FAIL"* ]]; then
+      printf 'DRY-RUN Vultr API: %s %s -> simulated failure\n' "$method" "$path" >&2
+      return 22
+    fi
     printf 'DRY-RUN Vultr API: %s %s%s\n' "$method" "$path" "$body" >&2
     dry_run_answer "$method" "$path" "$@"
     return 0
@@ -210,13 +234,16 @@ http_status() {
   api "$method" "$path" --no-fail-with-body --max-time 15 --output /dev/null --write-out '%{http_code}' || echo 000
 }
 
-# Labels of race VMs (all, or one run's), from the paginated instance list.
+# Race VMs (all, or one run's), from the paginated instance list.
 list_race_instances() {
   local prefix="$1" cursor="" page
   while :; do
-    page="$(api GET "/instances?per_page=500${cursor:+&cursor=$cursor}")"
-    jq -r --arg p "$prefix" '.instances[]? | select(.label | startswith($p)) | "\(.id)\t\(.label)\t\(.date_created)"' <<<"$page"
-    cursor="$(jq -r '.meta.links.next // ""' <<<"$page")"
+    # Any failed call or unreadable page fails the listing: an empty
+    # answer must mean nothing is left, never that nothing could be read.
+    page="$(api GET "/instances?per_page=500${cursor:+&cursor=$cursor}")" || return 1
+    jq -e '.instances | type == "array"' <<<"$page" >/dev/null || return 1
+    jq -r --arg p "$prefix" '.instances[]? | select(.label | startswith($p)) | "\(.id)\t\(.label)\t\(.date_created)"' <<<"$page" || return 1
+    cursor="$(jq -r '.meta.links.next // ""' <<<"$page")" || return 1
     [[ -n "$cursor" ]] || break
   done
 }
@@ -224,15 +251,18 @@ list_race_instances() {
 list_race_vpcs() {
   local prefix="$1" cursor="" page
   while :; do
-    page="$(api GET "/vpcs?per_page=500${cursor:+&cursor=$cursor}")"
-    jq -r --arg p "$prefix" '.vpcs[]? | select((.description // "") | startswith($p)) | "\(.id)\t\(.description)\t\(.date_created)"' <<<"$page"
-    cursor="$(jq -r '.meta.links.next // ""' <<<"$page")"
+    # Any failed call or unreadable page fails the listing: an empty
+    # answer must mean nothing is left, never that nothing could be read.
+    page="$(api GET "/vpcs?per_page=500${cursor:+&cursor=$cursor}")" || return 1
+    jq -e '.vpcs | type == "array"' <<<"$page" >/dev/null || return 1
+    jq -r --arg p "$prefix" '.vpcs[]? | select((.description // "") | startswith($p)) | "\(.id)\t\(.description)\t\(.date_created)"' <<<"$page" || return 1
+    cursor="$(jq -r '.meta.links.next // ""' <<<"$page")" || return 1
     [[ -n "$cursor" ]] || break
   done
 }
 
 # Delete one resource and verify it is gone: a 404 for its own path, and
-# for an instance, no instance left under its unique label.
+# no instance under its unique label (or no VPC with its id) in a listing.
 delete_verified() {
   local kind="$1" id="$2" label="${3:-}" attempt delete_status lookup_status listed
   for attempt in 1 2 3 4 5 6; do
@@ -241,7 +271,9 @@ delete_verified() {
     lookup_status="$(http_status GET "/$kind/$id")"
     listed=0
     if [[ "$kind" == instances && -n "$label" && "$lookup_status" == 404 ]]; then
-      listed="$(api GET "/instances?label=$label" | jq '.instances | length')" || listed=unknown
+      listed="$(api GET "/instances?label=$label" --max-time 15 | jq -e '.instances | length')" || listed=unknown
+    elif [[ "$kind" == vpcs && "$lookup_status" == 404 ]]; then
+      listed="$(list_race_vpcs "$LABEL_PREFIX-" | awk -F '\t' -v id="$id" '$1 == id { n++ } END { print n + 0 }')" || listed=unknown
     fi
     if [[ "$lookup_status" == 404 && "$listed" == 0 ]]; then
       log "Verified Vultr $kind $id ${label:+($label) }is absent"
@@ -285,8 +317,14 @@ cleanup() {
 # argument, only that run's resources; otherwise every race resource older
 # than the VM lifetime cap, so a concurrent run is never touched.
 sweep() {
-  local only="${1:-}" now id label created age status=0
+  local only="${1:-}" now id label created age status=0 instances vpcs
   now="$(date -u +%s)"
+  if ! instances="$(list_race_instances "${only:-$LABEL_PREFIX-}")" \
+    || ! vpcs="$(list_race_vpcs "${only:-$LABEL_PREFIX-}")"; then
+    log "ERROR: Could not list Vultr instances and VPCs, so leftovers cannot be checked"
+    summary_note "## Cleanup check failed" "" "The Vultr instance or VPC listing failed. Race resources may remain; rerun the cleanup." ""
+    return 1
+  fi
   while IFS=$'\t' read -r id label created; do
     [[ -n "$id" ]] || continue
     age=$(((now - $(date -u -d "$created" +%s)) / 60))
@@ -296,7 +334,7 @@ sweep() {
     fi
     log "Deleting leftover race VM $label ($id), $age minutes old"
     delete_verified instances "$id" "$label" || status=1
-  done < <(list_race_instances "${only:-$LABEL_PREFIX-}")
+  done <<<"$instances"
   while IFS=$'\t' read -r id label created; do
     [[ -n "$id" ]] || continue
     age=$(((now - $(date -u -d "$created" +%s)) / 60))
@@ -305,7 +343,7 @@ sweep() {
     fi
     log "Deleting leftover race VPC $label ($id)"
     delete_verified vpcs "$id" || status=1
-  done < <(list_race_vpcs "${only:-$LABEL_PREFIX-}")
+  done <<<"$vpcs"
   return "$status"
 }
 
@@ -322,7 +360,10 @@ if [[ "$MODE" == cleanup ]]; then
 fi
 
 trap cleanup EXIT INT TERM
-sweep || log "WARNING: a leftover from an earlier run could not be deleted; see above"
+if ! sweep; then
+  log "ERROR: Leftovers from an earlier run could not be checked or deleted; not creating new VMs"
+  exit 1
+fi
 
 if [[ "$DRY_RUN" == 1 ]]; then
   controller_ip="192.0.2.1"
@@ -380,6 +421,22 @@ runcmd:
   - systemctl reload ssh
 EOF
 
+# Deadlines, fixed before anything is created. VM_END: both VMs deleted and
+# verified. WORK_END: the last SSH or scp call ends. RACE_END: the race ends,
+# leaving time to copy its results.
+CREATE_AT="$(date -u +%s)"
+VM_END=$((CREATE_AT + MAX_VM_MINUTES * 60))
+JOB_LIMIT=$((SCRIPT_START + (JOB_TIMEOUT_MINUTES - JOB_MARGIN_MINUTES) * 60))
+((VM_END > JOB_LIMIT)) && VM_END=$JOB_LIMIT
+WORK_END=$((VM_END - TEARDOWN_MINUTES * 60))
+RACE_END=$((WORK_END - COPY_MINUTES * 60))
+if (((RACE_END - CREATE_AT) / 60 < EXPECTED_MINUTES)); then
+  echo "Only $(((RACE_END - CREATE_AT) / 60)) minutes would remain for an expected ${EXPECTED_MINUTES}-minute race; not creating VMs." >&2
+  exit 2
+fi
+utc() { date -u -d "@$1" +'%Y-%m-%dT%H:%M:%SZ'; }
+log "Deadlines: race by $(utc "$RACE_END"), last remote call by $(utc "$WORK_END"), VMs deleted by $(utc "$VM_END")"
+
 log "Creating private VPC for $RUN_LABEL in $REGION"
 vpc_payload="$WORK_DIR/vpc.json"
 jq -n --arg region "$REGION" --arg description "$RUN_LABEL-vpc" '{region: $region, description: $description}' > "$vpc_payload"
@@ -411,14 +468,13 @@ create_instance target "$TARGET_PLAN"
 create_instance driver "$DRIVER_PLAN"
 TARGET_ID="${INSTANCE_IDS[0]}"
 DRIVER_ID="${INSTANCE_IDS[1]}"
-# The lifetime clock starts at creation. The remote run must end
-# TEARDOWN_MINUTES before the cap so the trap can delete the VMs in time.
-DEADLINE=$(($(date -u +%s) + (MAX_VM_MINUTES - TEARDOWN_MINUTES) * 60))
-log "VM lifetime cap: $MAX_VM_MINUTES minutes; the race must finish by $(date -u -d "@$DEADLINE" +'%Y-%m-%dT%H:%M:%SZ')"
+
+before() { (($(date -u +%s) < $1)); }
 
 wait_active() {
   local id="$1" details status server_status ip
   for _ in $(seq 1 90); do
+    before "$WORK_END" || break
     details="$(api GET "/instances/$id")"
     status="$(jq -r '.instance.status // ""' <<<"$details")"
     server_status="$(jq -r '.instance.server_status // ""' <<<"$details")"
@@ -449,7 +505,8 @@ DRY-RUN remote steps (no SSH in a dry run):
   wait for SSH and cloud-init on target $TARGET_IP and driver $DRIVER_IP
   bring up the VPC interface (MAC $TARGET_MAC / $DRIVER_MAC) if cloud-init did not
   target firewall: allow SSH from the driver's private address $DRIVER_PRIVATE; race ports publish on $TARGET_PRIVATE only
-  driver: check out harness $GITHUB_SHA and Server $SERVER_REF, then run with timeout $((DEADLINE - $(date -u +%s)))s:
+  every SSH and scp call runs under timeout, ending by $(utc "$WORK_END")
+  driver: check out harness $GITHUB_SHA and Server $SERVER_REF, then run until $(utc "$RACE_END"):
     python3 scripts/perf/temporal_compare.py run --output ~/race-out --races $RACES --backends $BACKENDS \\
       --reps $REPS --workflows $WORKFLOWS --native-source ~/server-under-test \\
       --target-docker-host ssh://$SSH_USER@$TARGET_PRIVATE --target-bind $TARGET_PRIVATE --target-address $TARGET_PRIVATE \\
@@ -469,17 +526,38 @@ ssh_options=(
   -o StrictHostKeyChecking=accept-new
   -o "UserKnownHostsFile=$KNOWN_HOSTS"
 )
-remote() {
-  local host="$1"
-  shift
+# Every call after creation is bounded by a deadline, so a hung SSH session
+# can never keep the VMs past their lifetime cap: the exit trap runs as soon
+# as the foreground command returns.
+time_left() {
+  local left=$(($1 - $(date -u +%s)))
+  if ((left <= 0)); then
+    log "ERROR: The VM lifetime deadline has passed; no more remote commands"
+    return 1
+  fi
+  echo "$left"
+}
+remote_until() {
+  local end="$1" host="$2" left
+  shift 2
+  left="$(time_left "$end")" || return 124
   # shellcheck disable=SC2029  # remote commands are fixed strings or stdin
-  ssh "${ssh_options[@]}" "$SSH_USER@$host" "$@"
+  timeout --kill-after=10 "$left" ssh "${ssh_options[@]}" "$SSH_USER@$host" "$@"
+}
+remote() {
+  remote_until "$WORK_END" "$@"
+}
+scp_bounded() {
+  local left
+  left="$(time_left "$WORK_END")" || return 124
+  timeout --kill-after=10 "$left" scp "${ssh_options[@]}" "$@"
 }
 
 for host in "$TARGET_IP" "$DRIVER_IP"; do
   log "Waiting for SSH and cloud-init on $host"
   ready=false
   for _ in $(seq 1 90); do
+    before "$WORK_END" || break
     if remote "$host" true >/dev/null 2>&1; then ready=true; break; fi
     sleep 10
   done
@@ -515,7 +593,7 @@ sudo ufw allow from "$1" to any port 22 proto tcp >/dev/null
 REMOTE
 
 log "Giving the driver SSH access to the target's Docker engine"
-scp "${ssh_options[@]}" "$KEY_FILE" "$SSH_USER@$DRIVER_IP:.ssh/race_target" >/dev/null
+scp_bounded "$KEY_FILE" "$SSH_USER@$DRIVER_IP:.ssh/race_target" >/dev/null
 remote "$DRIVER_IP" bash -s -- "$TARGET_PRIVATE" "$SSH_USER" <<'REMOTE'
 set -euo pipefail
 chmod 600 "$HOME/.ssh/race_target"
@@ -527,7 +605,7 @@ Host $1
   ServerAliveInterval 30
 EOF
 chmod 600 "$HOME/.ssh/config"
-ssh "$2@$1" docker version --format '{{.Server.Version}}' >/dev/null
+timeout 60 ssh "$2@$1" docker version --format '{{.Server.Version}}' >/dev/null
 REMOTE
 
 log "Checking out harness $GITHUB_SHA and Server $SERVER_REF on the driver"
@@ -546,14 +624,14 @@ checkout "$1" "$HOME/server"
 checkout "$2" "$HOME/server-under-test"
 REMOTE
 
-remaining=$((DEADLINE - $(date -u +%s)))
+remaining=$((RACE_END - $(date -u +%s) - 60))
 if ((remaining < 600)); then
-  echo "Less than ten minutes of VM lifetime remain; not starting the race." >&2
+  echo "Less than ten minutes remain before the race deadline; not starting the race." >&2
   exit 1
 fi
 log "Starting the race on the driver (at most ${remaining}s)"
 set +e
-remote "$DRIVER_IP" bash -s -- "$remaining" "$TARGET_PRIVATE" "$RACES" "$BACKENDS" "$REPS" "$WORKFLOWS" \
+remote_until "$RACE_END" "$DRIVER_IP" bash -s -- "$remaining" "$TARGET_PRIVATE" "$RACES" "$BACKENDS" "$REPS" "$WORKFLOWS" \
   "$TARGET_PLAN" "$DRIVER_PLAN" "$REGION" "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
   "${GITHUB_REPOSITORY:-}" "${GITHUB_REF:-}" "$GITHUB_SHA" "${GITHUB_WORKFLOW:-}" "${GITHUB_EVENT_NAME:-}" \
   "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${GITHUB_JOB:-}" "vultr-$DRIVER_ID" <<'REMOTE'

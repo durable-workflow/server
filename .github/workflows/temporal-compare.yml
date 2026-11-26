@@ -86,6 +86,8 @@ jobs:
           DW_RACE_WORKFLOWS: ${{ inputs.workflows }}
           DW_RACE_MAX_SPEND_USD: ${{ inputs.max_spend_usd }}
           DW_RACE_MAX_VM_MINUTES: "180"
+          # Keep equal to timeout-minutes above.
+          DW_RACE_JOB_TIMEOUT_MINUTES: "210"
         run: scripts/perf/run-vultr-temporal-compare.sh race
 
       # If the race step was cancelled or timed out before its trap finished,
