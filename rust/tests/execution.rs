@@ -430,6 +430,8 @@ mod signal_external;
 mod carried_polls;
 #[path = "execution/continuations_v1.rs"]
 mod continuations_v1;
+#[path = "execution/continuation_tail.rs"]
+mod continuation_tail;
 
 #[path = "execution/workflow_poll_clock.rs"]
 mod workflow_poll_clock;

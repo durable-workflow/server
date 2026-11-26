@@ -170,8 +170,12 @@ store_methods! {
         }
     }
 
+    /// With `created`, the carrier claims only one of those tasks, in order,
+    /// and never one from the queue (a completion asking for a continuation
+    /// tail, Server #1181).
     pub(super) async fn claim_carried_activity(
         &self, tx: &mut super::transaction::Transaction<'_, DB>, poll: &ActivityPoll, completion_owner: &str,
+        created: Option<&[String]>,
     ) -> Result<Outcome> {
         let owner = super::text(&poll.body, "worker_id")?;
         if owner != completion_owner { return Ok(Outcome::Declined); }
@@ -189,7 +193,11 @@ store_methods! {
             return Ok(Outcome::Declined);
         }
         let saved = tx.poll_savepoint().await?;
-        match self.claim_with_registration(tx, &poll.body, "activity", &poll.protocol, None, None, Some(registration)).await {
+        let claimed = match created {
+            None => self.claim_with_registration(tx, &poll.body, "activity", &poll.protocol, None, None, Some(registration)).await,
+            Some(created) => self.claim_created_activity(tx, poll, owner, created, registration).await,
+        };
+        match claimed {
             Ok(task) => {
                 tx.release_poll_claim().await?;
                 Ok(task.map_or(Outcome::Empty, Outcome::Leased))
@@ -199,6 +207,33 @@ store_methods! {
                 if soft_refusal(&error) { Ok(Outcome::Declined) } else { Err(error) }
             }
         }
+    }
+
+    /// The first of `created` this carrier can claim, each through the scoped
+    /// `claim_only` target. A task of another kind, or one this worker cannot
+    /// take, is skipped.
+    async fn claim_created_activity(
+        &self, tx: &mut super::transaction::Transaction<'_, DB>, poll: &ActivityPoll, owner: &str, created: &[String],
+        registration: DB::Row,
+    ) -> Result<Option<Value>> {
+        let mut registration = Some(registration);
+        for task_id in created {
+            let registration = match registration.take() {
+                Some(row) => row,
+                None => match self.fenced_claim_registration(tx, &poll.fence, owner).await? {
+                    Some(row) => row,
+                    None => return Ok(None),
+                },
+            };
+            let previous = tx.claim_only.replace(super::transaction::ClaimTarget {
+                task_id: task_id.clone(), kind: "activity", observed_attempt: None, eligibility_digest: None });
+            let claimed = self.claim_with_registration(tx, &poll.body, "activity", &poll.protocol, None, None, Some(registration)).await;
+            tx.claim_only = previous;
+            if let Some(task) = claimed? {
+                return Ok(Some(task));
+            }
+        }
+        Ok(None)
     }
 
     pub(super) async fn admit_workflow_carrier(

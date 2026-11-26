@@ -4047,6 +4047,12 @@ where
         let workflow_poll = if checkpoint.is_none() {
             body.as_object_mut().and_then(|fields| fields.remove("workflow_poll"))
         } else { None };
+        // Server #1181: asking for the history tail does not change the
+        // authored completion receipt either.
+        let tail = if checkpoint.is_none() {
+            let member = body.as_object_mut().and_then(|fields| fields.remove("continuation_tail"));
+            super::continuation_tail::parse(member.as_ref(), &body)?
+        } else { None };
         // `commands` is required and non-empty, with no count limit of its
         // own: each command meets the run's structural limits instead.
         let commands = body["commands"]
@@ -4257,11 +4263,15 @@ where
             let created = DB::optional_document_row(&task, "receipt")?
                 .and_then(|receipt| receipt.get(COMPLETION_RECEIPT).map(|receipt| receipt["created_task_ids"].clone()))
                 .unwrap_or_else(|| json!([]));
-            return Ok((
-                deferred.then_some(tx),
-                json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
-                "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
-            ));
+            let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
+                "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created});
+            // The original tail is not kept, so the worker does not speculate
+            // on the activity that completion leased.
+            if let Some(request) = tail {
+                response["continuation_tail"] = super::continuation_tail::Tail::Omitted {
+                    after_sequence: request.after_sequence, reason: super::continuation_tail::UNAVAILABLE }.answer();
+            }
+            return Ok((deferred.then_some(tx), response));
         }
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
             .await
@@ -4358,6 +4368,12 @@ where
         let run = Self::active_run(&mut tx, &run_id)
             .await
             .map_err(|error| Self::not_recorded(&task, &body, error))?;
+        // A boundary past the run's history has no tail to continue it.
+        if let Some(request) = tail
+            && request.after_sequence > DB::number(&run, "last_history_sequence")?
+        {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_continuation_tail"));
+        }
         // `timeoutIfDeadlineExpired`: published PHP applies a run's deadlines
         // when one of its workflow tasks completes, and closes the run.
         let mut tx = if deferred {
@@ -4631,8 +4647,11 @@ where
                 .await?;
         }
         tx.summary_changed(&run_id);
+        // With a tail, only an activity this completion created can be
+        // carried, so the tail ends in its `ActivityStarted`.
         let carried = match activity_poll.as_ref() {
-            Some(poll) => self.claim_carried_activity(&mut tx, poll, &DB::string(&task, "lease_owner")?).await?,
+            Some(poll) => self.claim_carried_activity(&mut tx, poll, &DB::string(&task, "lease_owner")?,
+                tail.is_some().then_some(created.as_slice())).await?,
             None => super::carried_polls::Outcome::Declined,
         };
         let carried_workflow = if matches!(&carried, super::carried_polls::Outcome::Leased(_)) {
@@ -4645,8 +4664,15 @@ where
                 None => super::carried_polls::Outcome::Declined,
             }
         };
+        // Server #1181: after every write of the completion, before the claim
+        // records the boundary the worker's cache then holds.
+        let tail = match tail {
+            Some(request) => Some(Self::continuation_tail(&mut tx, &run_id, request.after_sequence).await?),
+            None => None,
+        };
         if let Some(metrics) = sticky_metrics {
-            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, task_id, &body, &run_status, metrics).await?;
+            let cached_through = tail.as_ref().map(super::continuation_tail::Tail::cached_through);
+            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, task_id, &body, &run_status, metrics, cached_through).await?;
         }
         let transaction = if deferred { Some(tx) } else {
             tx.commit().await?;
@@ -4654,6 +4680,7 @@ where
             None
         };
         let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created});
+        if let Some(tail) = tail { response["continuation_tail"] = tail.answer(); }
         if let Some(poll) = carried.activity_response()? { response["activity_poll"] = poll; }
         if let Some(poll) = carried_workflow.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
         Ok((transaction, response))
@@ -6239,7 +6266,7 @@ where
         Ok(payload)
     }
 
-    fn event(row: DB::Row) -> Result<Value> {
+    pub(super) fn event(row: DB::Row) -> Result<Value> {
         let event_type = DB::string(&row, "event_type")?;
         let payload =
             super::history_presentation::payload(DB::document_row(&row, "payload")?, &event_type);
