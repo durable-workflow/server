@@ -1123,7 +1123,7 @@ where
         // a spurious page-budget refusal.
         let (run, events, next) = {
             let mut snapshot = self.begin_repeatable_read().await?;
-            let run = Self::query("SELECT compatibility,queue,import_source,imported_at,import_dedupe_key,last_history_sequence FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace=$3")
+            let run = Self::query("SELECT compatibility,queue,import_source,imported_at,import_dedupe_key,last_history_sequence,details_pruned_at FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace=$3")
                 .bind(run_id)
                 .bind(workflow_id)
                 .bind(self.namespace.as_ref())
@@ -1150,6 +1150,13 @@ where
         // describe does.
         let mut body = json!({"workflow_id": workflow_id, "run_id": run_id, "events": public_events, "next_page_token": next});
         body.as_object_mut().expect("history object").extend(compatibility);
+        // Server #1365: retention pruned this run's events but kept its
+        // history sequence. The page is empty and final, and says why, as the
+        // export reports the same run.
+        if DB::optional_instant(&run, "details_pruned_at")?.is_some() {
+            body["history_complete"] = json!(false);
+            body["details_state"] = json!("pruned");
+        }
         // `LegacyV1Projection::metadataForRun` on a projected run.
         if DB::optional_string(&run, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
             body["migration_projection"] = self.projection_metadata(run_id, DB::optional_instant(&run, "imported_at")?,
@@ -6469,7 +6476,7 @@ where
         // No intervening history write is allowed before its first page.
         let observed_total = if known_total.is_none() || cfg!(debug_assertions) {
             let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
-                .bind(run_id).fetch_one(connection).await?;
+                .bind(run_id).fetch_one(&mut *connection).await?;
             Some(DB::number(&row, "last_history_sequence")?)
         } else { None };
         let total = match known_total {
@@ -6484,6 +6491,16 @@ where
             None => after_sequence,
         };
         if rows.is_empty() && after_sequence < total {
+            // Server #1365: retention deletes a pruned run's events and keeps
+            // its `last_history_sequence`. No event remains to page, as
+            // published PHP's query finds none, so the page is empty and
+            // final. Only a retained event larger than the page budget is
+            // refused.
+            let pruned = Self::query("SELECT details_pruned_at FROM workflow_runs WHERE id=$1")
+                .bind(run_id).fetch_one(&mut *connection).await?;
+            if DB::optional_instant(&pruned, "details_pruned_at")?.is_some() {
+                return Ok((Vec::new(), None));
+            }
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "history_event_exceeds_page_budget",
