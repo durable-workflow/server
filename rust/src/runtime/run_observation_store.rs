@@ -254,16 +254,10 @@ where
 
     async fn observed_timeout_cleanup(&self, run_id: &str, status: &str, started: Option<&Value>) -> Result<Option<Value>> {
         let opted_in = started.is_some_and(|started| started[super::timeout_cleanup::STARTED_KEY].is_object());
-        let Some(event_type) = super::timeout_cleanup::observation_event(status).filter(|_| opted_in) else {
+        if !opted_in {
             return Ok(None);
-        };
-        let row = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type=$2 ORDER BY sequence DESC LIMIT 1")
-            .bind(run_id).bind(event_type).fetch_optional(&self.pool).await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let payload = DB::optional_document_row(&row, "payload")?.unwrap_or(Value::Null);
-        Ok(super::timeout_cleanup::observation(event_type, &payload))
+        }
+        Self::observed_timeout_cleanup_event(&mut *self.pool.acquire().await?, run_id, status).await
     }
 
     async fn observation_history(

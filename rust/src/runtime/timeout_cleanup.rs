@@ -151,6 +151,27 @@ pub(super) fn observation(event_type: &str, payload: &Value) -> Option<Value> {
     Some(Value::Object(observed))
 }
 
+/// The runs of a list page that can report timeout cleanup: opted in (a
+/// `WorkflowStarted.timeout_cleanup` object) and either closed in a way that can carry an outcome, or open and
+/// holding a cooperative request. Cleanup entry always records the engine's
+/// request on the run, and nothing clears it while the run is open. An
+/// imported run is let through, since an import does not copy the request.
+/// `WorkflowStarted` is a run's first event, or its second after
+/// `StartAccepted`, on every native and embedded start, child, retry,
+/// continuation and redrive, so it is read by unique `(run, sequence)` seeks.
+macro_rules! cleanup_candidates {
+    ($opted_in:literal, $members:literal) => {
+        concat!(
+            "SELECT r.id FROM workflow_runs r JOIN workflow_history_events e",
+            " ON e.workflow_run_id=r.id AND e.sequence IN (1,2) AND e.event_type='WorkflowStarted'",
+            " WHERE ", $opted_in,
+            " AND (r.status IN ('failed','cancelled','terminated') OR (r.status IN ('pending','running','waiting')",
+            " AND (r.cancellation_request_command_id IS NOT NULL OR r.import_source IS NOT NULL)))",
+            " AND r.id IN (", $members, ")"
+        )
+    };
+}
+
 /// A registration that delivers the typed timeout interruption: it lists
 /// the capability and its manifest supports version 1.
 pub(super) fn worker_supports(capabilities: &Value, manifest: &Value) -> bool {
@@ -188,6 +209,70 @@ pub(super) struct Closing {
 }
 
 store_methods! {
+    /// The bounded run observation's `timeout_cleanup` for a run in
+    /// `status`, read from the newest event `observation_event` chooses, as
+    /// embedded `TimeoutCleanup::observe` does. The caller applies the
+    /// opt-in check.
+    pub(super) async fn observed_timeout_cleanup_event(connection: &mut DB::Connection, run_id: &str, status: &str)
+        -> Result<Option<Value>> {
+        let Some(event_type) = observation_event(status) else {
+            return Ok(None);
+        };
+        let row = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type=$2 ORDER BY sequence DESC LIMIT 1")
+            .bind(run_id).bind(event_type).fetch_optional(&mut *connection).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let payload = DB::optional_document_row(&row, "payload")?.unwrap_or(Value::Null);
+        Ok(observation(event_type, &payload))
+    }
+
+    /// Run lists' `timeout_cleanup` (workflow#863): the bounded run
+    /// observation's value for each listed run that has one, keyed by run
+    /// id. A list passes each run's id and status. One query selects the
+    /// page's candidates with the observation's opt-in check (see
+    /// `cleanup_candidates`); only those read the observation's event, which
+    /// for a timed-out, cancelled or terminated run is its newest. Ordinary,
+    /// armed and completed runs read nothing more.
+    pub(super) async fn timeout_cleanup_for_runs(connection: &mut DB::Connection, runs: &[(String, String)])
+        -> Result<std::collections::BTreeMap<String, Value>> {
+        let mut observed = std::collections::BTreeMap::new();
+        let listed: Vec<&str> = runs.iter()
+            .filter(|(_, status)| observation_event(status).is_some())
+            .map(|(run, _)| run.as_str())
+            .collect();
+        if listed.is_empty() {
+            return Ok(observed);
+        }
+        let sql = match DB::NAME {
+            "PostgreSQL" => cleanup_candidates!(
+                "jsonb_typeof(CAST(e.payload AS jsonb)->'timeout_cleanup')='object'",
+                "SELECT jsonb_array_elements_text(CAST($1 AS jsonb))"
+            ),
+            "MySQL" => cleanup_candidates!(
+                "JSON_TYPE(JSON_EXTRACT(e.payload,'$.timeout_cleanup'))='OBJECT'",
+                "SELECT ids.id FROM JSON_TABLE($1, '$[*]' COLUMNS (id VARCHAR(255) COLLATE utf8mb4_unicode_ci PATH '$')) ids"
+            ),
+            _ => cleanup_candidates!(
+                "CASE WHEN json_valid(e.payload) THEN json_type(e.payload,'$.timeout_cleanup') END='object'",
+                "SELECT value FROM json_each($1)"
+            ),
+        };
+        let ids = serde_json::to_string(&listed)?;
+        let mut candidates = std::collections::BTreeSet::new();
+        for row in Self::query(sql).bind(ids.as_str()).fetch_all(&mut *connection).await? {
+            candidates.insert(DB::string(&row, "id")?);
+        }
+        for (run, status) in runs {
+            if candidates.contains(run)
+                && let Some(value) = Self::observed_timeout_cleanup_event(&mut *connection, run, status).await?
+            {
+                observed.insert(run.clone(), value);
+            }
+        }
+        Ok(observed)
+    }
+
     /// The allowance the run was admitted with, from its `WorkflowStarted`.
     pub(super) async fn timeout_cleanup_allowance(tx: &mut Transaction<'_, DB>, run_id: &str) -> Result<Option<i64>> {
         let started = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='WorkflowStarted' ORDER BY sequence LIMIT 1")

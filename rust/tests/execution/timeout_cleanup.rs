@@ -102,6 +102,26 @@ fn dump(scenario: &str, history: &Value) {
     }
 }
 
+/// workflow#863: both run lists carry the bounded run observation's
+/// `timeout_cleanup`, and omit it whenever the observation does.
+async fn assert_listed(app: &Router, workflow: &str, run: &Value, present: bool) {
+    let run_id = run.as_str().unwrap();
+    let (status, observed) = request(app, "GET", &format!("/api/workflows/{workflow}/runs/{run_id}/observation"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{observed}");
+    let expected = observed.get("timeout_cleanup");
+    assert_eq!(expected.is_some(), present, "{workflow}: {observed}");
+    let (status, page) = request(app, "GET", "/api/workflows?page_size=200", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let listed = page["workflows"].as_array().unwrap().iter().find(|item| item["run_id"] == *run)
+        .unwrap_or_else(|| panic!("{workflow}: not listed in {page}"));
+    assert_eq!(listed.get("timeout_cleanup"), expected, "{workflow}: {listed}");
+    let (status, runs) = request(app, "GET", &format!("/api/workflows/{workflow}/runs"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{runs}");
+    let entry = runs["runs"].as_array().unwrap().iter().find(|item| item["run_id"] == *run)
+        .unwrap_or_else(|| panic!("{workflow}: not in {runs}"));
+    assert_eq!(entry.get("timeout_cleanup"), expected, "{workflow}: {entry}");
+}
+
 fn terminal<'a>(history: &'a Value, kind: &str) -> &'a Value {
     let events = events_of(history, kind);
     assert_eq!(events.len(), 1, "{kind}: {history}");
@@ -188,6 +208,7 @@ async fn a_start_without_the_option_keeps_the_hard_timeout_unchanged() {
     let (_, observed) = request(&app, "GET", &format!("/api/workflows/tc-default/runs/{}/observation", run.as_str().unwrap()), Value::Null).await;
     assert_eq!(observed["status"], "failed", "{observed}");
     assert!(observed.get("timeout_cleanup").is_none(), "{observed}");
+    assert_listed(&app, "tc-default", &run, false).await;
 }
 
 // Vectors 1 and 6, the idle wake and the audited user request.
@@ -339,6 +360,7 @@ async fn cleanup_failures_are_linked_and_the_interruption_marker_is_a_closed_set
         }
         let (_, described) = request(&app, "GET", &format!("/api/workflows/{workflow}"), Value::Null).await;
         assert_eq!((described["status"].as_str(), described["closed_reason"].as_str()), (Some("failed"), Some("timed_out")));
+        assert_listed(&app, workflow, &run, true).await;
     }
 }
 
@@ -359,6 +381,7 @@ async fn cleanup_expires_at_the_hard_deadline_without_a_worker() {
     assert!(timed_out["timeout_cleanup"]["started_at"].is_string());
     assert!(timed_out["message"].as_str().unwrap().ends_with("Timeout cleanup did not finish before the hard deadline."));
     assert!(cleanup_poll(&app, "cleanup-worker").await.is_null());
+    assert_listed(&app, "tc-expired", &run, true).await;
 }
 
 // A hard deadline that passes before cleanup was entered also expires it.
@@ -375,6 +398,7 @@ async fn a_hard_deadline_before_detection_expires_without_entering() {
     assert_eq!(cleanup["outcome"], "expired");
     assert!(cleanup.get("started_at").is_none(), "{cleanup}");
     assert_eq!(cleanup["cleanup_deadline_at"], "2000-01-01T00:00:00+00:00");
+    assert_listed(&app, "tc-late", &started["run_id"], true).await;
 }
 
 // Vector 4: terminate and hard cancel preempt cleanup.
@@ -395,6 +419,7 @@ async fn terminate_and_hard_cancel_preempt_cleanup() {
         assert_eq!(closed["timeout_cleanup"]["timeout_kind"], "execution");
         let (_, observed) = request(&app, "GET", &format!("/api/workflows/{workflow}/runs/{}/observation", run.as_str().unwrap()), Value::Null).await;
         assert_eq!(observed["timeout_cleanup"], closed["timeout_cleanup"], "{observed}");
+        assert_listed(&app, workflow, &run, true).await;
     }
 }
 
@@ -525,6 +550,41 @@ async fn a_claim_or_a_completion_that_first_notices_the_work_deadline_enters_cle
     assert_eq!(resumed["cancellation_request"]["request_id"], terminal(&history, "WorkflowTimeoutCleanupStarted")["workflow_command_id"]);
 }
 
+// workflow#863: a list page mixes runs that report cleanup with an ordinary
+// failed run and an opted-in run cancelled before its work deadline; only
+// the run that recorded cleanup carries the key.
+#[tokio::test]
+async fn run_lists_report_cleanup_only_for_runs_that_recorded_it() {
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    cleanup_worker(&app, "cleanup-worker", true).await;
+
+    let (status, failed) = start_with(&app, "tc-list-failed", json!({"execution_timeout_seconds": 600})).await;
+    assert_eq!(status, StatusCode::CREATED, "{failed}");
+    let task = cleanup_poll(&app, "cleanup-worker").await;
+    let (status, body) = cleanup_finish(&app, &task, json!([{"type": "fail_workflow", "message": "ordinary failure",
+        "exception_class": "RuntimeException"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &json!("tc-list-failed"), &failed["run_id"]).await;
+    assert_eq!(events_of(&history, "WorkflowFailed").len(), 1, "{history}");
+
+    let (status, cancelled) = start_with(&app, "tc-list-cancelled", json!({"execution_timeout_seconds": 600,
+        "timeout_cleanup_seconds": ALLOWANCE})).await;
+    assert_eq!(status, StatusCode::CREATED, "{cancelled}");
+    let task = cleanup_poll(&app, "cleanup-worker").await;
+    let (status, body) = cleanup_finish(&app, &task, json!([{"type": "start_timer", "delay_seconds": 3600}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = request(&app, "POST", "/api/workflows/tc-list-cancelled/cancel", json!({"reason": "operator"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let history = run_history(&app, &json!("tc-list-cancelled"), &cancelled["run_id"]).await;
+    assert!(terminal(&history, "WorkflowCancelled").get("timeout_cleanup").is_none());
+
+    let (running, _) = idle_in_cleanup(&app, "tc-list-running").await;
+    assert_listed(&app, "tc-list-failed", &failed["run_id"], false).await;
+    assert_listed(&app, "tc-list-cancelled", &cancelled["run_id"], false).await;
+    assert_listed(&app, "tc-list-running", &running, true).await;
+}
+
 // Vector 9: the run deadline is earlier, so cleanup is for kind `run` and
 // ends at the run deadline. Describe follows the state.
 #[tokio::test]
@@ -543,6 +603,7 @@ async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_stat
     let observation = format!("/api/workflows/tc-run-kind/runs/{}/observation", run.as_str().unwrap());
     let (_, observed) = request(&app, "GET", &observation, Value::Null).await;
     assert!(observed.get("timeout_cleanup").is_none(), "nothing recorded while armed: {observed}");
+    assert_listed(&app, "tc-run-kind", &run, false).await;
     assert_eq!(described["timeout_cleanup"]["allowance_seconds"], ALLOWANCE);
     assert_eq!(described["timeout_cleanup"]["timeout_kind"], "run");
     let first = cleanup_poll(&app, "cleanup-worker").await;
@@ -563,6 +624,7 @@ async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_stat
     assert_eq!(observed["timeout_cleanup"], json!({"outcome": "running", "cause": "timeout", "timeout_kind": "run",
         "started_at": entered["detected_at"], "work_deadline_at": entered["work_deadline_at"],
         "cleanup_deadline_at": entered["cleanup_deadline_at"]}), "{observed}");
+    assert_listed(&app, "tc-run-kind", &run, true).await;
     assert_eq!(view["started_at"], entered["detected_at"]);
     assert_eq!(view["cleanup_deadline_at"], json!(iso));
     let task = cleanup_poll(&app, "cleanup-worker").await;
@@ -580,6 +642,7 @@ async fn the_earliest_hard_deadline_names_the_kind_and_describe_follows_the_stat
     let (_, observed) = request(&app, "GET", &observation, Value::Null).await;
     assert_eq!(observed["timeout_cleanup"], timed_out["timeout_cleanup"], "{observed}");
     assert_eq!(observed["timeout_cleanup"]["outcome"], "completed");
+    assert_listed(&app, "tc-run-kind", &run, true).await;
 }
 
 // Vector 6 and worker replacement: the task holding the cleanup turn moves
