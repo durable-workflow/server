@@ -1,0 +1,17 @@
+# One RoadRunner Temporal worker: one workflow PHP process and one activity
+# PHP process, RoadRunner's minimum. The race runs six of these, as it runs
+# six Durable Workflow PHP SDK workers.
+version: "3"
+
+server:
+  command: "php /app/worker.php"
+
+temporal:
+  address: "${TEMPORAL_ADDRESS}"
+  namespace: default
+  activities:
+    num_workers: 1
+
+logs:
+  mode: production
+  level: warn

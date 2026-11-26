@@ -1,0 +1,15 @@
+# Locked Python environment for the Temporal comparison race driver
+# (temporal_compare.py, Server #1081). The load generator image installs
+# exactly uv.lock; the orchestrator and server_soak.py use only the standard
+# library and also run with the host's python3.
+[project]
+name = "durable-workflow-perf"
+version = "0"
+description = "Durable Workflow Server perf harness drivers"
+requires-python = ">=3.12"
+dependencies = [
+    "temporalio==1.36.1",
+]
+
+[tool.uv]
+package = false

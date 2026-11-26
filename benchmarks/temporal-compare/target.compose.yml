@@ -1,0 +1,140 @@
+# Target side of the Temporal comparison race (Server #1081): only the system
+# under test and its database. One profile per Compose project, each with
+# fresh volumes:
+#   temporal      Temporal's server (start-dev) on a SQLite file
+#   native-sqlite native Server on its default SQLite file
+#   native-mysql  native Server on MySQL 8.0, over TLS
+#   native-pgsql  native Server on PostgreSQL 16
+# No container limits on the measured hosts: the plan is the limit. The
+# server port is published only on DW_RACE_TARGET_BIND, the target's private
+# address, and the host firewall admits it only from the driver. Databases
+# keep their default durability (fsync on commit) and are reached over TCP.
+# temporal_compare.py sets every image from images.lock.json and refuses any
+# other image or a weaker durability setting.
+x-native-environment: &native_environment
+  DW_RUST_EXPERIMENTAL: "1"
+  DW_AUTH_DRIVER: token
+  DW_AUTH_TOKEN: "${DW_RACE_NATIVE_TOKEN:?}"
+
+x-native-health: &native_health
+  test: [CMD, bash, -c, "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/ready HTTP/1.0\r\n\r\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
+  interval: 2s
+  timeout: 3s
+  retries: 60
+
+services:
+  temporal:
+    profiles: [temporal]
+    image: "${DW_RACE_TEMPORAL_IMAGE:?}"
+    init: true
+    # A file database (not start-dev's in-memory default), with SQLite's own
+    # defaults: no --sqlite-pragma.
+    command: [server, start-dev, --ip, 0.0.0.0, --port, "7233", --headless, --db-filename, /home/temporal/temporal.db, --log-level, warn]
+    volumes:
+      - temporal-data:/home/temporal
+    ports: ["${DW_RACE_TARGET_BIND:?}:${DW_RACE_TEMPORAL_PORT:?}:7233"]
+    restart: "no"
+    healthcheck:
+      test: [CMD, temporal, operator, cluster, health, --address, "127.0.0.1:7233"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  native-sqlite:
+    profiles: [native-sqlite]
+    image: "${DW_RACE_NATIVE_IMAGE:?}"
+    init: true
+    stop_signal: SIGTERM
+    environment: *native_environment
+    volumes:
+      - native-sqlite-data:/app/database
+    ports: ["${DW_RACE_TARGET_BIND:?}:${DW_RACE_NATIVE_PORT:?}:8080"]
+    restart: "no"
+    healthcheck: *native_health
+
+  mysql:
+    profiles: [native-mysql]
+    image: "${DW_RACE_MYSQL_IMAGE:?}"
+    init: true
+    environment:
+      MYSQL_DATABASE: durable_workflow
+      MYSQL_USER: workflow
+      MYSQL_PASSWORD: race-database
+      MYSQL_ROOT_PASSWORD: race-database-root
+    # MySQL's defaults, stated so the harness can check them, plus TLS for
+    # every connection. Binary logging stays on; trusting function creators
+    # lets the application account install native's checkpoint triggers
+    # (rust/README.md, child summary checkpoints) without changing durability.
+    command: ["--innodb-flush-log-at-trx-commit=1", "--sync-binlog=1", "--require-secure-transport=ON", "--log-bin-trust-function-creators=1"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    restart: "no"
+    healthcheck:
+      test: [CMD-SHELL, "MYSQL_PWD=$$MYSQL_PASSWORD mysqladmin ping --silent --ssl-mode=REQUIRED -h 127.0.0.1 -u workflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+
+  native-mysql:
+    profiles: [native-mysql]
+    image: "${DW_RACE_NATIVE_IMAGE:?}"
+    init: true
+    stop_signal: SIGTERM
+    environment:
+      <<: *native_environment
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: race-database
+      DB_SSLMODE: require
+    ports: ["${DW_RACE_TARGET_BIND:?}:${DW_RACE_NATIVE_PORT:?}:8080"]
+    restart: "no"
+    depends_on:
+      mysql: {condition: service_healthy}
+    healthcheck: *native_health
+
+  postgres:
+    profiles: [native-pgsql]
+    image: "${DW_RACE_POSTGRES_IMAGE:?}"
+    init: true
+    environment:
+      POSTGRES_DB: durable_workflow
+      POSTGRES_USER: workflow
+      POSTGRES_PASSWORD: race-database
+    # PostgreSQL's defaults, stated so the harness can check them.
+    command: [postgres, -c, fsync=on, -c, synchronous_commit=on, -c, full_page_writes=on]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: "no"
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U workflow -d durable_workflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  native-pgsql:
+    profiles: [native-pgsql]
+    image: "${DW_RACE_NATIVE_IMAGE:?}"
+    init: true
+    stop_signal: SIGTERM
+    environment:
+      <<: *native_environment
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: race-database
+    ports: ["${DW_RACE_TARGET_BIND:?}:${DW_RACE_NATIVE_PORT:?}:8080"]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck: *native_health
+
+volumes:
+  temporal-data:
+  native-sqlite-data:
+  mysql-data:
+  postgres-data:

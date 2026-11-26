@@ -1,0 +1,10 @@
+# Local stand-in only (temporal_compare.py run --local-stand-in): bounds every
+# target container on a shared development host. A run with these limits is
+# never publishable; the measured hosts run without container limits.
+services:
+  temporal: {cpus: 2, mem_limit: 2g}
+  native-sqlite: {cpus: 2, mem_limit: 2g}
+  mysql: {cpus: 2, mem_limit: 2g}
+  native-mysql: {cpus: 2, mem_limit: 2g}
+  postgres: {cpus: 2, mem_limit: 2g}
+  native-pgsql: {cpus: 2, mem_limit: 2g}

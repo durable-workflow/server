@@ -1,0 +1,6 @@
+# Local stand-in only (temporal_compare.py run --local-stand-in): bounds every
+# driver container on a shared development host. Never publishable.
+services:
+  dw-worker: {cpus: 1, mem_limit: 512m}
+  rr-worker: {cpus: 1, mem_limit: 512m}
+  loadgen: {cpus: 1, mem_limit: 1g}
