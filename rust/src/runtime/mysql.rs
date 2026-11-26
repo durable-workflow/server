@@ -2530,8 +2530,10 @@ fn runtime_pool_options() -> MySqlPoolOptions {
                 // unless it is known to be idle outside a transaction. The
                 // released connection keeps its pool slot until this hook
                 // returns, so an unneeded reset round trip kept the slot busy
-                // for a whole database stall (Server #1204). SQLx closes the
-                // connection if this hook fails.
+                // for a whole database stall (Server #1204). After an error
+                // reply the status is not known, so the session is reset; a
+                // half-read statement prepare cannot be drained and fails the
+                // hook. SQLx closes the connection if this hook fails.
                 tokio::time::timeout(Duration::from_secs(5), async {
                     connection.read_pending_replies().await?;
                     if !connection.is_idle_outside_transaction() {

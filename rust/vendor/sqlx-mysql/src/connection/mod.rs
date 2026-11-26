@@ -43,7 +43,6 @@ pub(crate) struct MySqlConnectionInner {
 
     // transaction status
     pub(crate) transaction_depth: usize,
-    status_flags: Status,
 
     // cache by query string to the statement id and metadata
     cache_statement: StatementCache<(u32, MySqlStatementMetadata)>,
@@ -54,42 +53,49 @@ pub(crate) struct MySqlConnectionInner {
 impl MySqlConnection {
     pub(crate) fn in_transaction(&self) -> bool {
         self.inner
-            .status_flags
+            .stream
+            .status
             .intersects(Status::SERVER_STATUS_IN_TRANS)
     }
 
     /// Read the remaining replies of commands already sent, without sending
-    /// anything, and record the server status they end with. A result stream
-    /// dropped after its first row (`fetch_one`, `fetch_optional`) leaves the
-    /// rest of its reply unread although the server sent it with the row. A
-    /// buffered command that still awaits sending is left alone, so the
-    /// session stays not known to be idle (Durable Workflow Server #1204).
+    /// anything; the stream records the server status they end with. A
+    /// result stream dropped after its first row (`fetch_one`,
+    /// `fetch_optional`) leaves the rest of its reply unread although the
+    /// server sent it with the row. A buffered command that still awaits
+    /// sending is left alone, so the session stays not known to be idle. A
+    /// statement prepare whose reply is not fully read is an error: that
+    /// reply cannot be drained as a result, so the connection must be
+    /// discarded (Durable Workflow Server #1204).
     pub async fn read_pending_replies(&mut self) -> Result<(), Error> {
         let stream = &mut self.inner.stream;
+        if stream.prepare_in_flight {
+            return Err(err_protocol!(
+                "a cancelled statement prepare left a reply that cannot be drained"
+            ));
+        }
         if stream.waiting.is_empty()
             || !(stream.write_buffer().is_empty() || stream.queued_unanswered)
         {
             return Ok(());
         }
-        stream.drained_status = None;
-        stream.wait_until_ready().await?;
-        if let Some(status) = self.inner.stream.drained_status.take() {
-            self.inner.status_flags = status;
-        }
-        Ok(())
+        stream.wait_until_ready().await
     }
 
     /// Whether this session is known to be idle outside a transaction: no
-    /// reply is pending or unsent, no SQLx transaction is open, and the
-    /// server status of the last completed command (statement or ping) has
-    /// no open transaction. A cancelled command leaves a reply pending, so
-    /// its state is not known until that reply is read (Durable Workflow
-    /// Server #1204).
+    /// reply is pending or unsent, no statement prepare is half read, no
+    /// SQLx transaction is open, and the last reply read carried a server
+    /// status (no error reply since) that has no transaction open. A
+    /// cancelled command leaves a reply pending, so its state is not known
+    /// until that reply is read (Durable Workflow Server #1204).
     pub fn is_idle_outside_transaction(&self) -> bool {
+        let stream = &self.inner.stream;
         self.inner.transaction_depth == 0
+            && stream.status_known
+            && !stream.prepare_in_flight
             && !self.in_transaction()
-            && self.inner.stream.waiting.is_empty()
-            && (self.inner.stream.write_buffer().is_empty() || self.inner.stream.queued_unanswered)
+            && stream.waiting.is_empty()
+            && (stream.write_buffer().is_empty() || stream.queued_unanswered)
     }
 }
 
@@ -122,7 +128,8 @@ impl Connection for MySqlConnection {
         self.inner.stream.wait_until_ready().await?;
         self.inner.stream.send_packet(Ping).await?;
         // The OK packet carries the session's current server status.
-        self.inner.status_flags = self.inner.stream.recv_ok().await?.status;
+        let status = self.inner.stream.recv_ok().await?.status;
+        self.inner.stream.record_status(status);
 
         Ok(())
     }

@@ -505,6 +505,26 @@ async fn qualification_pool_return_resets_only_sessions_not_known_idle() {
             .await
             .unwrap();
         assert_eq!(count, 1);
+
+        // An error reply carries no server status. With autocommit off, a
+        // duplicate-key INSERT fails while InnoDB keeps its transaction and
+        // lock, so the session is not known to be idle and is reset.
+        let mut connection = pool.acquire().await.unwrap();
+        connection.execute("SET autocommit=0").await.unwrap();
+        assert!(connection.is_idle_outside_transaction());
+        let duplicate = connection.execute("INSERT INTO reset_probe VALUES (1)").await;
+        assert!(duplicate.is_err(), "the duplicate key is refused");
+        assert!(!connection.is_idle_outside_transaction(), "an error reply leaves the state unknown");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(open_transactions(id).fetch_one(&mut observer).await.unwrap(), 1);
+        let before = rollbacks(&writes);
+        connection.return_to_pool().await;
+        assert_eq!(rollbacks(&writes), before + 1, "a session after an error reply is reset");
+        no_open_transaction(&mut observer, id).await;
+        let mut connection = pool.acquire().await.unwrap();
+        connection.execute("SET autocommit=1").await.unwrap();
+        assert!(connection.is_idle_outside_transaction(), "a later reply records the status again");
+        drop(connection);
         pool.close().await;
         observer.close().await.unwrap();
         proxy.abort();
@@ -512,6 +532,69 @@ async fn qualification_pool_return_resets_only_sessions_not_known_idle() {
     })
     .await
     .expect("bounded real pool-return reset qualification");
+}
+
+/// Server #1204: a statement prepare cancelled before its reply was read
+/// leaves packets that the generic reply drain would misread as an OK
+/// packet with an arbitrary status. The pool-return hook refuses to drain
+/// it, so the session is discarded instead of being reused.
+#[tokio::test]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_pool_return_discards_a_cancelled_statement_prepare() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let direct = MySqlConnectOptions::from_str(&std::env::var("DW_TEST_MYSQL_URL").unwrap())
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let gate = Arc::new(ReplyGate::default());
+        let proxy = tokio::spawn(forward(
+            listener,
+            format!("{}:{}", direct.get_host(), direct.get_port()),
+            gate.clone(),
+        ));
+        let pool = runtime_pool_options()
+            .max_connections(1)
+            .connect_with(direct.host("127.0.0.1").port(port))
+            .await
+            .unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        let prior: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        gate.hold.store(true, Ordering::SeqCst);
+        let prepare = tokio::spawn(async move {
+            // A bound argument makes SQLx prepare the statement first.
+            let _: std::result::Result<i64, sqlx::Error> = sqlx::query_scalar("SELECT ? + 0 AS cancelled_prepare_probe")
+                .bind(1_i64)
+                .fetch_one(&mut *connection)
+                .await;
+        });
+        gate.blocked.notified().await;
+        prepare.abort();
+        assert!(prepare.await.unwrap_err().is_cancelled());
+        gate.release();
+        let mut replacement = tokio::time::timeout(Duration::from_secs(7), pool.acquire())
+            .await
+            .expect("the cancelled prepare's slot returns")
+            .unwrap();
+        let next: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *replacement)
+            .await
+            .unwrap();
+        assert_ne!(next, prior, "a session with a half-read prepare reply is discarded");
+        let probe: i64 = sqlx::query_scalar("SELECT ? + 0")
+            .bind(41_i64)
+            .fetch_one(&mut *replacement)
+            .await
+            .unwrap();
+        assert_eq!(probe, 41);
+        drop(replacement);
+        pool.close().await;
+        proxy.abort();
+    })
+    .await
+    .expect("bounded real cancelled-prepare qualification");
 }
 
 /// Forward clients to `upstream`, recording each TCP read chunk received from
