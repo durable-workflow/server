@@ -448,28 +448,30 @@ async fn qualification_held_polls_leave_registration_a_connection_during_a_stall
             }
         });
         let registered = store.register(registration("stall-0"), &config, Some("1.20")).await;
-        assert!(
-            registered.is_ok(),
-            "a registration during a stall must get a connection: {registered:?} after {:?}",
-            stalled.elapsed()
-        );
-        assert!(stalled.elapsed() >= Duration::from_secs(6), "the registration waited out the stall");
+        let waited = stalled.elapsed();
+        // Clean up before asserting, so a failure still releases the stall,
+        // ends the polls and drops the database.
         resume.await.unwrap();
         for poll in polls {
             // A probe that found no slot within the deadline answers the
             // typed pool refusal; the others answer normally.
             let _ = poll.await.unwrap();
         }
-        tokio::time::timeout(Duration::from_secs(5), async {
+        let returned = tokio::time::timeout(Duration::from_secs(5), async {
             while pool.num_idle() != pool.size() as usize {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .expect("every connection returns after the stall");
+        .await;
         store.close().await;
         proxy.abort();
         MySql::drop_database(&database_url).await.unwrap();
+        assert!(
+            registered.is_ok(),
+            "a registration during a stall must get a connection: {registered:?} after {waited:?}"
+        );
+        assert!(waited >= Duration::from_secs(6), "the registration waited out the stall");
+        returned.expect("every connection returns after the stall");
     })
     .await
     .expect("bounded held-poll stall qualification");

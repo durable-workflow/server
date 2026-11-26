@@ -12,11 +12,18 @@
 //! A probe now borrows one [`ProbeConnection`] for its lock-free reads and
 //! awaits the connection's return to the pool before it claims or waits.
 //! Its slot comes from a node-wide budget of the pool size less one (at
-//! least one), held until that return finishes, so held-poll probes can
-//! never occupy the last slot: producers and registrations always find one.
-//! A claim is a transition and keeps its own connection outside the budget,
-//! acquired only after the probe connection is back, so the transition
-//! FIFO is never entered while holding a probe slot.
+//! least one), held until that return finishes, so held-poll probes never
+//! occupy the last slot. That is the whole guarantee: other work still
+//! competes for that slot. During a stall longer than the acquisition
+//! deadline a registration can still be refused when it queues behind a
+//! transition stuck in the stall (a held poll's claim is a transition and
+//! outside the budget), when the free connection has been idle for a second
+//! or more and its pre-checkout ping runs inside SQLx's acquisition
+//! deadline, or when reads outside the budget hold the remaining slot (poll
+//! admission and replay reads, query-proof reads, ordinary requests and the
+//! maintenance ticker). A claim keeps its own connection outside the
+//! budget, acquired only after the probe connection is back, so the
+//! transition FIFO is never entered while holding a probe slot.
 use super::Result;
 use sqlx::pool::PoolConnection;
 use std::sync::Arc;
@@ -44,6 +51,9 @@ impl<DB: sqlx::Database> ProbeConnection<DB> {
 
     pub(super) async fn finish(mut self) {
         if let Some(mut connection) = self.connection.take() {
+            // SQLx 0.9 detaches the live connection before it returns the
+            // future, so the PoolConnection left behind returns nothing on
+            // drop. The exact version is pinned in Cargo.toml (`=0.9.0`).
             connection.return_to_pool().await;
         }
         self.slot.take();
@@ -53,6 +63,7 @@ impl<DB: sqlx::Database> ProbeConnection<DB> {
 impl<DB: sqlx::Database> Drop for ProbeConnection<DB> {
     fn drop(&mut self) {
         if let Some(mut connection) = self.connection.take() {
+            // The returned future owns the detached connection (see finish).
             let returned = connection.return_to_pool();
             let slot = self.slot.take();
             tokio::spawn(async move {
@@ -64,18 +75,18 @@ impl<DB: sqlx::Database> Drop for ProbeConnection<DB> {
 }
 
 store_methods! {
-    /// A probe slot and then a pool connection, each within the pool's
-    /// acquisition deadline; a timed-out slot wait is the same typed pool
+    /// A probe slot and then a pool connection, both within one pool
+    /// acquisition deadline; running out of it is the same typed pool
     /// refusal a timed-out acquisition returns.
     pub(super) async fn probe_connection(&self) -> Result<ProbeConnection<DB>> {
-        let slot = tokio::time::timeout(
-            self.pool.options().get_acquire_timeout(),
-            self.probe_slots.clone().acquire_owned(),
-        )
-        .await
-        .map_err(|_| sqlx::Error::PoolTimedOut)?
-        .expect("the probe budget is never closed");
-        let connection = self.pool.acquire().await?;
+        let deadline = tokio::time::Instant::now() + self.pool.options().get_acquire_timeout();
+        let slot = tokio::time::timeout_at(deadline, self.probe_slots.clone().acquire_owned())
+            .await
+            .map_err(|_| sqlx::Error::PoolTimedOut)?
+            .expect("the probe budget is never closed");
+        let connection = tokio::time::timeout_at(deadline, self.pool.acquire())
+            .await
+            .map_err(|_| sqlx::Error::PoolTimedOut)??;
         Ok(ProbeConnection { connection: Some(connection), slot: Some(slot) })
     }
 }
@@ -87,39 +98,46 @@ mod tests {
     use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::Duration};
 
     /// Between two arrivals at its wait point, a held activity poll's probe
-    /// borrows exactly one connection for all of its reads (Server #1204).
-    /// The reader pool has a single connection, so a read that borrowed a
-    /// second one while the probe held the first would time out instead.
+    /// borrows exactly one connection for its fence and readiness reads, and
+    /// one more, in turn, for the cross-kind queue-changed read when the
+    /// worker opted into it (Server #1204). The reader pool has a single
+    /// connection, so a read that borrowed a second connection while the
+    /// probe held the first would time out instead.
     #[cfg(debug_assertions)]
     #[tokio::test]
-    async fn sqlite_held_activity_probe_borrows_one_connection() {
+    async fn sqlite_held_activity_probe_borrows_one_connection_at_a_time() {
         use super::super::poll_pauses::{PollPoint, pause_workflow_poll};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("probe.sqlite");
         let writer = Store::<sqlx::Sqlite>::new(super::super::sqlite::open(path.to_str().unwrap()).await.unwrap());
-        writer.register(json!({"worker_id":"probe-worker","task_queue":"probe-queue","runtime":"php",
-            "supported_workflow_types":["probe"],"supported_activity_types":["act"]}),
-            &QueryTaskConfig::default(), Some("1.20")).await.unwrap();
         let checkouts = Arc::new(AtomicUsize::new(0));
         let pool = reader_pool(sqlx::sqlite::SqlitePoolOptions::new(), checkouts.clone())
             .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path)
                 .busy_timeout(Duration::from_secs(5))).await.unwrap();
         let store = Store::new(pool);
-        let request = format!("probe-request-{}", ulid::Ulid::new());
-        let first = pause_workflow_poll(&request, PollPoint::Waiting);
-        let body = json!({"worker_id":"probe-worker","task_queue":"probe-queue","timeout_seconds":2,"poll_request_id":request});
-        let (answer, probe) = tokio::join!(store.poll(body, "activity", "1.20"), async {
-            first.reached.await.unwrap();
-            checkouts.store(0, Ordering::SeqCst);
-            let second = pause_workflow_poll(&request, PollPoint::Waiting);
-            first.release.send(()).unwrap();
-            second.reached.await.unwrap();
-            let probe = checkouts.load(Ordering::SeqCst);
-            second.release.send(()).unwrap();
-            probe
-        });
-        assert_eq!(answer.unwrap()["poll_status"], "empty");
-        assert_eq!(probe, 1, "one held probe borrows one connection");
+        for (worker, capabilities, expected) in [
+            ("probe-worker", json!([]), 1),
+            ("probe-wake-worker", json!(["cross_kind_poll_wake"]), 2),
+        ] {
+            writer.register(json!({"worker_id":worker,"task_queue":worker,"runtime":"php",
+                "supported_workflow_types":["probe"],"supported_activity_types":["act"],"capabilities":capabilities}),
+                &QueryTaskConfig::default(), Some("1.20")).await.unwrap();
+            let request = format!("probe-request-{}", ulid::Ulid::new());
+            let first = pause_workflow_poll(&request, PollPoint::Waiting);
+            let body = json!({"worker_id":worker,"task_queue":worker,"timeout_seconds":2,"poll_request_id":request});
+            let (answer, probe) = tokio::join!(store.poll(body, "activity", "1.20"), async {
+                first.reached.await.unwrap();
+                checkouts.store(0, Ordering::SeqCst);
+                let second = pause_workflow_poll(&request, PollPoint::Waiting);
+                first.release.send(()).unwrap();
+                second.reached.await.unwrap();
+                let probe = checkouts.load(Ordering::SeqCst);
+                second.release.send(()).unwrap();
+                probe
+            });
+            assert_eq!(answer.unwrap()["poll_status"], "empty", "{worker}");
+            assert_eq!(probe, expected, "{worker}: connections a held probe borrows, one at a time");
+        }
         store.close().await;
         writer.close().await;
     }

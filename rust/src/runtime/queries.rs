@@ -1048,10 +1048,13 @@ where
             let wake = self.wake.notified();
             // `performPoll`: a registration replaced or silenced during the
             // wait ends the poll empty, leasing nothing.
-            if let Some(fence) = fence
-                && !self.worker_poll_fence_holds(self.probe_connection().await?.get(), fence, text(body, "worker_id")?).await?
-            {
-                return Ok(poll_result(None, "empty"));
+            if let Some(fence) = fence {
+                let mut reads = self.probe_connection().await?;
+                let holds = self.worker_poll_fence_holds(reads.get(), fence, text(body, "worker_id")?).await;
+                reads.finish().await;
+                if !holds? {
+                    return Ok(poll_result(None, "empty"));
+                }
             }
             if std::mem::take(&mut first) || self.query_poll_ready(body, config, proof, keys).await? {
                 match self.claim_query(body, config, proof, fence, keys).await? {
