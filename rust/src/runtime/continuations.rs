@@ -238,7 +238,13 @@ where
         let current = DB::string(rows.last().expect("one run"), "id")?;
         let fleet = self.fleet_snapshots(super::store::now()).await?;
         let run_ids = rows.iter().map(|row| DB::string(row, "id")).collect::<Result<Vec<_>>>()?;
-        let mut attention = self.task_attention_for_runs(&mut *self.pool.acquire().await?, &run_ids).await?;
+        let mut connection = self.pool.acquire().await?;
+        let mut attention = self.task_attention_for_runs(&mut connection, &run_ids).await?;
+        let run_statuses = rows.iter().zip(&run_ids)
+            .map(|(row, run)| Ok((run.clone(), DB::string(row, "status")?)))
+            .collect::<Result<Vec<_>>>()?;
+        let mut timeout_cleanup = Self::timeout_cleanup_for_runs(&mut connection, &run_statuses).await?;
+        drop(connection);
         let mut runs = Vec::with_capacity(rows.len());
         for (row, run) in rows.into_iter().zip(run_ids) {
             let task_attention = attention.remove(&run).unwrap_or(Value::Null);
@@ -258,6 +264,10 @@ where
                 "started_at":super::task_queues::json_time(DB::optional_instant(&row,"started_at")?),
                 "closed_at":super::task_queues::json_time(DB::optional_instant(&row,"closed_at")?),"memo":memo,
                 "task_attention": task_attention});
+            // workflow#863: the observation's value; absent when none was recorded.
+            if let Some(cleanup) = timeout_cleanup.remove(&run) {
+                entry[super::timeout_cleanup::STARTED_KEY] = cleanup;
+            }
             // `formatRunListEntry` leaves a Waterline v1 projection's memo out.
             if DB::optional_string(&row, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
                 entry.as_object_mut().expect("run entry").remove("memo");

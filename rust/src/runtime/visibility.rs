@@ -526,14 +526,18 @@ where
         let page = &rows[..rows.len().min(filter.limit as usize)];
         let run_ids = page.iter().map(|row| DB::string(row, "id")).collect::<Result<Vec<_>>>()?;
         let mut open_run_ids = Vec::new();
+        let mut run_statuses = Vec::with_capacity(run_ids.len());
         for (row, run_id) in page.iter().zip(&run_ids) {
-            if status_bucket(&DB::string(row, "status")?)? == "running" {
+            let status = DB::string(row, "status")?;
+            if status_bucket(&status)? == "running" {
                 open_run_ids.push(run_id.clone());
             }
+            run_statuses.push((run_id.clone(), status));
         }
         let mut unsupported_ready = self.unsupported_ready_tasks_for_runs(&open_run_ids, super::store::now()).await?;
         let mut connection = self.pool.acquire().await?;
         let mut attention = self.task_attention_for_runs(&mut connection, &run_ids).await?;
+        let mut timeout_cleanup = Self::timeout_cleanup_for_runs(&mut connection, &run_statuses).await?;
         for (row, run_id) in page.iter().zip(run_ids) {
             if DB::optional_string(row, "compatibility")?.is_some() {
                 return Err(refuse(StatusCode::CONFLICT, "unqualified_build_visibility"));
@@ -557,6 +561,10 @@ where
                 "search_attributes":search_attributes,"task_attention":task_attention});
             if let Some(task) = unsupported_ready.remove(&run_id) {
                 workflow["unsupported_ready_task"] = task;
+            }
+            // workflow#863: the observation's value; absent when none was recorded.
+            if let Some(cleanup) = timeout_cleanup.remove(&run_id) {
+                workflow[super::timeout_cleanup::STARTED_KEY] = cleanup;
             }
             workflows.push(workflow);
         }
