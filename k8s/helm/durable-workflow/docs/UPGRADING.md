@@ -69,6 +69,64 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.7.0 / Server 3.30.0 (native)
+
+**Every backend needs an explicit native schema upgrade from 3.29.0.** Chart
+5.7.0 selects [native Server 3.30.0](../../../../docs/releases/3.30.0.md).
+The chart's values and the worker protocol version (1.20) are unchanged, so
+chart 5.6.x values files work as they are. The 3.29.0 schema is the schema of
+every release since 3.22.0, so the same step applies from charts 5.4.0
+through 5.6.x. From an older chart, also read the earlier notes below.
+
+| Backend | Schema step |
+| --- | --- |
+| SQLite | 19 to 20 |
+| PostgreSQL | 20 to 21 |
+| MySQL | 21 to 23 |
+| MariaDB | 20 to 22 |
+
+3.29.0 and 3.30.0 Servers cannot share a database across this step, so the
+usual rolling Helm upgrade does not work. Startup never upgrades the schema:
+a 3.30.0 pod refuses the old schema with `native_schema_upgrade_required`,
+and a 3.29.0 pod refuses the upgraded one with
+`native_schema_newer_than_binary`.
+
+1. Stop every Server replica sharing the database, including replicas outside
+   this Helm release, with autoscaling off. Keep the database running.
+2. Back up the database and every external payload root.
+3. Run the 3.30.0 image's `schema-upgrade` once through the opt-in
+   `native.schemaUpgrade.enabled` hook or the manual Job in
+   [Native schema upgrades](../README.md#native-schema-upgrades). The hook
+   requires live proof that all Server replicas are stopped.
+4. Restart every replica on the same new image and verify readiness and
+   reported version 3.30.0. Turn `native.schemaUpgrade.enabled` off again in
+   your next upgrade.
+
+The step adds the `dw_workflow_tasks_run_fence` index on `workflow_tasks`
+on every backend and, on MySQL and MariaDB, replaces the checkpoint catalog
+function. It rewrites no rows. The index build takes longer the more
+`workflow_tasks` rows the database holds. For a large database, raise
+`native.schemaUpgrade.activeDeadlineSeconds` (default 1800) and the
+`helm upgrade --timeout` to match.
+
+On a binlogged MySQL or MariaDB writer, or when an administrator installed
+the checkpoint code from `schema-checkpoint-ddl`, the application account can
+lack the privileges to create the new function. If `schema-upgrade` reports
+`native_child_checkpoint_trigger_privilege_required`, use the manual path and
+keep every Server stopped. Run `schema-checkpoint-ddl` from the 3.30.0 image
+with the application `DB_*` settings, have your database administrator apply
+its output on the writer, then rerun `schema-upgrade`. On MySQL and MariaDB,
+pods refuse with `native_schema_upgrade_incomplete` until the upgrade
+finishes. Run `schema-upgrade` again to resume an interrupted one.
+
+To return to chart 5.6.x after the schema step, restore the pre-upgrade
+backup before starting Server 3.29.0. Workflows recorded after the upgrade
+are not in that backup.
+
+Before starting runs with `timeout_cleanup_seconds`, upgrade every worker on
+the task queue to an SDK that supports timeout cleanup. See the Server
+release notes for the SDK versions.
+
 ### Chart 5.6.0 / Server 3.29.0 (native)
 
 Chart 5.6.0 selects [native Server 3.29.0](../../../../docs/releases/3.29.0.md).
