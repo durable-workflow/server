@@ -1294,6 +1294,17 @@ already has events, the server returns it immediately. If the configured
 `DW_WORKER_POLL_TIMEOUT` expires first, the server returns an empty page.
 Use `wait_new_event=0` or omit the flag for an immediate read.
 
+A run whose details history retention pruned has no events left. Its history
+endpoint answers `200` with `events: []` and `next_page_token: null` for the
+first page and for any later token, including one issued before the prune.
+`wait_new_event=1` returns that page at once. The native server also reports
+`history_complete: false` and `details_state: "pruned"` on that page, as the
+run's history export does. Published PHP Server answers the same empty, final
+page without those two fields, after waiting out `wait_new_event=1`. A retained
+run's page has neither field. Use a history archive taken before the prune to
+read the pruned events. The `413 history_event_exceeds_page_budget` refusal is
+reserved for a retained event larger than one history page.
+
 History export responses are the exception inside the workflow route group:
 `GET /api/workflows/{id}/runs/{runId}/history/export` returns the replay bundle
 as-is so its integrity checksum and optional signature cover the exact artifact
