@@ -102,6 +102,8 @@ impl WithSocket for MapStream {
             status_known: true,
             prepare_in_flight: false,
             reply_deadline: None,
+            reply_timeout: None,
+            reply_failed: false,
         }
     }
 }

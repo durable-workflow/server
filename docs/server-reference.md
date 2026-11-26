@@ -2469,12 +2469,28 @@ how many request workers are busy.
   reply within 45 seconds; otherwise its statement fails
   (`503 storage_unavailable`, `database_io`) and the connection is discarded,
   so a database that went silent without resetting its connections (common
-  in an HA failover) holds a request for at most about 46 seconds. Other
-  statements have no client-side read deadline: MySQL and MariaDB refuse
-  lock waits after 5 seconds (`lock_wait_timeout`, `innodb_lock_wait_timeout`)
-  and PostgreSQL ends statements after 30 seconds (`statement_timeout`), but
-  neither bounds a database that stops answering
+  in an HA failover) holds a request for at most about 46 seconds
   ([#1355](https://github.com/durable-workflow/server/issues/1355)).
+- Every statement on a MySQL, MariaDB or PostgreSQL runtime connection (the
+  request pool and the maintenance connection) must receive each reply
+  within 45 seconds, and a connection returning to the pool must receive
+  each reply of its session reset and release ping within 45 seconds.
+  Otherwise the statement or the release fails with `503
+  storage_unavailable` (`database_io`) and the connection is discarded, so a
+  silent database holds a request, a budget slot or a pool slot for at most
+  about 45 seconds instead of until the operating system gives up on the
+  peer ([#1368](https://github.com/durable-workflow/server/issues/1368)).
+  A healthy server always replies sooner: PostgreSQL ends every statement
+  on these connections after 30 seconds (`statement_timeout`, first-start
+  migrations included), and MySQL and MariaDB refuse lock waits after 5
+  seconds (`lock_wait_timeout`, `innodb_lock_wait_timeout`). On MySQL and
+  MariaDB, which have no statement time limit, a namespace delete and the
+  per-run retention prune (statements with no row bound) run without the
+  reply bound; on PostgreSQL `statement_timeout` still bounds them. Other
+  long statements on MySQL, such as operator aggregates over very large
+  namespaces, now fail after 45 seconds of silence, as PostgreSQL already
+  fails them after 30. Schema bootstrap and upgrade connections opened
+  outside the pools keep no reply bound.
 - The per-namespace variants, `DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE`
   and `DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE`, are still ignored by
   native.

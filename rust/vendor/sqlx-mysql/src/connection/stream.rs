@@ -37,6 +37,13 @@ pub struct MySqlStream<S = Box<dyn Socket>> {
     // it. Once it has passed, every read fails at once, so the connection is
     // discarded when it returns to the pool even if the replies turn up.
     pub(crate) reply_deadline: Option<std::time::Instant>,
+    // While set, every read must receive its next packet within this long, or
+    // it fails (Durable Workflow Server #1368): a statement in flight, or the
+    // pool's release ping, on a peer that went silent without a reset.
+    pub(crate) reply_timeout: Option<std::time::Duration>,
+    // A read ran past `reply_deadline` or `reply_timeout`. The session is out
+    // of step, so every later read fails at once and the owner discards it.
+    pub(crate) reply_failed: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -79,6 +86,8 @@ impl<S: Socket> MySqlStream<S> {
             status_known: true,
             prepare_in_flight: false,
             reply_deadline: None,
+            reply_timeout: None,
+            reply_failed: false,
         }
     }
 
@@ -176,16 +185,27 @@ impl<S: Socket> MySqlStream<S> {
     }
 
     async fn recv_packet_part(&mut self) -> Result<Bytes, Error> {
-        let Some(deadline) = self.reply_deadline else {
-            return self.read_packet_part().await;
-        };
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
+        if self.reply_failed {
             return Err(unanswered_reply());
         }
-        let payload = sqlx_core::rt::timeout(remaining, self.read_packet_part())
-            .await
-            .map_err(|_| unanswered_reply())??;
+        let now = std::time::Instant::now();
+        let deadline = match (self.reply_deadline, self.reply_timeout) {
+            (None, None) => return self.read_packet_part().await,
+            (Some(deadline), None) => deadline,
+            (None, Some(timeout)) => now + timeout,
+            (Some(deadline), Some(timeout)) => deadline.min(now + timeout),
+        };
+        let remaining = deadline.saturating_duration_since(now);
+        let read = if remaining.is_zero() {
+            None
+        } else {
+            sqlx_core::rt::timeout(remaining, self.read_packet_part()).await.ok()
+        };
+        let Some(payload) = read else {
+            self.reply_failed = true;
+            return Err(unanswered_reply());
+        };
+        let payload = payload?;
         self.reply_deadline = None;
         Ok(payload)
     }
@@ -296,6 +316,8 @@ impl<S: Socket> MySqlStream<S> {
             status_known: self.status_known,
             prepare_in_flight: self.prepare_in_flight,
             reply_deadline: self.reply_deadline,
+            reply_timeout: self.reply_timeout,
+            reply_failed: self.reply_failed,
         }
     }
 }
@@ -314,12 +336,12 @@ impl<S> DerefMut for MySqlStream<S> {
     }
 }
 
-/// No reply within the bound on a connection whose liveness ping went
-/// unanswered (Durable Workflow Server #1355). The session is not in step any
-/// more, so its owner discards it.
+/// No reply within a reply bound: after an unanswered liveness ping
+/// (Durable Workflow Server #1355), or on any read while `reply_timeout` is
+/// set (#1368). The session is not in step any more, so its owner discards it.
 pub(crate) fn unanswered_reply() -> Error {
     Error::Io(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        "the database sent no reply within the bound for a connection whose liveness ping went unanswered",
+        "the database sent no reply within the connection's reply bound",
     ))
 }

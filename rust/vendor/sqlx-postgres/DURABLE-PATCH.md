@@ -1,7 +1,7 @@
 # SQLx PostgreSQL driver patch
 
 This directory contains the official `sqlx-postgres` 0.9.0 crate with one
-backported driver correction, one native tagging patch and one reply bound. Its published
+backported driver correction, one native tagging patch and two reply bounds. Its published
 archive has SHA-256
 `87a2bdd6e83f6b3ea525ca9fee568030508b58355a43d0b2c1674d5f79dcd65e` (the
 `Cargo.lock` checksum it replaces) and VCS commit
@@ -91,3 +91,27 @@ holds every reply after the ping and requires the statement to fail within
 the bound and the connection to be replaced. Remove this change only when a
 reviewed published driver lets a caller bound the wait for a reply, or when
 the server no longer hands out a connection whose ping went unanswered.
+
+## Every read can be bounded
+
+Native Server bounds every reply on its runtime pool connections, not only
+the first reply after an unanswered ping (Server #1368). A peer that went
+silent without a reset would otherwise hold a statement in flight, or the
+pool's release ping, until the operating system gave up on it.
+
+`PgConnection::set_reply_timeout` (`src/connection/mod.rs`) sets
+`reply_timeout` on the stream (`src/connection/stream.rs`). While it is set,
+each message read must complete within it; the unanswered-ping
+`reply_deadline` still applies, and the earlier of the two wins. A read that
+runs past either sets `reply_failed`, and every later read fails at once with
+the same I/O `TimedOut` error, so the pool discards the connection. The read
+stays cancel-safe. With neither set, reads are unchanged. Native Server sets
+45 seconds for statements and for the release ping; `statement_timeout`
+(30 s) ends every statement on these connections sooner on a healthy server.
+
+`runtime::postgres::tests::qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound`
+and `qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound`
+hold every reply and require the statement, and the return to the pool, to
+end within a shortened bound and the connection to be replaced. Remove this
+change only when a reviewed published driver lets a caller bound each read,
+or when the server bounds silent peers another way.

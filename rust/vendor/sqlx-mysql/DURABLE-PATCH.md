@@ -1,6 +1,6 @@
 # SQLx MySQL driver patches
 
-This directory contains the official `sqlx-mysql` 0.9.0 crate with five scoped
+This directory contains the official `sqlx-mysql` 0.9.0 crate with six scoped
 patches. Its published archive has
 SHA-256
 `90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27` and VCS
@@ -181,3 +181,29 @@ the bound and the connection to be replaced. Remove these changes only when
 a reviewed published driver tracks a cancelled ping and lets a caller bound
 the wait for a reply, or when the server no longer hands out a connection
 whose ping went unanswered.
+
+## Every read can be bounded
+
+Native Server bounds every reply on its runtime pool connections, not only
+the first reply after an unanswered ping (Server #1368). A peer that went
+silent without a reset would otherwise hold a statement in flight, or the
+pool's release ping, until the operating system gave up on it.
+
+`MySqlConnection::set_reply_timeout` (`src/connection/mod.rs`) sets
+`reply_timeout` on the stream (`src/connection/stream.rs`;
+`src/connection/tls.rs` carries it through the TLS upgrade). While it is
+set, each packet read must complete within it; the unanswered-ping
+`reply_deadline` still applies, and the earlier of the two wins. A read that
+runs past either sets `reply_failed`, and every later read on the connection
+fails at once with the same I/O `TimedOut` error, so the pool discards the
+connection even if the replies turn up later. With neither set, reads are
+unchanged. Native Server sets 45 seconds for statements and for the session
+reset and release ping, and lifts it for the namespace delete and per-run
+retention prune, which have no row bound.
+
+`runtime::mysql::stall_tests::qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound`
+and `qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound`
+hold every reply and require the statement, and the return to the pool, to
+end within a shortened bound and the connection to be replaced. Remove this
+change only when a reviewed published driver lets a caller bound each read,
+or when the server bounds silent peers another way.

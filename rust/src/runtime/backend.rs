@@ -79,16 +79,64 @@ pub(super) const CHECKOUT_PING_BUDGET: std::time::Duration = std::time::Duration
 /// (5 s), so waiting out a stall that short is never cut off by it.
 pub(super) const UNANSWERED_PING_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// A connection that can bound the wait for a reply after a ping went
-/// unanswered. The vendored MySQL and PostgreSQL drivers do; SQLite never
-/// waits on a network.
+/// How long a runtime pool connection may wait for each reply to a statement
+/// before the statement fails and the connection is discarded (Server #1368).
+/// A peer that went silent without a reset (common in an HA failover) would
+/// otherwise hold the request until the operating system gives up on it.
+///
+/// It must exceed the longest legitimate wait for a reply:
+/// - PostgreSQL ends every statement on these connections after 30 s
+///   (`statement_timeout`, which includes `lock_timeout`), first-start
+///   migrations included, so a healthy server always replies within 30 s.
+/// - MySQL and MariaDB refuse lock waits after 5 s (`lock_wait_timeout`,
+///   `innodb_lock_wait_timeout`), and runtime batches are bounded. The
+///   statements without a server-side or batch bound (namespace delete,
+///   per-run retention pruning and operator aggregates) run with
+///   [`Backend::LONG_STATEMENT_REPLY_TIMEOUT`] instead.
+/// - Like [`UNANSWERED_PING_REPLY_BOUND`] it is above the transition queue
+///   deadline (30 s) plus the acquisition deadline (5 s), so a statement
+///   waiting out a stall that short is never cut off by it.
+pub(super) const STATEMENT_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// How long a connection returning to the pool may wait for each reply: the
+/// MySQL session reset and SQLx's release ping (Server #1368). A silent peer
+/// otherwise kept the connection's pool slot, and a held poll's budget slot
+/// with it, until the operating system gave up on the peer.
+pub(super) const RELEASE_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// The reply bounds of a runtime pool's connections (tests shorten them).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ReplyBounds {
+    pub(super) ping_budget: std::time::Duration,
+    pub(super) unanswered_ping: std::time::Duration,
+    pub(super) statement: std::time::Duration,
+    pub(super) release: std::time::Duration,
+}
+
+impl ReplyBounds {
+    pub(super) const RUNTIME: Self = Self {
+        ping_budget: CHECKOUT_PING_BUDGET,
+        unanswered_ping: UNANSWERED_PING_REPLY_BOUND,
+        statement: STATEMENT_REPLY_BOUND,
+        release: RELEASE_REPLY_BOUND,
+    };
+}
+
+/// A connection whose waits for a reply can be bounded. The vendored MySQL
+/// and PostgreSQL drivers do; SQLite never waits on a network.
 pub(super) trait ReplyBound {
     fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration);
+    /// Every later read must receive its next packet within `timeout`, or
+    /// fails and poisons the connection (Server #1368).
+    fn set_reply_timeout(&mut self, timeout: Option<std::time::Duration>);
 }
 
 impl ReplyBound for sqlx::MySqlConnection {
     fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration) {
         self.bound_unanswered_replies(within);
+    }
+    fn set_reply_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        sqlx::MySqlConnection::set_reply_timeout(self, timeout);
     }
 }
 
@@ -96,10 +144,14 @@ impl ReplyBound for sqlx::PgConnection {
     fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration) {
         self.bound_unanswered_replies(within);
     }
+    fn set_reply_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        sqlx::PgConnection::set_reply_timeout(self, timeout);
+    }
 }
 
 impl ReplyBound for sqlx::SqliteConnection {
     fn bound_replies_after_unanswered_ping(&mut self, _within: std::time::Duration) {}
+    fn set_reply_timeout(&mut self, _timeout: Option<std::time::Duration>) {}
 }
 
 /// SQLx 0.9 checks connections before returning them to the idle queue.
@@ -120,20 +172,23 @@ impl ReplyBound for sqlx::SqliteConnection {
 /// a reply within [`UNANSWERED_PING_REPLY_BOUND`] or its read fails and it is
 /// discarded, instead of holding the request until the operating system
 /// gives up on the peer.
+///
+/// Each checkout also restores the statement reply bound
+/// ([`STATEMENT_REPLY_BOUND`]) that the release left at
+/// [`RELEASE_REPLY_BOUND`] (Server #1368).
 pub(super) fn test_idle_connections<DB: Database>(
     options: sqlx::pool::PoolOptions<DB>,
 ) -> sqlx::pool::PoolOptions<DB>
 where
     DB::Connection: ReplyBound,
 {
-    test_idle_connections_within(options, CHECKOUT_PING_BUDGET, UNANSWERED_PING_REPLY_BOUND)
+    test_idle_connections_within(options, ReplyBounds::RUNTIME)
 }
 
 /// [`test_idle_connections`] with explicit bounds (tests shorten them).
 pub(super) fn test_idle_connections_within<DB: Database>(
     options: sqlx::pool::PoolOptions<DB>,
-    ping_budget: std::time::Duration,
-    reply_bound: std::time::Duration,
+    bounds: ReplyBounds,
 ) -> sqlx::pool::PoolOptions<DB>
 where
     DB::Connection: ReplyBound,
@@ -142,10 +197,11 @@ where
         .test_before_acquire(false)
         .before_acquire(move |connection, metadata| {
             Box::pin(async move {
+                connection.set_reply_timeout(Some(bounds.statement));
                 if metadata.idle_for >= std::time::Duration::from_secs(1) {
-                    match tokio::time::timeout(ping_budget, sqlx::Connection::ping(connection)).await {
+                    match tokio::time::timeout(bounds.ping_budget, sqlx::Connection::ping(connection)).await {
                         Ok(answered) => answered?,
-                        Err(_) => connection.bound_replies_after_unanswered_ping(reply_bound),
+                        Err(_) => connection.bound_replies_after_unanswered_ping(bounds.unanswered_ping),
                     }
                 }
                 Ok(true)
@@ -170,6 +226,12 @@ pub(super) trait Backend: Database {
     // snapshot already is one; MySQL overrides it.
     const REPEATABLE_READ_SNAPSHOT_BEGIN: &str = Self::READ_SNAPSHOT_BEGIN;
     const COMMIT_HANDOFF: bool = false;
+    /// Lift [`STATEMENT_REPLY_BOUND`] from a pool connection for one
+    /// transaction whose statements have no server-side or batch bound
+    /// (Server #1368). The next checkout restores it. PostgreSQL keeps it:
+    /// `statement_timeout` ends every statement there within 30 s. MySQL
+    /// drops it, so a healthy server is never cut off mid-delete.
+    fn lift_statement_reply_bound(_connection: &mut Self::Connection) {}
     const HISTORY_SEQUENCE_MAX: i64 = i64::MAX;
     const HISTORY_ADVANCE_RETURNS_ROW: bool = true;
     const HISTORY_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1 AND last_history_sequence>=0 AND last_history_sequence<$2 RETURNING last_history_sequence";
@@ -693,6 +755,9 @@ macro_rules! mysql_task_candidates_sql {
 }
 
 impl Backend for MySql {
+    fn lift_statement_reply_bound(connection: &mut Self::Connection) {
+        connection.set_reply_timeout(None);
+    }
     const COMMIT_HANDOFF: bool = true;
     const HISTORY_SEQUENCE_MAX: i64 = u32::MAX as i64;
     const HISTORY_ADVANCE_RETURNS_ROW: bool = false;
