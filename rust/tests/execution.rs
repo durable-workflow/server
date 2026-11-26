@@ -432,6 +432,8 @@ mod carried_polls;
 mod continuations_v1;
 #[path = "execution/continuation_tail.rs"]
 mod continuation_tail;
+#[path = "execution/continuations_v2.rs"]
+mod continuations_v2;
 
 #[path = "execution/workflow_poll_clock.rs"]
 mod workflow_poll_clock;
