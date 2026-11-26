@@ -155,11 +155,17 @@ async fn a_signal_and_an_update_wait_for_the_whole_v2_continuation() {
 
 // Server #1181 (#1079 controls): a registration replaced after the carried
 // workflow poll's admission and before the transaction ends that admission.
-// The continuation declines instead of reusing the old registration.
+// The continuation declines instead of reusing the old registration. The
+// MySQL and PostgreSQL qualification suites run it on their backends.
 #[tokio::test]
 async fn a_registration_replaced_after_admission_declines_the_v2_continuation() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = Runtime::open(directory.path().join("runtime.sqlite").to_str().unwrap(), "test-token".into()).await.unwrap();
+    qualify_registration_replaced_after_admission(&runtime).await;
+    runtime.close().await;
+}
+
+pub(in crate::runtime) async fn qualify_registration_replaced_after_admission(runtime: &Runtime) {
     let entry = json!({"supported":true,"minimum_protocol_version":"1.18"});
     let registration = json!({"worker_id":"replaced-v2","task_queue":"test","runtime":"php","build_id":"build-1",
         "supported_workflow_types":["echo"],"supported_activity_types":["activity"],
@@ -183,8 +189,11 @@ async fn a_registration_replaced_after_admission_declines_the_v2_continuation() 
     let tail = done["continuation_tail"].clone();
     let through = &tail["last_sequence"];
     let gate = Arc::new(crate::runtime::commit_handoff_tests::CommitGate::default());
-    let Storage::Sqlite(store) = runtime.storage.as_ref() else { unreachable!() };
-    *store.test_admission_gate.lock().unwrap() = Some(gate.clone());
+    match runtime.storage.as_ref() {
+        Storage::Sqlite(store) => *store.test_admission_gate.lock().unwrap() = Some(gate.clone()),
+        Storage::Postgres(store) => *store.test_admission_gate.lock().unwrap() = Some(gate.clone()),
+        Storage::MySql(store) => *store.test_admission_gate.lock().unwrap() = Some(gate.clone()),
+    }
     let app = crate::runtime::router(runtime.clone());
     let path = format!("/api/worker/activity-tasks/{}/continuation/complete", activity["task_id"].as_str().unwrap());
     let body = json!({"lease_owner":"replaced-v2","activity_attempt_id":activity["activity_attempt_id"],
@@ -200,14 +209,15 @@ async fn a_registration_replaced_after_admission_declines_the_v2_continuation() 
     }
     // The registration's routing changes, as a replacement's would; its
     // build, and so the cache identity, and its leases stay.
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", directory.path().join("runtime.sqlite").display())).await.unwrap();
-    sqlx::query("UPDATE workflow_worker_registrations SET supported_workflow_types='[\"echo\",\"replacement\"]' WHERE worker_id='replaced-v2'")
-        .execute(&pool).await.unwrap();
-    pool.close().await;
+    const REPLACE: &str = "UPDATE workflow_worker_registrations SET supported_workflow_types='[\"echo\",\"replacement\"]' WHERE worker_id='replaced-v2'";
+    match runtime.storage.as_ref() {
+        Storage::Sqlite(store) => { sqlx::query(REPLACE).execute(&store.pool).await.unwrap(); }
+        Storage::Postgres(store) => { sqlx::query(REPLACE).execute(&store.pool).await.unwrap(); }
+        Storage::MySql(store) => { sqlx::query(REPLACE).execute(&store.pool).await.unwrap(); }
+    }
     gate.resume.notify_one();
     let (status, answer) = completion.await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["recorded"], true, "{answer}");
     assert_eq!(answer["continuation"], json!({"version":2,"outcome":"declined","reason":"workflow_slot_unavailable"}), "{answer}");
-    runtime.close().await;
 }
