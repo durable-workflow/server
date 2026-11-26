@@ -796,6 +796,49 @@ where
         Ok(findings)
     }
 
+    /// .github#232: a ready workflow task of a run whose history records an
+    /// explicit group policy waits until a fresh worker that runs its type
+    /// registers every recorded policy. No legacy worker takes it, so say so.
+    async fn group_policy_finding(
+        &self,
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        at: DateTime<Utc>,
+    ) -> Result<Option<Value>> {
+        let Some(task) = Self::query("SELECT t.id,t.queue,r.workflow_type FROM workflow_tasks t JOIN workflow_runs r ON r.id=t.workflow_run_id WHERE t.workflow_run_id=$1 AND t.namespace=$2 AND t.status='ready' AND t.task_type='workflow' AND r.status IN ('pending','running','waiting') ORDER BY t.available_at,t.created_at,t.id LIMIT 1")
+            .bind(run_id).bind(self.namespace.as_ref()).fetch_optional(&mut **tx).await?
+        else { return Ok(None) };
+        let required = Self::recorded_group_policies(&mut **tx, run_id).await?;
+        if required.is_empty() {
+            return Ok(None);
+        }
+        let queue = DB::optional_string(&task, "queue")?.unwrap_or_default();
+        let workflow_type = DB::string(&task, "workflow_type")?;
+        let fresh_after = at - Duration::seconds(self.worker_stale_after_seconds);
+        let workers = Self::query("SELECT * FROM workflow_worker_registrations WHERE namespace=$1 AND task_queue=$2 AND status='active' AND last_heartbeat_at>$3 ORDER BY worker_id LIMIT 33")
+            .bind(self.namespace.as_ref()).bind(&queue).bind(DB::bind_time(fresh_after))
+            .fetch_all(&mut **tx).await?;
+        if workers.len() > SLOT_DIAGNOSTIC_ROSTER_LIMIT {
+            return Ok(None);
+        }
+        let mut typed = 0;
+        for worker in &workers {
+            let types = DB::optional_document_row(worker, "supported_workflow_types")?.unwrap_or(Value::Null);
+            if !types.as_array().is_some_and(|types| types.iter().any(|value| *value == workflow_type)) {
+                continue;
+            }
+            typed += 1;
+            if Self::group_policies_supported(&mut **tx, worker, run_id).await? {
+                return Ok(None);
+            }
+        }
+        Ok(Some(json!({"severity": "error", "code": "parallel_group_policy_worker_unavailable",
+            "message": format!("A workflow task on task queue [{queue}] needs a worker that registers the parallel group policies [{}] its history records. No active worker for workflow type [{workflow_type}] there registers them all; the task waits until one does.", required.join(", ")),
+            "task_id": DB::string(&task, "id")?, "task_queue": queue, "workflow_type": workflow_type,
+            "required_capability": super::worker_admission::PARALLEL_GROUP_POLICIES,
+            "required_parallel_group_policies": required, "active_workflow_type_worker_count": typed})))
+    }
+
     /// An incomplete roster or unknown observation cannot prove that every
     /// eligible worker is busy.
     async fn worker_slot_finding(
@@ -953,7 +996,12 @@ where
         if !terminal {
             findings.extend(self.worker_slot_findings(&mut tx, &fields.run_id, at).await?);
         }
+        let policy_finding = if terminal { None } else { self.group_policy_finding(&mut tx, &fields.run_id, at).await? };
         tx.commit().await?;
+        if let Some(finding) = policy_finding {
+            findings.push(finding);
+            payload["diagnostic_status"] = json!("needs_attention");
+        }
         if routing["blocked"] == true {
             findings.push(json!({"severity": "warning", "code": "workflow_definition_routing_blocked",
                 "message": "A ready workflow task has no eligible definition route.",

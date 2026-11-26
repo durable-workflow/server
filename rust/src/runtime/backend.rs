@@ -270,6 +270,13 @@ pub(super) trait Backend: Database {
     /// The history sequence of a signal's `SignalReceived` event.
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SignalReceived' AND payload->>'signal_id'=$2 ORDER BY sequence LIMIT 1";
     const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ConditionWaitOpened' AND payload->>'condition_wait_input_order'='durable_receipt_order' LIMIT 1";
+    /// .github#232: whether a run's history records an explicit group
+    /// policy outside the three bound names (a worker's supported policies,
+    /// padded with an impossible empty name). A member's opening carries its
+    /// group's immutable policy, so the openings are enough.
+    const UNSUPPORTED_GROUP_POLICY_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','TimerScheduled','ChildWorkflowScheduled','ConditionWaitOpened') AND payload->>'parallel_group_policy' IS NOT NULL AND payload->>'parallel_group_policy' NOT IN ($2,$3,$4) LIMIT 1";
+    /// The distinct explicit group policies a run's history records.
+    const RECORDED_GROUP_POLICIES: &str = "SELECT DISTINCT payload->>'parallel_group_policy' AS policy FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','TimerScheduled','ChildWorkflowScheduled','ConditionWaitOpened') AND payload->>'parallel_group_policy' IS NOT NULL";
     // PostgreSQL compares text case-sensitively.
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
@@ -523,6 +530,8 @@ ORDER BY t.available_order,t.id LIMIT 100
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='TimerScheduled' AND json_extract(payload,'$.timer_id')=$2 ORDER BY sequence DESC LIMIT 1";
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='SignalReceived' AND json_extract(payload,'$.signal_id')=$2 ORDER BY sequence LIMIT 1";
     const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ConditionWaitOpened' AND json_extract(payload,'$.condition_wait_input_order')='durable_receipt_order' LIMIT 1";
+    const UNSUPPORTED_GROUP_POLICY_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','TimerScheduled','ChildWorkflowScheduled','ConditionWaitOpened') AND json_extract(payload,'$.parallel_group_policy') IS NOT NULL AND json_extract(payload,'$.parallel_group_policy') NOT IN ($2,$3,$4) LIMIT 1";
+    const RECORDED_GROUP_POLICIES: &str = "SELECT DISTINCT json_extract(payload,'$.parallel_group_policy') AS policy FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','TimerScheduled','ChildWorkflowScheduled','ConditionWaitOpened') AND json_extract(payload,'$.parallel_group_policy') IS NOT NULL";
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(
         "substr(s.arguments,1,30) COLLATE BINARY='dw-native-external-payload-v1:'",
@@ -885,6 +894,8 @@ impl Backend for MySql {
     const TIMER_SCHEDULE_SQL: &str = "SELECT payload FROM workflow_history_events WHERE workflow_run_id=? AND event_type='TimerScheduled' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.timer_id'))=? ORDER BY sequence DESC LIMIT 1";
     const SIGNAL_RECEIVED_SEQUENCE_SQL: &str = "SELECT sequence FROM workflow_history_events WHERE workflow_run_id=? AND event_type='SignalReceived' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.signal_id'))=? ORDER BY sequence LIMIT 1";
     const ORDERED_CONDITION_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=? AND event_type='ConditionWaitOpened' AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.condition_wait_input_order'))='durable_receipt_order' LIMIT 1";
+    const UNSUPPORTED_GROUP_POLICY_HISTORY: &str = "SELECT 1 FROM workflow_history_events WHERE workflow_run_id=? AND event_type IN ('ActivityScheduled','TimerScheduled','ChildWorkflowScheduled','ConditionWaitOpened') AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.parallel_group_policy')) IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.parallel_group_policy')) NOT IN (?,?,?) LIMIT 1";
+    const RECORDED_GROUP_POLICIES: &str = "SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(payload,'$.parallel_group_policy')) AS policy FROM workflow_history_events WHERE workflow_run_id=? AND event_type IN ('ActivityScheduled','TimerScheduled','ChildWorkflowScheduled','ConditionWaitOpened') AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.parallel_group_policy')) IS NOT NULL";
     // The payload column's collation ignores case; compare bytes.
     const RUN_COMMANDS_SQL: &str =
         super::store::run_commands_sql!(

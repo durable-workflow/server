@@ -232,6 +232,50 @@ where
     for<'r> i64: Decode<'r, DB>,
     usize: ColumnIndex<DB::Row>,
 {
+    /// The policies a worker registration's version 1 descriptor lists. A
+    /// worker without the descriptor supports none.
+    pub(super) fn registered_policies(worker: &DB::Row) -> Result<Vec<String>> {
+        Ok(DB::optional_document_row(worker, "capability_manifest")?
+            .and_then(|manifest| manifest[super::worker_admission::PARALLEL_GROUP_POLICIES]["policies"].as_array().cloned())
+            .into_iter()
+            .flatten()
+            .filter_map(|policy| policy.as_str().filter(|policy| super::worker_admission::GROUP_POLICIES.contains(policy)).map(str::to_owned))
+            .collect())
+    }
+
+    /// The replacement-worker fence: a worker replays or claims a run only
+    /// if its registered descriptor lists every explicit policy the run's
+    /// retained history records, including groups that already closed. A
+    /// legacy worker therefore never takes an explicit-policy run, whatever
+    /// workflow types it supports. Legacy histories need no descriptor.
+    pub(super) async fn group_policies_supported(
+        connection: &mut DB::Connection,
+        worker: &DB::Row,
+        run_id: &str,
+    ) -> Result<bool> {
+        let registered = Self::registered_policies(worker)?;
+        if super::worker_admission::GROUP_POLICIES.iter().all(|policy| registered.iter().any(|name| name == policy)) {
+            return Ok(true);
+        }
+        let bound = |index: usize| registered.get(index).map_or("", String::as_str);
+        Ok(Self::query(DB::UNSUPPORTED_GROUP_POLICY_HISTORY)
+            .bind(run_id).bind(bound(0)).bind(bound(1)).bind(bound(2))
+            .fetch_optional(&mut *connection).await?
+            .is_none())
+    }
+
+    /// The explicit policies a run's history records, in canonical order.
+    pub(super) async fn recorded_group_policies(connection: &mut DB::Connection, run_id: &str) -> Result<Vec<String>> {
+        let mut recorded = BTreeSet::new();
+        for row in Self::query(DB::RECORDED_GROUP_POLICIES).bind(run_id).fetch_all(&mut *connection).await? {
+            if let Some(policy) = DB::optional_string(&row, "policy")? {
+                recorded.insert(policy);
+            }
+        }
+        Ok(super::worker_admission::GROUP_POLICIES.iter()
+            .filter(|policy| recorded.contains(**policy)).map(|policy| (*policy).to_owned()).collect())
+    }
+
     /// Explicit policy admission: native must run every policy the batch
     /// records, and the claiming worker's registered descriptor must list it.
     /// Otherwise the whole completion is refused before any write. A policy
@@ -250,14 +294,11 @@ where
             .ok_or_else(|| refuse(StatusCode::CONFLICT, "task_not_leased"))?;
         let worker = Self::query("SELECT capability_manifest,status FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref()).bind(&worker_id).fetch_optional(&mut **tx).await?;
-        let mut registered = Vec::new();
-        if let Some(worker) = worker
-            && DB::optional_string(&worker, "status")?.is_none_or(|status| status == "active")
-            && let Some(manifest) = DB::optional_document_row(&worker, "capability_manifest")?
-            && let Some(policies) = manifest[super::worker_admission::PARALLEL_GROUP_POLICIES]["policies"].as_array()
-        {
-            registered.extend(policies.iter().filter_map(Value::as_str).map(str::to_owned));
-        }
+        let registered = match worker {
+            Some(worker) if DB::optional_string(&worker, "status")?.is_none_or(|status| status == "active") =>
+                Self::registered_policies(&worker)?,
+            _ => Vec::new(),
+        };
         for policy in super::worker_admission::GROUP_POLICIES.iter().filter(|policy| requested.contains(**policy)) {
             let unsupported_by = if !ADMITTED_POLICIES.contains(policy) {
                 "server"

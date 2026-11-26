@@ -569,3 +569,161 @@ async fn every_parent_event_of_an_explicit_child_group_keeps_the_policy() {
     runtime.close().await;
     database.remove().await;
 }
+
+/// Rewrites one admitted group's openings as `policy` recorded them, for a
+/// policy native does not admit yet: the routing fence reads only history.
+async fn record_group_as(database: &TestDatabase, group_id: &str, policy: &str) {
+    let replace = format!("'\"propagate\"','\"{policy}\"'");
+    let filter = format!("event_type='ActivityScheduled' AND {{payload}} LIKE '%\"{group_id}\"%'");
+    let statement = match database {
+        TestDatabase::Postgres { .. } => format!("UPDATE workflow_history_events SET payload=REPLACE(payload::text,{replace})::jsonb WHERE {}",
+            filter.replace("{payload}", "payload::text")),
+        _ => format!("UPDATE workflow_history_events SET payload=REPLACE(payload,{replace}) WHERE {}", filter.replace("{payload}", "payload")),
+    };
+    database.execute(sqlx::AssertSqlSafe(statement)).await;
+}
+
+/// A run whose retained history records `required` (one closed two-member
+/// group per policy, or one legacy group) and whose next workflow task is
+/// ready. The authoring worker is then silent, so only later workers count.
+async fn retained_run(database: &TestDatabase, app: &Router, workflow: &str, required: &[&str]) -> Value {
+    register_policies(app, "author", Some(&["propagate"])).await;
+    let run = start(app, workflow).await;
+    let task = poll(app, "author", "workflow").await;
+    let policies: Vec<Option<&str>> = if required.is_empty() { vec![None] } else { required.iter().map(|_| Some("propagate")).collect() };
+    let commands = json!(policies.iter().enumerate().flat_map(|(group, policy)| (0..2).map(move |index| {
+        member(index, vec![frame(1 + 2 * group as i64, 2, index, *policy)])
+    })).collect::<Vec<_>>());
+    let admitted = finish_task(app, &task, commands).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+    for _ in 0..2 * policies.len() {
+        let activity = poll(app, "author", "activity").await;
+        assert_eq!(complete_activity(app, &activity).await.0, StatusCode::OK);
+    }
+    for (group, policy) in required.iter().enumerate() {
+        if *policy != "propagate" {
+            record_group_as(database, &format!("parallel-activities:{}:2", 1 + 2 * group), policy).await;
+        }
+    }
+    database.execute("UPDATE workflow_worker_registrations SET last_heartbeat_at='2000-01-01 00:00:00' WHERE worker_id='author'").await;
+    run
+}
+
+async fn policy_findings(app: &Router, workflow: &str) -> Vec<Value> {
+    let (status, debug) = request(app, "GET", &format!("/api/workflows/{workflow}/debug"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{debug}");
+    debug["findings"].as_array().unwrap().iter()
+        .filter(|finding| finding["code"] == "parallel_group_policy_worker_unavailable").cloned().collect()
+}
+
+/// The contract's claim vectors: a worker leases a workflow task only when
+/// its registered descriptor lists every policy the run's retained history
+/// records. Otherwise the run waits, with a visible reason, for one that does.
+#[tokio::test]
+async fn contract_claim_vectors_route_explicit_runs_to_registered_workers() {
+    let mut ran = 0;
+    for vector in fixtures()["registration_claim_vectors"].as_array().unwrap() {
+        let (Some(declared), Some(claim)) = (vector.get("registration"), vector["expected"]["claim"].as_str()) else { continue };
+        let id = vector["id"].as_str().unwrap();
+        let required: Vec<&str> = vector["run_required_policies"].as_array().unwrap().iter().map(|policy| policy.as_str().unwrap()).collect();
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        let workflow = format!("claim-{id}");
+        let run = retained_run(&database, &app, &workflow, &required).await;
+        let (status, body) = register_declared(&app, "vector-worker", declared).await;
+        assert_eq!(status, StatusCode::CREATED, "{id}: {body}");
+        let task = poll(&app, "vector-worker", "workflow").await;
+        match claim {
+            "eligible" => {
+                assert_eq!(task["run_id"], run["run_id"], "{id}: {task}");
+                assert!(policy_findings(&app, &workflow).await.is_empty(), "{id}");
+            }
+            "ineligible" => {
+                assert!(task.is_null(), "{id}: {task}");
+                assert_eq!(vector["expected"]["run"], "waiting", "{id}");
+                let findings = policy_findings(&app, &workflow).await;
+                assert_eq!(findings.len(), 1, "{id}: {findings:?}");
+                assert_eq!(findings[0]["required_parallel_group_policies"], json!(required), "{id}");
+                assert_eq!(findings[0]["active_workflow_type_worker_count"], 1, "{id}");
+                // The task waited: a worker that registers every recorded
+                // policy leases it, and the reason clears.
+                register_policies(&app, "capable-worker", Some(&["propagate", "cancel_remaining", "settle"])).await;
+                let leased = poll(&app, "capable-worker", "workflow").await;
+                assert_eq!(leased["run_id"], run["run_id"], "{id}: {leased}");
+            }
+            other => panic!("{id}: {other}"),
+        }
+        ran += 1;
+        runtime.close().await;
+        database.remove().await;
+    }
+    assert_eq!(ran, 5, "every claim vector ran");
+}
+
+/// The contract's held-poll vector: a poll held under one descriptor is
+/// stale once the worker re-registers another, and the replacement's own
+/// poll is the claim authority for the explicit run.
+#[tokio::test]
+async fn contract_held_poll_vector_leaves_the_explicit_run_to_the_replacement() {
+    let vector = fixtures()["registration_claim_vectors"].as_array().unwrap().iter()
+        .find(|vector| vector["id"] == "descriptor-change-invalidates-held-poll").unwrap().clone();
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (status, body) = register_declared(&app, "fenced", &vector["held_poll_registration"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run = start(&app, "held-explicit").await;
+    let task = poll(&app, "fenced", "workflow").await;
+    let admitted = finish_task(&app, &task, group(&[Some("propagate"), Some("propagate")])).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+    // Another worker runs the activities, so re-registering the fenced
+    // worker leaves their leases alone.
+    register_policies(&app, "activity-worker", None).await;
+    let (first, second) = (poll(&app, "activity-worker", "activity").await, poll(&app, "activity-worker", "activity").await);
+    assert_eq!(complete_activity(&app, &first).await.0, StatusCode::OK);
+    // Registration times are whole seconds; let the replacement differ.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let held = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            request(&app, "POST", "/api/worker/workflow-tasks/poll",
+                json!({"worker_id": "fenced", "task_queue": "test", "timeout_seconds": 4})).await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let (status, body) = register_declared(&app, "fenced", &vector["replacement_registration"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(complete_activity(&app, &second).await.0, StatusCode::OK);
+    let (status, answer) = held.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["poll_status"], vector["expected"]["held_poll_claim"].as_str().unwrap(), "{answer}");
+    assert!(answer["task"].is_null(), "{answer}");
+    let replacement = poll(&app, "fenced", "workflow").await;
+    assert_eq!(vector["expected"]["replacement_claim"], "eligible");
+    assert_eq!(replacement["run_id"], run["run_id"], "{replacement}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+/// A legacy worker on the same queue never takes an explicit run's next
+/// task, even while it holds the only fresh registration; it keeps taking
+/// legacy runs.
+#[tokio::test]
+async fn a_legacy_worker_keeps_legacy_runs_but_not_explicit_ones() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let explicit = retained_run(&database, &app, "explicit-run", &["propagate"]).await;
+    register_policies(&app, "legacy", None).await;
+    let legacy_run = start(&app, "legacy-run").await;
+    let claimed = poll(&app, "legacy", "workflow").await;
+    assert_eq!(claimed["run_id"], legacy_run["run_id"], "{claimed}");
+    assert!(poll(&app, "legacy", "workflow").await.is_null(), "the explicit run's task is left waiting");
+    assert_eq!(policy_findings(&app, "explicit-run").await.len(), 1);
+    assert!(policy_findings(&app, "legacy-run").await.is_empty());
+    register_policies(&app, "upgraded", Some(&["propagate"])).await;
+    assert_eq!(poll(&app, "upgraded", "workflow").await["run_id"], explicit["run_id"]);
+    runtime.close().await;
+    database.remove().await;
+}
