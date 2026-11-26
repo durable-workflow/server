@@ -31,6 +31,15 @@ pub(super) struct Request {
     pub(super) commands: Vec<Value>,
 }
 
+/// What an activity completion proves about the worker's history under the
+/// transition lock, before its own append.
+pub(super) enum Prefix<'a> {
+    /// The v1 history page still ends at this sequence and event ID.
+    V1(i64, &'a str),
+    /// The v2 eligibility checks and O(1) proof, in the contract's order.
+    V2(&'a super::continuation_v2::Request),
+}
+
 /// Malformed continuations are refused before anything is written.
 pub(super) fn parse(value: Option<Value>) -> Result<Request> {
     let invalid = |reason: &'static str| refuse(StatusCode::UNPROCESSABLE_ENTITY, reason);
@@ -74,12 +83,12 @@ fn contains_external(value: &Value) -> bool {
     }
 }
 
-fn exact_fields(value: &Value, expected: &[&str]) -> bool {
+pub(super) fn exact_fields(value: &Value, expected: &[&str]) -> bool {
     value.as_object().is_some_and(|fields| fields.len() == expected.len()
         && expected.iter().all(|key| fields.contains_key(*key)))
 }
 
-fn identifier(value: &Value) -> bool {
+pub(super) fn identifier(value: &Value) -> bool {
     value.as_str().is_some_and(|id| !id.is_empty() && id.len() <= 64)
 }
 
@@ -212,7 +221,7 @@ store_methods! {
         let receipt_body = body.clone();
         let (through, last_id) = (continuation.through, continuation.last_event_id.as_str());
         let external_input = external.is_some() || !command_external.is_empty();
-        let prefix = if external_input { None } else { Some((through, last_id)) };
+        let prefix = if external_input { None } else { Some(Prefix::V1(through, last_id)) };
         let saved = tx.continuation_savepoint().await?;
         let mut answer = self.complete_activity_in(&mut tx, task_id, body, external.as_ref(), result.clone(), workflow_poll.clone(),
             prefix).await?;

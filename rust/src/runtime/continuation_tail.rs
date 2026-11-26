@@ -14,6 +14,8 @@ pub(super) const TAIL_MAX_EVENTS: usize = 64;
 /// The UTF-8 length of the JSON-encoded `history_events` array.
 pub(super) const TAIL_MAX_BYTES: usize = 262_144;
 pub(super) const UNAVAILABLE: &str = "tail_unavailable";
+/// Why a tail the Server read was omitted.
+pub(super) const BUDGET_REASONS: [&str; 2] = ["tail_event_budget_exceeded", "tail_byte_budget_exceeded"];
 
 /// A requested tail: the events after the completion's cached boundary.
 #[derive(Clone, Copy)]
@@ -83,7 +85,7 @@ store_methods! {
             }
         }
         if rows.len() > TAIL_MAX_EVENTS {
-            return Ok(Tail::Omitted { after_sequence, reason: "tail_event_budget_exceeded" });
+            return Ok(Tail::Omitted { after_sequence, reason: BUDGET_REASONS[0] });
         }
         if expected != last_sequence {
             return Err(violated());
@@ -91,8 +93,30 @@ store_methods! {
         let mut events = rows.into_iter().map(Self::event).collect::<Result<Vec<_>>>()?;
         Self::with_signal_sequences(&mut **tx, run_id, &mut events).await?;
         if serde_json::to_vec(&events)?.len() > TAIL_MAX_BYTES {
-            return Ok(Tail::Omitted { after_sequence, reason: "tail_byte_budget_exceeded" });
+            return Ok(Tail::Omitted { after_sequence, reason: BUDGET_REASONS[1] });
         }
+        Ok(Tail::Events { after_sequence, last_sequence, events })
+    }
+
+    /// A tail answered before, read again by its range for an exact retry.
+    /// Committed events never change; a range retention pruned is unavailable.
+    pub(super) async fn continuation_tail_range(
+        tx: &mut super::transaction::Transaction<'_, DB>, run_id: &str, after_sequence: i64, last_sequence: i64,
+    ) -> Result<Tail> {
+        let rows = Self::query("SELECT * FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 AND sequence<=$3 ORDER BY sequence")
+            .bind(run_id).bind(after_sequence).bind(last_sequence).fetch_all(&mut **tx).await?;
+        let mut expected = after_sequence;
+        for row in &rows {
+            expected += 1;
+            if DB::number(row, "sequence")? != expected {
+                return Ok(Tail::Omitted { after_sequence, reason: UNAVAILABLE });
+            }
+        }
+        if expected != last_sequence {
+            return Ok(Tail::Omitted { after_sequence, reason: UNAVAILABLE });
+        }
+        let mut events = rows.into_iter().map(Self::event).collect::<Result<Vec<_>>>()?;
+        Self::with_signal_sequences(&mut **tx, run_id, &mut events).await?;
         Ok(Tail::Events { after_sequence, last_sequence, events })
     }
 }
