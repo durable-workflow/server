@@ -66,6 +66,7 @@ mod timeout_cleanup;
 mod cross_kind_poll;
 mod carried_polls;
 mod continuation;
+mod continuation_tail;
 #[cfg(test)]
 mod carried_poll_tests;
 mod execution;
