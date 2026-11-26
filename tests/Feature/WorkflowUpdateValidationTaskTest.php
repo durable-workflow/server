@@ -580,6 +580,16 @@ class WorkflowUpdateValidationTaskTest extends TestCase
                     ],
                 ],
             );
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.synchronous_update_validation.sdk_surfaces',
+                [
+                    'sdk-python' => 'validator_capable',
+                    'sdk-php' => 'validator_capable',
+                    'sdk-rust' => 'validator_capable',
+                ],
+            );
     }
 
     /**

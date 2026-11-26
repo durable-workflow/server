@@ -74,8 +74,8 @@
       "task_kinds": ["workflow", "update_validation"],
       "response_discriminator": "task.task_kind"
     },
-    "validator_sdk_surfaces": ["sdk-python"],
-    "sdk_surfaces_without_validators": ["sdk-php", "sdk-rust"]
+    "validator_sdk_surfaces": ["sdk-python", "sdk-php", "sdk-rust"],
+    "sdk_surfaces_without_validators": []
   },
   "scenario_requirements": {
     "published_artifact_install_only": {

@@ -746,9 +746,13 @@ The answer has schema `durable-workflow.v2.retention-plan.v1`. It reports:
 
 - `current_policy` and `proposed_policy`, each with its cutoff.
 - `policy_revision`, a SHA-256 over the namespace, its stored retention mode
-  and days, the days in effect and the namespace's `updated_at`. Any policy
-  change produces a new revision. Other namespace updates move `updated_at`
-  too, so they also produce a new revision.
+  and days, the days in effect and the namespace's `updated_at`. Any change
+  to the retention mode or days produces a new revision. Other namespace
+  updates move `updated_at` too, so they usually produce a new revision, but
+  only at the stored precision. PostgreSQL and MySQL round `updated_at` to
+  the nearest whole second and MariaDB truncates it to the second, so an
+  update that stores the same second as the previous namespace write leaves
+  the revision unchanged. The server writes SQLite times with milliseconds.
 - `plan_revision`, a SHA-256 over `policy_revision` and the proposed mode and
   days. It binds the plan to both the current policy and this exact proposal.
 - `retroactive`: `true` when the proposal makes closed runs eligible that the
@@ -804,8 +808,14 @@ and changes nothing when:
 An accepted apply answers with schema `durable-workflow.v2.retention-apply.v1`:
 `applied_at`, `retroactive`, `confirmed_retroactive_pruning`, the
 `previous_policy` with its `previous_policy_revision`, and the applied
-`policy` with its new `policy_revision`. Because the revision changes, the
-same plan cannot be applied twice.
+`policy` with its new `policy_revision`. A plan that changes the retention
+mode or days cannot be applied twice, because applying it changes the
+revision. A plan that proposes the current mode and days leaves the policy
+unchanged but still moves `updated_at`, which can make other outstanding
+plans for the namespace stale. Applying it again is accepted only if the
+stored `updated_at` did not change (on PostgreSQL, MySQL and MariaDB, the
+same stored second), and then rewrites the same policy. Otherwise it is
+refused as stale.
 
 The apply changes only the namespace's policy. It marks, archives and prunes
 no run. The policy is active from `applied_at`. Each later retention pass
