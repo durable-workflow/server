@@ -97,6 +97,40 @@ $worker->registerWorkflow('tc.continue', static function (WorkflowContext $conte
     }
 });
 
+// Scoped descendants: the parent's cleanup cancels its child (try_cancel);
+// the child observes an ordinary cancellation and cleans up.
+$worker->registerWorkflow('tc.parent', static function (WorkflowContext $context, string $vector = '') use ($observe): string {
+    try {
+        $context->childWorkflow('tc.child', [$vector.'-child'], ['cancellation_policy' => 'try_cancel']);
+
+        return 'work finished';
+    } catch (WorkflowCancelled $error) {
+        $observe($context, $vector, $error);
+
+        return 'compensated';
+    }
+});
+$worker->registerWorkflow('tc.child', static function (WorkflowContext $context, string $vector = '') use ($observe): string {
+    try {
+        $context->sleep(3600);
+
+        return 'work finished';
+    } catch (WorkflowCancelled $error) {
+        $observe($context, $vector, $error);
+
+        return 'child cleaned up';
+    }
+});
+
+// Redrive: the only activity attempt fails, so the run fails at that step,
+// long before its work deadline.
+$worker->registerWorkflow('tc.redrive', static function (WorkflowContext $context, string $vector = ''): string {
+    return (string) $context->activity('tc.flaky', [], ['retry_policy' => ['max_attempts' => 1]]);
+});
+$worker->registerActivity('tc.flaky', static function (ActivityContext $context): string {
+    throw new RuntimeException('business failure');
+});
+
 // No opt-in: workflow code must never run again after the hard deadline.
 $worker->registerWorkflow('tc.plain', static function (WorkflowContext $context, string $vector = '') use ($observe): string {
     try {
