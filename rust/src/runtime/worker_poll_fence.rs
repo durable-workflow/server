@@ -260,8 +260,15 @@ store_methods! {
     }
 
     /// `isCurrent` before a probe.
-    pub(super) async fn worker_poll_fence_holds(&self, fence: &WorkerPollFence, worker_id: &str) -> Result<bool> {
-        let row = Self::query(FENCE_ROW).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&self.pool).await?;
+    /// On the caller's connection: a held poll's probe reads share one
+    /// (Server #1204).
+    pub(super) async fn worker_poll_fence_holds(
+        &self,
+        connection: &mut DB::Connection,
+        fence: &WorkerPollFence,
+        worker_id: &str,
+    ) -> Result<bool> {
+        let row = Self::query(FENCE_ROW).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(connection).await?;
         fence.holds::<DB>(row.as_ref(), self.worker_stale_after_seconds)
     }
 

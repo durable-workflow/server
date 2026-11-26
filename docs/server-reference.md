@@ -2390,7 +2390,16 @@ how many request workers are busy.
   request share. With a positive value, every poll probe takes one of
   `pool size - reserved` probe permits (at least one) and returns it before
   waiting, so polls never occupy the reserved connections. Unset or zero,
-  probes are not gated.
+  probes take no permit.
+- Whatever the setting, held-poll probe reads are always limited to the pool
+  size minus one connection (at least one). A held workflow or activity poll
+  runs each probe's lock-free reads on one connection from that node-wide
+  budget and returns it before it claims or waits; held query-task and
+  update-validation polls take their fence and cross-kind wake reads from the
+  same budget. Held-poll probes therefore never occupy the pool's last
+  connection. A claim is a transition and takes its connection outside the
+  budget
+  ([#1204](https://github.com/durable-workflow/server/issues/1204)).
 - The per-namespace variants, `DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE`
   and `DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE`, are still ignored by
   native.
@@ -2773,7 +2782,7 @@ every operator-facing variable the server honors.
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Writable local coordination and wait-lock directory, also required with Redis or database polling caches. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. Native honors it as a node-wide cap with the same `429 long_poll_capacity_exhausted` refusal; unset, native waits are unbounded (see [Native long-poll capacity](#native-long-poll-capacity)). |
-| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its database connections that long-poll probes leave free. Unset, native reserves none. |
+| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its database connections that long-poll probes leave free. Unset, native reserves none for it; held-poll probe reads still always leave one connection free. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
 | `DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS` | `5` | Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure. |

@@ -20,7 +20,9 @@
 //! database connections that long-poll probes may never occupy together:
 //! every poll probe (the first claim and each re-probe of a held wait) takes
 //! one of `pool size - reserved` probe permits (at least one) and returns it
-//! before it waits. Unset, probes are not gated.
+//! before it waits. Unset, probes take no permit here, but held-poll probe
+//! reads are always limited to the pool size minus one connection
+//! (`probe_connections`, Server #1204).
 use std::sync::{Arc, RwLock};
 
 use axum::http::StatusCode;

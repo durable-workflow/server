@@ -490,7 +490,11 @@ contract fixture before its correction.
   `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` reserves database connections
   instead: poll probes share the rest of the node's pool, leaving the reserve
   to health, readiness and admin requests. Unset, all three leave native's
-  behavior unchanged. The per-namespace variants stay ignored
+  behavior unchanged. Whatever the setting, held-poll probe reads are always
+  limited to the pool size minus one connection (at least one), one
+  connection per probe, so held-poll probes never occupy the pool's last
+  connection ([#1204](https://github.com/durable-workflow/server/issues/1204)).
+  The per-namespace variants stay ignored
   ([#982](https://github.com/durable-workflow/server/issues/982),
   [server reference](server-reference.md#native-long-poll-capacity)).
 - **Standalone activity duplicate starts.** Published PHP answers a start

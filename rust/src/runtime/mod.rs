@@ -124,6 +124,7 @@ mod php_value;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub mod poll_pauses;
+mod probe_connections;
 mod poll_sweeps;
 mod plain_input;
 mod poll_readiness;

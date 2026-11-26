@@ -219,6 +219,8 @@ pub(super) struct Store<DB: Backend> {
     /// The node's long-poll wait slots and probe permits (Server #982),
     /// shared by every namespace's store.
     pub(super) poll_capacity: Arc<super::poll_capacity::PollCapacity>,
+    /// Held-poll probe slots: the pool size less one (Server #1204).
+    pub(super) probe_slots: Arc<Semaphore>,
     // A per-store source-test clock for deterministic claim arithmetic. All
     // production claims continue to sample the existing canonical clock.
     #[cfg(test)]
@@ -363,6 +365,7 @@ where
         sqlx::query_scalar(sqlx::AssertSqlSafe(DB::statement(sql)))
     }
     pub(super) fn new(pool: Pool<DB>) -> Self {
+        let probe_slots = super::probe_connections::slots(pool.options().get_max_connections());
         Self {
             pool,
             transitions: Arc::default(),
@@ -394,6 +397,7 @@ where
             poll_sweeps: Arc::default(),
             storage_admission: Arc::default(),
             poll_capacity: Arc::default(),
+            probe_slots,
             #[cfg(test)]
             test_claim_at: None,
             #[cfg(test)]
@@ -427,6 +431,7 @@ where
             poll_sweeps: self.poll_sweeps.clone(),
             storage_admission: self.storage_admission.clone(),
             poll_capacity: self.poll_capacity.clone(),
+            probe_slots: self.probe_slots.clone(),
             #[cfg(test)]
             test_claim_at: self.test_claim_at,
             #[cfg(test)]
@@ -2508,7 +2513,10 @@ where
             return replayed_poll(answer, encoding);
         }
         let mut cross_kind = if timeout > 0 {
-            self.poll_wake_snapshot(&body, kind).await?
+            let mut reads = self.probe_connection().await?;
+            let snapshot = self.poll_wake_snapshot(reads.get(), &body, kind).await?;
+            reads.finish().await;
+            snapshot
         } else {
             None
         };
@@ -2544,13 +2552,31 @@ where
                     }
                 }
                 _ => {
+                    // The probe's lock-free reads share one connection, back
+                    // in the pool before the probe claims (Server #1204).
+                    let mut reads = None;
                     let current = match &fence {
-                        Some(fence) => self.worker_poll_fence_holds(fence, worker_id).await?,
+                        Some(fence) => {
+                            let reads = reads.insert(self.probe_connection().await?);
+                            self.worker_poll_fence_holds(reads.get(), fence, worker_id).await?
+                        }
                         None => true,
                     };
+                    let ready = if current && !first_probe {
+                        if reads.is_none() {
+                            reads = Some(self.probe_connection().await?);
+                        }
+                        let reads = reads.as_mut().expect("the probe connection");
+                        self.task_poll_ready(reads.get(), &body, kind, poll_request.as_ref()).await?
+                    } else {
+                        false
+                    };
+                    if let Some(reads) = reads {
+                        reads.finish().await;
+                    }
                     let claimed = if !current {
                         Err(super::worker_poll_fence::stale_claim())
-                    } else if first_probe || self.task_poll_ready(&body, kind, poll_request.as_ref()).await? {
+                    } else if first_probe || ready {
                         self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await
                     } else {
                         Ok(None)
@@ -2589,11 +2615,15 @@ where
                 return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await
                     .map(|answer| activity_server_time(kind, answer));
             }
-            if self
-                .poll_queue_changed(&body, kind, &mut cross_kind)
-                .await?
-                && tokio::time::Instant::now() < deadline
-            {
+            let changed = if cross_kind.is_some() {
+                let mut reads = self.probe_connection().await?;
+                let changed = self.poll_queue_changed(reads.get(), &body, kind, &mut cross_kind).await;
+                reads.finish().await;
+                changed?
+            } else {
+                false
+            };
+            if changed && tokio::time::Instant::now() < deadline {
                 return self.no_task_answer(&body, poll_request.as_ref(), "task_queue_changed", encoding).await
                     .map(|answer| activity_server_time(kind, answer));
             }
@@ -2604,8 +2634,10 @@ where
                 &self.namespace, text(&body, "task_queue")?, task_kind)?;
             drop(probe);
             #[cfg(debug_assertions)]
-            if let Some(request) = &poll_request {
-                super::poll_pauses::stop_at(&request.id, super::poll_pauses::PollPoint::Waiting).await;
+            if let Some(id) = poll_request.as_ref().map(|request| request.id.as_str())
+                .or_else(|| body.get("poll_request_id").and_then(Value::as_str).filter(|_| kind == "activity"))
+            {
+                super::poll_pauses::stop_at(id, super::poll_pauses::PollPoint::Waiting).await;
             }
             pace.wait(wake, deadline).await;
         }
@@ -2632,6 +2664,7 @@ where
     /// Whether a held workflow or activity poll should claim again.
     async fn task_poll_ready(
         &self,
+        connection: &mut DB::Connection,
         body: &Value,
         kind: &str,
         poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
@@ -2644,7 +2677,7 @@ where
         )
         .bind(worker_id)
         .bind(self.namespace.as_ref())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *connection)
         .await?;
         let build = match registration {
             Some(row) if DB::string(&row, "task_queue")? == queue => worker_build::<DB>(&row)?,
@@ -2653,7 +2686,7 @@ where
         // A concurrent poll with the same request ID may have answered
         // already; the claim replays that answer.
         if let Some(request) = poll_request
-            && self.workflow_poll_answered(&request.keys).await?
+            && self.workflow_poll_answered(&mut *connection, &request.keys).await?
         {
             return Ok(true);
         }
@@ -2661,17 +2694,17 @@ where
             && let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
             && Self::query("SELECT task_id FROM dw_poll_receipts WHERE worker_id=$1 AND kind=$2 AND request_id=$3 AND namespace=$4")
                 .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref())
-                .fetch_optional(&self.pool).await?.is_some()
+                .fetch_optional(&mut *connection).await?.is_some()
         {
             return Ok(true);
         }
         // A paused queue has nothing to claim until it resumes (Server #577).
-        if kind == "activity" && Self::activity_dispatch_paused(&self.pool, self.namespace.as_ref(), queue).await? {
+        if kind == "activity" && Self::activity_dispatch_paused(&mut *connection, self.namespace.as_ref(), queue).await? {
             return Ok(false);
         }
         let at = now();
         Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *connection)
             .await?
             .is_some())
     }
@@ -5668,12 +5701,18 @@ where
     /// superseded and the task repaired (`expired_workflow_task_lease`), ready
     /// for the next claim. Whether anything was recovered.
     async fn recover_abandoned_workflow_leases(&self, queue: &str) -> Result<bool> {
-        // One read outside the transition lock: the queue's lease owners
-        // with their registrations; an owner without one joins nulls.
+        // The reads outside the transition lock share one budgeted probe
+        // connection, back in the pool before the first recovery
+        // transaction, so a held workflow poll's recovery check never
+        // occupies the last pool slot (Server #1204). An error drops it,
+        // which still frees its slot only once the return finishes.
+        let mut reads = self.probe_connection().await?;
+        // One read: the queue's lease owners with their registrations; an
+        // owner without one joins nulls.
         let owners = Self::query("SELECT DISTINCT t.lease_owner,w.status,w.last_heartbeat_at FROM workflow_tasks t LEFT JOIN workflow_worker_registrations w ON w.namespace=t.namespace AND w.worker_id=t.lease_owner WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type='workflow' AND t.status='leased' AND t.lease_owner IS NOT NULL")
             .bind(self.namespace.as_ref())
             .bind(queue)
-            .fetch_all(&self.pool)
+            .fetch_all(reads.get())
             .await?;
         let mut stale = Vec::new();
         for row in &owners {
@@ -5683,6 +5722,7 @@ where
             }
         }
         if stale.is_empty() {
+            reads.finish().await;
             return Ok(false);
         }
         let limit = self.workflow_task_recovery_scan_limit.max(1);
@@ -5694,7 +5734,7 @@ where
                 .bind(queue)
                 .bind(owner.as_str())
                 .bind(limit)
-                .fetch_all(&self.pool)
+                .fetch_all(reads.get())
                 .await?;
             for row in rows {
                 if let Some(expires) = DB::optional_instant(&row, "lease_expires_at")?.filter(|expires| *expires > at) {
@@ -5702,6 +5742,7 @@ where
                 }
             }
         }
+        reads.finish().await;
         candidates.sort();
         candidates.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         let mut recovered = false;

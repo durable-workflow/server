@@ -542,7 +542,12 @@ where
             let current =
                 Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config).await?;
             let fenced = match fence {
-                Some(fence) => !self.worker_poll_fence_holds(fence, owner).await?,
+                Some(fence) => {
+                    let mut reads = self.probe_connection().await?;
+                    let holds = self.worker_poll_fence_holds(reads.get(), fence, owner).await;
+                    reads.finish().await;
+                    !holds?
+                }
                 None => false,
             };
             if current.as_deref() != Some(proof) || fenced {

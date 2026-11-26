@@ -371,6 +371,112 @@ async fn qualification_dead_recent_connection_surfaces_write_error_and_idle_deat
     .expect("bounded real disconnect/recovery qualification");
 }
 
+/// Server #1204: a database stall must not let held polls take every pool
+/// slot. Four held activity polls (the pool size) wait at their wait points;
+/// the database then stops answering for six seconds while each poll's next
+/// probe is in flight, and a registration arrives during the stall. Held
+/// probes may take all but one slot, so the registration borrows the last
+/// one, waits out the stall and succeeds; it is never refused with the typed
+/// pool timeout (HTTP 503 `pool_timeout`) after five seconds.
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_held_polls_leave_registration_a_connection_during_a_stall() {
+    use super::super::poll_pauses::{PollPoint, pause_workflow_poll};
+    use serde_json::json;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let database = format!("dw_pool_{}", ulid::Ulid::new().to_string().to_lowercase());
+        let direct = MySqlConnectOptions::from_str(&std::env::var("DW_TEST_MYSQL_URL").unwrap())
+            .unwrap()
+            .database(&database);
+        let database_url = direct.to_url_lossy().to_string();
+        MySql::create_database(&database_url).await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let gate = Arc::new(ReplyGate::default());
+        let proxy = tokio::spawn(forward(
+            listener,
+            format!("{}:{}", direct.get_host(), direct.get_port()),
+            gate.clone(),
+        ));
+        let pool = MySqlStorage::open(direct.clone().host("127.0.0.1").port(port))
+            .await
+            .unwrap()
+            .into_pool();
+        assert_eq!(pool.options().get_max_connections(), 4);
+        let store = Arc::new(super::super::store::Store::new(pool.clone()));
+        let config = super::super::QueryTaskConfig::default();
+        let registration = |worker: &str| {
+            json!({"worker_id":worker,"task_queue":worker,"runtime":"php",
+                "supported_workflow_types":["stall"],"supported_activity_types":["act"]})
+        };
+        let mut releases = Vec::new();
+        let mut polls = Vec::new();
+        for n in 0..4 {
+            let worker = format!("stall-{n}");
+            store.register(registration(&worker), &config, Some("1.20")).await.unwrap();
+            let request = format!("{database}-{n}");
+            let pause = pause_workflow_poll(&request, PollPoint::Waiting);
+            let body = json!({"worker_id":worker,"task_queue":worker,"timeout_seconds":8,"poll_request_id":request});
+            let poller = store.clone();
+            polls.push(tokio::spawn(async move { poller.poll(body, "activity", "1.20").await }));
+            pause.reached.await.unwrap();
+            releases.push(pause.release);
+        }
+        // Every slot is open and was just used, so no checkout pings first.
+        let mut warmed = Vec::new();
+        for _ in 0..4 {
+            warmed.push(pool.acquire().await.unwrap());
+        }
+        for mut connection in warmed {
+            connection.return_to_pool().await;
+        }
+        assert_eq!((pool.size(), pool.num_idle()), (4, 4));
+
+        // The database stops answering while each poll's next probe runs.
+        gate.hold.store(true, Ordering::SeqCst);
+        let stalled = tokio::time::Instant::now();
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let resume = tokio::spawn({
+            let gate = gate.clone();
+            async move {
+                tokio::time::sleep_until(stalled + Duration::from_secs(6)).await;
+                gate.release();
+            }
+        });
+        let registered = store.register(registration("stall-0"), &config, Some("1.20")).await;
+        let waited = stalled.elapsed();
+        // Clean up before asserting, so a failure still releases the stall,
+        // ends the polls and drops the database.
+        resume.await.unwrap();
+        for poll in polls {
+            // A probe that found no slot within the deadline answers the
+            // typed pool refusal; the others answer normally.
+            let _ = poll.await.unwrap();
+        }
+        let returned = tokio::time::timeout(Duration::from_secs(5), async {
+            while pool.num_idle() != pool.size() as usize {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        store.close().await;
+        proxy.abort();
+        MySql::drop_database(&database_url).await.unwrap();
+        assert!(
+            registered.is_ok(),
+            "a registration during a stall must get a connection: {registered:?} after {waited:?}"
+        );
+        assert!(waited >= Duration::from_secs(6), "the registration waited out the stall");
+        returned.expect("every connection returns after the stall");
+    })
+    .await
+    .expect("bounded held-poll stall qualification");
+}
+
 /// COM_QUERY `ROLLBACK` commands the clients sent.
 fn rollbacks(writes: &std::sync::Mutex<Vec<Vec<u8>>>) -> usize {
     let stream: Vec<u8> = writes.lock().unwrap().concat();
