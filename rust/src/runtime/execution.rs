@@ -117,9 +117,9 @@ impl TimerScheduler {
                             continue;
                         }
                         let result = match &*retention_storage {
-                            Storage::Sqlite(store) => store.retention_maintenance().await,
-                            Storage::Postgres(store) => store.retention_maintenance().await,
-                            Storage::MySql(store) => store.retention_maintenance().await,
+                            Storage::Sqlite(store) => store.for_maintenance().retention_maintenance().await,
+                            Storage::Postgres(store) => store.for_maintenance().retention_maintenance().await,
+                            Storage::MySql(store) => store.for_maintenance().retention_maintenance().await,
                         };
                         if let Err(error) = result {
                             eprintln!("retention_maintenance_failed: {error}");
@@ -150,9 +150,9 @@ impl TimerScheduler {
                         let pass = repair.load(Ordering::Relaxed)
                             .then(|| super::repair_pass::PassRequest { respect_throttle: true, ..Default::default() });
                         let result: Result<()> = async { match &*storage {
-                            Storage::Sqlite(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
-                            Storage::Postgres(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
-                            Storage::MySql(store) => { store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
+                            Storage::Sqlite(store) => { let store = store.for_maintenance(); store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
+                            Storage::Postgres(store) => { let store = store.for_maintenance(); store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
+                            Storage::MySql(store) => { let store = store.for_maintenance(); store.fire_due_timers().await?; store.fire_due_schedules().await?; if let Some(pass) = &pass { store.repair_pass(pass).await?; } Ok(()) },
                         }}.await;
                         let success = result.is_ok();
                         if healthy.swap(success,Ordering::Relaxed) && !success {
@@ -175,7 +175,15 @@ impl TimerScheduler {
                     _ = stop.changed() => break,
                     _ = tokio::time::sleep(Duration::from_secs(10)) => {
                         let next = refresh_offer_window(&storage, &keys).await;
-                        window.replace(logged_offer_window(next, &mut logged));
+                        // Storage that did not answer keeps the current
+                        // window: it closes at its own committed horizon, and
+                        // a stall must not suspend offers that are still
+                        // valid (Server #1355). Any other failure suspends.
+                        let keep = next.as_ref().is_err_and(|error| super::worker_incarnations::transient_reason(error).is_some());
+                        let refreshed = logged_offer_window(next, &mut logged);
+                        if !keep {
+                            window.replace(refreshed);
+                        }
                     }
                 }
             }
@@ -229,6 +237,7 @@ fn offer_refresh_failure(error: &super::RuntimeError) -> &'static str {
         super::RuntimeError::Json(_) => "json",
         super::RuntimeError::Migration(_) => "migration",
         super::RuntimeError::Protocol { .. } => "protocol",
+        super::RuntimeError::TransitionQueueTimeout => "transition_queue_timeout",
     }
 }
 
@@ -262,11 +271,11 @@ async fn refresh_offer_window(storage: &Storage, keys: &super::task_offer_seal::
 {
     match storage {
         Storage::Sqlite(store) if store.storage_admission.snapshot().accepts_new_work() =>
-            store.reserve_task_offer_issuance(keys).await.map(Some),
+            store.for_maintenance().reserve_task_offer_issuance(keys).await.map(Some),
         Storage::Postgres(store) if store.storage_admission.snapshot().accepts_new_work() =>
-            store.reserve_task_offer_issuance(keys).await.map(Some),
+            store.for_maintenance().reserve_task_offer_issuance(keys).await.map(Some),
         Storage::MySql(store) if store.storage_admission.snapshot().accepts_new_work() =>
-            store.reserve_task_offer_issuance(keys).await.map(Some),
+            store.for_maintenance().reserve_task_offer_issuance(keys).await.map(Some),
         _ => Ok(None),
     }
 }
@@ -421,7 +430,7 @@ impl Runtime {
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
-        let mut store = Store::new(sqlite::open(database).await?);
+        let mut store = Store::new(sqlite::open(database).await?).with_maintenance_pool();
         store.memo_size_limit = limit;
         store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;
@@ -450,7 +459,7 @@ impl Runtime {
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
-        let mut store = Store::new(PostgresStorage::open(options).await?.into_pool());
+        let mut store = Store::new(PostgresStorage::open(options).await?.into_pool()).with_maintenance_pool();
         store.memo_size_limit = limit;
         store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;
@@ -479,7 +488,7 @@ impl Runtime {
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
-        let mut store = Store::new(MySqlStorage::open(options).await?.into_pool());
+        let mut store = Store::new(MySqlStorage::open(options).await?.into_pool()).with_maintenance_pool();
         store.memo_size_limit = limit;
         store.search_attribute_limit = search_attribute_limit;
         store.history_budget = history_budget;

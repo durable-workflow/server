@@ -127,6 +127,8 @@ mod php_value;
 #[doc(hidden)]
 pub mod poll_pauses;
 mod probe_connections;
+#[cfg(test)]
+mod test_reply_gate;
 mod poll_sweeps;
 mod plain_input;
 mod poll_readiness;
@@ -283,6 +285,10 @@ pub enum RuntimeError {
     },
     #[error("protocol operation refused")]
     Protocol { status: StatusCode, response: Value },
+    /// A transition waited longer than the transition queue deadline for its
+    /// turn (Server #1355). Answered like any unavailable storage.
+    #[error("transition queue deadline exceeded")]
+    TransitionQueueTimeout,
 }
 
 fn diagnostic_database_code(code: &str) -> Option<&str> {
@@ -295,6 +301,14 @@ fn diagnostic_database_code(code: &str) -> Option<&str> {
 }
 
 impl RuntimeError {
+    /// Storage that did not answer: a database error, or a transition that
+    /// waited past the transition queue deadline (Server #1355). Answered as
+    /// `503 storage_unavailable` and retried from durable state, never
+    /// recorded as an operation's own failure.
+    pub(crate) fn is_storage_unavailable(&self) -> bool {
+        matches!(self, Self::Database(_) | Self::TransitionQueueTimeout)
+    }
+
     fn storage_diagnostic(&self) -> Option<Value> {
         let kind = match self {
             Self::Database(error) => match error {
@@ -312,6 +326,7 @@ impl RuntimeError {
             Self::Io(_) => "io",
             Self::Json(_) => "json",
             Self::Migration(_) => "migration",
+            Self::TransitionQueueTimeout => "transition_queue_timeout",
             Self::Refused { .. } | Self::Protocol { .. } => return None,
         };
         let (code, number) = match self {
@@ -379,6 +394,21 @@ impl IntoResponse for RuntimeError {
 mod error_diagnostic_tests {
     use super::*;
     use sqlx::Connection;
+
+    /// Server #1355: a transition queue timeout is storage that did not
+    /// answer, like a pool timeout: transient, `503 storage_unavailable`, and
+    /// passed through by the schedule trigger and backfill instead of being
+    /// recorded as their own failure.
+    #[test]
+    fn a_transition_queue_timeout_is_unavailable_storage() {
+        let error = RuntimeError::TransitionQueueTimeout;
+        assert!(error.is_storage_unavailable());
+        assert!(RuntimeError::Database(sqlx::Error::PoolTimedOut).is_storage_unavailable());
+        assert!(!refuse(StatusCode::NOT_FOUND, "schedule_not_found").is_storage_unavailable());
+        assert_eq!(worker_incarnations::transient_reason(&error), Some("backend_unavailable"));
+        assert_eq!(error.storage_diagnostic().unwrap()["error_kind"], "transition_queue_timeout");
+        assert_eq!(error.into_response().status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
 
     #[test]
     fn diagnostic_codes_accept_only_bounded_driver_codes() {

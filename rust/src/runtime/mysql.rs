@@ -2512,7 +2512,7 @@ pub struct MySqlStorage {
 
 fn runtime_pool_options() -> MySqlPoolOptions {
     super::backend::test_idle_connections(MySqlPoolOptions::new())
-        .max_connections(crate::statement_cache::POOL_CONNECTIONS)
+        .max_connections(crate::statement_cache::REQUEST_CONNECTIONS)
         .acquire_timeout(Duration::from_secs(5))
         .after_connect(|connection, _| {
             Box::pin(async move {
@@ -2674,6 +2674,10 @@ impl MySqlStorage {
 #[cfg(test)]
 #[path = "mysql_pool_tests.rs"]
 mod pool_tests;
+
+#[cfg(test)]
+#[path = "mysql_stall_tests.rs"]
+mod stall_tests;
 
 #[cfg(test)]
 mod tests {

@@ -142,7 +142,17 @@ store_methods! {
         &self, request: &WorkflowPollRequest, worker_id: &str, queue: &str,
         fence: &super::worker_poll_fence::WorkerPollFence,
     ) -> Result<Option<Value>> {
-        let mut read = self.begin_read().await?;
+        let mut connection = self.pool.acquire().await?;
+        self.replay_workflow_poll_read_only_on(&mut connection, request, worker_id, queue, fence).await
+    }
+
+    /// [`replay_workflow_poll_read_only`](Self::replay_workflow_poll_read_only)
+    /// on a connection the caller holds (a held poll's admission; Server #1355).
+    pub(super) async fn replay_workflow_poll_read_only_on(
+        &self, connection: &mut DB::Connection, request: &WorkflowPollRequest, worker_id: &str, queue: &str,
+        fence: &super::worker_poll_fence::WorkerPollFence,
+    ) -> Result<Option<Value>> {
+        let mut read = self.begin_read_on(connection).await?;
         if !self.worker_poll_fence_holds_in(&mut read, fence, worker_id).await? { return Ok(None); }
         let mut legacy = None;
         for keys in &request.legacy_keys {
@@ -210,10 +220,27 @@ store_methods! {
         default_wait: u64,
         kinds: &[&'static str],
     ) -> Result<WorkflowPollRequest> {
+        let mut connection = self.pool.acquire().await?;
+        self.workflow_poll_request_on(&mut connection, worker_id, queue, id, raw_id, default_wait, kinds).await
+    }
+
+    /// [`workflow_poll_request`](Self::workflow_poll_request) on a connection
+    /// the caller holds (a held poll's admission; Server #1355).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn workflow_poll_request_on(
+        &self,
+        connection: &mut DB::Connection,
+        worker_id: &str,
+        queue: &str,
+        id: String,
+        raw_id: Option<&str>,
+        default_wait: u64,
+        kinds: &[&'static str],
+    ) -> Result<WorkflowPollRequest> {
         let build = Self::query("SELECT build_id FROM workflow_worker_registrations WHERE namespace=$1 AND worker_id=$2")
             .bind(self.namespace.as_ref())
             .bind(worker_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(connection)
             .await?
             .map(|row| DB::optional_string(&row, "build_id"))
             .transpose()?

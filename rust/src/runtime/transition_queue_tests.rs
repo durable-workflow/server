@@ -13,23 +13,25 @@ store_methods! {
     pub(super) async fn qualify_transition_queue(&self) {
         Self::query("CREATE TABLE dw_transition_queue_probe (ordinal BIGINT PRIMARY KEY)")
             .execute(&self.pool).await.unwrap();
-        // Await each return hook so the pool has all four slots ready before
+        // Await each return hook so the pool has every slot ready before
         // testing which requests, rather than connection creation, occupy them.
+        let slots = self.pool.options().get_max_connections();
+        assert!(slots >= 3, "a holder, a queued waiter and readers need three slots");
         let mut warmed = Vec::new();
-        for _ in 0..4 { warmed.push(self.pool.acquire().await.unwrap()); }
+        for _ in 0..slots { warmed.push(self.pool.acquire().await.unwrap()); }
         for mut connection in warmed { connection.return_to_pool().await; }
-        assert_eq!(self.pool.size(), 4);
-        assert_eq!(self.pool.num_idle(), 4);
+        assert_eq!(self.pool.size(), slots);
+        assert_eq!(self.pool.num_idle(), slots as usize);
 
         let holder = self.begin().await.unwrap();
         let namespaces: Vec<_> = (0..4).map(|n| self.in_namespace(&format!("fifo-{n}"))).collect();
         let mut waiters: Vec<_> = namespaces.iter().map(|store| Some(Box::pin(store.begin()))).collect();
         for waiter in &mut waiters { pending(waiter.as_mut().unwrap().as_mut()).await; }
 
-        // All three other connections remain available to simultaneous reads.
+        // All other connections remain available to simultaneous reads.
         // The predecessor instead spends them waiting for the database lock.
         let mut readers = Vec::new();
-        for _ in 0..3 { readers.push(self.pool.acquire().await.unwrap()); }
+        for _ in 1..slots { readers.push(self.pool.acquire().await.unwrap()); }
         for mut reader in readers {
             let row = Self::query("SELECT COUNT(*) AS n FROM dw_transition_queue_probe")
                 .fetch_one(&mut *reader).await.unwrap();
@@ -54,21 +56,32 @@ store_methods! {
 
         let holder = self.begin().await.unwrap();
         let before = self.test_transitions.load(Ordering::Relaxed);
-        let budget = self.pool.options().get_acquire_timeout();
-        assert_eq!(budget, Duration::from_secs(5), "retain the runtime's existing admission budget");
+        assert_eq!(self.pool.options().get_acquire_timeout(), Duration::from_secs(5),
+            "retain the runtime's existing acquisition deadline");
+        assert_eq!(self.transition_queue_deadline, super::store::TRANSITION_QUEUE_DEADLINE);
+        assert!(super::store::TRANSITION_QUEUE_DEADLINE > self.pool.options().get_acquire_timeout(),
+            "waiting out a stalled transition is not a pool timeout (Server #1355)");
+        // The production deadline is thirty seconds; the queue's behavior at
+        // its deadline is the same with a shorter one.
+        let deadline = Duration::from_secs(2);
         let started = tokio::time::Instant::now();
-        let mut blocked: Vec<_> = namespaces.iter().map(|store| Box::pin(store.begin())).collect();
+        let shortened: Vec<_> = namespaces.iter().map(|store| {
+            let mut store = store.in_namespace(&store.namespace);
+            store.transition_queue_deadline = deadline;
+            store
+        }).collect();
+        let mut blocked: Vec<_> = shortened.iter().map(|store| Box::pin(store.begin())).collect();
         for waiter in &mut blocked { pending(waiter.as_mut()).await; }
         for waiter in blocked {
-            let error = tokio::time::timeout(budget + Duration::from_secs(2), waiter)
+            let error = tokio::time::timeout(deadline + Duration::from_secs(2), waiter)
                 .await.expect("queue wait must be bounded").err().expect("holder is still live");
-            assert!(matches!(&error, RuntimeError::Database(sqlx::Error::PoolTimedOut)));
+            assert!(matches!(&error, RuntimeError::TransitionQueueTimeout), "{error:?}");
             assert_eq!(super::worker_incarnations::transient_reason(&error), Some("backend_unavailable"));
         }
-        assert!(started.elapsed() >= Duration::from_secs(5));
+        assert!(started.elapsed() >= deadline);
         assert_eq!(self.test_transitions.load(Ordering::Relaxed), before,
             "an expired queue waiter never reaches DB::begin");
-        assert_eq!(self.pool.num_idle(), 3, "five-second timeout must not consume reader connections");
+        assert_eq!(self.pool.num_idle(), slots as usize - 1, "a queue timeout must not consume reader connections");
         holder.rollback().await.unwrap();
 
         // Rollback, statement failure and an implicit transaction drop all
@@ -94,4 +107,32 @@ async fn sqlite_transition_queue_preserves_reads_fifo_and_timeout_admission() {
         store.qualify_transition_queue().await;
         store.close().await;
     }).await.expect("bounded SQLite transition queue qualification");
+}
+
+/// A held poll's claim stops queueing at its own deadline plus the margin,
+/// but never sooner than the pool's acquisition deadline, so a poll with no
+/// time left (`timeout_seconds: 0`) queues as long as it did before the cap
+/// (Server #1355).
+#[tokio::test]
+async fn sqlite_a_claim_queue_wait_is_capped_by_the_poll_and_floored_by_the_pool() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("claim-wait.sqlite");
+    let acquire = Duration::from_millis(400);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(3).acquire_timeout(acquire)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path).create_if_missing(true))
+        .await.unwrap();
+    let store = Store::<sqlx::Sqlite>::new(pool);
+    let holder = store.queue_transition().await.unwrap();
+    for (until, waits) in [
+        (Duration::ZERO, acquire),
+        (Duration::from_millis(900), Duration::from_millis(900)),
+    ] {
+        let started = tokio::time::Instant::now();
+        let error = store.queue_transition_until(Some(started + until)).await.err().expect("the queue is held");
+        let waited = started.elapsed();
+        assert!(matches!(error, RuntimeError::TransitionQueueTimeout), "{error:?}");
+        assert!(waited >= waits && waited < waits + Duration::from_millis(300), "{until:?}: waited {waited:?}");
+    }
+    drop(holder);
+    store.close().await;
 }

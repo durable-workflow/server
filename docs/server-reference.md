@@ -2415,21 +2415,66 @@ how many request workers are busy.
   with `timeout_seconds: 0` never needs a slot. A slot is released when the
   poll answers, fails or its client disconnects.
 - `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` reserves database connections.
-  A native node has a fixed pool of database connections (four on MySQL,
-  PostgreSQL and file SQLite), which health, readiness, admin and every other
-  request share. With a positive value, every poll probe takes one of
-  `pool size - reserved` probe permits (at least one) and returns it before
-  waiting, so polls never occupy the reserved connections. Unset or zero,
-  probes take no permit.
-- Whatever the setting, held-poll probe reads are always limited to the pool
-  size minus one connection (at least one). A held workflow or activity poll
-  runs each probe's lock-free reads on one connection from that node-wide
-  budget and returns it before it claims or waits; held query-task and
-  update-validation polls take their fence and cross-kind wake reads from the
-  same budget. Held-poll probes therefore never occupy the pool's last
-  connection. A claim is a transition and takes its connection outside the
-  budget
-  ([#1204](https://github.com/durable-workflow/server/issues/1204)).
+  A native node opens four database connections on MySQL, PostgreSQL and file
+  SQLite: a request pool of three, which health, readiness, admin and every
+  other request share, and one connection of its own for the maintenance loop
+  (timers, schedules, repair, retention and the task-offer key window), so
+  maintenance never borrows a request connection
+  ([#1355](https://github.com/durable-workflow/server/issues/1355)). With a
+  positive value, every poll probe takes one of `request pool size - reserved`
+  probe permits (at least one) and returns it before waiting, so polls never
+  occupy the reserved connections. Unset or zero, probes take no permit.
+- Whatever the setting, a node-wide budget covers this held-poll work, so it
+  never occupies the request pool's last connection, which producers and
+  registrations keep. Its reads take at most the request pool size minus two
+  connections (at least one); the one transaction holding the transition
+  queue takes one more, so it never waits behind those reads:
+  - a held workflow or activity poll's admission and replay reads, its
+    probes' lock-free reads (one connection per probe, returned before it
+    claims or waits), its claim transactions and, for a workflow poll, its
+    abandoned-lease recovery reads;
+  - a held query-task poll's admission reads, readiness reads (registration
+    proof, superseded request, ready query keys and the leased-hold snapshot)
+    and fence reads;
+  - a workflow poll that also takes update-validation tasks: its admission
+    reads, fence reads and each probe's transaction;
+  - every held poll's cross-kind wake reads.
+
+  A budgeted transaction takes its turn on the transition queue before its
+  budget connection. A held poll's claim stops waiting for its turn two
+  seconds after the poll's own deadline, so no lease is committed for an
+  answer nobody reads, but never before the five-second acquisition
+  deadline. After its first probe, a held poll waits for a read slot only
+  until its own deadline; if none is free by then it answers as at its
+  deadline (`empty`) instead of waiting for other polls' reads past it.
+  Other work stays outside the budget and competes for
+  the last connection: ordinary requests, query-task claims and the shared
+  answers of duplicate query polls, recording an empty or stale poll answer,
+  workflow lease recovery transactions, and polls carried by a task
+  completion
+  ([#1204](https://github.com/durable-workflow/server/issues/1204),
+  [#1355](https://github.com/durable-workflow/server/issues/1355)).
+- A transition waits its turn on the transition queue for up to 30 seconds,
+  longer than the pool's five-second acquisition deadline, so a transition
+  ahead that is waiting out a database stall (an HA failover) is waited for.
+  Running out of that wait answers `503 storage_unavailable`, logged as
+  `transition_queue_timeout`; a pool with no free connection once it is the
+  transition's turn is still `pool_timeout`. A producer or registration can
+  therefore take about 35 seconds before it answers during a stall: give
+  clients an HTTP timeout above that.
+- A connection idle for a second or more is pinged before checkout for at
+  most one second. One the database has not answered by then is handed out,
+  so the request waits on its own statements instead of the stall counting
+  against the acquisition deadline. Such a connection must then receive a
+  reply within 45 seconds; otherwise its statement fails
+  (`503 storage_unavailable`, `database_io`) and the connection is discarded,
+  so a database that went silent without resetting its connections (common
+  in an HA failover) holds a request for at most about 46 seconds. Other
+  statements have no client-side read deadline: MySQL and MariaDB refuse
+  lock waits after 5 seconds (`lock_wait_timeout`, `innodb_lock_wait_timeout`)
+  and PostgreSQL ends statements after 30 seconds (`statement_timeout`), but
+  neither bounds a database that stops answering
+  ([#1355](https://github.com/durable-workflow/server/issues/1355)).
 - The per-namespace variants, `DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE`
   and `DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE`, are still ignored by
   native.
@@ -2812,7 +2857,7 @@ every operator-facing variable the server honors.
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Writable local coordination and wait-lock directory, also required with Redis or database polling caches. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. Native honors it as a node-wide cap with the same `429 long_poll_capacity_exhausted` refusal; unset, native waits are unbounded (see [Native long-poll capacity](#native-long-poll-capacity)). |
-| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its database connections that long-poll probes leave free. Unset, native reserves none for it; held-poll probe reads still always leave one connection free. |
+| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its request-pool database connections that long-poll probes leave free. Unset, native reserves none for it; the held-poll work listed under native long-poll capacity still leaves the request pool's last connection free. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
 | `DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS` | `5` | Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure. |

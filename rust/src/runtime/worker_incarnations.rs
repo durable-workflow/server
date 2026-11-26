@@ -23,6 +23,7 @@ const CONNECTION_SETUP_PROTOCOL_PREFIX: &str = "connection setup: ";
 
 pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
     match error {
+        RuntimeError::TransitionQueueTimeout => Some("backend_unavailable"),
         RuntimeError::Database(
             sqlx::Error::PoolTimedOut
             | sqlx::Error::PoolClosed

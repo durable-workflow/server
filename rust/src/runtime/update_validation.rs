@@ -1133,6 +1133,19 @@ where
         super::store::replayed_poll(answer, encoding).map(Leased::Workflow)
     }
 
+    /// The answer of a poll that reached its deadline without a task: under
+    /// a request ID, a duplicate's lease committed meanwhile replays instead.
+    async fn empty_task_kinds_answer(
+        &self, request: Option<&WorkflowPollRequest>, worker_id: &str, task_queue: &str, encoding: Option<&'static str>,
+    ) -> Result<Leased> {
+        if let Some(request) = request
+            && let Some(lease) = self.remember_empty_workflow_poll(request, worker_id, task_queue, "empty").await?
+        {
+            return Self::replayed(lease, encoding);
+        }
+        Ok(Leased::Workflow(json!({"task":null,"poll_status":"empty","server_capabilities":super::store::capabilities()})))
+    }
+
     /// `WorkflowTaskPoller` with validation tasks requested. A request ID
     /// binds to the normalized kind set and replays its deliverable answer
     /// first. Each probe then runs `WorkflowTaskKindSelector` as one
@@ -1155,16 +1168,20 @@ where
         let task_queue = text(body, "task_queue")?.to_owned();
         let encoding = super::history_pages::requested(body)?;
         let page = pages.poll(super::history_pages::requested_size(body)?, encoding);
-        // `WorkerPollFence`, as for a workflow poll.
-        let fence = match self.admit_worker_poll(&worker_id, &task_queue).await? {
+        // `WorkerPollFence`, as for a workflow poll. Admission reads share
+        // one budgeted probe connection (Server #1355).
+        let mut admission = self.probe_connection().await?;
+        let fence = match self.admit_worker_poll_on(admission.get(), &worker_id, &task_queue).await? {
             super::worker_poll_fence::PollAdmission::Stale => return Ok(Leased::Workflow(super::worker_poll_fence::stale_answer())),
             super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
             super::worker_poll_fence::PollAdmission::Unregistered => None,
         };
         let request = match super::workflow_poll_requests::request_id(body) {
-            Some(id) => Some(self.workflow_poll_request(&worker_id, &task_queue, id, body.get("poll_request_id").and_then(Value::as_str), default_wait, kinds).await?),
+            Some(id) => Some(self.workflow_poll_request_on(admission.get(), &worker_id, &task_queue, id,
+                body.get("poll_request_id").and_then(Value::as_str), default_wait, kinds).await?),
             None => None,
         };
+        admission.finish().await;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         let mut pace = super::poll_readiness::ReadPace::new();
         let mut first = true;
@@ -1176,7 +1193,11 @@ where
             let current = match &fence {
                 _ if first_probe && request.is_some() => true,
                 Some(fence) => {
-                    let mut reads = self.probe_connection().await?;
+                    // A later probe that cannot get a read slot by the poll's
+                    // deadline answers as at its deadline (Server #1355).
+                    let Some(mut reads) = self.probe_reads(first_probe, deadline).await? else {
+                        return self.empty_task_kinds_answer(request.as_ref(), &worker_id, &task_queue, encoding).await;
+                    };
                     let holds = self.worker_poll_fence_holds(reads.get(), fence, &worker_id).await;
                     reads.finish().await;
                     holds?
@@ -1184,7 +1205,8 @@ where
                 None => true,
             };
             let probed = if current {
-                self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref(), fence.as_ref(), first_probe).await?
+                self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref(), fence.as_ref(), first_probe,
+                    deadline + super::store::POLL_CLAIM_MARGIN).await?
             } else {
                 Some(Probe::Stale)
             };
@@ -1206,12 +1228,7 @@ where
                 None => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                if let Some(request) = &request
-                    && let Some(lease) = self.remember_empty_workflow_poll(request, &worker_id, &task_queue, "empty").await?
-                {
-                    return Self::replayed(lease, encoding);
-                }
-                return Ok(Leased::Workflow(json!({"task":null,"poll_status":"empty","server_capabilities":super::store::capabilities()})));
+                return self.empty_task_kinds_answer(request.as_ref(), &worker_id, &task_queue, encoding).await;
             }
             // A workflow poll that also takes validation tasks waits in the
             // worker pool, as a workflow poll does.
@@ -1223,6 +1240,7 @@ where
     }
 
     /// One probe of every requested kind, as one transaction.
+    #[allow(clippy::too_many_arguments)]
     async fn probe_task_kinds(
         &self,
         body: &Value,
@@ -1232,8 +1250,34 @@ where
         request: Option<&WorkflowPollRequest>,
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
         first: bool,
+        until: tokio::time::Instant,
     ) -> Result<Option<Probe>> {
-        let mut tx = self.begin().await?;
+        // Every probe is a transition; a budgeted background one, so it never
+        // holds the connection held polls leave free (Server #1355).
+        let (queued, mut connection) = self.queue_budgeted_transition(Some(until)).await?;
+        let probed = self.probe_task_kinds_on(connection.get(), queued, body, kinds, protocol_version, page, request, fence, first).await;
+        connection.finish().await;
+        probed
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn probe_task_kinds_on(
+        &self,
+        connection: &mut DB::Connection,
+        queued: tokio::sync::OwnedMutexGuard<()>,
+        body: &Value,
+        kinds: &[&'static str],
+        protocol_version: &str,
+        page: Option<i64>,
+        request: Option<&WorkflowPollRequest>,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+        first: bool,
+    ) -> Result<Option<Probe>> {
+        let mut tx = self.begin_on(connection, queued).await?;
+        #[cfg(debug_assertions)]
+        if let Some(request) = request {
+            super::poll_pauses::stop_at(&request.id, super::poll_pauses::PollPoint::Claiming).await;
+        }
         if first && let Some(request) = request
             && let Some(answer) = self.replay_workflow_poll_in(&mut tx, request, text(body, "worker_id")?, text(body, "task_queue")?).await?
         {

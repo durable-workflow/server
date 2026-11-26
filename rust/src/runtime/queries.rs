@@ -974,7 +974,9 @@ where
 
     pub(super) async fn poll_query(&self, body: Value, config: &QueryTaskConfig) -> Result<Value> {
         let owner = text(&body, "worker_id")?;
-        self.refuse_draining_worker(owner, text(&body, "task_queue")?).await?;
+        // Admission reads share one budgeted probe connection (Server #1355).
+        let mut admission = self.probe_connection().await?;
+        self.refuse_draining_worker_on(admission.get(), owner, text(&body, "task_queue")?).await?;
         // `queryPollTimeoutSeconds`: the requested wait, or the worker poll
         // wait (DW_WORKER_POLL_TIMEOUT), capped by DW_QUERY_TASK_POLL_TIMEOUT.
         let timeout = match body.get("timeout_seconds") {
@@ -994,16 +996,17 @@ where
             .map(|_| text(&body, "poll_request_id"))
             .transpose()?;
         let Some(proof) =
-            Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config).await?
+            Self::query_worker_proof(admission.get(), self.namespace.as_ref(), owner, config).await?
         else {
             return Ok(poll_result(None, "stale_worker_registration"));
         };
         // `WorkerPollFence`, as for workflow and activity polls.
-        let fence = match self.admit_worker_poll(owner, text(&body, "task_queue")?).await? {
+        let fence = match self.admit_worker_poll_on(admission.get(), owner, text(&body, "task_queue")?).await? {
             super::worker_poll_fence::PollAdmission::Stale => return Ok(poll_result(None, "stale_worker_registration")),
             super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
             super::worker_poll_fence::PollAdmission::Unregistered => None,
         };
+        admission.finish().await;
         match request_id {
             None => {
                 self.wait_for_query(&body, config, &proof, fence.as_ref(), timeout, deadline, None)
@@ -1046,17 +1049,30 @@ where
         loop {
             let probe = self.poll_capacity.probe().await;
             let wake = self.wake.notified();
+            // A later probe that cannot get a read slot by the poll's
+            // deadline answers as at its deadline (Server #1355).
+            let first_probe = std::mem::take(&mut first);
             // `performPoll`: a registration replaced or silenced during the
             // wait ends the poll empty, leasing nothing.
             if let Some(fence) = fence {
-                let mut reads = self.probe_connection().await?;
+                let Some(mut reads) = self.probe_reads(first_probe, deadline).await? else {
+                    return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" }));
+                };
                 let holds = self.worker_poll_fence_holds(reads.get(), fence, text(body, "worker_id")?).await;
                 reads.finish().await;
                 if !holds? {
                     return Ok(poll_result(None, "empty"));
                 }
             }
-            if std::mem::take(&mut first) || self.query_poll_ready(body, config, proof, keys).await? {
+            let ready = if first_probe {
+                true
+            } else {
+                match self.query_poll_ready(body, config, proof, keys, deadline).await? {
+                    Some(ready) => ready,
+                    None => return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" })),
+                }
+            };
+            if ready {
                 match self.claim_query(body, config, proof, fence, keys).await? {
                     QueryClaim::Task(task) => return Ok(poll_result(Some(task), "leased")),
                     QueryClaim::StaleWorker => return Ok(poll_result(None, "empty")),
@@ -1074,7 +1090,9 @@ where
                 return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" }));
             }
             let changed = if cross_kind.is_some() {
-                let mut reads = self.probe_connection().await?;
+                let Some(mut reads) = self.probe_connection_by(deadline).await? else {
+                    return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" }));
+                };
                 let changed = self.poll_queue_changed(reads.get(), body, "query", &mut cross_kind).await;
                 reads.finish().await;
                 changed?
@@ -1156,11 +1174,33 @@ where
         config: &QueryTaskConfig,
         proof: &str,
         keys: Option<&poll_requests::PollKeys>,
+        answer_by: tokio::time::Instant,
+    ) -> Result<Option<bool>> {
+        #[cfg(debug_assertions)]
+        super::poll_pauses::stop_at(text(body, "worker_id")?, super::poll_pauses::PollPoint::QueryReadiness).await;
+        // The readiness reads share one budgeted probe connection, returned
+        // before the poll claims or waits; none is free by the poll's
+        // deadline is `None` (Server #1355).
+        let Some(mut reads) = self.probe_connection_by(answer_by).await? else {
+            return Ok(None);
+        };
+        let ready = self.query_poll_ready_on(reads.get(), body, config, proof, keys).await;
+        reads.finish().await;
+        ready.map(Some)
+    }
+
+    async fn query_poll_ready_on(
+        &self,
+        connection: &mut DB::Connection,
+        body: &Value,
+        config: &QueryTaskConfig,
+        proof: &str,
+        keys: Option<&poll_requests::PollKeys>,
     ) -> Result<bool> {
         let owner = text(body, "worker_id")?;
         // The claim refuses a replaced, removed or stale registration, and
         // ends a poll a newer request from the same worker has replaced.
-        if Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config)
+        if Self::query_worker_proof(&mut *connection, self.namespace.as_ref(), owner, config)
             .await?
             .as_deref()
             != Some(proof)
@@ -1168,17 +1208,17 @@ where
             return Ok(true);
         }
         if let Some(keys) = keys
-            && self.poll_request_superseded(keys).await?
+            && self.poll_request_superseded_on(&mut *connection, keys).await?
         {
             return Ok(true);
         }
-        let candidates = self.ready_query_keys(&mut *self.pool.acquire().await?, text(body, "task_queue")?).await?;
+        let candidates = self.ready_query_keys(&mut *connection, text(body, "task_queue")?).await?;
         if candidates.is_empty() {
             return Ok(false);
         }
         // A query held by a leased workflow task stays held until that task
         // ends, which wakes this poll; reading that needs no write lock.
-        let mut read = self.begin_read().await?;
+        let mut read = self.begin_read_on(connection).await?;
         let mut ready = false;
         for candidate in candidates {
             let Some(row) = Self::query(DB::QUERY_CACHE_GET)

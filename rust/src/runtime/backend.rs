@@ -70,19 +70,83 @@ macro_rules! stream_references {
 /// `STREAM_REFERENCES` for backends that store JSON as text.
 const PLAIN_STREAM_REFERENCES: &str = stream_references!("payload", "metadata");
 
+/// How long a pre-checkout ping waits for the database (Server #1355).
+pub(super) const CHECKOUT_PING_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long a connection handed out after an unanswered ping may go without
+/// any reply before its read fails and it is discarded (Server #1355). Above
+/// the transition queue deadline (30 s) plus the pool's acquisition deadline
+/// (5 s), so waiting out a stall that short is never cut off by it.
+pub(super) const UNANSWERED_PING_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// A connection that can bound the wait for a reply after a ping went
+/// unanswered. The vendored MySQL and PostgreSQL drivers do; SQLite never
+/// waits on a network.
+pub(super) trait ReplyBound {
+    fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration);
+}
+
+impl ReplyBound for sqlx::MySqlConnection {
+    fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration) {
+        self.bound_unanswered_replies(within);
+    }
+}
+
+impl ReplyBound for sqlx::PgConnection {
+    fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration) {
+        self.bound_unanswered_replies(within);
+    }
+}
+
+impl ReplyBound for sqlx::SqliteConnection {
+    fn bound_replies_after_unanswered_ping(&mut self, _within: std::time::Duration) {}
+}
+
 /// SQLx 0.9 checks connections before returning them to the idle queue.
 /// Recheck after one second idle instead of repeating that check immediately.
 /// A connection lost during the shorter window can fail its first statement;
 /// this hook never retries a statement or an uncertain commit.
+///
+/// The ping runs inside SQLx's acquisition deadline, so during a database
+/// stall an unbounded ping turned a free connection into a typed pool timeout
+/// (Server #1355). A dead connection fails its ping at once and is replaced
+/// as before. A ping the database has not answered within
+/// [`CHECKOUT_PING_BUDGET`] hands the connection out: the request then waits
+/// on its own statements, as a request already in flight does, and the
+/// acquisition deadline keeps counting only the wait for a free connection.
+/// The unanswered ping stays a pending reply that the connection's next
+/// command reads first (each driver tracks it), so the session stays in step.
+/// A peer lost without a reset never answers it, so the connection must see
+/// a reply within [`UNANSWERED_PING_REPLY_BOUND`] or its read fails and it is
+/// discarded, instead of holding the request until the operating system
+/// gives up on the peer.
 pub(super) fn test_idle_connections<DB: Database>(
     options: sqlx::pool::PoolOptions<DB>,
-) -> sqlx::pool::PoolOptions<DB> {
+) -> sqlx::pool::PoolOptions<DB>
+where
+    DB::Connection: ReplyBound,
+{
+    test_idle_connections_within(options, CHECKOUT_PING_BUDGET, UNANSWERED_PING_REPLY_BOUND)
+}
+
+/// [`test_idle_connections`] with explicit bounds (tests shorten them).
+pub(super) fn test_idle_connections_within<DB: Database>(
+    options: sqlx::pool::PoolOptions<DB>,
+    ping_budget: std::time::Duration,
+    reply_bound: std::time::Duration,
+) -> sqlx::pool::PoolOptions<DB>
+where
+    DB::Connection: ReplyBound,
+{
     options
         .test_before_acquire(false)
-        .before_acquire(|connection, metadata| {
+        .before_acquire(move |connection, metadata| {
             Box::pin(async move {
                 if metadata.idle_for >= std::time::Duration::from_secs(1) {
-                    sqlx::Connection::ping(connection).await?;
+                    match tokio::time::timeout(ping_budget, sqlx::Connection::ping(connection)).await {
+                        Ok(answered) => answered?,
+                        Err(_) => connection.bound_replies_after_unanswered_ping(reply_bound),
+                    }
                 }
                 Ok(true)
             })
@@ -265,6 +329,13 @@ pub(super) trait Backend: Database {
     fn document_row(row: &Self::Row, field: &str) -> Result<Value>;
     fn optional_document_row(row: &Self::Row, field: &str) -> Result<Option<Value>>;
     fn begin(pool: &Pool<Self>) -> impl Future<Output = Result<Transaction<'static, Self>>> + Send;
+    /// [`begin`](Self::begin) on a connection the caller already holds
+    /// (a budgeted background transition; Server #1355).
+    fn begin_on(connection: &mut Self::Connection) -> impl Future<Output = Result<Transaction<'_, Self>>> + Send;
+    /// A read-only snapshot (`READ_SNAPSHOT_BEGIN`) on a connection the caller
+    /// already holds (Server #1355). Each backend begins it itself, so generic
+    /// callers see only this trait's `Send` future.
+    fn begin_read_on(connection: &mut Self::Connection) -> impl Future<Output = Result<Transaction<'_, Self>>> + Send;
     fn history_ready(pool: &Pool<Self>) -> impl Future<Output = bool> + Send;
 }
 
@@ -451,6 +522,12 @@ DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
         Ok(pool.begin_with("BEGIN IMMEDIATE").await?)
     }
+    async fn begin_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, "BEGIN IMMEDIATE").await?)
+    }
+    async fn begin_read_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, Self::READ_SNAPSHOT_BEGIN).await?)
+    }
     async fn history_ready(pool: &Pool<Self>) -> bool {
         let markers: std::result::Result<Vec<(String, i64)>, _> =
             sqlx::query_as("SELECT engine,version FROM dw_server_schema")
@@ -572,6 +649,12 @@ impl Backend for Postgres {
         // across independent pools/processes. Held long polls wait without it
         // (Store::task_poll_ready). Throughput/idle cost remain unqualified.
         Ok(pool.begin_with("BEGIN; SELECT pg_advisory_xact_lock(4924501473315676163)").await?)
+    }
+    async fn begin_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, "BEGIN; SELECT pg_advisory_xact_lock(4924501473315676163)").await?)
+    }
+    async fn begin_read_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, Self::READ_SNAPSHOT_BEGIN).await?)
     }
     async fn history_ready(pool: &Pool<Self>) -> bool {
         let Ok(mut connection) = pool.acquire().await else {
@@ -851,12 +934,16 @@ impl Backend for MySql {
     }
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
         let mut tx = pool.begin().await?;
-        // InnoDB row locking releases on commit/rollback/process loss. This
-        // first slice serializes transitions on its single ownership row.
-        // MariaDB stays at 12 while MySQL moved to 13 (server#1016).
-        sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=IF(VERSION() LIKE '%MariaDB%',?,?) FOR UPDATE")
-            .bind(mysql::MARIADB_VERSION).bind(mysql::MYSQL_VERSION).fetch_one(&mut *tx).await?;
+        mysql_ownership_lock(&mut tx).await?;
         Ok(tx)
+    }
+    async fn begin_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        let mut tx = sqlx::Connection::begin(connection).await?;
+        mysql_ownership_lock(&mut tx).await?;
+        Ok(tx)
+    }
+    async fn begin_read_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, Self::READ_SNAPSHOT_BEGIN).await?)
     }
     async fn history_ready(pool: &Pool<Self>) -> bool {
         let Ok(mut connection) = pool.acquire().await else {
@@ -1080,4 +1167,13 @@ mod timestamp_tests {
             assert!(sqlite_instant(value.into()).is_err(), "invalid {value}");
         }
     }
+}
+
+/// InnoDB row locking releases on commit/rollback/process loss. This first
+/// slice serializes transitions on its single ownership row. MariaDB stays at
+/// 12 while MySQL moved to 13 (server#1016).
+async fn mysql_ownership_lock(tx: &mut Transaction<'_, MySql>) -> Result<()> {
+    sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=IF(VERSION() LIKE '%MariaDB%',?,?) FOR UPDATE")
+        .bind(mysql::MARIADB_VERSION).bind(mysql::MYSQL_VERSION).fetch_one(&mut **tx).await?;
+    Ok(())
 }
