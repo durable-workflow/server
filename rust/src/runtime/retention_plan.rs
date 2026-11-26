@@ -268,6 +268,17 @@ pub(super) fn apply_request(body: &Value) -> Result<ApplyRequest> {
     })
 }
 
+/// What `compare` reads and derives for one namespace and proposal.
+struct Comparison {
+    mode: String,
+    days: Option<i64>,
+    updated_at: Option<DateTime<Utc>>,
+    at: DateTime<Utc>,
+    current: Policy,
+    proposed: Policy,
+    revision: String,
+}
+
 fn apply_refusal(status: StatusCode, reason: &str, name: &str, mut extra: Value, message: &str) -> RuntimeError {
     extra["reason"] = json!(reason);
     extra["namespace"] = json!(name);
@@ -325,26 +336,8 @@ store_methods! {
     pub(super) async fn apply_retention_plan(&self, name: &str, request: ApplyRequest) -> Result<Value> {
         let name = name.to_ascii_lowercase();
         let mut tx = self.begin().await?;
-        let row = Self::query("SELECT retention_mode,retention_days,updated_at FROM workflow_namespaces WHERE name=$1")
-            .bind(&name)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| RuntimeError::Protocol {
-                status: StatusCode::NOT_FOUND,
-                response: json!({"reason":"namespace_not_found","namespace":name,"message":format!("Namespace [{name}] not found.")}),
-            })?;
-        let stored_mode = DB::string(&row, "retention_mode")?;
-        let stored_days = DB::optional_number(&row, "retention_days")?;
-        let updated_at = DB::optional_instant(&row, "updated_at")?;
-        let (mode, days) = resolved_retention(
-            (request.retention_mode.as_deref(), request.retention_days),
-            stored_mode.clone(),
-            stored_days,
-        )?;
-        let at = now();
-        let current = Policy::new(Some(&stored_mode), stored_days, at);
-        let proposed = Policy::new(Some(&mode), days, at);
-        let revision = policy_revision(&name, Some(&stored_mode), stored_days, current.days, updated_at);
+        let Comparison { mode, days, updated_at, at, current, proposed, revision } =
+            Self::compare(&mut tx, &name, request.retention_mode.as_deref(), request.retention_days).await?;
         if revision != request.policy_revision {
             return Err(apply_refusal(StatusCode::CONFLICT, "retention_policy_revision_stale", &name,
                 json!({"policy_revision": revision}),
@@ -390,7 +383,14 @@ store_methods! {
         }))
     }
 
-    async fn plan_in_snapshot(&self, tx: &mut Transaction<'_, DB>, name: &str, request: &PlanRequest) -> Result<Value> {
+    /// The namespace's current policy and the proposal over it, as the plan
+    /// and the apply both compare them, with the current `policy_revision`.
+    async fn compare(
+        tx: &mut Transaction<'_, DB>,
+        name: &str,
+        requested_mode: Option<&str>,
+        requested_days: Option<Option<i64>>,
+    ) -> Result<Comparison> {
         let row = Self::query("SELECT retention_mode,retention_days,updated_at FROM workflow_namespaces WHERE name=$1")
             .bind(name)
             .fetch_optional(&mut **tx)
@@ -402,15 +402,17 @@ store_methods! {
         let stored_mode = DB::string(&row, "retention_mode")?;
         let stored_days = DB::optional_number(&row, "retention_days")?;
         let updated_at = DB::optional_instant(&row, "updated_at")?;
-        let (mode, days) = resolved_retention(
-            (request.retention_mode.as_deref(), request.retention_days),
-            stored_mode.clone(),
-            stored_days,
-        )?;
+        let (mode, days) = resolved_retention((requested_mode, requested_days), stored_mode.clone(), stored_days)?;
         let at = now();
         let current = Policy::new(Some(&stored_mode), stored_days, at);
         let proposed = Policy::new(Some(&mode), days, at);
         let revision = policy_revision(name, Some(&stored_mode), stored_days, current.days, updated_at);
+        Ok(Comparison { mode, days, updated_at, at, current, proposed, revision })
+    }
+
+    async fn plan_in_snapshot(&self, tx: &mut Transaction<'_, DB>, name: &str, request: &PlanRequest) -> Result<Value> {
+        let Comparison { mode, days, updated_at, at, current, proposed, revision } =
+            Self::compare(tx, name, request.retention_mode.as_deref(), request.retention_days).await?;
         let planned = plan_revision(&revision, &mode, days);
         let (limit, hold_limit) = (request.scan_limit, request.hold_scan_limit);
         let mut incomplete = Vec::new();
