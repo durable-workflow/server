@@ -20,6 +20,16 @@ async fn v2_worker(app: &Router, body: Value) {
     assert_eq!(status, StatusCode::CREATED, "{registered}");
 }
 
+/// Keeps the worker's registration inside its 30 second freshness window.
+/// Only registration and heartbeats refresh it, and a slow backend's table
+/// counts and history reads between requests can outlast it. A stale owner
+/// would be refused, or its carried polls not admitted, before the
+/// behaviour under test.
+async fn heartbeat(app: &Router, worker: &Value) {
+    let (status, beat) = request(app, "POST", "/api/worker/heartbeat", json!({"worker_id":worker})).await;
+    assert_eq!(status, StatusCode::OK, "{beat}");
+}
+
 fn schedule() -> Value {
     json!([{"type":"schedule_activity","activity_type":"activity","arguments":envelope(Payload::Array(vec![]))}])
 }
@@ -65,6 +75,7 @@ struct Seed {
 /// asking for a tail and carrying the activity it schedules.
 async fn seed(app: &Router, worker: &str, workflow: &str, commands: Value) -> Seed {
     start_on(app, workflow, worker).await;
+    heartbeat(app, &json!(worker)).await;
     let task = poll_on(app, worker, "workflow").await;
     assert_eq!(task["workflow_id"], workflow, "{task}");
     let mut body = completion(&task, commands);
@@ -93,6 +104,7 @@ fn v2_body(seed: &Seed, commands: Value, poll: &str) -> Value {
 }
 
 async fn continue_v2(app: &Router, seed: &Seed, body: Value) -> (StatusCode, Value) {
+    heartbeat(app, &seed.activity["lease_owner"]).await;
     request(app, "POST", &format!("/api/worker/activity-tasks/{}/continuation/complete", seed.activity["task_id"].as_str().unwrap()), body).await
 }
 
@@ -299,6 +311,7 @@ async fn a_standalone_activity_declines() {
     let (status, started) = request(&app, "POST", "/api/activities", json!({"activity_id":"v2-standalone","activity_type":"activity",
         "task_queue":"v2-standalone","input":envelope(Payload::Array(vec![]))})).await;
     assert_eq!(status, StatusCode::CREATED, "{started}");
+    heartbeat(&app, &json!("v2-standalone")).await;
     let activity = poll_on(&app, "v2-standalone", "activity").await;
     // The host run declines before any history proof, so any boundary does.
     let tail = json!({"last_sequence":1,"history_events":[{"id":"01JSTANDALONEHOSTEVENT0000"}]});
@@ -377,6 +390,7 @@ async fn carried_workflow_poll_declines_keep_the_ordinary_completion() {
     // The carried poll's ID already leased another run's task.
     let replayed = seed(&app, "v2-replayed", "v2-replayed", schedule()).await;
     start_on(&app, "v2-elsewhere", "v2-replayed").await;
+    heartbeat(&app, &json!("v2-replayed")).await;
     let (status, elsewhere) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
         poll_body(&json!("v2-replayed"), "v2-replayed-shared")).await;
     assert_eq!(status, StatusCode::OK, "{elsewhere}");
@@ -468,6 +482,7 @@ async fn an_over_budget_tail_is_omitted_and_the_next_suffix_starts_at_the_bounda
     let (status, finished) = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", leased["task_id"].as_str().unwrap()),
         json!({"lease_owner":"v2-budget","activity_attempt_id":leased["activity_attempt_id"],"result":envelope(Payload::Long(1))})).await;
     assert_eq!(status, StatusCode::OK, "{finished}");
+    heartbeat(&app, &json!("v2-budget")).await;
     let next = poll_on(&app, "v2-budget", "workflow").await;
     assert_eq!(next["sticky_replay_mode"], "sticky_hit_expected", "{next}");
     assert_eq!(next["history_after_sequence"], through, "{next}");

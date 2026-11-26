@@ -18,6 +18,13 @@ async fn an_external_result_declines_a_v2_continuation() {
     let created = json_request(&app, "POST", "/api/workflows", "operator-token", json!({
         "workflow_id":"external-v2","workflow_type":"echo","task_queue":"test","input":envelope(Payload::Array(vec![]))})).await;
     assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
+    // Only registration and heartbeats keep the worker fresh; a slow
+    // backend's upload can outlast the 30 second window.
+    let heartbeat = || async {
+        let (status, beat) = json_request(&app, "POST", "/api/worker/heartbeat", "worker-token", json!({"worker_id":"external-v2"})).await;
+        assert_eq!(status, StatusCode::OK, "{beat}");
+    };
+    heartbeat().await;
     let task = json_request(&app, "POST", "/api/worker/workflow-tasks/poll", "worker-token",
         json!({"worker_id":"external-v2","task_queue":"test","timeout_seconds":0})).await.1["task"].clone();
     let sticky = |task: &Value, through: &Value| json!({"worker_id":"external-v2","workflow_id":task["workflow_id"],
@@ -43,12 +50,14 @@ async fn an_external_result_declines_a_v2_continuation() {
             "history_last_event_id":tail["history_events"].as_array().unwrap().last().unwrap()["id"],
             "sticky_cache":sticky(&activity, through),"commands":[{"type":"start_timer","delay_seconds":60}]}});
     let path = format!("/api/worker/activity-tasks/{}/continuation/complete", activity["task_id"].as_str().unwrap());
+    heartbeat().await;
     let declined = json_request(&app, "POST", &path, "worker-token", continuation.clone()).await;
     assert_eq!(declined.0, StatusCode::OK, "{}", declined.1);
     assert_eq!(declined.1["recorded"], true, "{}", declined.1);
     assert_eq!(declined.1["continuation"], json!({"version":2,"outcome":"declined","reason":"external_payload"}));
     assert_eq!(declined.1["workflow_poll"]["leased"], true, "the ordinary carried poll: {}", declined.1);
     assert!(declined.1.get("continuation_tail").is_none());
+    heartbeat().await;
     let retry = json_request(&app, "POST", &path, "worker-token", continuation).await;
     assert_eq!(retry.0, StatusCode::OK, "{}", retry.1);
     assert_eq!(retry.1["recorded"], false);
