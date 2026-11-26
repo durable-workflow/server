@@ -1310,6 +1310,7 @@ where
                 }
                 let mut task: Value = serde_json::from_str(&DB::string(&row, "value")?)?;
                 if task["query_task_id"] != task_id || !self.query_matches_poll(&task, queue, &types)
+                    || !Self::group_policies_supported(&mut *read, &worker, task["run_id"].as_str().unwrap_or_default()).await?
                     || self.query_has_live_lease(&mut *read, &task, config).await?
                     || Self::query_hold(&mut *read, &task).await?.is_some()
                 {
@@ -1432,6 +1433,11 @@ where
         let mut held = None;
         for (key, mut task) in entries {
             if !self.query_matches_poll(&task, queue, &types) {
+                continue;
+            }
+            // A query replays the run's history: the worker must register
+            // every explicit parallel group policy it records (.github#232).
+            if !Self::group_policies_supported(&mut **tx, &worker, task["run_id"].as_str().unwrap_or_default()).await? {
                 continue;
             }
             if self.query_has_live_lease(&mut **tx, &task, config).await? {

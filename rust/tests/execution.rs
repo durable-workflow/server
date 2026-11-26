@@ -73,6 +73,8 @@ mod signal_claims;
 mod parallel_cancellation;
 #[path = "execution/parallel_group_policies.rs"]
 mod parallel_group_policies;
+#[path = "execution/parallel_group_replay_tasks.rs"]
+mod parallel_group_replay_tasks;
 #[path = "execution/runtime_credentials.rs"]
 mod runtime_credentials;
 #[path = "execution/selected_run_signals.rs"]

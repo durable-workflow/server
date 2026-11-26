@@ -321,7 +321,20 @@ where
             return Ok(Some(("update_validator_worker_incompatible",
                 "Active workers do not advertise a validator-capable implementation matching this workflow run.", true)));
         }
-        Ok(None)
+        // .github#232: a validator replays the run, so it must also register
+        // every explicit parallel group policy the run's history records.
+        let mut connection = self.pool.acquire().await?;
+        for row in &rows {
+            let worker = self.registration(row)?;
+            if worker.fresh && worker.capable
+                && worker.serves(request.workflow_type, request.name, request.compatibility, request.fingerprint)
+                && Self::group_policies_supported(&mut *connection, row, request.run_id).await?
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(("update_validator_parallel_group_policy_unsupported",
+            "Active validator workers do not register every parallel group policy this workflow run's history records.", true)))
     }
 
     /// `findOrCreateTask`: one task per run, update name and request id.
@@ -535,7 +548,9 @@ where
         let worker = self.registration(&row)?;
         if worker.fresh && worker.capable {
             for task in self.validation_claim_candidates(&mut read, queue, now(), None).await? {
-                if !Self::validator_matches_task(&worker, &task)? {
+                if !Self::validator_matches_task(&worker, &task)?
+                    || !Self::group_policies_supported(&mut *read, &row, &DB::string(&task, "workflow_run_id")?).await?
+                {
                     continue;
                 }
                 let observed = DB::number(&task, "attempt_count")?;
@@ -561,7 +576,7 @@ where
         if tx.claim_only.as_ref().is_some_and(|target| target.kind != "update_validation") {
             return Ok(None);
         }
-        let Some(worker) = Self::query("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
+        let Some(row) = Self::query("SELECT * FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
             .bind(worker_id)
             .bind(self.namespace.as_ref())
             .fetch_optional(&mut **tx)
@@ -569,7 +584,7 @@ where
         else {
             return Ok(None);
         };
-        let worker = self.registration(&worker)?;
+        let worker = self.registration(&row)?;
         if !worker.fresh || !worker.capable {
             return Ok(None);
         }
@@ -577,7 +592,10 @@ where
         let target = tx.claim_only.clone();
         let tasks = self.validation_claim_candidates(tx, task_queue, at, target.as_ref().map(|scope| scope.task_id.as_str())).await?;
         for task in tasks {
-            if !Self::validator_matches_task(&worker, &task)? {
+            // A validator replays the run (.github#232 policy eligibility).
+            if !Self::validator_matches_task(&worker, &task)?
+                || !Self::group_policies_supported(&mut **tx, &row, &DB::string(&task, "workflow_run_id")?).await?
+            {
                 continue;
             }
             let attempt = DB::number(&task, "attempt_count")?;
