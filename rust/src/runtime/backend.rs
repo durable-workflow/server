@@ -73,6 +73,35 @@ const PLAIN_STREAM_REFERENCES: &str = stream_references!("payload", "metadata");
 /// How long a pre-checkout ping waits for the database (Server #1355).
 pub(super) const CHECKOUT_PING_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How long a connection handed out after an unanswered ping may go without
+/// any reply before its read fails and it is discarded (Server #1355). Above
+/// the transition queue deadline (30 s) plus the pool's acquisition deadline
+/// (5 s), so waiting out a stall that short is never cut off by it.
+pub(super) const UNANSWERED_PING_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// A connection that can bound the wait for a reply after a ping went
+/// unanswered. The vendored MySQL and PostgreSQL drivers do; SQLite never
+/// waits on a network.
+pub(super) trait ReplyBound {
+    fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration);
+}
+
+impl ReplyBound for sqlx::MySqlConnection {
+    fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration) {
+        self.bound_unanswered_replies(within);
+    }
+}
+
+impl ReplyBound for sqlx::PgConnection {
+    fn bound_replies_after_unanswered_ping(&mut self, within: std::time::Duration) {
+        self.bound_unanswered_replies(within);
+    }
+}
+
+impl ReplyBound for sqlx::SqliteConnection {
+    fn bound_replies_after_unanswered_ping(&mut self, _within: std::time::Duration) {}
+}
+
 /// SQLx 0.9 checks connections before returning them to the idle queue.
 /// Recheck after one second idle instead of repeating that check immediately.
 /// A connection lost during the shorter window can fail its first statement;
@@ -87,18 +116,37 @@ pub(super) const CHECKOUT_PING_BUDGET: std::time::Duration = std::time::Duration
 /// acquisition deadline keeps counting only the wait for a free connection.
 /// The unanswered ping stays a pending reply that the connection's next
 /// command reads first (each driver tracks it), so the session stays in step.
+/// A peer lost without a reset never answers it, so the connection must see
+/// a reply within [`UNANSWERED_PING_REPLY_BOUND`] or its read fails and it is
+/// discarded, instead of holding the request until the operating system
+/// gives up on the peer.
 pub(super) fn test_idle_connections<DB: Database>(
     options: sqlx::pool::PoolOptions<DB>,
-) -> sqlx::pool::PoolOptions<DB> {
+) -> sqlx::pool::PoolOptions<DB>
+where
+    DB::Connection: ReplyBound,
+{
+    test_idle_connections_within(options, CHECKOUT_PING_BUDGET, UNANSWERED_PING_REPLY_BOUND)
+}
+
+/// [`test_idle_connections`] with explicit bounds (tests shorten them).
+pub(super) fn test_idle_connections_within<DB: Database>(
+    options: sqlx::pool::PoolOptions<DB>,
+    ping_budget: std::time::Duration,
+    reply_bound: std::time::Duration,
+) -> sqlx::pool::PoolOptions<DB>
+where
+    DB::Connection: ReplyBound,
+{
     options
         .test_before_acquire(false)
-        .before_acquire(|connection, metadata| {
+        .before_acquire(move |connection, metadata| {
             Box::pin(async move {
-                if metadata.idle_for >= std::time::Duration::from_secs(1)
-                    && let Ok(answered) =
-                        tokio::time::timeout(CHECKOUT_PING_BUDGET, sqlx::Connection::ping(connection)).await
-                {
-                    answered?;
+                if metadata.idle_for >= std::time::Duration::from_secs(1) {
+                    match tokio::time::timeout(ping_budget, sqlx::Connection::ping(connection)).await {
+                        Ok(answered) => answered?,
+                        Err(_) => connection.bound_replies_after_unanswered_ping(reply_bound),
+                    }
                 }
                 Ok(true)
             })

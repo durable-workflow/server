@@ -101,6 +101,7 @@ impl WithSocket for MapStream {
             status: Default::default(),
             status_known: true,
             prepare_in_flight: false,
+            reply_deadline: None,
         }
     }
 }

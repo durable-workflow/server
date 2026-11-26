@@ -1188,7 +1188,8 @@ where
                 None => true,
             };
             let probed = if current {
-                self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref(), fence.as_ref(), first_probe).await?
+                self.probe_task_kinds(body, kinds, protocol_version, page, request.as_ref(), fence.as_ref(), first_probe,
+                    deadline + super::store::POLL_CLAIM_MARGIN).await?
             } else {
                 Some(Probe::Stale)
             };
@@ -1227,6 +1228,7 @@ where
     }
 
     /// One probe of every requested kind, as one transaction.
+    #[allow(clippy::too_many_arguments)]
     async fn probe_task_kinds(
         &self,
         body: &Value,
@@ -1236,10 +1238,11 @@ where
         request: Option<&WorkflowPollRequest>,
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
         first: bool,
+        until: tokio::time::Instant,
     ) -> Result<Option<Probe>> {
         // Every probe is a transition; a budgeted background one, so it never
         // holds the connection held polls leave free (Server #1355).
-        let (queued, mut connection) = self.queue_budgeted_transition().await?;
+        let (queued, mut connection) = self.queue_budgeted_transition(Some(until)).await?;
         let probed = self.probe_task_kinds_on(connection.get(), queued, body, kinds, protocol_version, page, request, fence, first).await;
         connection.finish().await;
         probed
@@ -1259,6 +1262,10 @@ where
         first: bool,
     ) -> Result<Option<Probe>> {
         let mut tx = self.begin_on(connection, queued).await?;
+        #[cfg(debug_assertions)]
+        if let Some(request) = request {
+            super::poll_pauses::stop_at(&request.id, super::poll_pauses::PollPoint::Claiming).await;
+        }
         if first && let Some(request) = request
             && let Some(answer) = self.replay_workflow_poll_in(&mut tx, request, text(body, "worker_id")?, text(body, "task_queue")?).await?
         {

@@ -38,6 +38,13 @@ pub struct PgStream {
     pub(crate) parameter_statuses: BTreeMap<String, String>,
 
     pub(crate) server_version_num: Option<u32>,
+
+    // While set, a message must start arriving by this instant or the read
+    // fails: a connection handed out after its liveness ping went unanswered
+    // (Durable Workflow Server #1355). The first message clears it. Once it
+    // has passed, every read fails at once, so the connection is discarded
+    // when it returns to the pool even if the replies turn up.
+    pub(crate) reply_deadline: Option<std::time::Instant>,
 }
 
 impl PgStream {
@@ -54,6 +61,7 @@ impl PgStream {
             notifications: None,
             parameter_statuses: BTreeMap::default(),
             server_version_num: None,
+            reply_deadline: None,
         })
     }
 
@@ -77,6 +85,22 @@ impl PgStream {
     }
 
     pub(crate) async fn recv_unchecked(&mut self) -> Result<ReceivedMessage, Error> {
+        let Some(deadline) = self.reply_deadline else {
+            return self.read_unchecked().await;
+        };
+        // `read_unchecked` is cancel-safe: a timed-out read consumes nothing.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(unanswered_reply());
+        }
+        let message = sqlx_core::rt::timeout(remaining, self.read_unchecked())
+            .await
+            .map_err(|_| unanswered_reply())??;
+        self.reply_deadline = None;
+        Ok(message)
+    }
+
+    async fn read_unchecked(&mut self) -> Result<ReceivedMessage, Error> {
         // NOTE: to not break everything, this should be cancel-safe;
         // DO NOT modify `buf` unless a full message has been read
         self.inner
@@ -279,4 +303,14 @@ mod tests {
         // unknown
         assert_eq!(parse_server_version("unknown"), None);
     }
+}
+
+/// No reply within the bound on a connection whose liveness ping went
+/// unanswered (Durable Workflow Server #1355). The session is not in step any
+/// more, so its owner discards it.
+fn unanswered_reply() -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "the database sent no reply within the bound for a connection whose liveness ping went unanswered",
+    ))
 }

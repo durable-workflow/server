@@ -11,16 +11,18 @@
 //!
 //! A probe now borrows one [`ProbeConnection`] for its lock-free reads and
 //! awaits the connection's return to the pool before it claims or waits.
-//! Its slot comes from a node-wide budget of the pool size less one (at
-//! least one), held until that return finishes, so held-poll probes never
-//! occupy the last slot.
+//! Its slot comes from a node-wide budget, held until that return finishes,
+//! so held-poll work never occupies the last slot.
 //!
 //! Server #1355 brings the rest of a held poll's work under the same budget:
 //! its admission and replay reads, query readiness reads, and its claim and
-//! update-validation probe transactions. A budgeted transaction takes its
-//! turn on the transition queue first and its budget connection after
-//! (`Store::queue_budgeted_transition`), so a transaction holding a budget
-//! slot never waits for the queue. The maintenance loop has a connection of
+//! update-validation probe transactions. Reads take at most the pool size
+//! less two slots (at least one, [`slots`]). A budgeted transaction takes its
+//! turn on the transition queue first and then the budget's one transition
+//! slot (`Store::queue_budgeted_transition`): a transaction holding a budget
+//! slot never waits for the queue, and the queue holder never waits behind
+//! probe reads. Together they take all but one connection of a pool of three
+//! or more. The maintenance loop has a connection of
 //! its own (`Store::for_maintenance`). Other work still competes for the last
 //! connection: ordinary requests, query-task claims and duplicate query polls'
 //! shared answers, recording an empty or stale poll answer, workflow lease
@@ -30,10 +32,12 @@ use sqlx::pool::PoolConnection;
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// The probe budget for a pool of `connections`: all but one, at least one.
+/// The probe read budget for a pool of `connections`: all but two, at least
+/// one. With the transition slot of the transaction holding the transition
+/// queue, the budget takes all but one connection (Server #1355).
 pub(super) fn slots(connections: u32) -> Arc<Semaphore> {
     let connections = usize::try_from(connections).unwrap_or(usize::MAX);
-    Arc::new(Semaphore::new(connections.saturating_sub(1).max(1)))
+    Arc::new(Semaphore::new(connections.saturating_sub(2).max(1)))
 }
 
 /// A probe's pool connection and its budget slot. [`finish`](Self::finish)
@@ -80,8 +84,13 @@ store_methods! {
     /// acquisition deadline; running out of it is the same typed pool
     /// refusal a timed-out acquisition returns.
     pub(super) async fn probe_connection(&self) -> Result<ProbeConnection<DB>> {
+        self.budgeted_connection(&self.probe_slots).await
+    }
+
+    /// A slot of `budget` and then a pool connection, within one deadline.
+    pub(super) async fn budgeted_connection(&self, budget: &Arc<tokio::sync::Semaphore>) -> Result<ProbeConnection<DB>> {
         let deadline = tokio::time::Instant::now() + self.pool.options().get_acquire_timeout();
-        let slot = tokio::time::timeout_at(deadline, self.probe_slots.clone().acquire_owned())
+        let slot = tokio::time::timeout_at(deadline, budget.clone().acquire_owned())
             .await
             .map_err(|_| sqlx::Error::PoolTimedOut)?
             .expect("the probe budget is never closed");
@@ -164,8 +173,8 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_leaves_one_slot_and_never_reaches_zero() {
-        for (connections, budget) in [(0, 1), (1, 1), (2, 1), (4, 3), (10, 9)] {
+    fn the_read_budget_leaves_two_slots_and_never_reaches_zero() {
+        for (connections, budget) in [(0, 1), (1, 1), (2, 1), (3, 1), (4, 2), (10, 8)] {
             assert_eq!(super::slots(connections).available_permits(), budget, "{connections}");
         }
     }

@@ -17,12 +17,13 @@
 //! task, not a process. The fixed shared resource is the database pool, which
 //! health, readiness, admin and every other request need. So native reads
 //! `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` as the number of the node's
-//! database connections that long-poll probes may never occupy together:
+//! request-pool connections that long-poll probes may never occupy together:
 //! every poll probe (the first claim and each re-probe of a held wait) takes
-//! one of `pool size - reserved` probe permits (at least one) and returns it
-//! before it waits. Unset, probes take no permit here, but held-poll probe
-//! reads are always limited to the pool size minus one connection
-//! (`probe_connections`, Server #1204).
+//! one of `request pool size - reserved` probe permits (at least one) and
+//! returns it before it waits. Unset, probes take no permit here. Whatever
+//! the setting, the held-poll work `probe_connections` lists draws its
+//! connections from that module's budget and leaves the request pool's last
+//! connection free; other work, listed there, does not (Server #1204, #1355).
 use std::sync::{Arc, RwLock};
 
 use axum::http::StatusCode;

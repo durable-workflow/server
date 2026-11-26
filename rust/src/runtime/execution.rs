@@ -175,7 +175,15 @@ impl TimerScheduler {
                     _ = stop.changed() => break,
                     _ = tokio::time::sleep(Duration::from_secs(10)) => {
                         let next = refresh_offer_window(&storage, &keys).await;
-                        window.replace(logged_offer_window(next, &mut logged));
+                        // Storage that did not answer keeps the current
+                        // window: it closes at its own committed horizon, and
+                        // a stall must not suspend offers that are still
+                        // valid (Server #1355). Any other failure suspends.
+                        let keep = next.as_ref().is_err_and(|error| super::worker_incarnations::transient_reason(error).is_some());
+                        let refreshed = logged_offer_window(next, &mut logged);
+                        if !keep {
+                            window.replace(refreshed);
+                        }
                     }
                 }
             }

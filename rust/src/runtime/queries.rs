@@ -1160,6 +1160,8 @@ where
         proof: &str,
         keys: Option<&poll_requests::PollKeys>,
     ) -> Result<bool> {
+        #[cfg(debug_assertions)]
+        super::poll_pauses::stop_at(text(body, "worker_id")?, super::poll_pauses::PollPoint::QueryReadiness).await;
         // The readiness reads share one budgeted probe connection, returned
         // before the poll claims or waits (Server #1355).
         let mut reads = self.probe_connection().await?;

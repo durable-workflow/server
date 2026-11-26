@@ -2424,9 +2424,11 @@ how many request workers are busy.
   positive value, every poll probe takes one of `request pool size - reserved`
   probe permits (at least one) and returns it before waiting, so polls never
   occupy the reserved connections. Unset or zero, probes take no permit.
-- Whatever the setting, a node-wide budget of the request pool size minus one
-  connection (at least one) covers this held-poll work, so it never occupies
-  the request pool's last connection, which producers and registrations keep:
+- Whatever the setting, a node-wide budget covers this held-poll work, so it
+  never occupies the request pool's last connection, which producers and
+  registrations keep. Its reads take at most the request pool size minus two
+  connections (at least one); the one transaction holding the transition
+  queue takes one more, so it never waits behind those reads:
   - a held workflow or activity poll's admission and replay reads, its
     probes' lock-free reads (one connection per probe, returned before it
     claims or waits), its claim transactions and, for a workflow poll, its
@@ -2439,7 +2441,9 @@ how many request workers are busy.
   - every held poll's cross-kind wake reads.
 
   A budgeted transaction takes its turn on the transition queue before its
-  budget connection. Other work stays outside the budget and competes for
+  budget connection. A held poll's claim stops waiting for its turn two
+  seconds after the poll's own deadline, so no lease is committed for an
+  answer nobody reads. Other work stays outside the budget and competes for
   the last connection: ordinary requests, query-task claims and the shared
   answers of duplicate query polls, recording an empty or stale poll answer,
   workflow lease recovery transactions, and polls carried by a task
@@ -2451,10 +2455,21 @@ how many request workers are busy.
   ahead that is waiting out a database stall (an HA failover) is waited for.
   Running out of that wait answers `503 storage_unavailable`, logged as
   `transition_queue_timeout`; a pool with no free connection once it is the
-  transition's turn is still `pool_timeout`. A connection idle for a second
-  or more is pinged before checkout for at most one second; one the database
-  has not answered by then is handed out, so the request waits on its own
-  statements instead of the stall counting against the acquisition deadline
+  transition's turn is still `pool_timeout`. A producer or registration can
+  therefore take about 35 seconds before it answers during a stall: give
+  clients an HTTP timeout above that.
+- A connection idle for a second or more is pinged before checkout for at
+  most one second. One the database has not answered by then is handed out,
+  so the request waits on its own statements instead of the stall counting
+  against the acquisition deadline. Such a connection must then receive a
+  reply within 45 seconds; otherwise its statement fails
+  (`503 storage_unavailable`, `database_io`) and the connection is discarded,
+  so a database that went silent without resetting its connections (common
+  in an HA failover) holds a request for at most about 46 seconds. Other
+  statements have no client-side read deadline: MySQL and MariaDB refuse
+  lock waits after 5 seconds (`lock_wait_timeout`, `innodb_lock_wait_timeout`)
+  and PostgreSQL ends statements after 30 seconds (`statement_timeout`), but
+  neither bounds a database that stops answering
   ([#1355](https://github.com/durable-workflow/server/issues/1355)).
 - The per-namespace variants, `DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE`
   and `DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE`, are still ignored by

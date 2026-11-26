@@ -1,7 +1,7 @@
 # SQLx PostgreSQL driver patch
 
 This directory contains the official `sqlx-postgres` 0.9.0 crate with one
-backported driver correction and one native tagging patch. Its published
+backported driver correction, one native tagging patch and one reply bound. Its published
 archive has SHA-256
 `87a2bdd6e83f6b3ea525ca9fee568030508b58355a43d0b2c1674d5f79dcd65e` (the
 `Cargo.lock` checksum it replaces) and VCS commit
@@ -70,3 +70,24 @@ connection. Otherwise `transient_reason` must get that distinction another
 way first. The server keeps its own copy of the prefix, so a release build
 would still compile without the tag, and garbled handshakes would silently
 become non-retryable again; only the tests above would catch it.
+
+## A reply after an unanswered ping is bounded
+
+Native Server's pre-checkout ping waits at most one second for the database
+and then hands the connection out (Server #1355). The driver already tracks
+the unanswered `Sync` as a pending `ReadyForQuery`, which the next command
+drains first. `PgConnection::bound_unanswered_replies`
+(`src/connection/mod.rs`) sets a deadline on the stream while one is pending
+(`reply_deadline` in `src/connection/stream.rs`). Each message read races it,
+the first message that arrives clears it, and a read that runs past it fails
+with an I/O `TimedOut` error, and so does every later read, so the
+connection is discarded when it returns to the pool even if the replies turn
+up. The read itself
+stays cancel-safe: a timed-out read consumes nothing. Native Server sets 45
+seconds; reads on any other connection are unchanged.
+
+`runtime::postgres::tests::qualification_a_connection_whose_ping_went_unanswered_fails_within_its_reply_bound`
+holds every reply after the ping and requires the statement to fail within
+the bound and the connection to be replaced. Remove this change only when a
+reviewed published driver lets a caller bound the wait for a reply, or when
+the server no longer hands out a connection whose ping went unanswered.

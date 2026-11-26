@@ -192,6 +192,10 @@ fn poll_pause_id<'a>(
         .or_else(|| body.get("poll_request_id").and_then(Value::as_str).filter(|_| kind == "activity"))
 }
 
+/// How long after its own deadline a held poll's claim still waits for its
+/// turn on the transition queue (Server #1355).
+pub(super) const POLL_CLAIM_MARGIN: Duration = Duration::from_secs(2);
+
 /// How long a transition waits its turn on the transition queue before it is
 /// refused with HTTP 503 `storage_unavailable` (`transition_queue_timeout`).
 /// Longer than the pool's acquisition deadline, so a transition ahead that is
@@ -238,8 +242,12 @@ pub(super) struct Store<DB: Backend> {
     /// The node's long-poll wait slots and probe permits (Server #982),
     /// shared by every namespace's store.
     pub(super) poll_capacity: Arc<super::poll_capacity::PollCapacity>,
-    /// Held-poll probe slots: the pool size less one (Server #1204).
+    /// Held-poll probe read slots: the pool size less two, at least one
+    /// (Server #1204, #1355).
     pub(super) probe_slots: Arc<Semaphore>,
+    /// The one budget slot of the budgeted transaction that holds the
+    /// transition queue, so it never waits behind probe reads (Server #1355).
+    pub(super) transition_slot: Arc<Semaphore>,
     /// How long a transition waits its turn on the transition queue
     /// ([`TRANSITION_QUEUE_DEADLINE`]; Server #1355).
     pub(super) transition_queue_deadline: Duration,
@@ -426,6 +434,7 @@ where
             storage_admission: Arc::default(),
             poll_capacity: Arc::default(),
             probe_slots,
+            transition_slot: Arc::new(Semaphore::new(1)),
             transition_queue_deadline: TRANSITION_QUEUE_DEADLINE,
             maintenance_pool: None,
             #[cfg(test)]
@@ -464,6 +473,7 @@ where
             storage_admission: self.storage_admission.clone(),
             poll_capacity: self.poll_capacity.clone(),
             probe_slots: self.probe_slots.clone(),
+            transition_slot: self.transition_slot.clone(),
             transition_queue_deadline: self.transition_queue_deadline,
             maintenance_pool: self.maintenance_pool.clone(),
             #[cfg(test)]
@@ -560,7 +570,19 @@ where
     /// A timed-out waiter never abandons FIFO and continues to the database
     /// anyway.
     pub(super) async fn queue_transition(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
-        let queued = tokio::time::timeout(self.transition_queue_deadline, self.transitions.clone().lock_owned())
+        self.queue_transition_until(None).await
+    }
+
+    /// [`queue_transition`](Self::queue_transition), giving up at `until`
+    /// when that comes first: a held poll's claim stops waiting when nobody
+    /// reads its answer any more (Server #1355).
+    pub(super) async fn queue_transition_until(
+        &self,
+        until: Option<tokio::time::Instant>,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        let deadline = tokio::time::Instant::now() + self.transition_queue_deadline;
+        let deadline = until.map_or(deadline, |until| until.min(deadline));
+        let queued = tokio::time::timeout_at(deadline, self.transitions.clone().lock_owned())
             .await
             .map_err(|_| super::RuntimeError::TransitionQueueTimeout)?;
         #[cfg(test)]
@@ -581,17 +603,20 @@ where
             })
     }
     /// A background transition (Server #1355): its turn on the transition
-    /// queue first, then a probe budget slot and a connection, so it never
-    /// holds the connection held polls leave free. The order matters: a
-    /// transition that held a budget slot while waiting for its turn could
-    /// leave the transition ahead without a slot. Callers begin the
-    /// transaction with [`begin_on`](Self::begin_on) and return the
-    /// connection with `ProbeConnection::finish` after it ends.
+    /// queue first, giving up at `until`, then the budget's transition slot
+    /// and a connection, so it never holds the connection held polls leave
+    /// free. The order matters: a transition that held a budget slot while
+    /// waiting for its turn could leave the transition ahead without a slot.
+    /// Only the queue holder takes the transition slot, so it never waits
+    /// behind probe reads either. Callers begin the transaction with
+    /// [`begin_on`](Self::begin_on) and return the connection with
+    /// `ProbeConnection::finish` after it ends.
     pub(super) async fn queue_budgeted_transition(
         &self,
+        until: Option<tokio::time::Instant>,
     ) -> Result<(tokio::sync::OwnedMutexGuard<()>, super::probe_connections::ProbeConnection<DB>)> {
-        let queued = self.queue_transition().await?;
-        let connection = self.probe_connection().await?;
+        let queued = self.queue_transition_until(until).await?;
+        let connection = self.budgeted_connection(&self.transition_slot).await?;
         Ok((queued, connection))
     }
 
@@ -2588,6 +2613,9 @@ where
                 .ok_or_else(|| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_poll_timeout"))?,
         };
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+        // A claim stops waiting for its turn shortly after the poll would
+        // have answered, so no lease is committed for an answer nobody reads.
+        let claim_until = deadline + POLL_CLAIM_MARGIN;
         let requested = super::history_pages::requested_size(&body)?;
         let encoding = if kind == "workflow" {
             super::history_pages::requested(&body)?
@@ -2663,7 +2691,7 @@ where
             let first_probe = std::mem::take(&mut first);
             let (current, mut claimed) = match &poll_request {
                 Some(request) if first_probe => {
-                    match self.replay_or_claim(&body, kind, protocol_version, page, request, fence.as_ref()).await? {
+                    match self.replay_or_claim(&body, kind, protocol_version, page, request, fence.as_ref(), claim_until).await? {
                         FirstProbe::Replayed(answer) => return replayed_poll(answer, encoding),
                         FirstProbe::Claimed(claimed) => (true, claimed),
                     }
@@ -2694,7 +2722,7 @@ where
                     let claimed = if !current {
                         Err(super::worker_poll_fence::stale_claim())
                     } else if first_probe || ready {
-                        self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await
+                        self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref(), claim_until).await
                     } else {
                         Ok(None)
                     };
@@ -2709,7 +2737,7 @@ where
                 && matches!(claimed, Ok(None))
                 && self.recover_abandoned_workflow_leases(text(&body, "task_queue")?).await?
             {
-                claimed = self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await;
+                claimed = self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref(), claim_until).await;
             }
             let claimed = match claimed {
                 // A fenced poll records stale_worker_registration like any
@@ -2904,10 +2932,11 @@ where
         page: Option<i64>,
         poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+        until: tokio::time::Instant,
     ) -> Result<Option<Value>> {
         // A held poll's claim is a budgeted background transition (Server
         // #1355): it never holds the connection held polls leave free.
-        let (queued, mut connection) = self.queue_budgeted_transition().await?;
+        let (queued, mut connection) = self.queue_budgeted_transition(Some(until)).await?;
         let claimed = self.claim_on(connection.get(), queued, body, kind, protocol_version, page, poll_request, fence).await;
         connection.finish().await;
         claimed
@@ -2951,9 +2980,10 @@ where
         page: Option<i64>,
         request: &super::workflow_poll_requests::WorkflowPollRequest,
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+        until: tokio::time::Instant,
     ) -> Result<FirstProbe> {
         // A budgeted background transition, as `claim` is (Server #1355).
-        let (queued, mut connection) = self.queue_budgeted_transition().await?;
+        let (queued, mut connection) = self.queue_budgeted_transition(Some(until)).await?;
         let probed = self.replay_or_claim_on(connection.get(), queued, body, kind, protocol_version, page, request, fence).await;
         connection.finish().await;
         probed

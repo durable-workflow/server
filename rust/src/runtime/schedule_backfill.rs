@@ -217,7 +217,7 @@ where
                 Ok(_) => {
                     result.insert("outcome".into(), json!("skipped"));
                 }
-                Err(error @ RuntimeError::Database(_)) => return Err(error),
+                Err(error) if error.is_storage_unavailable() => return Err(error),
                 Err(error) => {
                     let reason = error.to_string();
                     self.record_failure(&key, &reason).await?;

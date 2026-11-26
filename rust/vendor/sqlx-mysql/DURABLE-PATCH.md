@@ -1,6 +1,6 @@
 # SQLx MySQL driver patches
 
-This directory contains the official `sqlx-mysql` 0.9.0 crate with four scoped
+This directory contains the official `sqlx-mysql` 0.9.0 crate with five scoped
 patches. Its published archive has
 SHA-256
 `90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27` and VCS
@@ -151,3 +151,33 @@ The session-state report has its own removal condition: remove it only when
 a reviewed published driver lets a caller tell, with the same guarantees,
 that a returned session is idle outside a transaction, or when the server's
 pool-return hook resets every returned session again.
+
+## An unanswered ping is tracked and bounded
+
+Native Server's pre-checkout ping waits at most one second for the database
+and then hands the connection out, so a database stall does not count
+against the pool's acquisition deadline (Server #1355). `ping`
+(`src/connection/mod.rs`) now registers its reply as pending before it sends
+`COM_PING` and removes it once the reply is read, so a ping cancelled before
+its reply arrives leaves a pending reply that the connection's next command
+drains first instead of misreading it as its own.
+
+`MySqlConnection::bound_unanswered_replies` sets a deadline on the stream
+while a reply is pending (`reply_deadline` in `src/connection/stream.rs`;
+`src/connection/tls.rs` carries it through the TLS upgrade). Each packet
+read races it, the first packet that arrives clears it, and a read that runs
+past it fails with an I/O `TimedOut` error, and so does every later read, so the
+connection is discarded when it returns to the pool even if the replies turn
+up.
+Native Server sets 45 seconds after an unanswered ping: a peer lost without
+a reset would otherwise hold the request until the operating system gave up
+on it. Reads on any other connection are unchanged.
+
+`runtime::mysql::stall_tests::qualification_registration_survives_a_stall_on_an_idle_last_connection`
+covers the cancelled ping;
+`qualification_a_connection_whose_ping_went_unanswered_fails_within_its_reply_bound`
+holds every reply after the ping and requires the statement to fail within
+the bound and the connection to be replaced. Remove these changes only when
+a reviewed published driver tracks a cancelled ping and lets a caller bound
+the wait for a reply, or when the server no longer hands out a connection
+whose ping went unanswered.

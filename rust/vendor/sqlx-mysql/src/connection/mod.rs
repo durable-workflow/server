@@ -82,6 +82,18 @@ impl MySqlConnection {
         stream.wait_until_ready().await
     }
 
+    /// Require a reply within `within` while a reply is pending: a connection
+    /// handed out after its liveness ping went unanswered (Durable Workflow
+    /// Server #1355). Otherwise a silently lost peer would hold the request
+    /// until the operating system gives up on it. The first packet that
+    /// arrives lifts the bound; a read that runs past it fails, and the
+    /// connection is discarded on return.
+    pub fn bound_unanswered_replies(&mut self, within: std::time::Duration) {
+        if !self.inner.stream.waiting.is_empty() {
+            self.inner.stream.reply_deadline = Some(std::time::Instant::now() + within);
+        }
+    }
+
     /// Whether this session is known to be idle outside a transaction: no
     /// reply is pending or unsent, no statement prepare is half read, no
     /// SQLx transaction is open, and the last reply read carried a server

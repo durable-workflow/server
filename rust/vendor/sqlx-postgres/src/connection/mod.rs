@@ -90,6 +90,18 @@ impl PgConnection {
         self.inner.stream.server_version_num
     }
 
+    /// Require a reply within `within` while a reply is pending: a connection
+    /// handed out after its liveness ping went unanswered (Durable Workflow
+    /// Server #1355). Otherwise a silently lost peer would hold the request
+    /// until the operating system gives up on it. The first message that
+    /// arrives lifts the bound; a read that runs past it fails, and the
+    /// connection is discarded on return.
+    pub fn bound_unanswered_replies(&mut self, within: std::time::Duration) {
+        if self.inner.pending_ready_for_query_count > 0 {
+            self.inner.stream.reply_deadline = Some(std::time::Instant::now() + within);
+        }
+    }
+
     // will return when the connection is ready for another query
     pub(crate) async fn wait_until_ready(&mut self) -> Result<(), Error> {
         if !self.inner.stream.write_buffer_mut().is_empty() {

@@ -2,66 +2,14 @@ use super::*;
 use sqlx::{ConnectOptions, MySql, migrate::MigrateDatabase};
 use std::{
     str::FromStr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::Notify,
 };
 
-#[derive(Default)]
-pub(super) struct ReplyGate {
-    pub(super) hold: AtomicBool,
-    blocked: Notify,
-    released: Notify,
-}
-
-impl ReplyGate {
-    pub(super) fn release(&self) {
-        self.hold.store(false, Ordering::SeqCst);
-        self.released.notify_waiters();
-    }
-}
-
-pub(super) async fn forward(listener: TcpListener, upstream: String, gate: Arc<ReplyGate>) {
-    loop {
-        let (client, _) = listener.accept().await.unwrap();
-        let server = TcpStream::connect(&upstream).await.unwrap();
-        let gate = gate.clone();
-        tokio::spawn(async move {
-            let (mut client_read, mut client_write) = client.into_split();
-            let (mut server_read, mut server_write) = server.into_split();
-            let downstream = async {
-                let mut bytes = [0; 65536];
-                loop {
-                    let count = server_read.read(&mut bytes).await?;
-                    if count == 0 {
-                        break;
-                    }
-                    while gate.hold.load(Ordering::SeqCst) {
-                        let release = gate.released.notified();
-                        gate.blocked.notify_one();
-                        if !gate.hold.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        release.await;
-                    }
-                    client_write.write_all(&bytes[..count]).await?;
-                }
-                client_write.shutdown().await
-            };
-            let upstream = async {
-                tokio::io::copy(&mut client_read, &mut server_write).await?;
-                server_write.shutdown().await
-            };
-            let _: (std::io::Result<()>, std::io::Result<()>) = tokio::join!(downstream, upstream);
-        });
-    }
-}
+pub(super) use super::super::test_reply_gate::{ReplyGate, forward};
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]

@@ -185,7 +185,7 @@ where
             .await
         {
             Ok(result) => result,
-            Err(error @ RuntimeError::Database(_)) => return Err(error),
+            Err(error) if error.is_storage_unavailable() => return Err(error),
             // PHP answers any other failure with this 500 body.
             Err(error) => {
                 return Err(RuntimeError::Protocol {

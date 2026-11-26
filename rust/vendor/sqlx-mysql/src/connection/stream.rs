@@ -31,6 +31,12 @@ pub struct MySqlStream<S = Box<dyn Socket>> {
     // A `COM_STMT_PREPARE` was sent and its reply is not fully read. Its
     // first packet would parse as an OK packet, so it is never drained.
     pub(crate) prepare_in_flight: bool,
+    // While set, a reply must start arriving by this instant or the read
+    // fails: a connection handed out after its liveness ping went unanswered
+    // (Durable Workflow Server #1355). The first packet that arrives clears
+    // it. Once it has passed, every read fails at once, so the connection is
+    // discarded when it returns to the pool even if the replies turn up.
+    pub(crate) reply_deadline: Option<std::time::Instant>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,6 +78,7 @@ impl<S: Socket> MySqlStream<S> {
             status: Default::default(),
             status_known: true,
             prepare_in_flight: false,
+            reply_deadline: None,
         }
     }
 
@@ -169,6 +176,21 @@ impl<S: Socket> MySqlStream<S> {
     }
 
     async fn recv_packet_part(&mut self) -> Result<Bytes, Error> {
+        let Some(deadline) = self.reply_deadline else {
+            return self.read_packet_part().await;
+        };
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(unanswered_reply());
+        }
+        let payload = sqlx_core::rt::timeout(remaining, self.read_packet_part())
+            .await
+            .map_err(|_| unanswered_reply())??;
+        self.reply_deadline = None;
+        Ok(payload)
+    }
+
+    async fn read_packet_part(&mut self) -> Result<Bytes, Error> {
         // https://dev.mysql.com/doc/dev/mysql-server/8.0.12/page_protocol_basic_packets.html
         // https://mariadb.com/kb/en/library/0-packet/#standard-packet
 
@@ -273,6 +295,7 @@ impl<S: Socket> MySqlStream<S> {
             status: self.status,
             status_known: self.status_known,
             prepare_in_flight: self.prepare_in_flight,
+            reply_deadline: self.reply_deadline,
         }
     }
 }
@@ -289,4 +312,14 @@ impl<S> DerefMut for MySqlStream<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.socket
     }
+}
+
+/// No reply within the bound on a connection whose liveness ping went
+/// unanswered (Durable Workflow Server #1355). The session is not in step any
+/// more, so its owner discards it.
+pub(crate) fn unanswered_reply() -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "the database sent no reply within the bound for a connection whose liveness ping went unanswered",
+    ))
 }

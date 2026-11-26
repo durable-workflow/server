@@ -1171,6 +1171,61 @@ mod tests {
         }
     }
 
+    /// Server #1355, silent peer: a connection handed out after its
+    /// pre-checkout ping went unanswered must see a reply within the bound, or
+    /// its statement fails and the connection is replaced; it never holds the
+    /// request until the operating system gives up on the peer. The proxy
+    /// holds every reply once the pool's only connection has idled a second.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires disposable PostgreSQL; run qualification_ explicitly"]
+    async fn qualification_a_connection_whose_ping_went_unanswered_fails_within_its_reply_bound() {
+        use super::super::test_reply_gate::{ReplyGate, forward};
+        use std::sync::{Arc, atomic::Ordering};
+        let bound = Duration::from_secs(3);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let db = Database::new().await;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let gate = Arc::new(ReplyGate::default());
+            let proxy = tokio::spawn(forward(listener, format!("{}:{}", db.options.get_host(), db.options.get_port()), gate.clone()));
+            let pool = super::super::backend::test_idle_connections_within(
+                PgPoolOptions::new().max_connections(1).acquire_timeout(Duration::from_secs(5)),
+                super::super::backend::CHECKOUT_PING_BUDGET,
+                bound,
+            )
+            .connect_with(db.options.clone().host("127.0.0.1").port(port))
+            .await
+            .unwrap();
+            let mut connection = pool.acquire().await.unwrap();
+            let silent: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *connection).await.unwrap();
+            connection.return_to_pool().await;
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            gate.hold.store(true, Ordering::SeqCst);
+            let started = tokio::time::Instant::now();
+            let outcome = async {
+                let mut connection = pool.acquire().await?;
+                sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&mut *connection).await
+            }
+            .await;
+            let waited = started.elapsed();
+            gate.release();
+            assert!(matches!(&outcome, Err(sqlx::Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut),
+                "a silent peer fails the statement: {outcome:?}");
+            let ceiling = super::super::backend::CHECKOUT_PING_BUDGET + bound + Duration::from_secs(2);
+            assert!(waited < ceiling, "the statement failed within the bound: {waited:?}");
+            let mut replacement = tokio::time::timeout(Duration::from_secs(10), pool.acquire()).await
+                .expect("the silent connection's slot returns").unwrap();
+            let next: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *replacement).await.unwrap();
+            assert_ne!(next, silent, "the silent connection was discarded");
+            drop(replacement);
+            pool.close().await;
+            proxy.abort();
+            db.remove().await;
+        })
+        .await
+        .expect("bounded silent-peer qualification");
+    }
+
     fn refused(result: Result<PostgresStorage>, expected: &str) {
         match result {
             Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),
