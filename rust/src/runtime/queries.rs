@@ -460,9 +460,9 @@ where
     /// Open tasks of this namespace on `queue` a poll could claim now: read
     /// lock-free from the namespace's open set, every row by key (Server
     /// #964). Only a readiness hint; the claim decides under the lock.
-    pub(super) async fn ready_query_keys(&self, queue: &str) -> Result<Vec<String>> {
+    pub(super) async fn ready_query_keys(&self, connection: &mut DB::Connection, queue: &str) -> Result<Vec<String>> {
         let namespace = self.namespace.as_ref();
-        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(Self::open_set_key(namespace)).fetch_optional(&self.pool).await? else {
+        let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(Self::open_set_key(namespace)).fetch_optional(&mut *connection).await? else {
             return Ok(vec![]);
         };
         let set: Value = serde_json::from_str(&DB::string(&row, "value")?).unwrap_or(Value::Null);
@@ -471,7 +471,7 @@ where
         let mut ready = vec![];
         for id in listed_ids(&set, namespace) {
             let key = key(&id)?;
-            let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&self.pool).await? else {
+            let Some(row) = Self::query(DB::QUERY_CACHE_GET).bind(&key).fetch_optional(&mut *connection).await? else {
                 continue;
             };
             if DB::number(&row, "expiration")? <= at.timestamp() {
@@ -1030,7 +1030,10 @@ where
         keys: Option<&poll_requests::PollKeys>,
     ) -> Result<Value> {
         let mut cross_kind = if timeout > 0 {
-            self.poll_wake_snapshot(body, "query").await?
+            let mut reads = self.probe_connection().await?;
+            let snapshot = self.poll_wake_snapshot(reads.get(), body, "query").await?;
+            reads.finish().await;
+            snapshot
         } else {
             None
         };
@@ -1046,7 +1049,7 @@ where
             // `performPoll`: a registration replaced or silenced during the
             // wait ends the poll empty, leasing nothing.
             if let Some(fence) = fence
-                && !self.worker_poll_fence_holds(fence, text(body, "worker_id")?).await?
+                && !self.worker_poll_fence_holds(self.probe_connection().await?.get(), fence, text(body, "worker_id")?).await?
             {
                 return Ok(poll_result(None, "empty"));
             }
@@ -1067,10 +1070,15 @@ where
             if tokio::time::Instant::now() >= deadline {
                 return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" }));
             }
-            if self
-                .poll_queue_changed(&body, "query", &mut cross_kind)
-                .await?
-                && tokio::time::Instant::now() < deadline
+            let changed = if cross_kind.is_some() {
+                let mut reads = self.probe_connection().await?;
+                let changed = self.poll_queue_changed(reads.get(), body, "query", &mut cross_kind).await;
+                reads.finish().await;
+                changed?
+            } else {
+                false
+            };
+            if changed && tokio::time::Instant::now() < deadline
             {
                 return Ok(
                     json!({"task":null,"poll_status":"task_queue_changed","server_capabilities":super::store::capabilities()}),
@@ -1161,7 +1169,7 @@ where
         {
             return Ok(true);
         }
-        let candidates = self.ready_query_keys(text(body, "task_queue")?).await?;
+        let candidates = self.ready_query_keys(&mut *self.pool.acquire().await?, text(body, "task_queue")?).await?;
         if candidates.is_empty() {
             return Ok(false);
         }

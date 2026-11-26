@@ -1175,7 +1175,7 @@ where
             let first_probe = std::mem::take(&mut first);
             let current = match &fence {
                 _ if first_probe && request.is_some() => true,
-                Some(fence) => self.worker_poll_fence_holds(fence, &worker_id).await?,
+                Some(fence) => self.worker_poll_fence_holds(self.probe_connection().await?.get(), fence, &worker_id).await?,
                 None => true,
             };
             let probed = if current {
