@@ -704,8 +704,9 @@ where
         let event_id = Self::append_returning(tx, &parent_run, event_type, payload, None, None).await?;
         // Record the outcome even while the all barrier remains closed. The
         // last successful member observes every committed call under the same
-        // parent transition lock; any failed member wakes the parent at once.
-        if matches!(resolution, ChildResolution::Completed(_))
+        // parent transition lock; any failed member wakes the parent at once,
+        // except in a `settle` group, which waits for every outcome.
+        if (matches!(resolution, ChildResolution::Completed(_)) || super::all_groups::settles(&parallel))
             && !Self::all_groups_closed(tx, &parent_run, &parallel).await?
         {
             if let Some(previous_sequence) = previous_sequence {
