@@ -229,6 +229,9 @@ pub(super) struct Store<DB: Backend> {
     pub(super) test_transitions: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
     pub(super) test_continuation_gate: Arc<std::sync::Mutex<Option<Arc<super::commit_handoff_tests::CommitGate>>>>,
+    /// Holds a v2 continuation between poll admission and its transaction.
+    #[cfg(test)]
+    pub(super) test_admission_gate: Arc<std::sync::Mutex<Option<Arc<super::commit_handoff_tests::CommitGate>>>>,
 }
 /// The `closed_reason` a terminal history event gives its run, or `None` for
 /// an event that does not close the run.
@@ -404,6 +407,8 @@ where
             test_transitions: Arc::default(),
             #[cfg(test)]
             test_continuation_gate: Arc::default(),
+            #[cfg(test)]
+            test_admission_gate: Arc::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -438,6 +443,8 @@ where
             test_transitions: self.test_transitions.clone(),
             #[cfg(test)]
             test_continuation_gate: self.test_continuation_gate.clone(),
+            #[cfg(test)]
+            test_admission_gate: self.test_admission_gate.clone(),
         }
     }
 
@@ -3575,49 +3582,56 @@ where
                     }
                 }
                 let last = DB::number(&run, "last_history_sequence")?;
-                // Server #1017: a worker that takes history suffixes and is
-                // expected to hit its cache gets only the events after the
-                // boundary it reported with its previous completion of the run.
-                let capabilities = DB::optional_document_row(&worker, "capabilities")?;
-                if capabilities.as_ref().is_some_and(super::wait_timeouts::supports_condition_input_order)
-                    && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(&run_id).fetch_optional(&mut **tx).await?.is_some()
-                {
-                    claim[super::wait_timeouts::PENDING_CONDITION_INPUT] = json!(
-                        Self::first_pending_condition_input(&mut **tx, &run_id).await?
-                    );
-                }
-                let suffix_worker = super::sticky_execution::takes_suffixes(capabilities.as_ref())
-                    && super::sticky_execution::registration_supports(capabilities.as_ref(),
-                        DB::optional_document_row(&worker, "capability_manifest")?.as_ref(), "sticky_execution");
-                let after = if suffix_worker && sticky_mode == Some(super::sticky_execution::STICKY_HIT_EXPECTED) {
-                    Self::query("SELECT payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='completed' AND lease_owner=$2 AND id<>$3 ORDER BY id DESC LIMIT 1")
-                        .bind(&run_id).bind(worker_id).bind(&task_id).fetch_optional(&mut **tx).await?
-                        .map(|row| DB::optional_document_row(&row, "payload")).transpose()?.flatten()
-                        .and_then(|payload| payload[super::sticky_execution::CACHED_THROUGH_KEY].as_i64())
-                        .filter(|through| (1..=last).contains(through))
-                        .unwrap_or(0)
+                // Server #1181: a v2 continuation completes this task in the
+                // same transaction, so no worker reads its history.
+                if tx.claim_without_history && tx.claim_only.is_some() {
+                    claim["history_events"] = json!([]);
+                    claim["next_history_page_token"] = Value::Null;
                 } else {
-                    0
-                };
-                let (mut events, next) = match page {
-                    Some(size) => Self::history_page_connection_with_total(&mut **tx, &run_id, after, size, Some(last)).await?,
-                    None if after > 0 => Self::history_page_connection_with_total(&mut **tx, &run_id, after, last - after, Some(last)).await?,
-                    None => (Self::whole_history(&mut **tx, &run_id, last).await?, None),
-                };
-                if suffix_worker {
-                    claim["history_after_sequence"] = json!(after);
-                    claim["history_last_sequence"] = json!(last);
+                    // Server #1017: a worker that takes history suffixes and is
+                    // expected to hit its cache gets only the events after the
+                    // boundary it reported with its previous completion of the run.
+                    let capabilities = DB::optional_document_row(&worker, "capabilities")?;
+                    if capabilities.as_ref().is_some_and(super::wait_timeouts::supports_condition_input_order)
+                        && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(&run_id).fetch_optional(&mut **tx).await?.is_some()
+                    {
+                        claim[super::wait_timeouts::PENDING_CONDITION_INPUT] = json!(
+                            Self::first_pending_condition_input(&mut **tx, &run_id).await?
+                        );
+                    }
+                    let suffix_worker = super::sticky_execution::takes_suffixes(capabilities.as_ref())
+                        && super::sticky_execution::registration_supports(capabilities.as_ref(),
+                            DB::optional_document_row(&worker, "capability_manifest")?.as_ref(), "sticky_execution");
+                    let after = if suffix_worker && sticky_mode == Some(super::sticky_execution::STICKY_HIT_EXPECTED) {
+                        Self::query("SELECT payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='completed' AND lease_owner=$2 AND id<>$3 ORDER BY id DESC LIMIT 1")
+                            .bind(&run_id).bind(worker_id).bind(&task_id).fetch_optional(&mut **tx).await?
+                            .map(|row| DB::optional_document_row(&row, "payload")).transpose()?.flatten()
+                            .and_then(|payload| payload[super::sticky_execution::CACHED_THROUGH_KEY].as_i64())
+                            .filter(|through| (1..=last).contains(through))
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let (mut events, next) = match page {
+                        Some(size) => Self::history_page_connection_with_total(&mut **tx, &run_id, after, size, Some(last)).await?,
+                        None if after > 0 => Self::history_page_connection_with_total(&mut **tx, &run_id, after, last - after, Some(last)).await?,
+                        None => (Self::whole_history(&mut **tx, &run_id, last).await?, None),
+                    };
+                    if suffix_worker {
+                        claim["history_after_sequence"] = json!(after);
+                        claim["history_last_sequence"] = json!(last);
+                    }
+                    Self::with_signal_sequences(&mut **tx, &run_id, &mut events).await?;
+                    let budget = Self::workflow_history_budget(
+                        tx,
+                        &run_id,
+                        last,
+                    )
+                    .await?;
+                    budget.write_task(&mut claim);
+                    claim["history_events"] = Value::Array(events);
+                    claim["next_history_page_token"] = json!(next);
                 }
-                Self::with_signal_sequences(&mut **tx, &run_id, &mut events).await?;
-                let budget = Self::workflow_history_budget(
-                    tx,
-                    &run_id,
-                    last,
-                )
-                .await?;
-                budget.write_task(&mut claim);
-                claim["history_events"] = Value::Array(events);
-                claim["next_history_page_token"] = json!(next);
             }
             if let Some(request_id) = request_id {
                 Self::query("INSERT INTO dw_poll_receipts(worker_id,kind,request_id,task_id,attempt,response,expires_at,namespace) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
@@ -4459,11 +4473,26 @@ where
         tx.meter = Some(super::history_meter::Meter::new(&limits, task_id, &body["workflow_task_attempt"]));
         if let Some(after) = continuation_after {
             // The enclosing activity result is part of this same history
-            // transaction, so it consumes the same event/row/byte budget.
-            let prior = Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence")
-                .bind(&run_id).bind(after).fetch_all(&mut *tx).await?;
-            for event in prior {
-                tx.charge_event(&DB::string(&event, "event_type")?, &DB::document_row(&event, "payload")?)?;
+            // transaction, so it consumes the same event/row/byte budget. A v2
+            // continuation remembered exactly those events as it wrote them
+            // (Server #1181); otherwise they are read back.
+            let remembered = tx.remembered_events.take().filter(|events| {
+                i64::try_from(events.len()).ok().and_then(|count| after.checked_add(count))
+                    .is_some_and(|last| tx.history_sequences.get(&run_id) == Some(&last))
+            });
+            match remembered {
+                Some(events) => {
+                    for (event_type, payload) in &events {
+                        tx.charge_event(event_type, payload)?;
+                    }
+                }
+                None => {
+                    let prior = Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence")
+                        .bind(&run_id).bind(after).fetch_all(&mut *tx).await?;
+                    for event in prior {
+                        tx.charge_event(&DB::string(&event, "event_type")?, &DB::document_row(&event, "payload")?)?;
+                    }
+                }
             }
         }
         let task_payload = DB::document_row(&task, "payload")?;
@@ -5386,11 +5415,13 @@ where
         } else {
             None
         };
+        tx.claim_without_history = tx.claim_only.is_some() && v2_decline.is_some();
         let carried = match workflow_poll.as_ref() {
             Some(poll) => self.claim_carried_workflow(tx, poll, &DB::string(&task, "lease_owner")?).await?,
             None => super::carried_polls::Outcome::Declined,
         };
         tx.claim_only = None;
+        tx.claim_without_history = false;
         let mut response = json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id});
         if let Some(poll) = carried.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
         if let Some(decline) = v2_decline {
@@ -5718,7 +5749,11 @@ where
                 json!({"current_attempt":current}),
             ));
         }
-        if !Self::lease_owner_fresh(tx, &DB::string(task, "namespace")?, lease_owner, stale_after_seconds).await? {
+        // Server #1181: a v2 continuation's carried claim fenced this owner's
+        // registration moments ago under the same transition lock.
+        if tx.fresh_lease_owner.as_deref() != Some(lease_owner)
+            && !Self::lease_owner_fresh(tx, &DB::string(task, "namespace")?, lease_owner, stale_after_seconds).await?
+        {
             return Err(refused(
                 "Workflow task lease owner is no longer an active worker.",
                 "stale_worker_registration",
@@ -6007,6 +6042,16 @@ where
     pub(super) async fn allocate_history_sequences(
         tx: &mut Transaction<'_, DB>, run_id: &str, count: usize,
     ) -> Result<Vec<i64>> {
+        let sequences = Self::advance_history_sequences(tx, run_id, count).await?;
+        if let Some(last) = sequences.last() {
+            tx.remember_history_sequence(run_id, *last);
+        }
+        Ok(sequences)
+    }
+
+    async fn advance_history_sequences(
+        tx: &mut Transaction<'_, DB>, run_id: &str, count: usize,
+    ) -> Result<Vec<i64>> {
         if count == 0 { return Ok(Vec::new()); }
         let count_i64 = i64::try_from(count)
             .map_err(|_| refuse(StatusCode::CONFLICT, "history_sequence_exhausted"))?;
@@ -6038,6 +6083,14 @@ where
     }
 
     pub(super) async fn allocate_history_sequence(
+        tx: &mut Transaction<'_, DB>, run_id: &str,
+    ) -> Result<i64> {
+        let sequence = Self::advance_history_sequence(tx, run_id).await?;
+        tx.remember_history_sequence(run_id, sequence);
+        Ok(sequence)
+    }
+
+    async fn advance_history_sequence(
         tx: &mut Transaction<'_, DB>, run_id: &str,
     ) -> Result<i64> {
         if DB::HISTORY_ADVANCE_RETURNS_ROW {
@@ -6115,6 +6168,9 @@ where
         }
         // A metered completion (Workflow #930) charges the event as stored.
         tx.charge_event(event_type, &payload)?;
+        if let Some(events) = tx.remembered_events.as_mut() {
+            events.push((event_type.to_owned(), payload.clone()));
+        }
         let event_id = id();
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(&event_id).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;

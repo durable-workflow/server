@@ -584,3 +584,68 @@ async fn a_version_one_continuation_is_unchanged() {
     runtime.close().await;
     database.remove().await;
 }
+
+// The other half of control 2 (#1079): a writer that bypasses the allocator
+// after the proof, inside the transaction, breaks the sequence the
+// transaction remembers. The commit-time independent read catches it.
+#[tokio::test]
+async fn a_writer_that_bypasses_the_allocator_after_the_proof_is_caught() {
+    let database = TestDatabase::new().await;
+    // MySQL triggers cannot change the table that fired them.
+    if matches!(&database, TestDatabase::MySql { .. }) {
+        return;
+    }
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    v2_worker(&app, registration("v2-late-bypass")).await;
+    let seeded = seed(&app, "v2-late-bypass", "v2-late-bypass", schedule()).await;
+    match &database {
+        TestDatabase::Sqlite(_) => database.execute("CREATE TRIGGER continuation_bypass AFTER INSERT ON workflow_history_events WHEN NEW.event_type='ActivityCompleted' BEGIN DELETE FROM workflow_history_events WHERE workflow_run_id=NEW.workflow_run_id AND sequence=1; END").await,
+        _ => {
+            database.execute("CREATE FUNCTION continuation_bypass_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type='ActivityCompleted' THEN DELETE FROM workflow_history_events WHERE workflow_run_id=NEW.workflow_run_id AND sequence=1; END IF; RETURN NEW; END $$").await;
+            database.execute("CREATE TRIGGER continuation_bypass AFTER INSERT ON workflow_history_events FOR EACH ROW EXECUTE FUNCTION continuation_bypass_fn()").await;
+        }
+    }
+    let events = history(&app, &seeded).await;
+    let before = table_counts(&database).await;
+    let (status, refused) = continue_v2(&app, &seeded, v2_body(&seeded, timer(), "v2-late-bypass")).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{refused}");
+    assert_eq!(refused["reason"], "history_invariant_violated", "{refused}");
+    assert_eq!(history(&app, &seeded).await, events, "everything rolled back");
+    assert_eq!(table_counts(&database).await, before);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// #1079 control: a fault after the nested completion, at the receipt write,
+// rolls back every effect, and the ordinary completion then succeeds.
+#[tokio::test]
+async fn a_fault_after_the_nested_completion_leaves_the_ordinary_completion() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    v2_worker(&app, registration("v2-receipt-fault")).await;
+    let seeded = seed(&app, "v2-receipt-fault", "v2-receipt-fault", schedule()).await;
+    match &database {
+        TestDatabase::Sqlite(_) => database.execute("CREATE TRIGGER continuation_receipt_fault BEFORE UPDATE ON dw_task_completions WHEN NEW.receipt LIKE '%activity_workflow_continuation_v2%' BEGIN SELECT RAISE(ABORT,'continuation receipt fault fixture'); END").await,
+        TestDatabase::MySql { .. } => database.execute("CREATE TRIGGER continuation_receipt_fault BEFORE UPDATE ON dw_task_completions FOR EACH ROW BEGIN IF CAST(NEW.receipt AS CHAR) LIKE '%activity_workflow_continuation_v2%' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='continuation receipt fault fixture'; END IF; END").await,
+        TestDatabase::Postgres { .. } => {
+            database.execute("CREATE FUNCTION continuation_receipt_fault_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.receipt::text LIKE '%activity_workflow_continuation_v2%' THEN RAISE EXCEPTION 'continuation receipt fault fixture'; END IF; RETURN NEW; END $$").await;
+            database.execute("CREATE TRIGGER continuation_receipt_fault BEFORE UPDATE ON dw_task_completions FOR EACH ROW EXECUTE FUNCTION continuation_receipt_fault_fn()").await;
+        }
+    }
+    let events = history(&app, &seeded).await;
+    let before = table_counts(&database).await;
+    let (status, refused) = continue_v2(&app, &seeded, v2_body(&seeded, schedule(), "v2-receipt-fault")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{refused}");
+    assert_eq!(history(&app, &seeded).await, events, "no result, command, claim or tail survives");
+    assert_eq!(table_counts(&database).await, before);
+    heartbeat(&app, &seeded.activity["lease_owner"]).await;
+    let (status, ordinary) = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", seeded.activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner":seeded.activity["lease_owner"],"activity_attempt_id":seeded.activity["activity_attempt_id"],
+            "result":envelope(Payload::Long(7))})).await;
+    assert_eq!(status, StatusCode::OK, "{ordinary}");
+    assert_eq!(ordinary["recorded"], true, "{ordinary}");
+    runtime.close().await;
+    database.remove().await;
+}
