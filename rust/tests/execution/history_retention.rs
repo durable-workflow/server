@@ -226,3 +226,53 @@ async fn maintenance_retention_prunes_expired_runs_past_held_ones() {
     assert_eq!(status, StatusCode::OK, "{export}");
     assert!(!export["history_events"].as_array().unwrap().is_empty());
 }
+
+/// Server #1365: retention deletes a pruned run's events but keeps its
+/// `last_history_sequence`. Its history page is empty and final, as published
+/// PHP's query finds no events, and says the run is pruned as its export does.
+/// It is not refused as an event larger than the page budget.
+#[tokio::test]
+async fn a_pruned_run_history_page_is_empty_and_final() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let pruned = completed_run(&app, "history-pruned").await;
+    let kept = completed_run(&app, "history-kept").await;
+    let history = |workflow: &str, run: &str, query: &str| format!("/api/workflows/{workflow}/runs/{run}/history{query}");
+
+    let (status, first) = request(&app, "GET", &history("history-pruned", &pruned, "?page_size=1"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let token = first["next_page_token"].as_str().unwrap_or_else(|| panic!("{first}")).replace('+', "%2B").replace('=', "%3D");
+    let (status, retained) = request(&app, "GET", &history("history-kept", &kept, ""), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{retained}");
+
+    let (status, report) = request(&app, "POST", PASS, json!({"run_ids":[pruned]})).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["pruned"], 1, "{report}");
+
+    // The first page, a later page from a token issued before the prune, and
+    // a waiting read all answer at once with the same empty, final page.
+    for query in [String::new(), "?page_size=1".into(), format!("?next_page_token={token}"), "?wait_new_event=1".into()] {
+        let (status, page) = request(&app, "GET", &history("history-pruned", &pruned, &query), Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {page}");
+        assert_eq!(
+            [&page["workflow_id"], &page["run_id"], &page["events"], &page["next_page_token"]],
+            [&json!("history-pruned"), &json!(pruned), &json!([]), &Value::Null],
+            "{query}: {page}"
+        );
+        assert_eq!([&page["history_complete"], &page["details_state"]], [&json!(false), &json!("pruned")], "{query}: {page}");
+    }
+    let bundle = export(&app, "history-pruned", &pruned).await;
+    assert_eq!([&bundle["history_complete"], &bundle["workflow"]["details_state"]], [&json!(false), &json!("pruned")]);
+
+    // A retained run's page is unchanged and carries no pruning state.
+    let (status, after) = request(&app, "GET", &history("history-kept", &kept, ""), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(after, retained);
+    for field in ["history_complete", "details_state"] {
+        assert!(after.get(field).is_none(), "{field}: {after}");
+    }
+    runtime.close().await;
+    database.remove().await;
+}

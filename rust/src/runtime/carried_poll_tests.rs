@@ -263,11 +263,11 @@ store_methods! {
         let poll = store.admit_activity_carrier(Some(activity_poll()), "owner", Some("1.20")).await.unwrap().unwrap();
         let workflow = store.admit_workflow_carrier(Some(workflow_poll()), "owner", polling()).await.unwrap().unwrap();
         let mut tx = store.begin().await.unwrap();
-        assert!(matches!(store.claim_carried_activity(&mut tx, &poll, "other").await.unwrap(), super::carried_polls::Outcome::Declined));
+        assert!(matches!(store.claim_carried_activity(&mut tx, &poll, "other", None).await.unwrap(), super::carried_polls::Outcome::Declined));
         assert!(matches!(store.claim_carried_workflow(&mut tx, &workflow, "other").await.unwrap(), super::carried_polls::Outcome::Declined));
         Self::query("UPDATE workflow_worker_registrations SET build_id='replacement' WHERE namespace=$1 AND worker_id='owner'")
             .bind(store.namespace.as_ref()).execute(&mut *tx).await.unwrap();
-        assert!(matches!(store.claim_carried_activity(&mut tx, &poll, "owner").await.unwrap(), super::carried_polls::Outcome::Declined));
+        assert!(matches!(store.claim_carried_activity(&mut tx, &poll, "owner", None).await.unwrap(), super::carried_polls::Outcome::Declined));
         assert!(matches!(store.claim_carried_workflow(&mut tx, &workflow, "owner").await.unwrap(), super::carried_polls::Outcome::Declined));
         tx.rollback().await.unwrap();
 

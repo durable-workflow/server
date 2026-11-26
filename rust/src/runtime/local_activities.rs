@@ -1028,10 +1028,13 @@ store_methods! {
     /// metrics are kept with its registration. `run_status` is the status the
     /// completion just left the run in, and `metrics` the registration's
     /// process metrics `guard_sticky_cache` read in this transaction.
+    /// `cached_through` is the boundary a continuation tail answer leaves the
+    /// cache at, in place of the claim's own (Server #1181).
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn record_sticky_cache(tx: &mut Transaction<'_, DB>, namespace: &str, run_id: &str, task_id: &str, body: &Value,
-        run_status: &str, mut metrics: Value) -> Result<()> {
+        run_status: &str, mut metrics: Value, cached_through: Option<i64>) -> Result<()> {
         let claim = &body["sticky_cache"];
-        if let Some(through) = claim["history_last_sequence"].as_i64() {
+        if let Some(through) = cached_through.or(claim["history_last_sequence"].as_i64()) {
             let row = Self::query("SELECT payload FROM workflow_tasks WHERE id=$1").bind(task_id).fetch_one(&mut **tx).await?;
             let mut payload = DB::optional_document_row(&row, "payload")?.filter(Value::is_object).unwrap_or_else(|| json!({}));
             payload[super::sticky_execution::CACHED_THROUGH_KEY] = json!(through);

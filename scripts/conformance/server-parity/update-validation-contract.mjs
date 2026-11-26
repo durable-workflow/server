@@ -17,6 +17,7 @@ const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 const UNCOMPARED = new Set(['principal', 'control_plane', 'seconds']);
 const TIMEOUTS = ['unclaimed', 'worker_lost', 'execution_timeout'];
 const VALIDATION_SECONDS = [9, 20];
+const NATIVE_SDK_SURFACES = {'sdk-php': 'validator_capable', 'sdk-python': 'validator_capable', 'sdk-rust': 'validator_capable'};
 
 export function normalizeUpdateValidation(state, workflowId) {
   const prefix = `${workflowId}-uv`;
@@ -60,6 +61,7 @@ export function checkUpdateValidation(fixture, observation, workflowId, target) 
   const retainedIntent = nativeDivergence(target, 'retained-command-intent-readback');
   const receiptMetadata = nativeDivergence(target, 'command-key-receipt-metadata');
   const replayClock = nativeDivergence(target, 'replay-clock-validation-tasks');
+  const sdkSurfaces = nativeDivergence(target, 'update-validation-sdk-surfaces');
   const keyedReceipts = {approved_update: 'r1', plain: 'p1', completed_wait: 'r4',
     retained_approval: 'r1', retained_rejection: 'r2'};
   assert.deepStrictEqual(Object.keys(actual), Object.keys(expected), 'update validation steps');
@@ -77,6 +79,10 @@ export function checkUpdateValidation(fixture, observation, workflowId, target) 
     // Native validation tasks always carry the run's replay_clock (.github#215).
     if (replayClock && ['dedicated_poll', 'multiplexed_poll'].includes(step) && Array.isArray(wanted.task?.keys)) {
       wanted = {...wanted, task: {...wanted.task, keys: [...wanted.task.keys, 'replay_clock'].sort()}};
+    }
+    // Native lists sdk-php and sdk-rust as validator capable (PHP SDK 3.32.0, Rust SDK 4.25.0).
+    if (sdkSurfaces && step === 'capability' && Array.isArray(wanted) && wanted[1]?.sdk_surfaces) {
+      wanted = [wanted[0], {...wanted[1], sdk_surfaces: NATIVE_SDK_SURFACES}, ...wanted.slice(2)];
     }
     assert.deepStrictEqual(actual[step], wanted, `update validation ${step}`);
   }

@@ -219,6 +219,8 @@ pub(super) struct Store<DB: Backend> {
     /// The node's long-poll wait slots and probe permits (Server #982),
     /// shared by every namespace's store.
     pub(super) poll_capacity: Arc<super::poll_capacity::PollCapacity>,
+    /// Held-poll probe slots: the pool size less one (Server #1204).
+    pub(super) probe_slots: Arc<Semaphore>,
     // A per-store source-test clock for deterministic claim arithmetic. All
     // production claims continue to sample the existing canonical clock.
     #[cfg(test)]
@@ -227,6 +229,9 @@ pub(super) struct Store<DB: Backend> {
     pub(super) test_transitions: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
     pub(super) test_continuation_gate: Arc<std::sync::Mutex<Option<Arc<super::commit_handoff_tests::CommitGate>>>>,
+    /// Holds a v2 continuation between poll admission and its transaction.
+    #[cfg(test)]
+    pub(super) test_admission_gate: Arc<std::sync::Mutex<Option<Arc<super::commit_handoff_tests::CommitGate>>>>,
 }
 /// The `closed_reason` a terminal history event gives its run, or `None` for
 /// an event that does not close the run.
@@ -363,6 +368,7 @@ where
         sqlx::query_scalar(sqlx::AssertSqlSafe(DB::statement(sql)))
     }
     pub(super) fn new(pool: Pool<DB>) -> Self {
+        let probe_slots = super::probe_connections::slots(pool.options().get_max_connections());
         Self {
             pool,
             transitions: Arc::default(),
@@ -394,12 +400,15 @@ where
             poll_sweeps: Arc::default(),
             storage_admission: Arc::default(),
             poll_capacity: Arc::default(),
+            probe_slots,
             #[cfg(test)]
             test_claim_at: None,
             #[cfg(test)]
             test_transitions: Arc::default(),
             #[cfg(test)]
             test_continuation_gate: Arc::default(),
+            #[cfg(test)]
+            test_admission_gate: Arc::default(),
         }
     }
     pub(super) fn in_namespace(&self, namespace: &str) -> Self {
@@ -427,12 +436,15 @@ where
             poll_sweeps: self.poll_sweeps.clone(),
             storage_admission: self.storage_admission.clone(),
             poll_capacity: self.poll_capacity.clone(),
+            probe_slots: self.probe_slots.clone(),
             #[cfg(test)]
             test_claim_at: self.test_claim_at,
             #[cfg(test)]
             test_transitions: self.test_transitions.clone(),
             #[cfg(test)]
             test_continuation_gate: self.test_continuation_gate.clone(),
+            #[cfg(test)]
+            test_admission_gate: self.test_admission_gate.clone(),
         }
     }
 
@@ -1111,7 +1123,7 @@ where
         // a spurious page-budget refusal.
         let (run, events, next) = {
             let mut snapshot = self.begin_repeatable_read().await?;
-            let run = Self::query("SELECT compatibility,queue,import_source,imported_at,import_dedupe_key,last_history_sequence FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace=$3")
+            let run = Self::query("SELECT compatibility,queue,import_source,imported_at,import_dedupe_key,last_history_sequence,details_pruned_at FROM workflow_runs WHERE id=$1 AND workflow_instance_id=$2 AND namespace=$3")
                 .bind(run_id)
                 .bind(workflow_id)
                 .bind(self.namespace.as_ref())
@@ -1138,6 +1150,13 @@ where
         // describe does.
         let mut body = json!({"workflow_id": workflow_id, "run_id": run_id, "events": public_events, "next_page_token": next});
         body.as_object_mut().expect("history object").extend(compatibility);
+        // Server #1365: retention pruned this run's events but kept its
+        // history sequence. The page is empty and final, and says why, as the
+        // export reports the same run.
+        if DB::optional_instant(&run, "details_pruned_at")?.is_some() {
+            body["history_complete"] = json!(false);
+            body["details_state"] = json!("pruned");
+        }
         // `LegacyV1Projection::metadataForRun` on a projected run.
         if DB::optional_string(&run, "import_source")?.as_deref() == Some(super::waterline_import::IMPORT_SOURCE) {
             body["migration_projection"] = self.projection_metadata(run_id, DB::optional_instant(&run, "imported_at")?,
@@ -2508,7 +2527,10 @@ where
             return replayed_poll(answer, encoding);
         }
         let mut cross_kind = if timeout > 0 {
-            self.poll_wake_snapshot(&body, kind).await?
+            let mut reads = self.probe_connection().await?;
+            let snapshot = self.poll_wake_snapshot(reads.get(), &body, kind).await?;
+            reads.finish().await;
+            snapshot
         } else {
             None
         };
@@ -2544,13 +2566,31 @@ where
                     }
                 }
                 _ => {
+                    // The probe's lock-free reads share one connection, back
+                    // in the pool before the probe claims (Server #1204).
+                    let mut reads = None;
                     let current = match &fence {
-                        Some(fence) => self.worker_poll_fence_holds(fence, worker_id).await?,
+                        Some(fence) => {
+                            let reads = reads.insert(self.probe_connection().await?);
+                            self.worker_poll_fence_holds(reads.get(), fence, worker_id).await?
+                        }
                         None => true,
                     };
+                    let ready = if current && !first_probe {
+                        if reads.is_none() {
+                            reads = Some(self.probe_connection().await?);
+                        }
+                        let reads = reads.as_mut().expect("the probe connection");
+                        self.task_poll_ready(reads.get(), &body, kind, poll_request.as_ref()).await?
+                    } else {
+                        false
+                    };
+                    if let Some(reads) = reads {
+                        reads.finish().await;
+                    }
                     let claimed = if !current {
                         Err(super::worker_poll_fence::stale_claim())
-                    } else if first_probe || self.task_poll_ready(&body, kind, poll_request.as_ref()).await? {
+                    } else if first_probe || ready {
                         self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref()).await
                     } else {
                         Ok(None)
@@ -2589,11 +2629,15 @@ where
                 return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await
                     .map(|answer| activity_server_time(kind, answer));
             }
-            if self
-                .poll_queue_changed(&body, kind, &mut cross_kind)
-                .await?
-                && tokio::time::Instant::now() < deadline
-            {
+            let changed = if cross_kind.is_some() {
+                let mut reads = self.probe_connection().await?;
+                let changed = self.poll_queue_changed(reads.get(), &body, kind, &mut cross_kind).await;
+                reads.finish().await;
+                changed?
+            } else {
+                false
+            };
+            if changed && tokio::time::Instant::now() < deadline {
                 return self.no_task_answer(&body, poll_request.as_ref(), "task_queue_changed", encoding).await
                     .map(|answer| activity_server_time(kind, answer));
             }
@@ -2604,8 +2648,10 @@ where
                 &self.namespace, text(&body, "task_queue")?, task_kind)?;
             drop(probe);
             #[cfg(debug_assertions)]
-            if let Some(request) = &poll_request {
-                super::poll_pauses::stop_at(&request.id, super::poll_pauses::PollPoint::Waiting).await;
+            if let Some(id) = poll_request.as_ref().map(|request| request.id.as_str())
+                .or_else(|| body.get("poll_request_id").and_then(Value::as_str).filter(|_| kind == "activity"))
+            {
+                super::poll_pauses::stop_at(id, super::poll_pauses::PollPoint::Waiting).await;
             }
             pace.wait(wake, deadline).await;
         }
@@ -2632,6 +2678,7 @@ where
     /// Whether a held workflow or activity poll should claim again.
     async fn task_poll_ready(
         &self,
+        connection: &mut DB::Connection,
         body: &Value,
         kind: &str,
         poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
@@ -2644,7 +2691,7 @@ where
         )
         .bind(worker_id)
         .bind(self.namespace.as_ref())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *connection)
         .await?;
         let build = match registration {
             Some(row) if DB::string(&row, "task_queue")? == queue => worker_build::<DB>(&row)?,
@@ -2653,7 +2700,7 @@ where
         // A concurrent poll with the same request ID may have answered
         // already; the claim replays that answer.
         if let Some(request) = poll_request
-            && self.workflow_poll_answered(&request.keys).await?
+            && self.workflow_poll_answered(&mut *connection, &request.keys).await?
         {
             return Ok(true);
         }
@@ -2661,17 +2708,17 @@ where
             && let Some(request_id) = body.get("poll_request_id").and_then(Value::as_str)
             && Self::query("SELECT task_id FROM dw_poll_receipts WHERE worker_id=$1 AND kind=$2 AND request_id=$3 AND namespace=$4")
                 .bind(worker_id).bind(kind).bind(request_id).bind(self.namespace.as_ref())
-                .fetch_optional(&self.pool).await?.is_some()
+                .fetch_optional(&mut *connection).await?.is_some()
         {
             return Ok(true);
         }
         // A paused queue has nothing to claim until it resumes (Server #577).
-        if kind == "activity" && Self::activity_dispatch_paused(&self.pool, self.namespace.as_ref(), queue).await? {
+        if kind == "activity" && Self::activity_dispatch_paused(&mut *connection, self.namespace.as_ref(), queue).await? {
             return Ok(false);
         }
         let at = now();
         Ok(self.task_candidate_query(queue, kind, build.as_deref(), at, at, true)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *connection)
             .await?
             .is_some())
     }
@@ -3542,49 +3589,56 @@ where
                     }
                 }
                 let last = DB::number(&run, "last_history_sequence")?;
-                // Server #1017: a worker that takes history suffixes and is
-                // expected to hit its cache gets only the events after the
-                // boundary it reported with its previous completion of the run.
-                let capabilities = DB::optional_document_row(&worker, "capabilities")?;
-                if capabilities.as_ref().is_some_and(super::wait_timeouts::supports_condition_input_order)
-                    && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(&run_id).fetch_optional(&mut **tx).await?.is_some()
-                {
-                    claim[super::wait_timeouts::PENDING_CONDITION_INPUT] = json!(
-                        Self::first_pending_condition_input(&mut **tx, &run_id).await?
-                    );
-                }
-                let suffix_worker = super::sticky_execution::takes_suffixes(capabilities.as_ref())
-                    && super::sticky_execution::registration_supports(capabilities.as_ref(),
-                        DB::optional_document_row(&worker, "capability_manifest")?.as_ref(), "sticky_execution");
-                let after = if suffix_worker && sticky_mode == Some(super::sticky_execution::STICKY_HIT_EXPECTED) {
-                    Self::query("SELECT payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='completed' AND lease_owner=$2 AND id<>$3 ORDER BY id DESC LIMIT 1")
-                        .bind(&run_id).bind(worker_id).bind(&task_id).fetch_optional(&mut **tx).await?
-                        .map(|row| DB::optional_document_row(&row, "payload")).transpose()?.flatten()
-                        .and_then(|payload| payload[super::sticky_execution::CACHED_THROUGH_KEY].as_i64())
-                        .filter(|through| (1..=last).contains(through))
-                        .unwrap_or(0)
+                // Server #1181: a v2 continuation completes this task in the
+                // same transaction, so no worker reads its history.
+                if tx.claim_without_history && tx.claim_only.is_some() {
+                    claim["history_events"] = json!([]);
+                    claim["next_history_page_token"] = Value::Null;
                 } else {
-                    0
-                };
-                let (mut events, next) = match page {
-                    Some(size) => Self::history_page_connection_with_total(&mut **tx, &run_id, after, size, Some(last)).await?,
-                    None if after > 0 => Self::history_page_connection_with_total(&mut **tx, &run_id, after, last - after, Some(last)).await?,
-                    None => (Self::whole_history(&mut **tx, &run_id, last).await?, None),
-                };
-                if suffix_worker {
-                    claim["history_after_sequence"] = json!(after);
-                    claim["history_last_sequence"] = json!(last);
+                    // Server #1017: a worker that takes history suffixes and is
+                    // expected to hit its cache gets only the events after the
+                    // boundary it reported with its previous completion of the run.
+                    let capabilities = DB::optional_document_row(&worker, "capabilities")?;
+                    if capabilities.as_ref().is_some_and(super::wait_timeouts::supports_condition_input_order)
+                        && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(&run_id).fetch_optional(&mut **tx).await?.is_some()
+                    {
+                        claim[super::wait_timeouts::PENDING_CONDITION_INPUT] = json!(
+                            Self::first_pending_condition_input(&mut **tx, &run_id).await?
+                        );
+                    }
+                    let suffix_worker = super::sticky_execution::takes_suffixes(capabilities.as_ref())
+                        && super::sticky_execution::registration_supports(capabilities.as_ref(),
+                            DB::optional_document_row(&worker, "capability_manifest")?.as_ref(), "sticky_execution");
+                    let after = if suffix_worker && sticky_mode == Some(super::sticky_execution::STICKY_HIT_EXPECTED) {
+                        Self::query("SELECT payload FROM workflow_tasks WHERE workflow_run_id=$1 AND task_type='workflow' AND status='completed' AND lease_owner=$2 AND id<>$3 ORDER BY id DESC LIMIT 1")
+                            .bind(&run_id).bind(worker_id).bind(&task_id).fetch_optional(&mut **tx).await?
+                            .map(|row| DB::optional_document_row(&row, "payload")).transpose()?.flatten()
+                            .and_then(|payload| payload[super::sticky_execution::CACHED_THROUGH_KEY].as_i64())
+                            .filter(|through| (1..=last).contains(through))
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let (mut events, next) = match page {
+                        Some(size) => Self::history_page_connection_with_total(&mut **tx, &run_id, after, size, Some(last)).await?,
+                        None if after > 0 => Self::history_page_connection_with_total(&mut **tx, &run_id, after, last - after, Some(last)).await?,
+                        None => (Self::whole_history(&mut **tx, &run_id, last).await?, None),
+                    };
+                    if suffix_worker {
+                        claim["history_after_sequence"] = json!(after);
+                        claim["history_last_sequence"] = json!(last);
+                    }
+                    Self::with_signal_sequences(&mut **tx, &run_id, &mut events).await?;
+                    let budget = Self::workflow_history_budget(
+                        tx,
+                        &run_id,
+                        last,
+                    )
+                    .await?;
+                    budget.write_task(&mut claim);
+                    claim["history_events"] = Value::Array(events);
+                    claim["next_history_page_token"] = json!(next);
                 }
-                Self::with_signal_sequences(&mut **tx, &run_id, &mut events).await?;
-                let budget = Self::workflow_history_budget(
-                    tx,
-                    &run_id,
-                    last,
-                )
-                .await?;
-                budget.write_task(&mut claim);
-                claim["history_events"] = Value::Array(events);
-                claim["next_history_page_token"] = json!(next);
             }
             if let Some(request_id) = request_id {
                 Self::query("INSERT INTO dw_poll_receipts(worker_id,kind,request_id,task_id,attempt,response,expires_at,namespace) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
@@ -4047,6 +4101,12 @@ where
         let workflow_poll = if checkpoint.is_none() {
             body.as_object_mut().and_then(|fields| fields.remove("workflow_poll"))
         } else { None };
+        // Server #1181: asking for the history tail does not change the
+        // authored completion receipt either.
+        let tail = if checkpoint.is_none() {
+            let member = body.as_object_mut().and_then(|fields| fields.remove("continuation_tail"));
+            super::continuation_tail::parse(member.as_ref(), &body)?
+        } else { None };
         // `commands` is required and non-empty, with no count limit of its
         // own: each command meets the run's structural limits instead.
         let commands = body["commands"]
@@ -4257,11 +4317,15 @@ where
             let created = DB::optional_document_row(&task, "receipt")?
                 .and_then(|receipt| receipt.get(COMPLETION_RECEIPT).map(|receipt| receipt["created_task_ids"].clone()))
                 .unwrap_or_else(|| json!([]));
-            return Ok((
-                deferred.then_some(tx),
-                json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
-                "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created}),
-            ));
+            let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": DB::string(&current,"status")?, "workflow_task_attempt": body["workflow_task_attempt"],
+                "outcome": "completed", "recorded": false, "reason": "already_completed", "created_task_ids": created});
+            // The original tail is not kept, so the worker does not speculate
+            // on the activity that completion leased.
+            if let Some(request) = tail {
+                response["continuation_tail"] = super::continuation_tail::Tail::Omitted {
+                    after_sequence: request.after_sequence, reason: super::continuation_tail::UNAVAILABLE }.answer();
+            }
+            return Ok((deferred.then_some(tx), response));
         }
         Self::workflow_task_guard(&mut tx, &task, &body, self.worker_stale_after_seconds)
             .await
@@ -4358,6 +4422,12 @@ where
         let run = Self::active_run(&mut tx, &run_id)
             .await
             .map_err(|error| Self::not_recorded(&task, &body, error))?;
+        // A boundary past the run's history has no tail to continue it.
+        if let Some(request) = tail
+            && request.after_sequence > DB::number(&run, "last_history_sequence")?
+        {
+            return Err(refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_continuation_tail"));
+        }
         // `timeoutIfDeadlineExpired`: published PHP applies a run's deadlines
         // when one of its workflow tasks completes, and closes the run.
         let mut tx = if deferred {
@@ -4410,11 +4480,26 @@ where
         tx.meter = Some(super::history_meter::Meter::new(&limits, task_id, &body["workflow_task_attempt"]));
         if let Some(after) = continuation_after {
             // The enclosing activity result is part of this same history
-            // transaction, so it consumes the same event/row/byte budget.
-            let prior = Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence")
-                .bind(&run_id).bind(after).fetch_all(&mut *tx).await?;
-            for event in prior {
-                tx.charge_event(&DB::string(&event, "event_type")?, &DB::document_row(&event, "payload")?)?;
+            // transaction, so it consumes the same event/row/byte budget. A v2
+            // continuation remembered exactly those events as it wrote them
+            // (Server #1181); otherwise they are read back.
+            let remembered = tx.remembered_events.take().filter(|events| {
+                i64::try_from(events.len()).ok().and_then(|count| after.checked_add(count))
+                    .is_some_and(|last| tx.history_sequences.get(&run_id) == Some(&last))
+            });
+            match remembered {
+                Some(events) => {
+                    for (event_type, payload) in &events {
+                        tx.charge_event(event_type, payload)?;
+                    }
+                }
+                None => {
+                    let prior = Self::query("SELECT event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND sequence>$2 ORDER BY sequence")
+                        .bind(&run_id).bind(after).fetch_all(&mut *tx).await?;
+                    for event in prior {
+                        tx.charge_event(&DB::string(&event, "event_type")?, &DB::document_row(&event, "payload")?)?;
+                    }
+                }
             }
         }
         let task_payload = DB::document_row(&task, "payload")?;
@@ -4631,8 +4716,11 @@ where
                 .await?;
         }
         tx.summary_changed(&run_id);
+        // With a tail, only an activity this completion created can be
+        // carried, so the tail ends in its `ActivityStarted`.
         let carried = match activity_poll.as_ref() {
-            Some(poll) => self.claim_carried_activity(&mut tx, poll, &DB::string(&task, "lease_owner")?).await?,
+            Some(poll) => self.claim_carried_activity(&mut tx, poll, &DB::string(&task, "lease_owner")?,
+                tail.is_some().then_some(created.as_slice())).await?,
             None => super::carried_polls::Outcome::Declined,
         };
         let carried_workflow = if matches!(&carried, super::carried_polls::Outcome::Leased(_)) {
@@ -4645,8 +4733,15 @@ where
                 None => super::carried_polls::Outcome::Declined,
             }
         };
+        // Server #1181: after every write of the completion, before the claim
+        // records the boundary the worker's cache then holds.
+        let tail = match tail {
+            Some(request) => Some(Self::continuation_tail(&mut tx, &run_id, request.after_sequence).await?),
+            None => None,
+        };
         if let Some(metrics) = sticky_metrics {
-            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, task_id, &body, &run_status, metrics).await?;
+            let cached_through = tail.as_ref().map(super::continuation_tail::Tail::cached_through);
+            Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, task_id, &body, &run_status, metrics, cached_through).await?;
         }
         let transaction = if deferred { Some(tx) } else {
             tx.commit().await?;
@@ -4654,6 +4749,7 @@ where
             None
         };
         let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created});
+        if let Some(tail) = tail { response["continuation_tail"] = tail.answer(); }
         if let Some(poll) = carried.activity_response()? { response["activity_poll"] = poll; }
         if let Some(poll) = carried_workflow.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
         Ok((transaction, response))
@@ -5155,6 +5251,7 @@ where
             None => envelope(&body, "result")?,
         };
         let mut tx = self.begin().await?;
+        let prefix = prefix.map(|(through, last_event_id)| super::continuation::Prefix::V1(through, last_event_id));
         let mut response = self.complete_activity_in(&mut tx, task_id, body, external.as_ref(), result, workflow_poll, prefix).await?;
         tx.commit().await?;
         super::carried_polls::refresh_workflow_clock(&mut response);
@@ -5167,7 +5264,7 @@ where
     pub(super) async fn complete_activity_in(
         &self, tx: &mut Transaction<'_, DB>, task_id: &str, body: Value,
         external: Option<&super::external_resolution::PreparedExternal>, result: String,
-        workflow_poll: Option<super::carried_polls::WorkflowPoll>, prefix: Option<(i64, &str)>,
+        workflow_poll: Option<super::carried_polls::WorkflowPoll>, prefix: Option<super::continuation::Prefix<'_>>,
     ) -> Result<Value> {
         let attempt_id = text(&body, "activity_attempt_id")?;
         let task = self.task_row(tx, task_id).await?;
@@ -5236,9 +5333,15 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
+        let mut v2_decline = None;
         let prefix_holds = match prefix {
-            Some((through, last_event_id)) => Some(DB::optional_document_row(&activity, "parallel_group_path")?.is_none()
+            Some(super::continuation::Prefix::V1(through, last_event_id)) => Some(DB::optional_document_row(&activity, "parallel_group_path")?.is_none()
                 && Self::continuation_prefix_holds(tx, &run_id, through, last_event_id).await?),
+            Some(super::continuation::Prefix::V2(request)) => {
+                let decline = self.continuation_v2_decline(tx, &task, &run, &activity, request).await?;
+                v2_decline = Some(decline);
+                Some(decline.is_none())
+            }
             None => None,
         };
         if let Some(prepared) = &external {
@@ -5319,14 +5422,20 @@ where
         } else {
             None
         };
+        tx.claim_without_history = tx.claim_only.is_some() && v2_decline.is_some();
         let carried = match workflow_poll.as_ref() {
             Some(poll) => self.claim_carried_workflow(tx, poll, &DB::string(&task, "lease_owner")?).await?,
             None => super::carried_polls::Outcome::Declined,
         };
         tx.claim_only = None;
+        tx.claim_without_history = false;
         let mut response = json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id});
         if let Some(poll) = carried.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
-        if let Some(holds) = prefix_holds { response["continuation_prefix_holds"] = json!(holds); }
+        if let Some(decline) = v2_decline {
+            response[super::continuation_v2::DECLINE_FIELD] = json!(decline);
+        } else if let Some(holds) = prefix_holds {
+            response["continuation_prefix_holds"] = json!(holds);
+        }
         Ok(response)
     }
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {
@@ -5647,7 +5756,11 @@ where
                 json!({"current_attempt":current}),
             ));
         }
-        if !Self::lease_owner_fresh(tx, &DB::string(task, "namespace")?, lease_owner, stale_after_seconds).await? {
+        // Server #1181: a v2 continuation's carried claim fenced this owner's
+        // registration moments ago under the same transition lock.
+        if tx.fresh_lease_owner.as_deref() != Some(lease_owner)
+            && !Self::lease_owner_fresh(tx, &DB::string(task, "namespace")?, lease_owner, stale_after_seconds).await?
+        {
             return Err(refused(
                 "Workflow task lease owner is no longer an active worker.",
                 "stale_worker_registration",
@@ -5668,12 +5781,18 @@ where
     /// superseded and the task repaired (`expired_workflow_task_lease`), ready
     /// for the next claim. Whether anything was recovered.
     async fn recover_abandoned_workflow_leases(&self, queue: &str) -> Result<bool> {
-        // One read outside the transition lock: the queue's lease owners
-        // with their registrations; an owner without one joins nulls.
+        // The reads outside the transition lock share one budgeted probe
+        // connection, back in the pool before the first recovery
+        // transaction, so a held workflow poll's recovery check never
+        // occupies the last pool slot (Server #1204). An error drops it,
+        // which still frees its slot only once the return finishes.
+        let mut reads = self.probe_connection().await?;
+        // One read: the queue's lease owners with their registrations; an
+        // owner without one joins nulls.
         let owners = Self::query("SELECT DISTINCT t.lease_owner,w.status,w.last_heartbeat_at FROM workflow_tasks t LEFT JOIN workflow_worker_registrations w ON w.namespace=t.namespace AND w.worker_id=t.lease_owner WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type='workflow' AND t.status='leased' AND t.lease_owner IS NOT NULL")
             .bind(self.namespace.as_ref())
             .bind(queue)
-            .fetch_all(&self.pool)
+            .fetch_all(reads.get())
             .await?;
         let mut stale = Vec::new();
         for row in &owners {
@@ -5683,6 +5802,7 @@ where
             }
         }
         if stale.is_empty() {
+            reads.finish().await;
             return Ok(false);
         }
         let limit = self.workflow_task_recovery_scan_limit.max(1);
@@ -5694,7 +5814,7 @@ where
                 .bind(queue)
                 .bind(owner.as_str())
                 .bind(limit)
-                .fetch_all(&self.pool)
+                .fetch_all(reads.get())
                 .await?;
             for row in rows {
                 if let Some(expires) = DB::optional_instant(&row, "lease_expires_at")?.filter(|expires| *expires > at) {
@@ -5702,6 +5822,7 @@ where
                 }
             }
         }
+        reads.finish().await;
         candidates.sort();
         candidates.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         let mut recovered = false;
@@ -5928,6 +6049,16 @@ where
     pub(super) async fn allocate_history_sequences(
         tx: &mut Transaction<'_, DB>, run_id: &str, count: usize,
     ) -> Result<Vec<i64>> {
+        let sequences = Self::advance_history_sequences(tx, run_id, count).await?;
+        if let Some(last) = sequences.last() {
+            tx.remember_history_sequence(run_id, *last);
+        }
+        Ok(sequences)
+    }
+
+    async fn advance_history_sequences(
+        tx: &mut Transaction<'_, DB>, run_id: &str, count: usize,
+    ) -> Result<Vec<i64>> {
         if count == 0 { return Ok(Vec::new()); }
         let count_i64 = i64::try_from(count)
             .map_err(|_| refuse(StatusCode::CONFLICT, "history_sequence_exhausted"))?;
@@ -5959,6 +6090,14 @@ where
     }
 
     pub(super) async fn allocate_history_sequence(
+        tx: &mut Transaction<'_, DB>, run_id: &str,
+    ) -> Result<i64> {
+        let sequence = Self::advance_history_sequence(tx, run_id).await?;
+        tx.remember_history_sequence(run_id, sequence);
+        Ok(sequence)
+    }
+
+    async fn advance_history_sequence(
         tx: &mut Transaction<'_, DB>, run_id: &str,
     ) -> Result<i64> {
         if DB::HISTORY_ADVANCE_RETURNS_ROW {
@@ -6036,6 +6175,9 @@ where
         }
         // A metered completion (Workflow #930) charges the event as stored.
         tx.charge_event(event_type, &payload)?;
+        if let Some(events) = tx.remembered_events.as_mut() {
+            events.push((event_type.to_owned(), payload.clone()));
+        }
         let event_id = id();
         Self::query("INSERT INTO workflow_history_events(id,workflow_run_id,sequence,event_type,payload,workflow_task_id,workflow_command_id,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
         .bind(&event_id).bind(run_id).bind(sequence).bind(event_type).bind(DB::document(&payload)).bind(task_id).bind(command_id).bind(DB::bind_time(recorded_at)).execute(&mut **tx).await?;
@@ -6239,7 +6381,7 @@ where
         Ok(payload)
     }
 
-    fn event(row: DB::Row) -> Result<Value> {
+    pub(super) fn event(row: DB::Row) -> Result<Value> {
         let event_type = DB::string(&row, "event_type")?;
         let payload =
             super::history_presentation::payload(DB::document_row(&row, "payload")?, &event_type);
@@ -6334,7 +6476,7 @@ where
         // No intervening history write is allowed before its first page.
         let observed_total = if known_total.is_none() || cfg!(debug_assertions) {
             let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1")
-                .bind(run_id).fetch_one(connection).await?;
+                .bind(run_id).fetch_one(&mut *connection).await?;
             Some(DB::number(&row, "last_history_sequence")?)
         } else { None };
         let total = match known_total {
@@ -6349,6 +6491,16 @@ where
             None => after_sequence,
         };
         if rows.is_empty() && after_sequence < total {
+            // Server #1365: retention deletes a pruned run's events and keeps
+            // its `last_history_sequence`. No event remains to page, as
+            // published PHP's query finds none, so the page is empty and
+            // final. Only a retained event larger than the page budget is
+            // refused.
+            let pruned = Self::query("SELECT details_pruned_at FROM workflow_runs WHERE id=$1")
+                .bind(run_id).fetch_one(&mut *connection).await?;
+            if DB::optional_instant(&pruned, "details_pruned_at")?.is_some() {
+                return Ok((Vec::new(), None));
+            }
             return Err(refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "history_event_exceeds_page_budget",

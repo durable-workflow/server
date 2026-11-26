@@ -440,8 +440,8 @@ store_methods! {
     }
 
     /// Whether a concurrent duplicate already left an answer to replay.
-    pub(super) async fn workflow_poll_answered(&self, keys: &WorkflowPollKeys) -> Result<bool> {
-        Ok(match Self::query(DB::QUERY_CACHE_GET).bind(&keys.result).fetch_optional(&self.pool).await? {
+    pub(super) async fn workflow_poll_answered(&self, connection: &mut DB::Connection, keys: &WorkflowPollKeys) -> Result<bool> {
+        Ok(match Self::query(DB::QUERY_CACHE_GET).bind(&keys.result).fetch_optional(connection).await? {
             Some(row) => DB::number(&row, "expiration")? > epoch(),
             None => false,
         })

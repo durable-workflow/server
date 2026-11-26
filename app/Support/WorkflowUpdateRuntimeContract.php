@@ -119,8 +119,8 @@ final class WorkflowUpdateRuntimeContract
                 'workflow_contract_field' => WorkflowUpdateValidationTaskBroker::CONTRACT_FIELD,
                 'validator_execution' => 'replay_without_handler_or_state_commit',
                 'request_id_required' => true,
-                'validator_sdk_surfaces' => ['sdk-python'],
-                'sdk_surfaces_without_validators' => ['sdk-php', 'sdk-rust'],
+                'validator_sdk_surfaces' => ['sdk-python', 'sdk-php', 'sdk-rust'],
+                'sdk_surfaces_without_validators' => [],
                 'typed_outcomes' => [
                     'update_validator_rejected',
                     'update_validator_contract_missing',

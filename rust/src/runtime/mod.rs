@@ -66,6 +66,8 @@ mod timeout_cleanup;
 mod cross_kind_poll;
 mod carried_polls;
 mod continuation;
+mod continuation_tail;
+mod continuation_v2;
 #[cfg(test)]
 mod carried_poll_tests;
 mod execution;
@@ -124,6 +126,7 @@ mod php_value;
 #[cfg(debug_assertions)]
 #[doc(hidden)]
 pub mod poll_pauses;
+mod probe_connections;
 mod poll_sweeps;
 mod plain_input;
 mod poll_readiness;
@@ -190,6 +193,8 @@ mod sql_counts;
 mod poll_write_tests;
 #[cfg(test)]
 mod local_write_tests;
+#[cfg(test)]
+mod continuation_v2_tests;
 mod schema;
 pub mod schema_upgrade;
 mod search_attribute_upserts;

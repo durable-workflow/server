@@ -208,11 +208,17 @@ async fn malformed_continuations_and_foreign_readers_write_nothing() {
     let child = json!([{"type":"start_child_workflow","workflow_type":"child","arguments":envelope(Payload::Array(vec![]))}]);
     let mut without_poll = continuation_body(&activity, "malformed", &history, complete_workflow(), "unused");
     without_poll.as_object_mut().unwrap().remove("workflow_poll");
+    // Server #1181: version 2 exists now. A version-2 request without its
+    // `sticky_cache` is a malformed v2 request; an unimplemented version
+    // keeps the version refusal.
+    let mut malformed_v2 = continuation_body(&activity, "malformed", &history, complete_workflow(), "unused");
+    malformed_v2["continuation"]["version"] = json!(2);
     let mut wrong_version = continuation_body(&activity, "malformed", &history, complete_workflow(), "unused");
-    wrong_version["continuation"]["version"] = json!(2);
+    wrong_version["continuation"]["version"] = json!(3);
     for (body, reason) in [
         (continuation_body(&activity, "malformed", &history, child, "unused"), "unsupported_continuation_command"),
         (without_poll, "continuation_requires_workflow_poll"),
+        (malformed_v2, "invalid_continuation"),
         (wrong_version, "unsupported_continuation_version"),
     ] {
         let (status, refused) = continue_activity(&app, &activity, body).await;

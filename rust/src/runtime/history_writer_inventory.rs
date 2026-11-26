@@ -516,10 +516,10 @@ fn the_scanner_skips_test_items_and_classifies_literals() {
                 _ => { let p = "DELETE FROM workflow_history_events WHERE after_arm"; }
             }
             #[cfg(test)]
-            unsafe { let _probe = 1; }
+            unsafe { let _ = "DELETE FROM workflow_history_events WHERE unsafe_block"; }
             let q = "DELETE FROM workflow_history_events WHERE after_unsafe";
             #[cfg(test)]
-            async { let _x = 1; }
+            async { let _ = "DELETE FROM workflow_history_events WHERE async_block"; };
             let r = "DELETE FROM workflow_history_events WHERE after_async";
             #[cfg(test)]
             async move { let _y = 1; }
@@ -554,8 +554,8 @@ fn the_scanner_skips_test_items_and_classifies_literals() {
         assert!(kept.contains(present), "{present}: {kept}");
     }
     for absent in [
-        "fixture", "raw()", "generic", "const B", "let c", "WHERE helper", "TRUNCATE workflow_history_events\"; }", "_probe",
-        "_x", "_y", "MAX > 0", "fn probe", "doc =", "fn bracket",
+        "fixture", "raw()", "generic", "const B", "let c", "WHERE helper", "TRUNCATE workflow_history_events\"; }", "unsafe_block",
+        "async_block", "_x", "_y", "MAX > 0", "fn probe", "doc =", "fn bracket",
     ] {
         assert!(!kept.contains(absent), "{absent}: {kept}");
     }

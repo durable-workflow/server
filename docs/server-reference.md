@@ -746,9 +746,13 @@ The answer has schema `durable-workflow.v2.retention-plan.v1`. It reports:
 
 - `current_policy` and `proposed_policy`, each with its cutoff.
 - `policy_revision`, a SHA-256 over the namespace, its stored retention mode
-  and days, the days in effect and the namespace's `updated_at`. Any policy
-  change produces a new revision. Other namespace updates move `updated_at`
-  too, so they also produce a new revision.
+  and days, the days in effect and the namespace's `updated_at`. Any change
+  to the retention mode or days produces a new revision. Other namespace
+  updates move `updated_at` too, so they usually produce a new revision, but
+  only at the stored precision. PostgreSQL and MySQL round `updated_at` to
+  the nearest whole second and MariaDB truncates it to the second, so an
+  update that stores the same second as the previous namespace write leaves
+  the revision unchanged. The server writes SQLite times with milliseconds.
 - `plan_revision`, a SHA-256 over `policy_revision` and the proposed mode and
   days. It binds the plan to both the current policy and this exact proposal.
 - `retroactive`: `true` when the proposal makes closed runs eligible that the
@@ -804,8 +808,14 @@ and changes nothing when:
 An accepted apply answers with schema `durable-workflow.v2.retention-apply.v1`:
 `applied_at`, `retroactive`, `confirmed_retroactive_pruning`, the
 `previous_policy` with its `previous_policy_revision`, and the applied
-`policy` with its new `policy_revision`. Because the revision changes, the
-same plan cannot be applied twice.
+`policy` with its new `policy_revision`. A plan that changes the retention
+mode or days cannot be applied twice, because applying it changes the
+revision. A plan that proposes the current mode and days leaves the policy
+unchanged but still moves `updated_at`, which can make other outstanding
+plans for the namespace stale. Applying it again is accepted only if the
+stored `updated_at` did not change (on PostgreSQL, MySQL and MariaDB, the
+same stored second), and then rewrites the same policy. Otherwise it is
+refused as stale.
 
 The apply changes only the namespace's policy. It marks, archives and prunes
 no run. The policy is active from `applied_at`. Each later retention pass
@@ -1284,6 +1294,17 @@ already has events, the server returns it immediately. If the configured
 `DW_WORKER_POLL_TIMEOUT` expires first, the server returns an empty page.
 Use `wait_new_event=0` or omit the flag for an immediate read.
 
+A run whose details history retention pruned has no events left. Its history
+endpoint answers `200` with `events: []` and `next_page_token: null` for the
+first page and for any later token, including one issued before the prune.
+`wait_new_event=1` returns that page at once. The native server also reports
+`history_complete: false` and `details_state: "pruned"` on that page, as the
+run's history export does. Published PHP Server answers the same empty, final
+page without those two fields, after waiting out `wait_new_event=1`. A retained
+run's page has neither field. Use a history archive taken before the prune to
+read the pruned events. The `413 history_event_exceeds_page_budget` refusal is
+reserved for a retained event larger than one history page.
+
 History export responses are the exception inside the workflow route group:
 `GET /api/workflows/{id}/runs/{runId}/history/export` returns the replay bundle
 as-is so its integrity checksum and optional signature cover the exact artifact
@@ -1419,6 +1440,15 @@ whose replay history does not contain that identity.
 Native additionally advertises `condition_wait_idempotent_reopen` when opening
 an already-unresolved occurrence preserves its existing wait and deadline.
 See [idempotent condition-wait opens](contracts/condition-wait-occurrences.md).
+Native advertises `activity_workflow_continuation` for activity completions
+that also complete the run's resumed workflow task with worker-computed
+commands. Its top-level fields describe version 1 and keep `version: 1` for
+released SDKs; `supported_versions` lists `[1, 2]` and the `v2` member names
+the version-2 endpoint, commands, required worker capabilities
+(`sticky_execution` and `sticky_history_suffix`) and the history tail budgets
+(`tail_max_events`, `tail_max_bytes`). Continuations are opt-in per request and
+default-off in the SDKs. See
+[activity workflow continuation v2](contracts/activity-workflow-continuation-v2.md).
 
 Long-poll wake-ups use short-lived cache-backed signal keys plus periodic
 reprobes. Multi-node deployments therefore need a shared cache backend for
@@ -2390,7 +2420,16 @@ how many request workers are busy.
   request share. With a positive value, every poll probe takes one of
   `pool size - reserved` probe permits (at least one) and returns it before
   waiting, so polls never occupy the reserved connections. Unset or zero,
-  probes are not gated.
+  probes take no permit.
+- Whatever the setting, held-poll probe reads are always limited to the pool
+  size minus one connection (at least one). A held workflow or activity poll
+  runs each probe's lock-free reads on one connection from that node-wide
+  budget and returns it before it claims or waits; held query-task and
+  update-validation polls take their fence and cross-kind wake reads from the
+  same budget. Held-poll probes therefore never occupy the pool's last
+  connection. A claim is a transition and takes its connection outside the
+  budget
+  ([#1204](https://github.com/durable-workflow/server/issues/1204)).
 - The per-namespace variants, `DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE`
   and `DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE`, are still ignored by
   native.
@@ -2773,7 +2812,7 @@ every operator-facing variable the server honors.
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Writable local coordination and wait-lock directory, also required with Redis or database polling caches. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. Native honors it as a node-wide cap with the same `429 long_poll_capacity_exhausted` refusal; unset, native waits are unbounded (see [Native long-poll capacity](#native-long-poll-capacity)). |
-| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its database connections that long-poll probes leave free. Unset, native reserves none. |
+| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its database connections that long-poll probes leave free. Unset, native reserves none for it; held-poll probe reads still always leave one connection free. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
 | `DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS` | `5` | Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure. |

@@ -8,6 +8,8 @@ pub(super) struct Counts(BTreeMap<&'static str, usize>);
 impl Counts {
     pub(super) fn total(&self) -> usize { self.0.values().sum() }
     pub(super) fn count(&self, sql: &'static str) -> usize { self.0.get(sql).copied().unwrap_or(0) }
+    /// Every counted template with its count, for a failure message.
+    pub(super) fn entries(&self) -> Vec<(&'static str, usize)> { self.0.iter().map(|(sql, count)| (*sql, *count)).collect() }
     pub(super) fn count_prefix(&self, prefix: &str) -> usize {
         self.0.iter().filter(|(sql,_)| sql.starts_with(prefix)).map(|(_,count)| count).sum()
     }

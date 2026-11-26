@@ -17,11 +17,16 @@ pub(super) const MAX_HISTORY_EVENTS: i64 = 256;
 pub(super) const MAX_COMMANDS: usize = 16;
 pub(super) const COMMANDS: [&str; 4] = ["schedule_activity", "start_timer", "complete_workflow", "record_version_marker"];
 
+pub(super) const COMPLETE_ENDPOINT: &str = "/worker/activity-tasks/{taskId}/continuation/complete";
+
+/// The v1 descriptor, unchanged for released SDKs that accept it only when
+/// `version` is exactly 1, with the versions served and the v2 member.
 pub(super) fn capability() -> Value {
     json!({"version": VERSION,
         "history_endpoint": "/worker/activity-tasks/{taskId}/continuation/history",
-        "complete_endpoint": "/worker/activity-tasks/{taskId}/continuation/complete",
-        "supported_commands": COMMANDS, "max_history_events": MAX_HISTORY_EVENTS, "max_commands": MAX_COMMANDS})
+        "complete_endpoint": COMPLETE_ENDPOINT,
+        "supported_commands": COMMANDS, "max_history_events": MAX_HISTORY_EVENTS, "max_commands": MAX_COMMANDS,
+        "supported_versions": [VERSION, super::continuation_v2::VERSION], "v2": super::continuation_v2::capability()})
 }
 
 /// A continuation request's own member, after the ordinary completion fields.
@@ -29,6 +34,15 @@ pub(super) struct Request {
     pub(super) through: i64,
     pub(super) last_event_id: String,
     pub(super) commands: Vec<Value>,
+}
+
+/// What an activity completion proves about the worker's history under the
+/// transition lock, before its own append.
+pub(super) enum Prefix<'a> {
+    /// The v1 history page still ends at this sequence and event ID.
+    V1(i64, &'a str),
+    /// The v2 eligibility checks and O(1) proof, in the contract's order.
+    V2(&'a super::continuation_v2::Request),
 }
 
 /// Malformed continuations are refused before anything is written.
@@ -74,12 +88,12 @@ fn contains_external(value: &Value) -> bool {
     }
 }
 
-fn exact_fields(value: &Value, expected: &[&str]) -> bool {
+pub(super) fn exact_fields(value: &Value, expected: &[&str]) -> bool {
     value.as_object().is_some_and(|fields| fields.len() == expected.len()
         && expected.iter().all(|key| fields.contains_key(*key)))
 }
 
-fn identifier(value: &Value) -> bool {
+pub(super) fn identifier(value: &Value) -> bool {
     value.as_str().is_some_and(|id| !id.is_empty() && id.len() <= 64)
 }
 
@@ -212,7 +226,7 @@ store_methods! {
         let receipt_body = body.clone();
         let (through, last_id) = (continuation.through, continuation.last_event_id.as_str());
         let external_input = external.is_some() || !command_external.is_empty();
-        let prefix = if external_input { None } else { Some((through, last_id)) };
+        let prefix = if external_input { None } else { Some(Prefix::V1(through, last_id)) };
         let saved = tx.continuation_savepoint().await?;
         let mut answer = self.complete_activity_in(&mut tx, task_id, body, external.as_ref(), result.clone(), workflow_poll.clone(),
             prefix).await?;

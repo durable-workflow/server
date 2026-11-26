@@ -31,7 +31,7 @@ mod transition_codec_tests;
 
 #[cfg(test)]
 #[path = "continuation_atomic_tests.rs"]
-mod continuation_atomic_tests;
+pub(super) mod continuation_atomic_tests;
 
 #[derive(Clone)]
 pub struct Runtime {
@@ -2341,6 +2341,42 @@ impl Runtime {
             Storage::Postgres(store) => store.complete_activity_continuation(task_id, body, continuation, external, result,
                 commands, command_external, self.transition_codec.clone(), worker, polling, self.structural).await,
             Storage::MySql(store) => store.complete_activity_continuation(task_id, body, continuation, external, result,
+                commands, command_external, self.transition_codec.clone(), worker, polling, self.structural).await
+                .map_err(super::payload_limits::packet_refusal),
+        }
+    }
+    /// A version-2 continuation (Server #1181). Its receipt is the first
+    /// read of the store's write transaction, so there is no read probe.
+    pub(crate) async fn complete_activity_continuation_v2(
+        &self, task_id: &str, body: Value, continuation: super::continuation_v2::Request,
+        worker: Option<super::runtime_credentials::Principal>, protocol: &str,
+    ) -> Result<Value> {
+        let polling = super::carried_polls::Config { protocol: Some(protocol), pages: self.history_pages(), default_wait: self.worker_poll_wait() };
+        let external = self.prepare_external(&body["result"]).await?;
+        let result = match &external {
+            Some(prepared) => prepared.stored(),
+            None => super::envelope(&body, "result")?,
+        };
+        if super::memo_limits::Exceeded::payload(self.structural.payload_bytes, &result).is_some() {
+            return Err(refuse(StatusCode::PAYLOAD_TOO_LARGE, "continuation_result_exceeds_budget"));
+        }
+        let commands = json!({"lease_owner": body["lease_owner"], "workflow_task_attempt": 1,
+            "commands": continuation.commands, "sticky_cache": continuation.sticky_cache});
+        self.check_command_payloads(&commands).await?;
+        let command_external = self.prepare_command_payloads(&commands).await?;
+        let mut commands = super::completion_rules::canonical_payloads(commands)?;
+        // The nested completion returns the tail and carries only an
+        // activity it created.
+        commands["continuation_tail"] = json!({"version": super::continuation_tail::VERSION});
+        if let Some(poll) = body.get("activity_poll") {
+            commands["activity_poll"] = poll.clone();
+        }
+        match &*self.storage {
+            Storage::Sqlite(store) => store.complete_activity_continuation_v2(task_id, body, continuation, external, result,
+                commands, command_external, self.transition_codec.clone(), worker, polling, self.structural).await,
+            Storage::Postgres(store) => store.complete_activity_continuation_v2(task_id, body, continuation, external, result,
+                commands, command_external, self.transition_codec.clone(), worker, polling, self.structural).await,
+            Storage::MySql(store) => store.complete_activity_continuation_v2(task_id, body, continuation, external, result,
                 commands, command_external, self.transition_codec.clone(), worker, polling, self.structural).await
                 .map_err(super::payload_limits::packet_refusal),
         }

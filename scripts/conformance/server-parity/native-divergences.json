@@ -177,6 +177,15 @@
       "published_php": "Update-validation tasks and query tasks carry no replay_clock member.",
       "native": "Update-validation tasks (dedicated and multiplexed polls) and query tasks always carry replay_clock: the run's WorkerReplayClock v1 object, identical to its workflow tasks', or null when the Server proves no start.",
       "harness": "The update-validation contract adds replay_clock to the recorded key set of native's dedicated_poll and multiplexed_poll tasks. Every other recorded field, the PHP and embedded recordings and the frozen fixtures are unchanged. Values and the null case are covered by the all-backend native execution suite (replay_clock)."
+    },
+    {
+      "id": "update-validation-sdk-surfaces",
+      "issue": "https://github.com/durable-workflow/sdk-php/pull/487",
+      "since": "native source (unreleased)",
+      "applies_to": ["update-validation"],
+      "published_php": "synchronous_update_validation.sdk_surfaces lists sdk-php and sdk-rust as validators_not_exposed; only sdk-python is validator_capable.",
+      "native": "synchronous_update_validation.sdk_surfaces lists sdk-python, sdk-php and sdk-rust as validator_capable: PHP SDK 3.32.0 (sdk-php#487) and Rust SDK 4.25.0 (sdk-rust#322) expose update validators.",
+      "harness": "The update-validation contract requires native's capability step to advertise all three SDK surfaces as validator_capable. Every other capability field, the PHP and embedded recordings and the frozen fixtures are unchanged. Retire this entry when the published PHP baseline advertises the same surfaces."
     }
   ]
 }

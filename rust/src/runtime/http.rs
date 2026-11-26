@@ -3022,6 +3022,21 @@ async fn complete_activity_continuation(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     let protocol = request_protocol(&headers)?;
+    // Server #1181: version 2 has its own request member and transaction.
+    if super::continuation_v2::requested(&body) {
+        let continuation = super::continuation_v2::parse(body.get("continuation")).map_err(worker_refusal)?;
+        if !body["workflow_poll"].is_object() {
+            return Err(worker_refusal(super::refuse(StatusCode::UNPROCESSABLE_ENTITY, "continuation_requires_workflow_poll")));
+        }
+        let owner = super::text(&body, "lease_owner").map_err(worker_refusal)?.to_owned();
+        completion_checks(&task_id, &headers, json!({"lease_owner": owner, "workflow_task_attempt": 1,
+            "commands": continuation.commands, "sticky_cache": continuation.sticky_cache}))?;
+        let attempt = body["activity_attempt_id"].clone();
+        return runtime.complete_activity_continuation_v2(&task_id, body, continuation,
+            Some(request.principal().clone()), protocol).await
+            .map_err(|error| continuation_refusal(error, &task_id, attempt))
+            .map(|body| Json(worker_response(body)));
+    }
     let continuation = super::continuation::parse(body.get("continuation").cloned()).map_err(worker_refusal)?;
     if !body["workflow_poll"].is_object() {
         return Err(worker_refusal(super::refuse(StatusCode::UNPROCESSABLE_ENTITY, "continuation_requires_workflow_poll")));
@@ -3032,25 +3047,28 @@ async fn complete_activity_continuation(
     let attempt = body["activity_attempt_id"].clone();
     runtime.complete_activity_continuation(&task_id, body, continuation,
         Some(request.principal().clone()), protocol).await
-        .map_err(|error| {
-            let error = completion_refusal(error, &task_id, "activity_attempt_id", attempt.clone(), "Activity task not found.");
-            match error {
-                super::RuntimeError::Protocol { status, mut response } => {
-                    // A refused nested workflow task never committed. Report
-                    // the caller's original activity authority, not a rolled-
-                    // back task identity that the worker could mistake for a lease.
-                    if let Some(fields) = response.as_object_mut() {
-                        fields.insert("task_id".into(), json!(task_id));
-                        fields.insert("activity_attempt_id".into(), attempt);
-                        fields.insert("recorded".into(), json!(false));
-                        fields.remove("workflow_task_attempt");
-                    }
-                    super::RuntimeError::Protocol { status, response }
-                }
-                other => other,
-            }
-        })
+        .map_err(|error| continuation_refusal(error, &task_id, attempt))
         .map(|body| Json(worker_response(body)))
+}
+
+/// A continuation's refusal, in the activity completion's shape.
+fn continuation_refusal(error: super::RuntimeError, task_id: &str, attempt: Value) -> super::RuntimeError {
+    let error = completion_refusal(error, task_id, "activity_attempt_id", attempt.clone(), "Activity task not found.");
+    match error {
+        super::RuntimeError::Protocol { status, mut response } => {
+            // A refused nested workflow task never committed. Report
+            // the caller's original activity authority, not a rolled-
+            // back task identity that the worker could mistake for a lease.
+            if let Some(fields) = response.as_object_mut() {
+                fields.insert("task_id".into(), json!(task_id));
+                fields.insert("activity_attempt_id".into(), attempt);
+                fields.insert("recorded".into(), json!(false));
+                fields.remove("workflow_task_attempt");
+            }
+            super::RuntimeError::Protocol { status, response }
+        }
+        other => other,
+    }
 }
 
 fn completion_refusal(
