@@ -174,3 +174,54 @@ async fn update_validation_tasks_carry_their_runs_entry_instant() {
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn multiplexed_update_validation_tasks_carry_their_runs_entry_instant() {
+    use super::update_validation::{complete, send_update, update_body, validating_worker};
+
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    validating_worker(&app, "clock-mux", "clock-mq", Some(json!(["reject_me"])), true).await;
+    let (status, started) = request(&app, "POST", "/api/workflows", json!({"workflow_id":"clocked-mux",
+        "workflow_type":"echo","task_queue":"clock-mq","input":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    let multiplexed = || {
+        let app = app.clone();
+        async move {
+            let (status, polled) = request(&app, "POST", "/api/worker/workflow-tasks/poll", json!({"worker_id":"clock-mux",
+                "task_queue":"clock-mq","timeout_seconds":5,"task_kinds":["workflow","update_validation"]})).await;
+            assert_eq!(status, StatusCode::OK, "{polled}");
+            polled["task"].clone()
+        }
+    };
+    let task = multiplexed().await;
+    assert_eq!(task["task_kind"], "workflow", "{task}");
+    let entry = clock(&task, "run_started_at");
+    assert_eq!(finish_task(&app, &task, json!([{"type":"open_signal_wait","signal_name":"finish"}])).await.0, StatusCode::OK);
+
+    // A rejected update opens no workflow task, so each poll leases the validation.
+    let reject = |validation: &Value| json!({"lease_owner":"clock-mux",
+        "update_validation_attempt":validation["update_validation_attempt"],"failure":{"message":"no"}});
+    let pending = send_update(&app, "clocked-mux", "reject_me", update_body(1, Some("clock-mux-1")));
+    let validation = multiplexed().await;
+    assert_eq!(validation["task_kind"], "update_validation", "{validation}");
+    assert_eq!(validation["run_id"], started["run_id"], "{validation}");
+    assert_eq!(clock(&validation, "run_started_at"), entry);
+    let id = validation["update_validation_task_id"].as_str().unwrap().to_owned();
+    let (status, decided) = complete(&app, &id, "reject", reject(&validation)).await;
+    assert_eq!(status, StatusCode::OK, "{decided}");
+    pending.abort();
+
+    let run = started["run_id"].as_str().unwrap();
+    database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_runs SET started_at=NULL WHERE id='{run}'"))).await;
+    let pending = send_update(&app, "clocked-mux", "reject_me", update_body(2, Some("clock-mux-2")));
+    let unproved = multiplexed().await;
+    assert_eq!(unproved["task_kind"], "update_validation", "{unproved}");
+    assert_eq!(unproved["run_id"], started["run_id"], "{unproved}");
+    // The multiplexed shape keeps the explicit null, as the dedicated poll does.
+    assert_eq!(unproved.get("replay_clock"), Some(&Value::Null), "{unproved}");
+    pending.abort();
+    runtime.close().await;
+    database.remove().await;
+}

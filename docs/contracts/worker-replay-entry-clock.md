@@ -67,7 +67,7 @@ Workflow tasks keep omitting the object when it is not proved.
 ## Stability
 
 The value depends only on stored rows. A later lease of the same run carries
-the same value, and a cached poll answer keeps the object it was issued with.
+the same value, and a cached poll answer keeps or recomputes the same object.
 Lookups use existing keys, so no schema change is needed.
 
 The OpenAPI schema is `WorkerReplayClock` in
