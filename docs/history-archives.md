@@ -3,9 +3,11 @@
 A history export (`GET /api/workflows/{workflow_id}/runs/{run_id}/history/export`)
 keeps each external payload as a reference envelope. Its `payload_manifest`
 marks these entries with `encoding: "external-storage-reference"` (diagnostic
-`external_storage_reference`), and no bytes are copied. The
-export therefore still depends on the source database's payload registrations
-and on the payload store. A history archive removes that dependency
+`external_storage_reference`, `available: true`, and the reference's codec).
+The native server marks its runtime `external_payload` references the same way
+published PHP Server marks its `external_storage` envelopes. No bytes are
+copied. The export therefore still depends on the source database's payload
+registrations and on the payload store. A history archive removes that dependency
 ([Server #520](https://github.com/durable-workflow/server/issues/520)). It is a
 directory that holds:
 

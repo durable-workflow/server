@@ -155,6 +155,22 @@ async fn a_held_archive_verifies_after_retention_cleanup_and_without_its_payload
     assert_eq!(ids, [input["reference_id"].as_str().unwrap(), signal["reference_id"].as_str().unwrap()]);
     assert!(copying.plan.objects[0].paths.contains(&"payloads.arguments.data".to_owned()), "{:?}", copying.plan.objects[0].paths);
     assert!(copying.plan.objects[1].paths.iter().any(|path| path.starts_with("signals.0.")), "{:?}", copying.plan.objects[1].paths);
+    // Server #1366: the export's manifest marks each runtime reference as
+    // the history-archives guide says, and the plan holds an object at every
+    // path the manifest marks external.
+    let entries = copying.export["payload_manifest"]["entries"].as_array().unwrap();
+    for path in ["payloads.arguments.data", "signals.0.arguments"] {
+        let entry = entries.iter().find(|entry| entry["path"] == path).unwrap_or_else(|| panic!("{path}: {entries:?}"));
+        assert_eq!(
+            [&entry["available"], &entry["codec"], &entry["encoding"], &entry["diagnostic"]],
+            [&json!(true), &json!("avro"), &json!("external-storage-reference"), &json!("external_storage_reference")],
+            "{entry}"
+        );
+    }
+    for entry in entries.iter().filter(|entry| entry["encoding"] == "external-storage-reference") {
+        let path = entry["path"].as_str().unwrap();
+        assert!(copying.plan.objects.iter().any(|object| object.paths.iter().any(|known| known == path)), "{entry}");
+    }
     assert_eq!(copy(&router, &copying, &dir).await, Vec::<String>::new());
     let receipt = finish(&router, &copying, &dir).await.unwrap();
     assert_eq!(receipt["schema"], archive::RECEIPT_SCHEMA);
