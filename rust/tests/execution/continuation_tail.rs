@@ -158,15 +158,25 @@ async fn a_malformed_tail_request_is_refused_before_any_write() {
     ahead["sticky_cache"]["history_last_sequence"] = json!(task["history_last_sequence"].as_i64().unwrap() + 1);
     refused.push(ahead);
 
+    // Each case counts every table, which is slow on a loaded PostgreSQL or
+    // MariaDB runner. Keep the worker's registration fresh so every case
+    // reaches the tail check rather than the registration fence.
+    let heartbeat = || async {
+        let (status, beat) = request(&app, "POST", "/api/worker/heartbeat", json!({"worker_id":"refused-a"})).await;
+        assert_eq!(status, StatusCode::OK, "{beat}");
+    };
+    heartbeat().await;
     let before = table_counts(&database).await;
     let history = sequences(&recorded_history(&app, "tail-refused", &task).await);
     for body in refused {
+        heartbeat().await;
         let (status, answer) = complete(&app, &task, body.clone()).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {answer}");
         assert_eq!(answer["reason"], "invalid_continuation_tail", "{body}: {answer}");
         assert_eq!(table_counts(&database).await, before, "{body} wrote nothing");
     }
     assert_eq!(sequences(&recorded_history(&app, "tail-refused", &task).await), history);
+    heartbeat().await;
     let (status, done) = complete(&app, &task, valid).await;
     assert_eq!(status, StatusCode::OK, "the task is still leased: {done}");
     assert_eq!(done["recorded"], true, "{done}");
