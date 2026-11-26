@@ -796,6 +796,14 @@ fn parallel_entry(value: &Value, leaf: &str) -> Option<Vec<(&'static str, Value)
         entry.extend([("parallel_group_base_sequence", json!(base)), ("parallel_group_size", json!(size)),
             ("parallel_group_index", json!(index))]);
     }
+    // .github#232: an all-group frame may name one version 1 failure policy.
+    // It is part of the entry, so the innermost frame and the flattened
+    // fields must agree on it, including on its absence.
+    if let Some(policy) = value.get("parallel_group_policy") {
+        let policy = policy.as_str()
+            .filter(|policy| mode == "all" && super::worker_admission::GROUP_POLICIES.contains(policy))?;
+        entry.push(("parallel_group_policy", json!(policy)));
+    }
     Some(entry)
 }
 
@@ -838,10 +846,12 @@ const READS: &[(&str, &[&str])] = &[
 ];
 
 /// `parallelMetadataValidationRules`' fields, read for the leaf commands.
+/// Native also reads the version 1 failure policy, which must reach its checks
+/// instead of being dropped as an ignored field.
 const PARALLEL_FIELDS: &[&str] = &["parallel_group_id", "parallel_group_kind", "parallel_group_mode",
     "parallel_group_base_sequence", "parallel_group_size", "parallel_group_index", "selection_member_key",
     "selection_member_index", "selection_member_base_sequence", "selection_member_size", "selection_member_kind",
-    "parallel_group_path"];
+    "parallel_group_path", "parallel_group_policy"];
 const PARALLEL_LEAVES: &[&str] = &["schedule_activity", "start_timer", "start_child_workflow", "open_condition_wait", "open_signal_wait"];
 
 /// Fields a scope check refuses on the wrong command, so they must reach it.
