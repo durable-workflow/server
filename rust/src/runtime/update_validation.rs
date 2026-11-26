@@ -50,7 +50,7 @@ pub(super) fn capability() -> Value {
                 "update_validation_task_not_leased","update_validation_lease_owner_mismatch",
                 "stale_update_validation_completion","update_validation_lease_expired","update_validator_worker_lost"]},
         "timeout_seconds":timeout,"lease_timeout_seconds":lease,
-        "sdk_surfaces":{"sdk-python":"validator_capable","sdk-php":"validators_not_exposed","sdk-rust":"validators_not_exposed"}})
+        "sdk_surfaces":{"sdk-python":"validator_capable","sdk-php":"validator_capable","sdk-rust":"validator_capable"}})
 }
 
 /// The 409 a poll gets from a registration without the capability.
@@ -1319,6 +1319,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_sdk_surface_is_validator_capable() {
+        // PHP SDK 3.32.0 (sdk-php#487) and Rust SDK 4.25.0 (sdk-rust#322) expose validators.
+        assert_eq!(capability()["sdk_surfaces"], json!({"sdk-python":"validator_capable",
+            "sdk-php":"validator_capable","sdk-rust":"validator_capable"}));
+    }
 
     #[test]
     fn validation_errors_keep_non_empty_string_messages() {
