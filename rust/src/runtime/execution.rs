@@ -32,6 +32,9 @@ mod transition_codec_tests;
 #[cfg(test)]
 #[path = "continuation_atomic_tests.rs"]
 pub(super) mod continuation_atomic_tests;
+#[cfg(test)]
+#[path = "poll_wake_tests.rs"]
+mod poll_wake_tests;
 
 #[derive(Clone)]
 pub struct Runtime {

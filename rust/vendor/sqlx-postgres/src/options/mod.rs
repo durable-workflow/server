@@ -354,6 +354,12 @@ impl PgConnectOptions {
         self
     }
 
+    /// The capacity of the prepared-statement cache (Durable Workflow
+    /// Server #1372: its maintenance connection keeps a smaller one).
+    pub fn get_statement_cache_capacity(&self) -> usize {
+        self.statement_cache_capacity
+    }
+
     /// Sets the application name. Defaults to None
     ///
     /// # Example

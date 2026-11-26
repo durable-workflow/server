@@ -373,7 +373,7 @@ where
             self.wake.notify_waiters();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(timeouts().0 as u64);
             loop {
-                let wake = self.wake.notified();
+                let wake = super::poll_wakes::any(self.wake.notified(), self.poll_wakes.others.notified());
                 let status = Self::query("SELECT status FROM workflow_update_validation_tasks WHERE id=$1")
                     .bind(&task_id)
                     .fetch_one(&self.pool)
@@ -1066,7 +1066,7 @@ where
         let mut wait_slot = None;
         loop {
             let probe = self.poll_capacity.probe().await;
-            let wake = self.wake.notified();
+            let wake = super::poll_wakes::any(self.wake.notified(), self.poll_wakes.others.notified());
             if (std::mem::take(&mut first) || self.validation_waiting(task_queue).await?)
                 && let Some(task_id) = self.claim_update_validation(worker_id, task_queue).await?
             {
@@ -1079,7 +1079,7 @@ where
             self.poll_capacity.hold(&mut wait_slot, super::poll_capacity::Pool::QueryTask,
                 &self.namespace, task_queue, "update_validation_task")?;
             drop(probe);
-            pace.wait(wake, deadline).await;
+            pace.wait(wake, deadline, &self.poll_wakes).await;
         }
     }
 
@@ -1186,9 +1186,12 @@ where
         let mut pace = super::poll_readiness::ReadPace::new();
         let mut first = true;
         let mut wait_slot = None;
+        // Woken by commits that make its queue ready, and by everything
+        // that still wakes every poll (Server #1372).
+        let queue_wait = self.poll_wakes.subscribe(self.namespace.as_ref(), &task_queue);
         loop {
             let probe = self.poll_capacity.probe().await;
-            let wake = self.wake.notified();
+            let wake = super::poll_wakes::any(self.wake.notified(), queue_wait.notify.notified());
             let first_probe = std::mem::take(&mut first);
             let current = match &fence {
                 _ if first_probe && request.is_some() => true,
@@ -1235,7 +1238,7 @@ where
             self.poll_capacity.hold(&mut wait_slot, super::poll_capacity::Pool::Worker,
                 &self.namespace, &task_queue, "workflow_task")?;
             drop(probe);
-            pace.wait(wake, deadline).await;
+            pace.wait(wake, deadline, &self.poll_wakes).await;
         }
     }
 

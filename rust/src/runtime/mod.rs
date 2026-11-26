@@ -132,6 +132,7 @@ mod test_reply_gate;
 mod poll_sweeps;
 mod plain_input;
 mod poll_readiness;
+mod poll_wakes;
 pub mod postgres;
 mod previews;
 mod prometheus_metrics;

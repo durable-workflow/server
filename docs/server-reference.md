@@ -2415,20 +2415,23 @@ how many request workers are busy.
   with `timeout_seconds: 0` never needs a slot. A slot is released when the
   poll answers, fails or its client disconnects.
 - `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` reserves database connections.
-  A native node opens four database connections on MySQL, PostgreSQL and file
-  SQLite: a request pool of three, which health, readiness, admin and every
+  A native node opens five database connections on MySQL, PostgreSQL and file
+  SQLite: a request pool of four, which health, readiness, admin and every
   other request share, and one connection of its own for the maintenance loop
   (timers, schedules, repair, retention and the task-offer key window), so
   maintenance never borrows a request connection
-  ([#1355](https://github.com/durable-workflow/server/issues/1355)). With a
+  ([#1355](https://github.com/durable-workflow/server/issues/1355),
+  [#1372](https://github.com/durable-workflow/server/issues/1372)). With a
   positive value, every poll probe takes one of `request pool size - reserved`
   probe permits (at least one) and returns it before waiting, so polls never
-  occupy the reserved connections. Unset or zero, probes take no permit.
+  occupy the reserved connections: `2`, the PHP default, gives two permits,
+  `3` gives one. Unset or zero, probes take no permit.
 - Whatever the setting, a node-wide budget covers this held-poll work, so it
   never occupies the request pool's last connection, which producers and
   registrations keep. Its reads take at most the request pool size minus two
-  connections (at least one); the one transaction holding the transition
-  queue takes one more, so it never waits behind those reads:
+  connections (at least one), so two read slots on the request pool of four;
+  the one transaction holding the transition queue takes one more, so it
+  never waits behind those reads:
   - a held workflow or activity poll's admission and replay reads, its
     probes' lock-free reads (one connection per probe, returned before it
     claims or waits), its claim transactions and, for a workflow poll, its
@@ -2879,7 +2882,8 @@ every operator-facing variable the server honors.
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Writable local coordination and wait-lock directory, also required with Redis or database polling caches. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. Native honors it as a node-wide cap with the same `429 long_poll_capacity_exhausted` refusal; unset, native waits are unbounded (see [Native long-poll capacity](#native-long-poll-capacity)). |
-| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its request-pool database connections that long-poll probes leave free. Unset, native reserves none for it; the held-poll work listed under native long-poll capacity still leaves the request pool's last connection free. |
+| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its request-pool database connections (four) that long-poll probes leave free, so `2` leaves two probe permits. Unset, native reserves none for it; the held-poll work listed under native long-poll capacity still leaves the request pool's last connection free. |
+| `DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY` | `192` | Native only. Server-side prepared statements each MySQL or PostgreSQL request connection keeps (0 to 4083; SQLx's `statement-cache-capacity` `DB_URL` parameter sets the same value and must agree). The maintenance connection keeps at most 48 (none at `0`). A node holds at most `4 × capacity + min(capacity, 48)`, so on MySQL keep `nodes × (4 × capacity + min(capacity, 48)) + other clients' statements ≤ max_prepared_stmt_count` (16382 by default): 20 nodes at the default. A request connection's hot path uses about 166 statements on the PHP SDK workload ([#1174](https://github.com/durable-workflow/server/issues/1174)) and about 126 on the in-process workload ([#1372](https://github.com/durable-workflow/server/issues/1372)). |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
 | `DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS` | `5` | Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure. |

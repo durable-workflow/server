@@ -491,12 +491,15 @@ contract fixture before its correction.
   instead: poll probes share the rest of the node's pool, leaving the reserve
   to health, readiness and admin requests. Unset, all three leave native's
   behavior unchanged. Whatever the setting, held polls' admission, replay,
-  probe, readiness and claim work takes its connections from a budget of the
-  request pool size minus one (at least one), and the maintenance loop has
-  its own connection, so neither occupies the request pool's last
-  connection. Other work, listed in the server reference, stays outside the
-  budget ([#1204](https://github.com/durable-workflow/server/issues/1204),
-  [#1355](https://github.com/durable-workflow/server/issues/1355)).
+  probe, readiness and claim work takes its connections from a budget: reads
+  take at most the request pool size minus two (two read slots on the
+  request pool of four) and the transaction holding the transition queue one
+  more. The maintenance loop has its own connection, so neither occupies the
+  request pool's last connection. Other work, listed in the server
+  reference, stays outside the budget
+  ([#1204](https://github.com/durable-workflow/server/issues/1204),
+  [#1355](https://github.com/durable-workflow/server/issues/1355),
+  [#1372](https://github.com/durable-workflow/server/issues/1372)).
   The per-namespace variants stay ignored
   ([#982](https://github.com/durable-workflow/server/issues/982),
   [server reference](server-reference.md#native-long-poll-capacity)).

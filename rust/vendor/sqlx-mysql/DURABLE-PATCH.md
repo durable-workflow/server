@@ -1,6 +1,6 @@
 # SQLx MySQL driver patches
 
-This directory contains the official `sqlx-mysql` 0.9.0 crate with six scoped
+This directory contains the official `sqlx-mysql` 0.9.0 crate with seven scoped
 patches. Its published archive has
 SHA-256
 `90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27` and VCS
@@ -209,3 +209,11 @@ hold every reply and require the statement, and the return to the pool, to
 end within a shortened bound and the connection to be replaced. Remove this
 change only when a reviewed published driver lets a caller bound each read,
 or when the server bounds silent peers another way.
+
+## The statement cache capacity can be read
+
+`get_statement_cache_capacity` (`src/options/mod.rs`) returns the capacity the
+connect options carry. Native Server reads it to give its maintenance
+connection a smaller cache than its request connections (Server #1372), and
+still none when the operator turned the cache off. Remove it only when a
+published release has the same getter.

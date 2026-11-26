@@ -206,7 +206,7 @@ store_methods! {
                     response: super::storage_admission::refusal(&pressure, super::storage_admission::Admission::Poll, Some(scope.request_id)),
                 });
             }
-            let wake = self.wake.notified();
+            let wake = super::poll_wakes::any(self.wake.notified(), self.poll_wakes.others.notified());
             let window = windows.current().ok_or_else(unavailable)?;
             match self.issue_task_offer(&claim, keys, &window).await {
                 Ok(Some(offer)) => return Ok(Delivery::Offer(Some(offer))),
@@ -219,7 +219,7 @@ store_methods! {
             }
             self.poll_capacity.hold(&mut slot, pool, &self.namespace, scope.queue, kind)?;
             drop(probe);
-            pace.wait(wake, deadline).await;
+            pace.wait(wake, deadline, &self.poll_wakes).await;
         }
     }
 

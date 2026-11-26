@@ -2690,6 +2690,10 @@ mod pool_tests;
 mod stall_tests;
 
 #[cfg(test)]
+#[path = "mysql_held_poll_bench.rs"]
+mod held_poll_bench;
+
+#[cfg(test)]
 mod tests {
 
     #[test]

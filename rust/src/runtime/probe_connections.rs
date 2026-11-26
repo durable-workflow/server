@@ -117,6 +117,19 @@ store_methods! {
     async fn budgeted_connection_by(
         &self, budget: &Arc<tokio::sync::Semaphore>, answer_by: Option<tokio::time::Instant>,
     ) -> Result<Option<ProbeConnection<DB>>> {
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let acquired = self.budgeted_connection_untimed(budget, answer_by).await;
+        #[cfg(test)]
+        if Arc::ptr_eq(budget, &self.probe_slots) {
+            probe_stats::record(started.elapsed(), acquired.is_err());
+        }
+        acquired
+    }
+
+    async fn budgeted_connection_untimed(
+        &self, budget: &Arc<tokio::sync::Semaphore>, answer_by: Option<tokio::time::Instant>,
+    ) -> Result<Option<ProbeConnection<DB>>> {
         let deadline = tokio::time::Instant::now() + self.pool.options().get_acquire_timeout();
         let slot = match answer_by.filter(|answer_by| *answer_by < deadline) {
             Some(answer_by) => match tokio::time::timeout_at(answer_by, budget.clone().acquire_owned()).await {
@@ -132,6 +145,32 @@ store_methods! {
             .await
             .map_err(|_| sqlx::Error::PoolTimedOut)??;
         Ok(Some(ProbeConnection { connection: Some(connection), slot: Some(slot) }))
+    }
+}
+
+/// Read-slot waits, for the held-poll benchmark
+/// (`runtime::mysql::held_poll_bench`).
+#[cfg(test)]
+pub(super) mod probe_stats {
+    use std::sync::{Mutex, atomic::{AtomicUsize, Ordering}};
+    static WAITS: Mutex<Vec<f64>> = Mutex::new(Vec::new());
+    static FAILURES: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn record(waited: std::time::Duration, failed: bool) {
+        WAITS.lock().unwrap().push(waited.as_secs_f64() * 1000.0);
+        if failed {
+            FAILURES.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub(in crate::runtime) fn reset() {
+        WAITS.lock().unwrap().clear();
+        FAILURES.store(0, Ordering::Relaxed);
+    }
+
+    /// The read-slot waits in milliseconds, and how many failed.
+    pub(in crate::runtime) fn take() -> (Vec<f64>, usize) {
+        (std::mem::take(&mut *WAITS.lock().unwrap()), FAILURES.load(Ordering::Relaxed))
     }
 }
 

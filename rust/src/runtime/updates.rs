@@ -825,7 +825,7 @@ where
         let deadline =
             tokio::time::Instant::now() + Duration::from_secs(wait_seconds as u64);
         loop {
-            let wake = self.wake.notified();
+            let wake = super::poll_wakes::any(self.wake.notified(), self.poll_wakes.others.notified());
             let update = Self::query(UPDATE_ROW)
                 .bind(update_id)
                 .fetch_one(&self.pool)

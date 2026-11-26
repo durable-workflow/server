@@ -92,6 +92,10 @@ pub(super) struct Transaction<'a, DB: Backend> {
     /// carried claim fenced, under the same transition lock.
     pub(super) fresh_lease_owner: Option<String>,
     history_wakes: Option<Arc<super::history_waits::HistoryWakes>>,
+    /// The queues this transaction created ready tasks on, and the wakes of
+    /// their held polls (Server #1372).
+    pub(super) ready_queues: super::poll_wakes::ReadyQueues,
+    poll_wakes: Option<Arc<super::poll_wakes::PollWakes>>,
     // An implicit failure drops the database transaction before this guard.
     _queue_guard: Option<OwnedMutexGuard<()>>,
     #[cfg(test)]
@@ -120,10 +124,19 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             remembered_events: None,
             fresh_lease_owner: None,
             history_wakes,
+            ready_queues: Default::default(),
+            poll_wakes: None,
             _queue_guard: queue_guard,
             #[cfg(test)]
             commit_gate: None,
         }
+    }
+
+    /// Wake the held polls of the queues this transaction creates ready
+    /// tasks on when it commits (Server #1372).
+    pub(super) fn with_poll_wakes(mut self, wakes: Arc<super::poll_wakes::PollWakes>) -> Self {
+        self.poll_wakes = Some(wakes);
+        self
     }
 
     /// Cache only immutable task tags from an authoritative row this
@@ -299,6 +312,9 @@ where
         self.inner.commit().await?;
         if !changed_runs.is_empty() && let Some(wakes) = self.history_wakes {
             wakes.committed(changed_runs.keys());
+        }
+        if !self.ready_queues.is_empty() && let Some(wakes) = self.poll_wakes {
+            wakes.wake_queues(&self.ready_queues);
         }
         Ok(())
     }

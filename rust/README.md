@@ -250,34 +250,51 @@ datum decoding or qualifying ingress.
 
 ## Prepared-statement cache
 
-Each connection of the MySQL and PostgreSQL runtime pools (4 connections per
-node) keeps up to `DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY` server-side prepared
-statements, default **200**. SQLx's `statement-cache-capacity` `DB_URL`
-parameter sets the same value; if both are set they must agree. Values are
-whole numbers from `0` (prepare and close every statement) to `4095`; anything
-else, or two different values, stops startup. SQLite is
-unaffected.
+Each request connection of the MySQL and PostgreSQL runtime pools (a request
+pool of 4 per node) keeps up to `DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY`
+server-side prepared statements, default **192**; the node's fifth
+connection, the maintenance loop's, keeps at most 48 (fewer if the capacity is
+smaller, none at `0`). SQLx's `statement-cache-capacity` `DB_URL` parameter
+sets the same value; if both are set they must agree. Values are whole numbers
+from `0` (prepare and close every statement) to `4083`; anything else, or two
+different values, stops startup. SQLite is unaffected.
 
 SQLx's own default of 100 is smaller than the hot path. On the #1078 workload
 (200 workflows of five 20 ms activities, six PHP workers, MySQL 8.0) each pool
-connection uses about 160 distinct statements. At 100 the cache evicted them,
-so every workflow prepared about 12 statements again and closed about 11
+connection uses about 160 to 166 distinct statements. At 100 the cache evicted
+them, so every workflow prepared about 12 statements again and closed about 11
 (Server #1174). At 200 the same workload prepares 0.2 statements per workflow
 and closes none.
+
+Server #1372 added the fifth connection. The maintenance loop uses few
+statements, so its connection keeps a small cache and the request connections
+keep 192, still above the #1174 working set. On the same shape of workload
+driven in process (200 workflows of five 20 ms activities and a signal, six
+workers, MariaDB 10.11; `tests/execution/hot_path_cache.rs`) each request
+connection uses 123 to 126 distinct statements and the maintenance connection
+about 8:
+
+| Capacity | Prepares per workflow | Closes per workflow | Hit rate |
+|---|---|---|---|
+| 200 | 2.50 | 0 | 99.71 % |
+| 160 | 2.52 | 0 | 99.70 % |
+| 128 | 2.51 | 0.26 | 99.71 % |
+| 100 | 17.42 | 15.70 | 97.96 % |
 
 MySQL counts every prepared statement of every client toward the server-wide
 `max_prepared_stmt_count` (default 16382). When a client reaches it, further
 prepares fail with error 1461. A native node holds at most
-`4 × capacity` statements, so keep
+`4 × capacity + min(capacity, 48)` statements, so keep
 
 ```text
-nodes × 4 × DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY + other clients' statements ≤ max_prepared_stmt_count
+nodes × (4 × DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY + min(DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY, 48))
+    + other clients' statements ≤ max_prepared_stmt_count
 ```
 
-At the default that is 800 per node and up to 20 nodes on a default MySQL
-server. The hot path above fills about 650 per node. For a larger cluster,
+At the default that is 816 per node and up to 20 nodes on a default MySQL
+server. The hot path above fills about 510 per node. For a larger cluster,
 raise `max_prepared_stmt_count` or lower the capacity. `Prepared_stmt_count`
-in `SHOW GLOBAL STATUS` reports current use. The upper bound of 4095 keeps one
+in `SHOW GLOBAL STATUS` reports current use. The upper bound of 4083 keeps one
 node within the default limit. PostgreSQL has no server-wide limit; each cached
 statement holds memory in its own backend.
 
@@ -405,7 +422,8 @@ across restarts. This opt-in does not authorize use as a production replacement.
 
 The first slice uses Axum/Tokio for HTTP and SQLx for SQLite transactions, with
 only the required features enabled and no build-time database or SQL macro
-generation. Four connections and `BEGIN IMMEDIATE` serialize durable state
+generation. Five connections (a request pool of four and the maintenance
+loop's) and `BEGIN IMMEDIATE` serialize durable state
 changes; SQLite runs on SQLx's connection workers. HTTP uses two Tokio executor
 threads. WAL with full synchronous writes retains acknowledged state.
 Namespaces within one runtime share a FIFO transition queue before pool

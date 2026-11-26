@@ -18,6 +18,8 @@ use std::str::FromStr;
 
 #[path = "execution/schedules.rs"]
 mod schedules;
+#[path = "execution/hot_path_cache.rs"]
+mod hot_path_cache;
 
 #[path = "execution/visibility.rs"]
 mod visibility;

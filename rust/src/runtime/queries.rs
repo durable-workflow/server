@@ -862,7 +862,7 @@ where
         // Periodic probes observe results committed by another server process.
         let mut last = json!({"status":"pending"});
         loop {
-            let wake = self.wake.notified();
+            let wake = super::poll_wakes::any(self.wake.notified(), self.poll_wakes.others.notified());
             let remaining = (deadline - authority::now()).to_std().unwrap_or_default();
             let read = Self::query(DB::QUERY_CACHE_GET)
                 .bind(&key)
@@ -1048,7 +1048,7 @@ where
         let mut wait_slot = None;
         loop {
             let probe = self.poll_capacity.probe().await;
-            let wake = self.wake.notified();
+            let wake = super::poll_wakes::any(self.wake.notified(), self.poll_wakes.others.notified());
             // A later probe that cannot get a read slot by the poll's
             // deadline answers as at its deadline (Server #1355).
             let first_probe = std::mem::take(&mut first);
@@ -1109,7 +1109,7 @@ where
             self.poll_capacity.hold(&mut wait_slot, super::poll_capacity::Pool::QueryTask,
                 &self.namespace, text(body, "task_queue")?, "query_task")?;
             drop(probe);
-            pace.wait(wake, deadline).await;
+            pace.wait(wake, deadline, &self.poll_wakes).await;
         }
     }
 

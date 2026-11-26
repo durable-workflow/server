@@ -1,7 +1,8 @@
 # SQLx PostgreSQL driver patch
 
 This directory contains the official `sqlx-postgres` 0.9.0 crate with one
-backported driver correction, one native tagging patch and two reply bounds. Its published
+backported driver correction, one native tagging patch, two reply bounds and a
+capacity getter. Its published
 archive has SHA-256
 `87a2bdd6e83f6b3ea525ca9fee568030508b58355a43d0b2c1674d5f79dcd65e` (the
 `Cargo.lock` checksum it replaces) and VCS commit
@@ -117,3 +118,11 @@ hold every reply and require the statement, and the return to the pool, to
 end within a shortened bound and the connection to be replaced. Remove this
 change only when a reviewed published driver lets a caller bound each read,
 or when the server bounds silent peers another way.
+
+## The statement cache capacity can be read
+
+`get_statement_cache_capacity` (`src/options/mod.rs`) returns the capacity the
+connect options carry. Native Server reads it to give its maintenance
+connection a smaller cache than its request connections (Server #1372), and
+still none when the operator turned the cache off. Remove it only when a
+published release has the same getter.

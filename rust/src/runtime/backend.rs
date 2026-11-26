@@ -239,6 +239,14 @@ pub(super) trait Backend: Database {
     /// `statement_timeout` ends every statement there within 30 s. MySQL
     /// drops it, so a healthy server is never cut off mid-delete.
     fn lift_statement_reply_bound(_connection: &mut Self::Connection) {}
+    /// The maintenance connection's connect options, from the request pool's:
+    /// a statement cache of at most `statement_cache::MAINTENANCE` entries
+    /// (Server #1372). SQLite keeps no server-side statements.
+    fn maintenance_connect_options(
+        options: <Self::Connection as sqlx::Connection>::Options,
+    ) -> <Self::Connection as sqlx::Connection>::Options {
+        options
+    }
     const HISTORY_SEQUENCE_MAX: i64 = i64::MAX;
     const HISTORY_ADVANCE_RETURNS_ROW: bool = true;
     const HISTORY_ADVANCE_SQL: &str = "UPDATE workflow_runs SET last_history_sequence=last_history_sequence+1 WHERE id=$1 AND last_history_sequence>=0 AND last_history_sequence<$2 RETURNING last_history_sequence";
@@ -633,6 +641,12 @@ impl Encode<'_, Postgres> for PostgresDocument {
 }
 
 impl Backend for Postgres {
+    fn maintenance_connect_options(
+        options: <Self::Connection as sqlx::Connection>::Options,
+    ) -> <Self::Connection as sqlx::Connection>::Options {
+        let capacity = crate::statement_cache::maintenance(options.get_statement_cache_capacity());
+        options.statement_cache_capacity(capacity)
+    }
     const COMMIT_HANDOFF: bool = true;
     const HISTORY_SEQUENCE_MAX: i64 = i32::MAX as i64;
     const TASK_CANDIDATES_SQL: &str = super::postgres::TASK_CANDIDATES_SQL;
@@ -764,6 +778,12 @@ macro_rules! mysql_task_candidates_sql {
 impl Backend for MySql {
     fn lift_statement_reply_bound(connection: &mut Self::Connection) {
         connection.set_reply_timeout(None);
+    }
+    fn maintenance_connect_options(
+        options: <Self::Connection as sqlx::Connection>::Options,
+    ) -> <Self::Connection as sqlx::Connection>::Options {
+        let capacity = crate::statement_cache::maintenance(options.get_statement_cache_capacity());
+        options.statement_cache_capacity(capacity)
     }
     const COMMIT_HANDOFF: bool = true;
     const HISTORY_SEQUENCE_MAX: i64 = u32::MAX as i64;
@@ -1248,4 +1268,24 @@ async fn mysql_ownership_lock(tx: &mut Transaction<'_, MySql>) -> Result<()> {
     sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=IF(VERSION() LIKE '%MariaDB%',?,?) FOR UPDATE")
         .bind(mysql::MARIADB_VERSION).bind(mysql::MYSQL_VERSION).fetch_one(&mut **tx).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod maintenance_cache_tests {
+    use super::Backend;
+
+    /// Server #1372: the maintenance connection keeps at most
+    /// `statement_cache::MAINTENANCE` statements, and none when the
+    /// configured capacity turns the cache off.
+    #[test]
+    fn the_maintenance_connection_keeps_a_small_cache_or_none() {
+        use crate::statement_cache::{DEFAULT, MAINTENANCE, MAX};
+        use sqlx::{mysql::MySqlConnectOptions, postgres::PgConnectOptions};
+        for (configured, kept) in [(DEFAULT, MAINTENANCE), (MAX, MAINTENANCE), (20, 20), (0, 0)] {
+            let mysql = sqlx::MySql::maintenance_connect_options(MySqlConnectOptions::new().statement_cache_capacity(configured));
+            assert_eq!(mysql.get_statement_cache_capacity(), kept, "{configured}");
+            let postgres = sqlx::Postgres::maintenance_connect_options(PgConnectOptions::new().statement_cache_capacity(configured));
+            assert_eq!(postgres.get_statement_cache_capacity(), kept, "{configured}");
+        }
+    }
 }

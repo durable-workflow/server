@@ -209,6 +209,8 @@ pub(super) struct Store<DB: Backend> {
     transitions: Arc<Mutex<()>>,
     pub(super) wake: Arc<Notify>,
     history_wakes: Arc<super::history_waits::HistoryWakes>,
+    /// Held worker polls' per-queue wakes (Server #1372).
+    pub(super) poll_wakes: Arc<super::poll_wakes::PollWakes>,
     pub(super) namespace: Arc<str>,
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
@@ -408,6 +410,7 @@ where
             transitions: Arc::default(),
             wake: Arc::new(Notify::new()),
             history_wakes: Arc::default(),
+            poll_wakes: Arc::default(),
             namespace: "default".into(),
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
@@ -454,6 +457,7 @@ where
             transitions: self.transitions.clone(),
             wake: self.wake.clone(),
             history_wakes: self.history_wakes.clone(),
+            poll_wakes: self.poll_wakes.clone(),
             namespace: namespace.into(),
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
@@ -539,13 +543,15 @@ where
     /// Give the maintenance loop its own connection (Server #1355): one
     /// connection with the request pool's options, hooks and connect
     /// options, opened when the loop first needs it. The node still opens
-    /// at most `statement_cache::POOL_CONNECTIONS` connections.
+    /// at most `statement_cache::POOL_CONNECTIONS` connections. Its statement
+    /// cache keeps at most `statement_cache::MAINTENANCE` entries
+    /// (Server #1372).
     pub(super) fn with_maintenance_pool(mut self) -> Self {
         self.maintenance_pool = Some(
             self.pool.options().clone()
                 .max_connections(crate::statement_cache::MAINTENANCE_CONNECTIONS)
                 .min_connections(0)
-                .connect_lazy_with((*self.pool.connect_options()).clone()),
+                .connect_lazy_with(DB::maintenance_connect_options((*self.pool.connect_options()).clone())),
         );
         self
     }
@@ -605,6 +611,7 @@ where
             .await
             .map(|inner| {
                 Transaction::new(inner, self.history_budget, Some(queued), Some(self.history_wakes.clone()))
+                    .with_poll_wakes(self.poll_wakes.clone())
             })
     }
     /// A background transition (Server #1355): its turn on the transition
@@ -632,7 +639,8 @@ where
         queued: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<Transaction<'c, DB>> {
         let inner = DB::begin_on(connection).await?;
-        Ok(Transaction::new(inner, self.history_budget, Some(queued), Some(self.history_wakes.clone())))
+        Ok(Transaction::new(inner, self.history_budget, Some(queued), Some(self.history_wakes.clone()))
+            .with_poll_wakes(self.poll_wakes.clone()))
     }
 
     /// [`begin_read`](Self::begin_read) on a connection the caller holds.
@@ -755,7 +763,9 @@ where
         )
         .await?;
         tx.commit().await?;
-        self.wake.notify_waiters();
+        // The commit woke the held polls of the queues it made ready; wake
+        // the other waiters, not every held poll (Server #1372).
+        self.poll_wakes.others.notify_waiters();
         Ok(started)
     }
 
@@ -1411,7 +1421,9 @@ where
         // A refusal commits its durable rejection record.
         tx.commit().await?;
         let mut response = admitted?;
-        self.wake.notify_waiters();
+        // The commit woke the held polls of the queues it made ready; wake
+        // the other waiters, not every held poll (Server #1372).
+        self.poll_wakes.others.notify_waiters();
         if let Some(key) = key {
             response["request_id"] = json!(key);
             response["retained"] = json!(false);
@@ -2678,6 +2690,9 @@ where
         let mut pace = super::poll_readiness::ReadPace::new();
         let worker_id = text(&body, "worker_id")?;
         let mut wait_slot = None;
+        // Woken by commits that make its queue ready, and by everything
+        // that still wakes every poll (Server #1372).
+        let queue_wait = self.poll_wakes.subscribe(self.namespace.as_ref(), text(&body, "task_queue")?);
         loop {
             // Each probe's database work takes a probe permit, so polls
             // leave the reserved connections free (Server #982).
@@ -2692,7 +2707,7 @@ where
                 return Err(super::RuntimeError::Protocol { status: StatusCode::SERVICE_UNAVAILABLE, response });
             }
             // Register the notification before probing.
-            let wake = self.wake.notified();
+            let wake = super::poll_wakes::any(self.wake.notified(), queue_wait.notify.notified());
             let first_probe = std::mem::take(&mut first);
             let (current, mut claimed) = match &poll_request {
                 Some(request) if first_probe => {
@@ -2750,6 +2765,7 @@ where
             if current
                 && kind == "workflow"
                 && matches!(claimed, Ok(None))
+                && (first_probe || self.poll_wakes.recovery_due(self.namespace.as_ref(), text(&body, "task_queue")?))
                 && self.recover_abandoned_workflow_leases(text(&body, "task_queue")?).await?
             {
                 claimed = self.claim(&body, kind, protocol_version, page, poll_request.as_ref(), fence.as_ref(), claim_until).await;
@@ -2800,7 +2816,7 @@ where
             if let Some(id) = poll_pause_id(kind, &body, poll_request.as_ref()) {
                 super::poll_pauses::stop_at(id, super::poll_pauses::PollPoint::Waiting).await;
             }
-            pace.wait(wake, deadline).await;
+            pace.wait(wake, deadline, &self.poll_wakes).await;
         }
     }
 
@@ -4937,9 +4953,14 @@ where
             let cached_through = tail.as_ref().map(super::continuation_tail::Tail::cached_through);
             Self::record_sticky_cache(&mut tx, self.namespace.as_ref(), &run_id, task_id, &body, &run_status, metrics, cached_through).await?;
         }
+        // Completing this workflow task releases the same-run fence on the
+        // run's other workflow tasks (Server #1282), so its commit also wakes
+        // the run's queue; the commit wakes the queues it made ready, and the
+        // other waiters are woken here, not every held poll (Server #1372).
+        tx.ready_queues.insert((self.namespace.to_string(), DB::string(&run, "queue")?));
         let transaction = if deferred { Some(tx) } else {
             tx.commit().await?;
-            self.wake.notify_waiters();
+            self.poll_wakes.others.notify_waiters();
             None
         };
         let mut response = json!({"task_id": task_id, "run_id": run_id, "run_status": run_status, "workflow_task_attempt": body["workflow_task_attempt"], "outcome": "completed", "recorded": true, "reason": null, "created_task_ids": created});
@@ -5449,7 +5470,9 @@ where
         let mut response = self.complete_activity_in(&mut tx, task_id, body, external.as_ref(), result, workflow_poll, prefix).await?;
         tx.commit().await?;
         super::carried_polls::refresh_workflow_clock(&mut response);
-        self.wake.notify_waiters();
+        // The commit woke the held polls of the queues it made ready; wake
+        // the other waiters, not every held poll (Server #1372).
+        self.poll_wakes.others.notify_waiters();
         Ok(response)
     }
 
@@ -6187,6 +6210,7 @@ where
         .bind(tags.compatibility.as_deref())
         .bind(DB::optional_time(matches!(kind, "workflow" | "activity").then_some(created)))
         .execute(&mut **tx).await?;
+        tx.ready_queues.insert((namespace.clone(), queue.to_owned()));
         Ok(task_id)
     }
 
