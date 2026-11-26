@@ -875,7 +875,10 @@ def race_result(system: str, race: str, workflows: list[dict[str, Any]], errors:
 
 
 def native_race(args: argparse.Namespace) -> dict[str, Any]:
-    base = f"http://{args.address}"
+    # Plain HTTP by design: the target publishes this port only on its private
+    # VPC address, which holds only the target and the driver, and the payloads
+    # are synthetic (as in benchmarks/server-port/small-host).
+    base = f"http://{args.address}"  # NOSONAR
     headers = auth_headers(NATIVE_TOKEN, "default")
     workflow_type = RACES[args.race]
     workflows = [{"id": f"{args.id_prefix}-{index:05d}"} for index in range(args.workflows)]
