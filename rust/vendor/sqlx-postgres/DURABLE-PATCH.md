@@ -1,7 +1,8 @@
 # SQLx PostgreSQL driver patch
 
 This directory contains the official `sqlx-postgres` 0.9.0 crate with one
-backported driver correction and one native tagging patch. Its published archive has SHA-256
+backported driver correction and one native tagging patch. Its published
+archive has SHA-256
 `87a2bdd6e83f6b3ea525ca9fee568030508b58355a43d0b2c1674d5f79dcd65e` (the
 `Cargo.lock` checksum it replaces) and VCS commit
 `003b698e99e024f3621b8043a2426fde5b741171`.
@@ -29,7 +30,8 @@ the node reported its storage unavailable for the rest of the run.
 ("fix(postgres): roll back a transaction cancelled during BEGIN", launchbadge/sqlx
 #4394, merged 2026-09-09, not yet in a release). The depth is claimed before
 the round trip and unwound if the `BEGIN` did not take, so a cancelled or
-failed `BEGIN` queues a `ROLLBACK`. All other upstream source is retained apart from the tagging patch below.
+failed `BEGIN` queues a `ROLLBACK`. All other upstream source is retained,
+apart from the tagging patch below.
 
 `qualification_a_begin_cancelled_in_flight_leaves_no_transaction_behind` in
 `rust/src/runtime/postgres.rs` cancels a pooled `BEGIN` while its round trip
@@ -61,5 +63,10 @@ checks the tagged error and its classification.
 exported prefix matches the server's and that untagged protocol failures stay
 non-transient.
 
-Remove this directory and its `[patch.crates-io]` entry once a published
-`sqlx-postgres` release contains the fix.
+Remove this directory and its `[patch.crates-io]` entry only once a
+published `sqlx-postgres` release contains the BEGIN fix and lets a caller
+tell a protocol failure during connection setup from one on an established
+connection. Otherwise `transient_reason` must get that distinction another
+way first. The server keeps its own copy of the prefix, so a release build
+would still compile without the tag, and garbled handshakes would silently
+become non-retryable again; only the tests above would catch it.

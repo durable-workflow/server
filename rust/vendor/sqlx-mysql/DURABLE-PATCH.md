@@ -1,7 +1,8 @@
 # SQLx MySQL driver patches
 
-This directory contains the official `sqlx-mysql` 0.9.0 crate with three scoped
-driver corrections. Its published archive has SHA-256
+This directory contains the official `sqlx-mysql` 0.9.0 crate with two scoped
+driver corrections and one native tagging patch. Its published archive has
+SHA-256
 `90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27` and VCS
 commit `003b698e99e024f3621b8043a2426fde5b741171`.
 
@@ -58,9 +59,10 @@ chunks a proxy receives from the client:
 
 All upstream source is retained. The source-code changes are in
 `src/connection/mod.rs`, `src/connection/stream.rs`,
-`src/connection/executor.rs`, `src/options/connect.rs` and `src/lib.rs`. The packaged license-reference files are replaced with
-the full MIT and Apache license texts from the same upstream commit. This file
-records the patch; no upstream release is represented as containing it.
+`src/connection/executor.rs`, `src/options/connect.rs` and `src/lib.rs`.
+The packaged license-reference files are replaced with the full MIT and
+Apache license texts from the same upstream commit. This file records the
+patch; no upstream release is represented as containing it.
 
 ## Protocol failures during connection setup are tagged
 
@@ -85,6 +87,12 @@ checks the tagged error and its classification.
 exported prefix matches the server's and that untagged protocol failures stay
 non-transient.
 
-Remove this override when a reviewed published driver provides equivalent
-hard-close behavior and statement-close batching (or `TCP_NODELAY`), and passes
-the same database and TLS qualification.
+Remove this override only when a reviewed published driver provides
+equivalent hard-close behavior and statement-close batching (or
+`TCP_NODELAY`), passes the same database and TLS qualification, and lets a
+caller tell a protocol failure during connection setup from one on an
+established connection. Otherwise `transient_reason` must get that
+distinction another way first. The server keeps its own copy of the prefix,
+so a release build would still compile without the tag, and garbled
+handshakes would silently become non-retryable again; only the tests
+above would catch it.
