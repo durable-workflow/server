@@ -147,9 +147,10 @@ async fn explicit_propagate_is_recorded_per_frame_and_survives_a_cold_reopen() {
     assert!(poll(&app, "policy-worker", "workflow").await.is_null());
     let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
     assert_eq!(&history.as_array().unwrap()[..original.as_array().unwrap().len()], original.as_array().unwrap());
-    let completed = history.as_array().unwrap().iter()
-        .find(|event| event["event_type"] == "ActivityCompleted").unwrap();
-    assert_recorded_policy(completed, "propagate");
+    let checked = assert_policy_on_every_group_event(&history, "propagate");
+    for kind in ["ActivityScheduled", "ActivityStarted", "ActivityFailed", "ActivityCompleted"] {
+        assert!(checked.iter().any(|checked| checked == kind), "{kind} was not checked: {checked:?}");
+    }
     second.close().await;
     database.remove().await;
 }
@@ -378,6 +379,192 @@ async fn uniform_nested_propagate_is_recorded_in_every_frame() {
         // The flattened fields repeat the innermost frame.
         let innermost = event["payload"]["parallel_group_path"].as_array().unwrap().last().unwrap();
         assert_eq!(event["payload"]["parallel_group_id"], innermost["parallel_group_id"]);
+    }
+    runtime.close().await;
+    database.remove().await;
+}
+
+/// Every event that names a group carries `policy` at the top level and in
+/// every path frame. Returns the event types checked, for coverage asserts.
+fn assert_policy_on_every_group_event(history: &Value, policy: &str) -> Vec<String> {
+    let mut checked = Vec::new();
+    for event in history.as_array().unwrap() {
+        let payload = &event["payload"];
+        let grouped = ["parallel_group_id", "parallel_group_kind", "parallel_group_path"]
+            .iter().any(|field| payload.get(*field).is_some_and(|value| !value.is_null()));
+        if !grouped {
+            continue;
+        }
+        assert_recorded_policy(event, policy);
+        assert!(!payload["parallel_group_path"].as_array().unwrap().is_empty(), "{event}");
+        checked.push(event["event_type"].as_str().unwrap().to_owned());
+    }
+    checked
+}
+
+fn timer_kind(event: &Value) -> &str {
+    event["payload"]["timer_kind"].as_str().unwrap_or("member")
+}
+
+async fn wait_for_history(app: &Router, run: &Value, done: impl Fn(&Value) -> bool) -> Value {
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            let history = run_history(app, &run["workflow_id"], &run["run_id"]).await;
+            if done(&history) {
+                return history;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }).await.expect("history reaches the expected state")
+}
+
+fn has(history: &Value, kind: &str, timer: Option<&str>) -> bool {
+    history.as_array().unwrap().iter()
+        .any(|event| event["event_type"] == kind && timer.is_none_or(|timer| timer_kind(event) == timer))
+}
+
+fn mixed(index: i64, size: i64, mut command: Value) -> Value {
+    let frame = json!({"parallel_group_id": format!("parallel-calls:1:{size}"), "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 1, "parallel_group_size": size, "parallel_group_index": index,
+        "parallel_group_policy": "propagate"});
+    for (field, value) in frame.as_object().unwrap() {
+        command[field] = value.clone();
+    }
+    command["parallel_group_path"] = json!([frame]);
+    command
+}
+
+// An activity, a timer and a condition wait with its timeout timer in one
+// explicit group: each member's opening, progress and close, the
+// condition's satisfaction and its cancelled timeout all keep the policy.
+#[tokio::test]
+async fn every_event_of_a_mixed_group_with_a_condition_member_keeps_the_policy() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_policies(&app, "policy-worker", Some(&["propagate"])).await;
+    let run = start(&app, "mixed-policy").await;
+    let task = poll(&app, "policy-worker", "workflow").await;
+    let commands = json!([
+        mixed(0, 3, json!({"type": "schedule_activity", "activity_type": "echo_activity",
+            "arguments": envelope(Payload::Array(vec![]))})),
+        mixed(1, 3, json!({"type": "start_timer", "delay_seconds": 1})),
+        mixed(2, 3, json!({"type": "open_condition_wait", "condition_key": "approval",
+            "condition_wait_occurrence_id": "condition-wait:0", "timeout_seconds": 600})),
+    ]);
+    let admitted = finish_task(&app, &task, commands).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+    let activity = poll(&app, "policy-worker", "activity").await;
+    let completed = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/complete", activity["task_id"].as_str().unwrap()),
+        json!({"lease_owner": activity["lease_owner"], "activity_attempt_id": activity["activity_attempt_id"],
+            "result": envelope(Payload::Null)})).await;
+    assert_eq!(completed.0, StatusCode::OK, "{}", completed.1);
+    wait_for_history(&app, &run, |history| has(history, "TimerFired", Some("member"))).await;
+    assert!(poll(&app, "policy-worker", "workflow").await.is_null(), "the open condition holds the barrier");
+    let (status, body) = request(&app, "POST", "/api/workflows/mixed-policy/signal/approve", json!([])).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let resumed = poll(&app, "policy-worker", "workflow").await;
+    assert!(resumed["task_id"].is_string(), "{resumed}");
+    // The worker replays the policy on every delivered group event.
+    assert_policy_on_every_group_event(&resumed["history_events"], "propagate");
+    let finished = finish_task(&app, &resumed, json!([{"type": "complete_workflow", "result": envelope(Payload::Null)}])).await;
+    assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let checked = assert_policy_on_every_group_event(&history, "propagate");
+    for kind in ["ActivityScheduled", "ActivityStarted", "ActivityCompleted", "TimerScheduled", "TimerFired",
+        "ConditionWaitOpened", "ConditionWaitSatisfied", "TimerCancelled"] {
+        assert!(checked.iter().any(|checked| checked == kind), "{kind} was not checked: {checked:?}");
+    }
+    assert!(has(&history, "TimerScheduled", Some("condition_timeout")) && has(&history, "TimerCancelled", Some("condition_timeout")),
+        "{history}");
+    runtime.close().await;
+    database.remove().await;
+}
+
+fn condition_member(index: i64, mut command: Value) -> Value {
+    let frame = json!({"parallel_group_id": "parallel-calls:1:2", "parallel_group_kind": "condition",
+        "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": index,
+        "parallel_group_policy": "propagate"});
+    for (field, value) in frame.as_object().unwrap() {
+        command[field] = value.clone();
+    }
+    command["parallel_group_path"] = json!([frame]);
+    command
+}
+
+// Condition members whose timeouts fire record the scheduled and fired
+// timeout timers with the policy.
+#[tokio::test]
+async fn condition_timeouts_in_an_explicit_group_keep_the_policy() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_policies(&app, "policy-worker", Some(&["propagate"])).await;
+    let run = start(&app, "condition-timeouts").await;
+    let task = poll(&app, "policy-worker", "workflow").await;
+    let condition = |index: i64| condition_member(index,
+        json!({"type": "open_condition_wait", "condition_key": format!("key-{index}"), "timeout_seconds": 1}));
+    let admitted = finish_task(&app, &task, json!([condition(0), condition(1)])).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+    let fired = |history: &Value| history.as_array().unwrap().iter()
+        .filter(|event| event["event_type"] == "TimerFired" && timer_kind(event) == "condition_timeout").count();
+    let history = wait_for_history(&app, &run, |history| fired(history) == 2).await;
+    let checked = assert_policy_on_every_group_event(&history, "propagate");
+    for kind in ["ConditionWaitOpened", "TimerScheduled", "TimerFired"] {
+        assert!(checked.iter().any(|checked| checked == kind), "{kind} was not checked: {checked:?}");
+    }
+    let resumed = poll(&app, "policy-worker", "workflow").await;
+    assert!(resumed["task_id"].is_string(), "the group wakes once both members closed: {resumed}");
+    assert_policy_on_every_group_event(&resumed["history_events"], "propagate");
+    runtime.close().await;
+    database.remove().await;
+}
+
+// A child group: scheduling, start and each child's failure or completion in
+// the parent's history keep the policy.
+#[tokio::test]
+async fn every_parent_event_of_an_explicit_child_group_keeps_the_policy() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_policies(&app, "policy-worker", Some(&["propagate"])).await;
+    let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id": "child-worker",
+        "task_queue": "children", "runtime": "php", "supported_workflow_types": ["child"], "supported_activity_types": []})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run = start(&app, "child-policy").await;
+    let task = poll(&app, "policy-worker", "workflow").await;
+    let commands = json!((0..2).map(|index| {
+        let frame = json!({"parallel_group_id": "parallel-children:1:2", "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": index,
+            "parallel_group_policy": "propagate"});
+        let mut command = child_command(index);
+        command["queue"] = json!("children");
+        for (field, value) in frame.as_object().unwrap() {
+            command[field] = value.clone();
+        }
+        command["parallel_group_path"] = json!([frame]);
+        command
+    }).collect::<Vec<_>>());
+    let admitted = finish_task(&app, &task, commands).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+    let child_poll = || async {
+        let (status, body) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+            json!({"worker_id": "child-worker", "task_queue": "children", "timeout_seconds": 0})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["task"].clone()
+    };
+    let (first, second) = (child_poll().await, child_poll().await);
+    let failed = finish_task(&app, &first, json!([{"type": "fail_workflow", "message": "child failed"}])).await;
+    assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
+    let done = finish_task(&app, &second, json!([{"type": "complete_workflow", "result": envelope(Payload::Null)}])).await;
+    assert_eq!(done.0, StatusCode::OK, "{}", done.1);
+    let resumed = poll(&app, "policy-worker", "workflow").await;
+    assert!(resumed["task_id"].is_string(), "{resumed}");
+    assert_policy_on_every_group_event(&resumed["history_events"], "propagate");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let checked = assert_policy_on_every_group_event(&history, "propagate");
+    for kind in ["ChildWorkflowScheduled", "ChildRunFailed", "ChildRunCompleted"] {
+        assert!(checked.iter().any(|checked| checked == kind), "{kind} was not checked: {checked:?}");
     }
     runtime.close().await;
     database.remove().await;
