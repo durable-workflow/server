@@ -13,6 +13,14 @@ use sqlx::{ColumnIndex, Decode, Encode, Executor, IntoArguments, Type};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+/// The prefix the vendored PostgreSQL and MySQL drivers put on a protocol
+/// failure raised while a connection is being set up. During a failover a
+/// proxy or a starting server can answer the handshake with bytes the driver
+/// cannot parse; that is a passing backend condition. A protocol failure on an
+/// established connection (for example a client-side encoding limit) carries
+/// no prefix and stays a request fault.
+const CONNECTION_SETUP_PROTOCOL_PREFIX: &str = "connection setup: ";
+
 pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
     match error {
         RuntimeError::Database(
@@ -21,6 +29,11 @@ pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
             | sqlx::Error::Io(_)
             | sqlx::Error::Tls(_),
         ) => Some("backend_unavailable"),
+        RuntimeError::Database(sqlx::Error::Protocol(message))
+            if message.starts_with(CONNECTION_SETUP_PROTOCOL_PREFIX) =>
+        {
+            Some("backend_unavailable")
+        }
         RuntimeError::Database(sqlx::Error::Database(error)) => {
             if let Some(mysql) = error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>() {
                 // An unlisted number still falls back to its SQLSTATE class,
@@ -41,6 +54,62 @@ pub(super) fn transient_reason(error: &RuntimeError) -> Option<&'static str> {
         }
         _ => None,
     }
+}
+
+#[test]
+fn only_connection_setup_protocol_failures_are_transient() {
+    // Both vendored drivers tag setup failures with the prefix this check reads.
+    assert_eq!(sqlx::postgres::CONNECTION_SETUP_PROTOCOL_PREFIX, CONNECTION_SETUP_PROTOCOL_PREFIX);
+    assert_eq!(sqlx::mysql::CONNECTION_SETUP_PROTOCOL_PREFIX, CONNECTION_SETUP_PROTOCOL_PREFIX);
+    let protocol = |message: &str| RuntimeError::Database(sqlx::Error::Protocol(message.into()));
+    assert_eq!(transient_reason(&protocol("connection setup: Packet empty")), Some("backend_unavailable"));
+    for established in ["too many parameter format codes (40000)", "execute: unexpected message: DataRow", "Packet empty"] {
+        assert_eq!(transient_reason(&protocol(established)), None, "{established}");
+    }
+}
+
+/// A server that answers the opening of a connection with bytes no driver
+/// accepts, as a proxy can while its backend fails over. It returns the
+/// error each driver raises from a real connection attempt.
+#[cfg(test)]
+async fn garbled_handshake(reply: &'static [u8]) -> (tokio::task::JoinHandle<()>, u16) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        // PostgreSQL clients speak first (SSLRequest); MySQL clients wait.
+        let mut request = [0u8; 8];
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(200), socket.read(&mut request)).await;
+        socket.write_all(reply).await.unwrap();
+        let _ = socket.flush().await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    });
+    (server, port)
+}
+
+#[tokio::test]
+async fn a_garbled_postgres_handshake_is_transient() {
+    use sqlx::{ConnectOptions, postgres::{PgConnectOptions, PgSslMode}};
+    // `X` is neither `S` nor `N` in reply to the SSLRequest.
+    let (server, port) = garbled_handshake(b"X").await;
+    let error = PgConnectOptions::new().host("127.0.0.1").port(port).username("dw")
+        .ssl_mode(PgSslMode::Prefer).connect().await.err().expect("refused");
+    server.abort();
+    assert!(matches!(&error, sqlx::Error::Protocol(message) if message.starts_with(CONNECTION_SETUP_PROTOCOL_PREFIX)), "{error:?}");
+    assert_eq!(transient_reason(&RuntimeError::Database(error)), Some("backend_unavailable"));
+}
+
+#[tokio::test]
+async fn a_garbled_mysql_handshake_is_transient() {
+    use sqlx::{ConnectOptions, mysql::{MySqlConnectOptions, MySqlSslMode}};
+    // An empty first packet where the server greeting belongs.
+    let (server, port) = garbled_handshake(&[0, 0, 0, 0]).await;
+    let error = MySqlConnectOptions::new().host("127.0.0.1").port(port).username("dw")
+        .ssl_mode(MySqlSslMode::Disabled).connect().await.err().expect("refused");
+    server.abort();
+    assert!(matches!(&error, sqlx::Error::Protocol(message) if message.starts_with(CONNECTION_SETUP_PROTOCOL_PREFIX)), "{error:?}");
+    assert_eq!(transient_reason(&RuntimeError::Database(error)), Some("backend_unavailable"));
 }
 
 /// SQLSTATE values that describe a passing backend condition. Class 08 is a
