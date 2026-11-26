@@ -227,6 +227,46 @@ class ControllerTest(unittest.TestCase):
                 text=True, capture_output=True, timeout=60,
             )
 
+    def test_a_refused_call_logs_vultr_error_body_without_the_key(self):
+        import http.server
+        import threading
+
+        key = "VULTRKEY" + "x" * 28
+        served = []
+
+        class Refuse(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - http.server naming
+                served.append(self.path)
+                body = json.dumps({"error": f"Unauthorized IP address: 203.0.113.9 for {key}", "status": 403}).encode()
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Refuse)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = self.run_controller(
+                "cleanup",
+                DW_RACE_DRY_RUN="0",
+                VULTR_API_KEY=key,
+                VULTR_API_BASE=f"http://127.0.0.1:{server.server_address[1]}/v2",
+            )
+        finally:
+            server.shutdown()
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertTrue(served and served[0].startswith("/v2/instances?"), served)
+        self.assertIn("Vultr API GET /instances answered HTTP 403", output)
+        self.assertIn("Unauthorized IP address: 203.0.113.9", output)
+        self.assertIn("<redacted>", output)
+        self.assertNotIn(key, output)
+
     def test_dry_run_prints_create_delete_and_verify_calls(self):
         result = self.run_controller()
         output = result.stdout + result.stderr

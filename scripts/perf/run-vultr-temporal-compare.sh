@@ -194,6 +194,39 @@ api() {
     dry_run_answer "$method" "$path" "$@"
     return 0
   fi
+  # A caller that asks for the status code or redirects the body handles
+  # the answer itself.
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == --output || "$arg" == --write-out ]]; then
+      api_curl "$method" "$path" "$@"
+      return
+    fi
+  done
+  # Otherwise the body goes to stdout as before, and a refused call also
+  # logs Vultr's error body to stderr. curl --fail-with-body puts that body
+  # on stdout, where callers capture and discard it, so the reason for a
+  # 4xx or 5xx was lost.
+  local body status rc=0
+  body="$(mktemp)"
+  status="$(api_curl "$method" "$path" "$@" --no-fail-with-body --output "$body" --write-out '%{http_code}')" || rc=$?
+  if (( rc != 0 )); then
+    rm -f "$body"
+    return "$rc"
+  fi
+  cat "$body"
+  if [[ "$status" =~ ^2 ]]; then
+    rm -f "$body"
+    return 0
+  fi
+  log "ERROR: Vultr API $method ${path%%\?*} answered HTTP $status: $(redact_api_error "$body")"
+  rm -f "$body"
+  return 22
+}
+
+api_curl() {
+  local method="$1" path="$2"
+  shift 2
   curl --fail-with-body --silent --show-error \
     --connect-timeout 15 \
     --max-time 60 \
@@ -202,6 +235,17 @@ api() {
     --header "Content-Type: application/json" \
     "$@" \
     "$API_BASE$path"
+}
+
+# Vultr's error body on one line, at most 500 characters, with the API key
+# removed in case the answer echoes the request.
+redact_api_error() {
+  local text
+  text="$(head -c 2000 "$1" | tr '\r\n' '  ')"
+  if [[ -n "${VULTR_API_KEY:-}" ]]; then
+    text="${text//"$VULTR_API_KEY"/<redacted>}"
+  fi
+  printf '%s' "${text:0:500}"
 }
 
 dry_run_answer() {
