@@ -19,7 +19,16 @@ pub(super) const POLICY: &str = "parallel_group_policy";
 /// The explicit policies native records and runs. A known policy outside
 /// this list is refused at admission, before any write, until its runtime
 /// behavior is implemented here; it is never recorded as a legacy group.
-pub(super) const ADMITTED_POLICIES: &[&str] = &["propagate"];
+/// `propagate` keeps the fail-fast wake. `settle` wakes the workflow once
+/// every member has an outcome, whatever it is.
+pub(super) const ADMITTED_POLICIES: &[&str] = &["propagate", "settle"];
+
+/// Whether a member's path contains a `settle` group: its failure does not
+/// wake the workflow until every member of that group has an outcome.
+pub(super) fn settles(metadata: &Value) -> bool {
+    metadata["parallel_group_path"].as_array()
+        .is_some_and(|path| path.iter().any(|group| group[POLICY] == "settle"))
+}
 
 pub(super) fn invalid() -> super::RuntimeError {
     refuse(

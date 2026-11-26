@@ -169,12 +169,15 @@ fn refused_batches() -> Vec<(String, Value)> {
     for vector in fixtures()["refusal_vectors"].as_array().unwrap() {
         let id = vector["id"].as_str().unwrap().to_owned();
         let batch = match id.as_str() {
-            // Malformed names, and `settle`, which native does not run yet.
+            // Malformed names, and a policy the producer does not run. The
+            // vector's producer runs only `propagate`; native also runs
+            // `settle`, so `cancel_remaining` takes the unsupported place.
             "unknown-policy" | "null-policy" | "unsupported-selected-policy" => {
+                let policy = if id == "unsupported-selected-policy" { json!("cancel_remaining") } else { vector["policy"].clone() };
                 let mut batch = group(&[Some("propagate"), Some("propagate")]);
                 for command in batch.as_array_mut().unwrap() {
-                    command["parallel_group_policy"] = vector["policy"].clone();
-                    command["parallel_group_path"][0]["parallel_group_policy"] = vector["policy"].clone();
+                    command["parallel_group_policy"] = policy.clone();
+                    command["parallel_group_path"][0]["parallel_group_policy"] = policy.clone();
                 }
                 batch
             }
@@ -570,27 +573,14 @@ async fn every_parent_event_of_an_explicit_child_group_keeps_the_policy() {
     database.remove().await;
 }
 
-/// Rewrites one admitted group's openings as `policy` recorded them, for a
-/// policy native does not admit yet: the routing fence reads only history.
-async fn record_group_as(database: &TestDatabase, group_id: &str, policy: &str) {
-    let replace = format!("'\"propagate\"','\"{policy}\"'");
-    let filter = format!("event_type='ActivityScheduled' AND {{payload}} LIKE '%\"{group_id}\"%'");
-    let statement = match database {
-        TestDatabase::Postgres { .. } => format!("UPDATE workflow_history_events SET payload=REPLACE(payload::text,{replace})::jsonb WHERE {}",
-            filter.replace("{payload}", "payload::text")),
-        _ => format!("UPDATE workflow_history_events SET payload=REPLACE(payload,{replace}) WHERE {}", filter.replace("{payload}", "payload")),
-    };
-    database.execute(sqlx::AssertSqlSafe(statement)).await;
-}
-
 /// A run whose retained history records `required` (one closed two-member
 /// group per policy, or one legacy group) and whose next workflow task is
 /// ready. The authoring worker is then silent, so only later workers count.
 async fn retained_run(database: &TestDatabase, app: &Router, workflow: &str, required: &[&str]) -> Value {
-    register_policies(app, "author", Some(&["propagate"])).await;
+    register_policies(app, "author", Some(&["propagate", "settle"])).await;
     let run = start(app, workflow).await;
     let task = poll(app, "author", "workflow").await;
-    let policies: Vec<Option<&str>> = if required.is_empty() { vec![None] } else { required.iter().map(|_| Some("propagate")).collect() };
+    let policies: Vec<Option<&str>> = if required.is_empty() { vec![None] } else { required.iter().map(|policy| Some(*policy)).collect() };
     let commands = json!(policies.iter().enumerate().flat_map(|(group, policy)| (0..2).map(move |index| {
         member(index, vec![frame(1 + 2 * group as i64, 2, index, *policy)])
     })).collect::<Vec<_>>());
@@ -599,11 +589,6 @@ async fn retained_run(database: &TestDatabase, app: &Router, workflow: &str, req
     for _ in 0..2 * policies.len() {
         let activity = poll(app, "author", "activity").await;
         assert_eq!(complete_activity(app, &activity).await.0, StatusCode::OK);
-    }
-    for (group, policy) in required.iter().enumerate() {
-        if *policy != "propagate" {
-            record_group_as(database, &format!("parallel-activities:{}:2", 1 + 2 * group), policy).await;
-        }
     }
     database.execute("UPDATE workflow_worker_registrations SET last_heartbeat_at='2000-01-01 00:00:00' WHERE worker_id='author'").await;
     run
@@ -724,6 +709,191 @@ async fn a_legacy_worker_keeps_legacy_runs_but_not_explicit_ones() {
     assert!(policy_findings(&app, "legacy-run").await.is_empty());
     register_policies(&app, "upgraded", Some(&["propagate"])).await;
     assert_eq!(poll(&app, "upgraded", "workflow").await["run_id"], explicit["run_id"]);
+    runtime.close().await;
+    database.remove().await;
+}
+
+async fn fail_retryable(app: &Router, task: &Value) -> (StatusCode, Value) {
+    request(app, "POST", &format!("/api/worker/activity-tasks/{}/fail", task["task_id"].as_str().unwrap()),
+        json!({"lease_owner": task["lease_owner"], "activity_attempt_id": task["activity_attempt_id"],
+            "failure": {"type": "RuntimeException", "message": "try again", "non_retryable": false}})).await
+}
+
+fn outcomes(history: &Value) -> Vec<(String, i64)> {
+    history.as_array().unwrap().iter()
+        .filter(|event| matches!(event["event_type"].as_str(), Some("ActivityCompleted" | "ActivityFailed")))
+        .map(|event| (event["event_type"].as_str().unwrap().to_owned(), event["payload"]["parallel_group_index"].as_i64().unwrap()))
+        .collect()
+}
+
+// .github#232 `settle`: a member failure does not wake the workflow. It
+// wakes once, when the last member has an outcome, and the replayed history
+// holds every member's result or failure. A cold reopen in between changes
+// nothing, and the recorded policy routes the run away from a worker
+// without `settle`.
+#[tokio::test]
+async fn settle_wakes_once_every_member_has_an_outcome() {
+    let database = TestDatabase::new().await;
+    let first = database.open().await.unwrap();
+    let app = router(first.clone());
+    register_policies(&app, "settle-worker", Some(&["propagate", "settle"])).await;
+    let run = start(&app, "settle-activities").await;
+    let initial = poll(&app, "settle-worker", "workflow").await;
+    let admitted = finish_task(&app, &initial, group(&[Some("settle"), Some("settle"), Some("settle")])).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+    let members: Vec<Value> = [(); 3].iter().map(|_| Value::Null).collect();
+    let mut members = members;
+    for member in members.iter_mut() {
+        *member = poll(&app, "settle-worker", "activity").await;
+    }
+    let failed = fail_activity(&app, &members[1]).await;
+    assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
+    assert_eq!(failed.1["next_task_id"], Value::Null, "a settle failure does not wake: {}", failed.1);
+    assert!(poll(&app, "settle-worker", "workflow").await.is_null());
+    let completed = complete_activity(&app, &members[0]).await;
+    assert_eq!(completed.1["next_task_id"], Value::Null, "{}", completed.1);
+    drop(app);
+    first.close().await;
+
+    let second = database.open().await.unwrap();
+    let app = router(second.clone());
+    assert!(poll(&app, "settle-worker", "workflow").await.is_null(), "still waiting after a cold reopen");
+    let last = fail_activity(&app, &members[2]).await;
+    assert_eq!(last.0, StatusCode::OK, "{}", last.1);
+    assert!(last.1["next_task_id"].is_string(), "the last outcome wakes: {}", last.1);
+    // A propagate-only worker cannot take the settle run's task.
+    register_policies(&app, "propagate-worker", Some(&["propagate"])).await;
+    assert!(poll(&app, "propagate-worker", "workflow").await.is_null());
+    let resumed = poll(&app, "settle-worker", "workflow").await;
+    assert_eq!(resumed["task_id"], last.1["next_task_id"]);
+    assert_eq!(outcomes(&resumed["history_events"]),
+        [("ActivityFailed".to_owned(), 1), ("ActivityCompleted".to_owned(), 0), ("ActivityFailed".to_owned(), 2)]);
+    assert_policy_on_every_group_event(&resumed["history_events"], "settle");
+    let finished = finish_task(&app, &resumed, json!([{"type": "complete_workflow", "result": envelope(Payload::Null)}])).await;
+    assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    assert_policy_on_every_group_event(&history, "settle");
+    assert!(poll(&app, "settle-worker", "workflow").await.is_null(), "one wake");
+    second.close().await;
+    database.remove().await;
+}
+
+// A retried member has no outcome yet: the group waits for its last attempt.
+#[tokio::test]
+async fn settle_waits_for_a_retrying_member() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_policies(&app, "settle-worker", Some(&["settle"])).await;
+    start(&app, "settle-retry").await;
+    let initial = poll(&app, "settle-worker", "workflow").await;
+    let mut commands = group(&[Some("settle"), Some("settle")]);
+    commands[0]["retry_policy"] = json!({"max_attempts": 2, "backoff_seconds": [0]});
+    let admitted = finish_task(&app, &initial, commands).await;
+    assert_eq!(admitted.0, StatusCode::OK, "{}", admitted.1);
+    let (retried, sibling) = (poll(&app, "settle-worker", "activity").await, poll(&app, "settle-worker", "activity").await);
+    let failed = fail_retryable(&app, &retried).await;
+    assert_eq!(failed.0, StatusCode::OK, "{}", failed.1);
+    assert_eq!(complete_activity(&app, &sibling).await.1["next_task_id"], Value::Null, "the retry is still open");
+    assert!(poll(&app, "settle-worker", "workflow").await.is_null());
+    let (status, attempt) = request(&app, "POST", "/api/worker/activity-tasks/poll",
+        json!({"worker_id": "settle-worker", "task_queue": "test", "timeout_seconds": 5})).await;
+    assert_eq!(status, StatusCode::OK, "{attempt}");
+    let attempt = attempt["task"].clone();
+    assert_eq!(attempt["attempt_number"], 2, "{attempt}");
+    let last = fail_activity(&app, &attempt).await;
+    assert!(last.1["next_task_id"].is_string(), "the final attempt's failure is the last outcome: {}", last.1);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// The same shape with `propagate` wakes at the first failure, so `settle`'s
+// wait is the policy's doing.
+#[tokio::test]
+async fn propagate_wakes_at_the_first_failure_where_settle_waits() {
+    for (policy, wakes_at_failure) in [("propagate", true), ("settle", false)] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap();
+        let app = router(runtime.clone());
+        register_policies(&app, "worker", Some(&["propagate", "settle"])).await;
+        start(&app, "compare").await;
+        let initial = poll(&app, "worker", "workflow").await;
+        assert_eq!(finish_task(&app, &initial, group(&[Some(policy), Some(policy)])).await.0, StatusCode::OK);
+        let (first, second) = (poll(&app, "worker", "activity").await, poll(&app, "worker", "activity").await);
+        let failed = fail_activity(&app, &second).await;
+        assert_eq!(failed.1["next_task_id"].is_string(), wakes_at_failure, "{policy}: {}", failed.1);
+        let completed = complete_activity(&app, &first).await;
+        assert_eq!(completed.1["next_task_id"].is_string(), !wakes_at_failure, "{policy}: {}", completed.1);
+        runtime.close().await;
+        database.remove().await;
+    }
+}
+
+// A child group: a failed child leaves the parent asleep until its sibling
+// completes, and a mixed group with a timer waits for the timer.
+#[tokio::test]
+async fn settle_child_and_timer_members_wait_for_every_outcome() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register_policies(&app, "settle-worker", Some(&["settle"])).await;
+    let (status, body) = request(&app, "POST", "/api/worker/register", json!({"worker_id": "child-worker",
+        "task_queue": "children", "runtime": "php", "supported_workflow_types": ["child"], "supported_activity_types": []})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let run = start(&app, "settle-children").await;
+    let task = poll(&app, "settle-worker", "workflow").await;
+    let commands = json!((0..2).map(|index| {
+        let frame = json!({"parallel_group_id": "parallel-children:1:2", "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": index,
+            "parallel_group_policy": "settle"});
+        let mut command = child_command(index);
+        command["queue"] = json!("children");
+        for (field, value) in frame.as_object().unwrap() {
+            command[field] = value.clone();
+        }
+        command["parallel_group_path"] = json!([frame]);
+        command
+    }).collect::<Vec<_>>());
+    assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
+    let child_poll = || async {
+        let (status, body) = request(&app, "POST", "/api/worker/workflow-tasks/poll",
+            json!({"worker_id": "child-worker", "task_queue": "children", "timeout_seconds": 0})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["task"].clone()
+    };
+    let (failing, completing) = (child_poll().await, child_poll().await);
+    assert_eq!(finish_task(&app, &failing, json!([{"type": "fail_workflow", "message": "child failed"}])).await.0, StatusCode::OK);
+    assert!(poll(&app, "settle-worker", "workflow").await.is_null(), "a failed settle child does not wake the parent");
+    assert_eq!(finish_task(&app, &completing, json!([{"type": "complete_workflow", "result": envelope(Payload::Null)}])).await.0,
+        StatusCode::OK);
+    let resumed = poll(&app, "settle-worker", "workflow").await;
+    assert!(resumed["task_id"].is_string(), "{resumed}");
+    let history = run_history(&app, &run["workflow_id"], &run["run_id"]).await;
+    let checked = assert_policy_on_every_group_event(&history, "settle");
+    assert!(checked.contains(&"ChildRunFailed".to_owned()) && checked.contains(&"ChildRunCompleted".to_owned()), "{checked:?}");
+    let finished = finish_task(&app, &resumed, json!([{"type": "complete_workflow", "result": envelope(Payload::Null)}])).await;
+    assert_eq!(finished.0, StatusCode::OK, "{}", finished.1);
+
+    let timer_run = start(&app, "settle-timer").await;
+    let task = poll(&app, "settle-worker", "workflow").await;
+    let frame = |index: i64| json!({"parallel_group_id": "parallel-calls:1:2", "parallel_group_kind": "mixed",
+        "parallel_group_base_sequence": 1, "parallel_group_size": 2, "parallel_group_index": index, "parallel_group_policy": "settle"});
+    let member = |index: i64, mut command: Value| {
+        for (field, value) in frame(index).as_object().unwrap() {
+            command[field] = value.clone();
+        }
+        command["parallel_group_path"] = json!([frame(index)]);
+        command
+    };
+    let commands = json!([member(0, json!({"type": "schedule_activity", "activity_type": "echo_activity",
+        "arguments": envelope(Payload::Array(vec![]))})), member(1, json!({"type": "start_timer", "delay_seconds": 1}))]);
+    assert_eq!(finish_task(&app, &task, commands).await.0, StatusCode::OK);
+    let activity = poll(&app, "settle-worker", "activity").await;
+    assert_eq!(fail_activity(&app, &activity).await.1["next_task_id"], Value::Null, "the timer is still open");
+    let history = wait_for_history(&app, &timer_run, |history| has(history, "TimerFired", None)).await;
+    assert_policy_on_every_group_event(&history, "settle");
+    let resumed = poll(&app, "settle-worker", "workflow").await;
+    assert!(resumed["task_id"].is_string(), "the timer's fire is the last outcome: {resumed}");
     runtime.close().await;
     database.remove().await;
 }

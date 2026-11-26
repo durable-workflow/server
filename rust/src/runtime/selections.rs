@@ -619,7 +619,9 @@ where
     /// published PHP's `ParallelChildGroup::shouldWakeParentOnClosure` would
     /// not: a successful close inside an all-of group waits until every
     /// member of every enclosing group has closed successfully. A failed
-    /// member wakes it at once. Selections resolve their own winner.
+    /// member wakes it at once, except inside a `settle` group (.github#232),
+    /// which waits until every member has an outcome. Selections resolve
+    /// their own winner.
     pub(super) async fn selection_resume(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -629,7 +631,9 @@ where
         successful: bool,
     ) -> Result<Option<String>> {
         if metadata.get("parallel_group_id").is_some() {
-            if successful && !is_selection(metadata) && !Self::all_groups_closed(tx, run_id, metadata).await? {
+            if (successful || super::all_groups::settles(metadata))
+                && !is_selection(metadata) && !Self::all_groups_closed(tx, run_id, metadata).await?
+            {
                 return Ok(None);
             }
             // A leased worker may be replaying an older history snapshot.
@@ -646,7 +650,9 @@ where
 
     /// `groupCompletedSuccessfully` for each all-of group on a member's path:
     /// Every authored member has completed. A retried child or a reopened
-    /// condition retains its original position in the barrier.
+    /// condition retains its original position in the barrier. A `settle`
+    /// group (.github#232) closes once every member has any outcome; a
+    /// retrying member has none yet.
     pub(super) async fn all_groups_closed(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -664,6 +670,7 @@ where
                 return Ok(true);
             };
             let last = base + size - 1;
+            let settled = group[super::all_groups::POLICY] == "settle";
             if group["parallel_group_kind"] == "child" {
                 // Use the open-wait index to get a hint, then confirm the
                 // authored sequence and status against the authoritative call.
@@ -687,22 +694,26 @@ where
                 }
             }
             let mut closed = std::collections::BTreeSet::new();
-            for (sql, done) in [
+            for (sql, done, outcome) in [
                 (
                     "SELECT sequence,status FROM workflow_run_timers WHERE workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3",
                     "fired",
+                    &["fired", "cancelled"][..],
                 ),
                 (
                     "SELECT sequence,status FROM activity_executions WHERE workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3",
                     "completed",
+                    &["completed", "failed", "cancelled"][..],
                 ),
                 (
                     "SELECT sequence,status FROM workflow_child_calls WHERE parent_workflow_run_id=$1 AND sequence>=$2 AND sequence<=$3",
                     "completed",
+                    &["completed", "failed", "cancelled", "terminated"][..],
                 ),
             ] {
                 for row in Self::query(sql).bind(run_id).bind(base).bind(last).fetch_all(&mut **tx).await? {
-                    if DB::string(&row, "status")? == done {
+                    let status = DB::string(&row, "status")?;
+                    if status == done || settled && outcome.contains(&status.as_str()) {
                         closed.insert(DB::number(&row, "sequence")?);
                     }
                 }
@@ -721,7 +732,7 @@ where
                     else { continue };
                     if let Some(index) = member["parallel_group_index"].as_i64().filter(|index| (0..size).contains(index)) {
                         let position = base + index;
-                        if positions.insert(position) && wait.completed_successfully() {
+                        if positions.insert(position) && (wait.completed_successfully() || settled && !wait.is_open()) {
                             closed.insert(position);
                         }
                     }
