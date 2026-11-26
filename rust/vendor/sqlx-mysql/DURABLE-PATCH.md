@@ -1,7 +1,8 @@
 # SQLx MySQL driver patches
 
 This directory contains the official `sqlx-mysql` 0.9.0 crate with two scoped
-driver corrections. Its published archive has SHA-256
+driver corrections and one native tagging patch. Its published archive has
+SHA-256
 `90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27` and VCS
 commit `003b698e99e024f3621b8043a2426fde5b741171`.
 
@@ -57,11 +58,41 @@ chunks a proxy receives from the client:
   three to none.
 
 All upstream source is retained. The source-code changes are in
-`src/connection/mod.rs`, `src/connection/stream.rs` and
-`src/connection/executor.rs`. The packaged license-reference files are replaced with
-the full MIT and Apache license texts from the same upstream commit. This file
-records the patch; no upstream release is represented as containing it.
+`src/connection/mod.rs`, `src/connection/stream.rs`,
+`src/connection/executor.rs`, `src/options/connect.rs` and `src/lib.rs`.
+The packaged license-reference files are replaced with the full MIT and
+Apache license texts from the same upstream commit. This file records the
+patch; no upstream release is represented as containing it.
 
-Remove this override when a reviewed published driver provides equivalent
-hard-close behavior and statement-close batching (or `TCP_NODELAY`), and passes
-the same database and TLS qualification.
+## Protocol failures during connection setup are tagged
+
+`ConnectOptions::connect` (`src/options/connect.rs`) prefixes a
+`sqlx::Error::Protocol` raised while the connection is being set up with
+`CONNECTION_SETUP_PROTOCOL_PREFIX` (`"connection setup: "`, exported from
+`src/lib.rs`). Every pool connection and every direct `connect_with` goes
+through this one entry point. Other error variants, and protocol failures
+on an established connection, are unchanged.
+
+Upstream raises the same `Protocol` variant whether a proxy or a starting
+server answers the handshake with bytes the driver cannot parse, or whether a
+query hits a client-side encoding limit. The first is a passing backend
+condition during a failover; the second is a request fault. Native Server's
+shared transient check (`worker_incarnations::transient_reason`) reads the
+prefix, so only setup-phase protocol failures become a retryable 503.
+
+`worker_incarnations::a_garbled_{postgres,mysql}_handshake_is_transient`
+connects to a local listener that answers the handshake with invalid bytes and
+checks the tagged error and its classification.
+`only_connection_setup_protocol_failures_are_transient` checks that the
+exported prefix matches the server's and that untagged protocol failures stay
+non-transient.
+
+Remove this override only when a reviewed published driver provides
+equivalent hard-close behavior and statement-close batching (or
+`TCP_NODELAY`), passes the same database and TLS qualification, and lets a
+caller tell a protocol failure during connection setup from one on an
+established connection. Otherwise `transient_reason` must get that
+distinction another way first. The server keeps its own copy of the prefix,
+so a release build would still compile without the tag, and garbled
+handshakes would silently become non-retryable again; only the tests
+above would catch it.

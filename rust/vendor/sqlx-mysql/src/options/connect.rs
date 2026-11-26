@@ -22,6 +22,27 @@ impl ConnectOptions for MySqlConnectOptions {
     where
         Self::Connection: Sized,
     {
+        // Durable Workflow patch: tag a protocol failure while the connection
+        // is being set up, so callers can tell it from one on an established
+        // connection (see DURABLE-PATCH.md).
+        self.connect_and_configure()
+            .await
+            .map_err(crate::connection_setup_error)
+    }
+
+    fn log_statements(mut self, level: LevelFilter) -> Self {
+        self.log_settings.log_statements(level);
+        self
+    }
+
+    fn log_slow_statements(mut self, level: LevelFilter, duration: Duration) -> Self {
+        self.log_settings.log_slow_statements(level, duration);
+        self
+    }
+}
+
+impl MySqlConnectOptions {
+    async fn connect_and_configure(&self) -> Result<MySqlConnection, Error> {
         let mut conn = MySqlConnection::establish(self).await?;
 
         // After the connection is established, we initialize by configuring a few
@@ -89,15 +110,5 @@ impl ConnectOptions for MySqlConnectOptions {
         }
 
         Ok(conn)
-    }
-
-    fn log_statements(mut self, level: LevelFilter) -> Self {
-        self.log_settings.log_statements(level);
-        self
-    }
-
-    fn log_slow_statements(mut self, level: LevelFilter, duration: Duration) -> Self {
-        self.log_settings.log_slow_statements(level, duration);
-        self
     }
 }

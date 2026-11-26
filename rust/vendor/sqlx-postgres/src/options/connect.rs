@@ -21,7 +21,14 @@ impl ConnectOptions for PgConnectOptions {
     where
         Self::Connection: Sized,
     {
-        PgConnection::establish(self)
+        // Durable Workflow patch: tag a protocol failure while the connection
+        // is being set up, so callers can tell it from one on an established
+        // connection (see DURABLE-PATCH.md).
+        async move {
+            PgConnection::establish(self)
+                .await
+                .map_err(crate::connection_setup_error)
+        }
     }
 
     fn log_statements(mut self, level: LevelFilter) -> Self {

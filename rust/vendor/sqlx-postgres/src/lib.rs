@@ -83,3 +83,18 @@ impl_acquire!(Postgres, PgConnection);
 impl_column_index_for_row!(PgRow);
 impl_column_index_for_statement!(PgStatement);
 impl_encode_for_option!(Postgres);
+
+/// Durable Workflow patch: the prefix a protocol failure carries when it is
+/// raised while a connection is being set up (`ConnectOptions::connect`), so
+/// a caller can tell it from a protocol failure on an established connection.
+/// See DURABLE-PATCH.md.
+pub const CONNECTION_SETUP_PROTOCOL_PREFIX: &str = "connection setup: ";
+
+pub(crate) fn connection_setup_error(error: crate::error::Error) -> crate::error::Error {
+    match error {
+        crate::error::Error::Protocol(message) => {
+            crate::error::Error::Protocol(format!("{CONNECTION_SETUP_PROTOCOL_PREFIX}{message}"))
+        }
+        error => error,
+    }
+}
