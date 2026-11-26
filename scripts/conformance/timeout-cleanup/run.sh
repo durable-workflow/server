@@ -84,7 +84,7 @@ case "$worker_sdk" in
     fi
     printf 'FROM %s\nCOPY . /src\nRUN pip install --no-cache-dir --quiet "%s" && pip show durable-workflow > /sdk-version.txt\n' \
       "${PYTHON_IMAGE:-python:3.12-slim-bookworm}" "$requirement" | docker build -q -t "$prefix-python:local" -f - "$work/python" >/dev/null
-    docker run --rm --name "$prefix-pip" "$prefix-python:local" cat /sdk-version.txt > "$evidence/python-sdk.txt"
+    docker run --rm --name "$prefix-pip" "${limits[@]}" "$prefix-python:local" cat /sdk-version.txt > "$evidence/python-sdk.txt"
     worker_image="$prefix-python:local"
     worker_cmd=(python /harness/python/worker.py)
     ;;
@@ -121,7 +121,7 @@ docker run -d --name "$prefix-server" "${limits[@]}" --user "$user" --network "$
 containers+=("$prefix-server")
 
 php() {
-  docker run --rm "${limits[@]}" --user "$user" --network "$network" -e TC_TOKEN="$token" \
+  docker run --rm --name "$prefix-driver-${2:-main}" "${limits[@]}" --user "$user" --network "$network" -e TC_TOKEN="$token" \
     -e TC_RUN_SUFFIX="$suffix" -v "$work:/harness:ro" -v "$evidence:/evidence" "$php_image" php "/harness/$1" "${@:2}"
 }
 
