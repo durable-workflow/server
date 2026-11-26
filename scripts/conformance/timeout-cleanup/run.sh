@@ -176,6 +176,9 @@ if [[ -n "${EXPECT_ADVERTISED:-}" ]]; then
 fi
 
 phases=" ${TC_PHASES:-vectors extended} "
+for selected in $phases; do
+  [[ "$selected" == vectors || "$selected" == extended ]] || { echo "TC_PHASES may name vectors and extended, not $selected" >&2; exit 2; }
+done
 if [[ "$phases" == *" vectors "* ]]; then
 php vectors.php main || failed=1
 
@@ -223,4 +226,4 @@ total=$(jq -s 'length' "$evidence/results.jsonl")
 } > "$evidence/summary.md"
 [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] && cat "$evidence/summary.md" >> "$GITHUB_STEP_SUMMARY"
 cat "$evidence/summary.md"
-[[ "$failed" == 0 && "$passed" == "$total" ]]
+[[ "$failed" == 0 && "$total" -gt 0 && "$passed" == "$total" ]]

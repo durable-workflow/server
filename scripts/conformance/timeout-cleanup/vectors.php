@@ -12,9 +12,10 @@ declare(strict_types=1);
 //   late-check      the work deadline so the engine notices it late
 //   replace-start vector 6: the worker holding the cleanup turn is killed and
 //   replace-check   a fresh replacement process finishes it
-//   extended      task-boundary expiry, replay-blocking precedence, malformed
-//                 and unauthorized markers (a raw worker-protocol client),
-//                 redrive inheritance, and scoped descendants (PHP workers)
+//   extended      task-boundary expiry, replay-blocking precedence, malformed,
+//                 inactive and unauthorized markers, and scoped descendants
+//                 (a raw worker-protocol client); redrive inheritance and child
+//                 descendants (PHP workers)
 //
 // Each phase appends its results to /evidence/results.jsonl and exits
 // non-zero when a check fails.
@@ -431,21 +432,41 @@ $extended = static function () use ($http, $codec, $suffix): void {
     rawRegister($http, 'raw-blocked', 'tc-raw-blocked', true);
     $wid = $id('blocked');
     [$run, $turn] = rawCleanupTurn($http, $codec, 'blocked', $wid, 'tc-raw-blocked', 'raw-blocked',
-        ['execution_timeout_seconds' => 20, 'timeout_cleanup_seconds' => 8]);
+        ['execution_timeout_seconds' => 60, 'timeout_cleanup_seconds' => 40]);
     [$status, $body] = wcall($http, "workflow-tasks/{$turn['task_id']}/fail", ['lease_owner' => $turn['lease_owner'],
         'workflow_task_attempt' => $turn['workflow_task_attempt'],
         'failure' => ['type' => 'NondeterministicReplayException', 'message' => 'nondeterministic replay of cleanup']]);
-    check('blocked', 'replay-blocking task failure accepted', $status >= 200 && $status < 300, [$status, $body]);
+    check('blocked', 'replay-blocking task failure accepted and blocked for repair (no retry task)', $status >= 200 && $status < 300
+        && array_key_exists('next_task_id', $body) && $body['next_task_id'] === null, [$status, $body]);
     $history = history($http, $wid, $run);
     check('blocked', 'no terminal event and no failed cleanup', events($history, 'WorkflowTimedOut') === []
         && events($history, 'WorkflowFailed') === [], array_column($history, 'event_type'));
     $described = describe($http, $wid);
     check('blocked', 'describe still reports cleanup running', ($described['timeout_cleanup']['outcome'] ?? null) === 'running'
         && ($described['status'] ?? null) !== 'failed', array_intersect_key($described, ['status' => 1, 'timeout_cleanup' => 1]));
+    $claimed = null;
+    try {
+        $claimed = rawPoll($http, 'raw-blocked', 'tc-raw-blocked', $run, 8);
+    } catch (RuntimeException) {
+    }
+    check('blocked', 'nothing retries it: no workflow task is claimable for the run', $claimed === null, $claimed);
     $final = closed($http, $wid);
     $closed = payload(history($http, $wid, $final), 'WorkflowTimedOut');
     check('blocked', 'the hard deadline expires it', ($closed['timeout_cleanup']['outcome'] ?? null) === 'expired'
         && !isset($closed['timeout_cleanup']['failure_id']), $closed);
+
+    // Control: an ordinary failure on the cleanup turn is retried, not blocked.
+    rawRegister($http, 'raw-retried', 'tc-raw-retried', true);
+    $wid = $id('blocked-control');
+    [$run, $turn] = rawCleanupTurn($http, $codec, 'blocked-control', $wid, 'tc-raw-retried', 'raw-retried',
+        ['execution_timeout_seconds' => 20, 'timeout_cleanup_seconds' => 8]);
+    [$status, $body] = wcall($http, "workflow-tasks/{$turn['task_id']}/fail", ['lease_owner' => $turn['lease_owner'],
+        'workflow_task_attempt' => $turn['workflow_task_attempt'], 'failure' => ['type' => 'RuntimeException', 'message' => 'transient']]);
+    check('blocked-control', 'an ordinary task failure queues a retry task', $status >= 200 && $status < 300
+        && is_string($body['next_task_id'] ?? null), [$status, $body]);
+    $retry = rawPoll($http, 'raw-retried', 'tc-raw-retried', $run, 8);
+    check('blocked-control', 'the retry task is claimable at once', ($retry['task_id'] ?? null) === ($body['next_task_id'] ?? false), $retry);
+    closed($http, $wid);
 
     // Malformed markers are refused before any write; a valid one completes.
     rawRegister($http, 'raw-marker', 'tc-raw-marker', true);
@@ -478,6 +499,34 @@ $extended = static function () use ($http, $codec, $suffix): void {
     $closed = payload(history($http, $wid, closed($http, $wid)), 'WorkflowTimedOut');
     check('marker-empty', 'recorded as failed cleanup, not completed', ($closed['timeout_cleanup']['outcome'] ?? null) === 'failed', $closed);
 
+    // The marker before cleanup started is refused: it never starts cleanup.
+    rawRegister($http, 'raw-inactive', 'tc-raw-inactive', true);
+    $wid = $id('marker-inactive');
+    [$status, $body] = start($http, $codec, $wid, 'tc.raw', 'tc-raw-inactive', $short);
+    check('marker-inactive', 'admitted', $status === 201, [$status, $body]);
+    $run = (string) ($body['run_id'] ?? '');
+    $first = rawPoll($http, 'raw-inactive', 'tc-raw-inactive', $run);
+    $before = count(history($http, $wid, $run));
+    [$status, $body] = rawComplete($http, $first, [['type' => 'fail_workflow', 'message' => 'interrupted',
+        'exception_type' => 'TimeoutCleanupInterruption', 'failure' => ['interruption' => 'timeout_cleanup']]]);
+    check('marker-inactive', 'marker without active timeout cleanup refused with 409 timeout_cleanup_interruption_not_active',
+        $status === 409 && ($body['reason'] ?? null) === 'timeout_cleanup_interruption_not_active', [$status, $body]);
+    check('marker-inactive', 'the refusal wrote nothing and did not start cleanup', count(history($http, $wid, $run)) === $before
+        && events(history($http, $wid, $run), 'WorkflowTimeoutCleanupStarted') === []);
+    [$status, $body] = rawComplete($http, $first, [['type' => 'complete_workflow', 'result' => $null]]);
+    check('marker-inactive', 'the run then completes normally', $status === 200 && ($body['run_status'] ?? null) === 'completed', [$status, $body]);
+
+    // The same normalization trims a padded marker to the reserved value.
+    rawRegister($http, 'raw-padded', 'tc-raw-padded', true);
+    $wid = $id('marker-padded');
+    [$run, $turn] = rawCleanupTurn($http, $codec, 'marker-padded', $wid, 'tc-raw-padded', 'raw-padded', $short);
+    [$status, $body] = rawComplete($http, $turn, [['type' => 'fail_workflow', 'message' => 'interrupted',
+        'exception_type' => 'TimeoutCleanupInterruption', 'failure' => ['interruption' => ' timeout_cleanup ']]]);
+    check('marker-padded', 'a whitespace-padded marker is trimmed to the reserved value and accepted', $status === 200, [$status, $body]);
+    $closed = payload(history($http, $wid, closed($http, $wid)), 'WorkflowTimedOut');
+    check('marker-padded', 'recorded as completed (the turn holds the active engine request and negotiated the capability)',
+        ($closed['timeout_cleanup']['outcome'] ?? null) === 'completed', $closed);
+
     // A worker that did not negotiate timeout_cleanup cannot send the marker,
     // even on a queue where a capable worker made the start admissible.
     rawRegister($http, 'raw-capable', 'tc-raw-mixed', true);
@@ -497,10 +546,43 @@ $extended = static function () use ($http, $codec, $suffix): void {
     check('mixed', 'recorded as failed cleanup with failure_id', ($closed['timeout_cleanup']['outcome'] ?? null) === 'failed'
         && is_string($closed['timeout_cleanup']['failure_id'] ?? null), $closed);
 
+    // Scoped descendants: a cancellation scope open at the work deadline is
+    // requested under the engine's timeout request; its own context carries no
+    // cause, and the timed-out root is kept only as its scope origin.
+    rawRegister($http, 'raw-scoped', 'tc-raw-scoped', true);
+    $wid = $id('scoped');
+    [$status, $body] = start($http, $codec, $wid, 'tc.raw', 'tc-raw-scoped', ['execution_timeout_seconds' => 20, 'timeout_cleanup_seconds' => 8]);
+    check('scoped', 'admitted', $status === 201, [$status, $body]);
+    $run = (string) ($body['run_id'] ?? '');
+    $first = rawPoll($http, 'raw-scoped', 'tc-raw-scoped', $run);
+    [$status, $opened] = wcall($http, "workflow-tasks/{$first['task_id']}/cancellation-scopes/open", ['lease_owner' => $first['lease_owner'],
+        'workflow_task_attempt' => $first['workflow_task_attempt'], 'sequence' => 1]);
+    check('scoped', 'a cancellation scope opens', $status === 200 && ($opened['opened'] ?? null) === true, [$status, $opened]);
+    [$status, $body] = rawComplete($http, $first, [['type' => 'start_timer', 'delay_seconds' => 3600]]);
+    check('scoped', 'a timer starts inside it', $status === 200, [$status, $body]);
+    $history = waitFor($http, $wid, $run, 'WorkflowTimeoutCleanupStarted');
+    $engine = payload($history, 'WorkflowTimeoutCleanupStarted')['workflow_command_id'] ?? null;
+    $until = time() + 15;
+    while (events($history, 'CancellationScopeRequested') === [] && time() < $until) {
+        sleep(1);
+        $history = history($http, $wid, $run);
+    }
+    $requests = events($history, 'CancellationScopeRequested');
+    $scoped = $requests[0]['payload']['cancellation'] ?? [];
+    check('scoped', 'the open scope is requested once under the engine request', count($requests) === 1
+        && is_string($engine) && ($scoped['root_context']['root_request_id'] ?? $scoped['root_request_id'] ?? null) === $engine,
+        [$engine, $requests]);
+    check('scoped', 'the scope request carries no top-level cause', $scoped !== [] && !array_key_exists('cause', $scoped), $scoped);
+    closed($http, $wid);
+
     // Redrive inheritance: an opted-in run that fails at an activity step before
     // its work deadline is redriven; the successor keeps the allowance and the
     // execution clock, and its run work deadline comes from its own run clock.
     // (A timed-out run is final: redrive refuses it, in native and embedded.)
+    if (getenv('TC_WORKER_SDK') !== 'php') {
+        check('redrive', 'skipped: needs PHP workers (tc.redrive)', true);
+        check('child-descendant', 'skipped: needs PHP workers (tc.parent, tc.child)', true);
+    }
     if (getenv('TC_WORKER_SDK') === 'php') {
         $wid = $id('redrive');
         [$status, $body] = start($http, $codec, $wid, 'tc.redrive', 'timeout-cleanup',
@@ -528,18 +610,18 @@ $extended = static function () use ($http, $codec, $suffix): void {
         closed($http, $wid);
     }
 
-    // Scoped descendants: a child the parent's cleanup cancels sees an
-    // ordinary cancellation lineage under the root request, never the cause.
+    // Child descendants: a child the parent's cleanup cancels sees an ordinary
+    // cancellation lineage under the root request, never the cause.
     if (getenv('TC_WORKER_SDK') === 'php') {
         $wid = $id('descendant');
         [$status, $body] = start($http, $codec, $wid, 'tc.parent', 'timeout-cleanup', $short);
-        check('descendant', 'admitted', $status === 201, [$status, $body]);
+        check('child-descendant', 'admitted', $status === 201, [$status, $body]);
         $parent = (string) ($body['run_id'] ?? '');
-        [$history, $entered] = timedOut($http, 'descendant', $wid, closed($http, $wid), 'completed', 'execution');
+        [$history, $entered] = timedOut($http, 'child-descendant', $wid, closed($http, $wid), 'completed', 'execution');
         $child = events($history, 'ChildRunStarted')[0]['payload'] ?? [];
         $childId = (string) ($child['child_workflow_instance_id'] ?? '');
         $childRun = (string) ($child['child_workflow_run_id'] ?? '');
-        check('descendant', 'the parent started a child', $childId !== '' && $childRun !== '', $child);
+        check('child-descendant', 'the parent started a child', $childId !== '' && $childRun !== '', $child);
         $until = time() + 60;
         while (observations($wid.'-child') === [] && time() < $until) {
             sleep(1);
@@ -547,13 +629,12 @@ $extended = static function () use ($http, $codec, $suffix): void {
         $childHistory = history($http, $childId, $childRun);
         $requested = events($childHistory, 'CooperativeCancellationRequested');
         $context = $requested[0]['payload']['cancellation'] ?? [];
-        check('descendant', "the child's request has no cause and names the parent's timeout request as root and parent",
+        check('child-descendant', "the child's request has no cause and names the parent's timeout request as root and parent",
             count($requested) === 1 && !array_key_exists('cause', $context)
             && ($context['root_request_id'] ?? null) === ($entered['workflow_command_id'] ?? false)
             && ($context['parent_request_id'] ?? null) === ($entered['workflow_command_id'] ?? false), [$context, $entered]);
-        check('descendant', 'the child never enters timeout cleanup', events($childHistory, 'WorkflowTimeoutCleanupStarted') === []);
         $seen = observations($wid.'-child');
-        check('descendant', 'child workflow code saw an ordinary cancellation', count($seen) === 1
+        check('child-descendant', 'child workflow code saw an ordinary cancellation', count($seen) === 1
             && $seen[0]['timeout_subtype'] === false && $seen[0]['cause'] === null, $seen);
     }
 };
