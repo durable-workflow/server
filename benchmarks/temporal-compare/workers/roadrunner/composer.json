@@ -1,0 +1,19 @@
+{
+    "name": "durable-workflow/temporal-compare-roadrunner-worker",
+    "description": "Locked Temporal PHP SDK worker run by RoadRunner for the Temporal comparison race",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.3",
+        "temporal/sdk": "2.20.0"
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "config": {
+        "platform": {
+            "php": "8.3.37",
+            "ext-sockets": "8.3.37"
+        },
+        "sort-packages": true
+    }
+}

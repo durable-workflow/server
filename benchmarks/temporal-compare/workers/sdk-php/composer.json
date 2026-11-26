@@ -1,0 +1,18 @@
+{
+    "name": "durable-workflow/temporal-compare-sdk-php-worker",
+    "description": "Locked Durable Workflow PHP SDK worker for the Temporal comparison race",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.3",
+        "durable-workflow/sdk": "3.32.0"
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "config": {
+        "platform": {
+            "php": "8.3.37"
+        },
+        "sort-packages": true
+    }
+}

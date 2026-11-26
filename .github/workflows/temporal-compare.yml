@@ -1,0 +1,119 @@
+name: Temporal Compare
+
+# Server #1081 stage 1: races the native Server against Temporal on a fresh
+# Vultr target/driver pair. Dispatch only. Nightly scheduling, calibration,
+# regression bisects and the release gate are later stages.
+on:
+  workflow_dispatch:
+    inputs:
+      server_ref:
+        description: "Server commit SHA to build and race (empty: the dispatched commit)"
+        required: false
+        default: ""
+      target_plan:
+        description: "Target VM plan"
+        required: false
+        type: choice
+        options: [vhp-2c-4gb-amd, vhp-1c-2gb-amd]
+        default: vhp-2c-4gb-amd
+      races:
+        description: "Races, comma-separated"
+        required: false
+        default: "five-steps,five-local-steps"
+      backends:
+        description: "Native backends, comma-separated (the headline needs all three)"
+        required: false
+        default: "sqlite,mysql,pgsql"
+      reps:
+        description: "Reps per system (1-9)"
+        required: false
+        default: "5"
+      workflows:
+        description: "Workflows per rep (20-1000)"
+        required: false
+        default: "200"
+      max_spend_usd:
+        description: "Refuse to start if the worst-case VM cost could exceed this many USD"
+        required: false
+        default: "0.35"
+      cleanup_only:
+        description: "Only delete leftover race VMs and VPCs older than the lifetime cap"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporal-compare
+  cancel-in-progress: false
+
+jobs:
+  race:
+    name: Temporal comparison race on a disposable Vultr pair
+    runs-on: ubuntu-latest
+    environment: perf-soak
+    if: github.repository == 'durable-workflow/server' && github.ref == 'refs/heads/main'
+    # Longer than the controller's 180-minute VM lifetime cap, so its exit
+    # trap deletes the VMs before Actions stops the job.
+    timeout-minutes: 210
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - name: Delete leftover race resources
+        if: inputs.cleanup_only
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_PERF_API_KEY }}
+          VULTR_PERF_REGION: ${{ vars.VULTR_PERF_REGION }}
+        run: scripts/perf/run-vultr-temporal-compare.sh cleanup
+
+      - name: Race on a disposable target and driver
+        if: ${{ !inputs.cleanup_only }}
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_PERF_API_KEY }}
+          VULTR_PERF_REGION: ${{ vars.VULTR_PERF_REGION }}
+          VULTR_PERF_OS_ID: "2284"
+          DW_RACE_TARGET_PLAN: ${{ inputs.target_plan }}
+          DW_RACE_SERVER_REF: ${{ inputs.server_ref }}
+          DW_RACE_RACES: ${{ inputs.races }}
+          DW_RACE_BACKENDS: ${{ inputs.backends }}
+          DW_RACE_REPS: ${{ inputs.reps }}
+          DW_RACE_WORKFLOWS: ${{ inputs.workflows }}
+          DW_RACE_MAX_SPEND_USD: ${{ inputs.max_spend_usd }}
+          DW_RACE_MAX_VM_MINUTES: "180"
+          # Keep equal to timeout-minutes above.
+          DW_RACE_JOB_TIMEOUT_MINUTES: "210"
+        run: scripts/perf/run-vultr-temporal-compare.sh race
+
+      # If the race step was cancelled or timed out before its trap finished,
+      # delete this run's VMs and VPC (at any age) and verify they are gone.
+      - name: Verify this run left no VMs
+        if: ${{ always() && !inputs.cleanup_only }}
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_PERF_API_KEY }}
+          VULTR_PERF_REGION: ${{ vars.VULTR_PERF_REGION }}
+          DW_RACE_CLEANUP_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/perf/run-vultr-temporal-compare.sh cleanup
+
+      - name: Summarize the race
+        if: ${{ always() && !inputs.cleanup_only }}
+        run: |
+          if [ -f build/temporal-compare/summary.md ]; then
+            cat build/temporal-compare/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## Temporal comparison race\n\nNo summary was produced. Inspect the provisioning log and the race artifact; this is not a result.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload race artifacts
+        if: ${{ always() && !inputs.cleanup_only }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: temporal-compare
+          path: build/temporal-compare/
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,0 +1,30 @@
+# Driver side of the Temporal comparison race (Server #1081): the workers and
+# the load generator, on a separate host from the target. The race runs six
+# workers of one kind at a time (temporal_compare.py --workers), with the same
+# workflow and activity code and the same step sleep on both sides.
+services:
+  dw-worker:
+    image: "${DW_RACE_SDK_PHP_WORKER_IMAGE:?}"
+    init: true
+    stop_signal: SIGTERM
+    environment:
+      DURABLE_WORKFLOW_RUNTIME_URL: "http://${DW_RACE_TARGET_ADDRESS:?}:${DW_RACE_NATIVE_PORT:?}"
+      DURABLE_WORKFLOW_TOKEN: "${DW_RACE_NATIVE_TOKEN:?}"
+      RACE_TASK_QUEUE: "${DW_RACE_TASK_QUEUE:?}"
+      RACE_STEP_MILLISECONDS: "${DW_RACE_STEP_MILLISECONDS:?}"
+    restart: "no"
+
+  rr-worker:
+    image: "${DW_RACE_RR_WORKER_IMAGE:?}"
+    init: true
+    stop_signal: SIGTERM
+    environment:
+      TEMPORAL_ADDRESS: "${DW_RACE_TARGET_ADDRESS:?}:${DW_RACE_TEMPORAL_PORT:?}"
+      RACE_TASK_QUEUE: "${DW_RACE_TASK_QUEUE:?}"
+      RACE_STEP_MILLISECONDS: "${DW_RACE_STEP_MILLISECONDS:?}"
+    restart: "no"
+
+  loadgen:
+    image: "${DW_RACE_LOADGEN_IMAGE:?}"
+    init: true
+    restart: "no"
