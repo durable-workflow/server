@@ -210,8 +210,6 @@ jobs:
           python3 -m unittest tests/Unit/Support/server_soak_test.py
           python3 -m unittest tests/Unit/Support/vultr_soak_cleanup_test.py
           python3 -m unittest tests/Unit/Support/small_host_summary_test.py
-          python3 -m unittest tests/Unit/Support/temporal_compare_test.py
-          python3 scripts/perf/temporal_compare.py check
 
       - name: Compile exact first-party capacity adapters
         run: |
@@ -234,6 +232,11 @@ jobs:
           CARGO_TARGET_DIR=build/capacity-rust-target \
             cargo check --locked \
               --manifest-path benchmarks/capacity/v1/bindings/rust/Cargo.toml
+
+      - name: Check the Temporal comparison race harness
+        run: |
+          python3 -m unittest tests/Unit/Support/temporal_compare_test.py
+          python3 scripts/perf/temporal_compare.py check
 
       - name: Qualify capacity benchmark contract and bounded reference cell
         run: |

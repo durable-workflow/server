@@ -286,6 +286,71 @@
       ]
     },
     {
+      "path": "benchmarks/temporal-compare/images.lock.json",
+      "line": "\"ref\": \"composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee\",",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/temporal-compare/workers/roadrunner/Dockerfile",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS deps",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/temporal-compare/workers/roadrunner/Dockerfile",
+      "line": "RUN composer install --no-dev --no-interaction --no-progress --prefer-dist \\",
+      "count": 1,
+      "confinement": "Runs in the pinned Composer 2.10.3 build stage; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-stage",
+          "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS deps",
+          "distance": 3
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/temporal-compare/workers/sdk-php/Dockerfile",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS deps",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/temporal-compare/workers/sdk-php/Dockerfile",
+      "line": "RUN composer install --no-dev --no-interaction --no-progress --prefer-dist \\",
+      "count": 1,
+      "confinement": "Runs in the pinned Composer 2.10.3 build stage; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-stage",
+          "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee AS deps",
+          "distance": 3
+        }
+      ]
+    },
+    {
       "path": "scripts/ci/brotli-safe-composer.sh",
       "line": "base=composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
       "count": 1,
