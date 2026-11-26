@@ -98,6 +98,9 @@ impl WithSocket for MapStream {
             waiting: self.waiting,
             is_tls: true,
             queued_unanswered: false,
+            status: Default::default(),
+            status_known: true,
+            prepare_in_flight: false,
         }
     }
 }

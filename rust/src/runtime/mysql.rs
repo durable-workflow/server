@@ -2526,13 +2526,25 @@ fn runtime_pool_options() -> MySqlPoolOptions {
             Box::pin(async move {
                 // A cancelled BEGIN can leave a physical transaction open
                 // before SQLx increments its logical transaction depth. Drain
-                // pending replies and reset the session before pool reuse.
-                // SQLx closes the connection if this hook fails.
-                tokio::time::timeout(Duration::from_secs(5), connection.execute("ROLLBACK"))
-                    .await
-                    .map_err(|_| {
-                        sqlx::Error::Protocol("native MySQL pool reset deadline exceeded".into())
-                    })??;
+                // pending replies, then reset the session before pool reuse
+                // unless it is known to be idle outside a transaction. The
+                // released connection keeps its pool slot until this hook
+                // returns, so an unneeded reset round trip kept the slot busy
+                // for a whole database stall (Server #1204). After an error
+                // reply the status is not known, so the session is reset; a
+                // half-read statement prepare cannot be drained and fails the
+                // hook. SQLx closes the connection if this hook fails.
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    connection.read_pending_replies().await?;
+                    if !connection.is_idle_outside_transaction() {
+                        connection.execute("ROLLBACK").await?;
+                    }
+                    Ok::<_, sqlx::Error>(())
+                })
+                .await
+                .map_err(|_| {
+                    sqlx::Error::Protocol("native MySQL pool reset deadline exceeded".into())
+                })??;
                 Ok(true)
             })
         })

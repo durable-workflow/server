@@ -22,6 +22,15 @@ pub struct MySqlStream<S = Box<dyn Socket>> {
     // The write buffer holds only commands without a reply, queued to leave
     // with the next command.
     pub(crate) queued_unanswered: bool,
+    // The server status of the last status-bearing reply read, whether the
+    // command path or `wait_until_ready` read it.
+    pub(crate) status: Status,
+    // False after an error reply, which carries no status, until a later
+    // reply records one.
+    pub(crate) status_known: bool,
+    // A `COM_STMT_PREPARE` was sent and its reply is not fully read. Its
+    // first packet would parse as an OK packet, so it is never drained.
+    pub(crate) prepare_in_flight: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -60,6 +69,9 @@ impl<S: Socket> MySqlStream<S> {
             socket: BufferedSocket::new(socket),
             is_tls: false,
             queued_unanswered: false,
+            status: Default::default(),
+            status_known: true,
+            prepare_in_flight: false,
         }
     }
 
@@ -72,6 +84,11 @@ impl<S: Socket> MySqlStream<S> {
         }
         self.queued_unanswered = false;
         Ok(())
+    }
+
+    pub(crate) fn record_status(&mut self, status: Status) {
+        self.status = status;
+        self.status_known = true;
     }
 
     pub(crate) async fn wait_until_ready(&mut self) -> Result<(), Error> {
@@ -91,6 +108,7 @@ impl<S: Socket> MySqlStream<S> {
                     if eof.status.contains(Status::SERVER_MORE_RESULTS_EXISTS) {
                         *self.waiting.front_mut().unwrap() = Waiting::Result;
                     } else {
+                        self.record_status(eof.status);
                         self.waiting.pop_front();
                     };
                 }
@@ -103,6 +121,7 @@ impl<S: Socket> MySqlStream<S> {
                     let ok = packet.ok()?;
 
                     if !ok.status.contains(Status::SERVER_MORE_RESULTS_EXISTS) {
+                        self.record_status(ok.status);
                         self.waiting.pop_front();
                     }
                 } else {
@@ -196,6 +215,10 @@ impl<S: Socket> MySqlStream<S> {
             .eq(&0xff)
         {
             self.waiting.pop_front();
+            // An error reply carries no server status. The failed command
+            // may have left a transaction open (`autocommit=0`, or a routine
+            // that started one), so the session state is no longer known.
+            self.status_known = false;
 
             // instead of letting this packet be looked at everywhere, we check here
             // and emit a proper Error
@@ -247,6 +270,9 @@ impl<S: Socket> MySqlStream<S> {
             waiting: self.waiting,
             is_tls: self.is_tls,
             queued_unanswered: self.queued_unanswered,
+            status: self.status,
+            status_known: self.status_known,
+            prepare_in_flight: self.prepare_in_flight,
         }
     }
 }
