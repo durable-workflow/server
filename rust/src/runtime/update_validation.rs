@@ -1155,16 +1155,20 @@ where
         let task_queue = text(body, "task_queue")?.to_owned();
         let encoding = super::history_pages::requested(body)?;
         let page = pages.poll(super::history_pages::requested_size(body)?, encoding);
-        // `WorkerPollFence`, as for a workflow poll.
-        let fence = match self.admit_worker_poll(&worker_id, &task_queue).await? {
+        // `WorkerPollFence`, as for a workflow poll. Admission reads share
+        // one budgeted probe connection (Server #1355).
+        let mut admission = self.probe_connection().await?;
+        let fence = match self.admit_worker_poll_on(admission.get(), &worker_id, &task_queue).await? {
             super::worker_poll_fence::PollAdmission::Stale => return Ok(Leased::Workflow(super::worker_poll_fence::stale_answer())),
             super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
             super::worker_poll_fence::PollAdmission::Unregistered => None,
         };
         let request = match super::workflow_poll_requests::request_id(body) {
-            Some(id) => Some(self.workflow_poll_request(&worker_id, &task_queue, id, body.get("poll_request_id").and_then(Value::as_str), default_wait, kinds).await?),
+            Some(id) => Some(self.workflow_poll_request_on(admission.get(), &worker_id, &task_queue, id,
+                body.get("poll_request_id").and_then(Value::as_str), default_wait, kinds).await?),
             None => None,
         };
+        admission.finish().await;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
         let mut pace = super::poll_readiness::ReadPace::new();
         let mut first = true;
@@ -1233,7 +1237,28 @@ where
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
         first: bool,
     ) -> Result<Option<Probe>> {
-        let mut tx = self.begin().await?;
+        // Every probe is a transition; a budgeted background one, so it never
+        // holds the connection held polls leave free (Server #1355).
+        let (queued, mut connection) = self.queue_budgeted_transition().await?;
+        let probed = self.probe_task_kinds_on(connection.get(), queued, body, kinds, protocol_version, page, request, fence, first).await;
+        connection.finish().await;
+        probed
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn probe_task_kinds_on(
+        &self,
+        connection: &mut DB::Connection,
+        queued: tokio::sync::OwnedMutexGuard<()>,
+        body: &Value,
+        kinds: &[&'static str],
+        protocol_version: &str,
+        page: Option<i64>,
+        request: Option<&WorkflowPollRequest>,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+        first: bool,
+    ) -> Result<Option<Probe>> {
+        let mut tx = self.begin_on(connection, queued).await?;
         if first && let Some(request) = request
             && let Some(answer) = self.replay_workflow_poll_in(&mut tx, request, text(body, "worker_id")?, text(body, "task_queue")?).await?
         {

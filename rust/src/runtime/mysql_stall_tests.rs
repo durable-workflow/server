@@ -32,6 +32,7 @@ struct Stall {
     polls: Vec<JoinHandle<Result<Value>>>,
     releases: Vec<oneshot::Sender<()>>,
     resume: Option<JoinHandle<()>>,
+    tasks: Vec<JoinHandle<()>>,
 }
 
 impl Stall {
@@ -51,8 +52,8 @@ impl Stall {
             gate.clone(),
         ));
         let pool = MySqlStorage::open(direct.host("127.0.0.1").port(port)).await.unwrap().into_pool();
-        let store = Arc::new(Store::new(pool.clone()));
-        Self { database, database_url, gate, proxy, pool, store, polls: Vec::new(), releases: Vec::new(), resume: None }
+        let store = Arc::new(Store::new(pool.clone()).with_maintenance_pool());
+        Self { database, database_url, gate, proxy, pool, store, polls: Vec::new(), releases: Vec::new(), resume: None, tasks: Vec::new() }
     }
 
     async fn register(&self, worker: &str) -> Result<Value> {
@@ -121,6 +122,9 @@ impl Stall {
             resume.await.unwrap();
         }
         self.gate.release();
+        for task in self.tasks {
+            task.await.unwrap();
+        }
         for poll in self.polls {
             // A poll that found no connection within its deadline answers the
             // typed pool refusal; the others answer normally.
@@ -208,4 +212,34 @@ async fn qualification_registration_waits_out_a_transition_stuck_in_a_stall() {
     })
     .await
     .expect("bounded stuck-transition stall qualification");
+}
+
+/// Server #1355, work outside the probe budget: held probes fill the budget,
+/// then during the stall a new activity poll is admitted and the maintenance
+/// loop ticks. Neither may take the request pool's last connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_admission_and_maintenance_leave_registration_a_connection_during_a_stall() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let mut stall = Stall::open().await;
+        stall.hold_waiting_polls(stall.store.probe_slots.available_permits()).await;
+        stall.register("stall-late").await.unwrap();
+        stall.warm(0).await;
+        let stalled = stall.stall().await;
+        let late = json!({"worker_id":"stall-late","task_queue":"stall-late","timeout_seconds":2});
+        let store = stall.store.clone();
+        stall.polls.push(tokio::spawn(async move { store.poll(late, "activity", "1.20").await }));
+        // The maintenance loop's 250 ms tick, through the stall.
+        let store = stall.store.clone();
+        stall.tasks.push(tokio::spawn(async move {
+            while Instant::now() < stalled + STALL {
+                let _ = store.for_maintenance().fire_due_timers().await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        register_through(stall, stalled, "stall-0").await;
+    })
+    .await
+    .expect("bounded admission and maintenance stall qualification");
 }

@@ -235,7 +235,18 @@ store_methods! {
 
     /// `WorkerPollFence::snapshot` at admission, after `isFresh`.
     pub(super) async fn admit_worker_poll(&self, worker_id: &str, queue: &str) -> Result<PollAdmission> {
-        let row = Self::query(FENCE_ROW).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(&self.pool).await?;
+        self.admit_worker_poll_on(&mut *self.pool.acquire().await?, worker_id, queue).await
+    }
+
+    /// [`admit_worker_poll`](Self::admit_worker_poll) on a connection the
+    /// caller holds (a held poll's admission; Server #1355).
+    pub(super) async fn admit_worker_poll_on(
+        &self,
+        connection: &mut DB::Connection,
+        worker_id: &str,
+        queue: &str,
+    ) -> Result<PollAdmission> {
+        let row = Self::query(FENCE_ROW).bind(self.namespace.as_ref()).bind(worker_id).fetch_optional(connection).await?;
         let Some(row) = row.filter(|row| DB::optional_string(row, "task_queue").ok().flatten().as_deref() == Some(queue)) else {
             return Ok(PollAdmission::Unregistered);
         };

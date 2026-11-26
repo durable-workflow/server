@@ -135,9 +135,18 @@ store_methods! {
     pub(super) async fn replay_activity_poll_read_only(
         &self, body: &Value, fence: &WorkerPollFence,
     ) -> Result<Option<Value>> {
+        let mut connection = self.pool.acquire().await?;
+        self.replay_activity_poll_read_only_on(&mut connection, body, fence).await
+    }
+
+    /// [`replay_activity_poll_read_only`](Self::replay_activity_poll_read_only)
+    /// on a connection the caller holds (a held poll's admission; Server #1355).
+    pub(super) async fn replay_activity_poll_read_only_on(
+        &self, connection: &mut DB::Connection, body: &Value, fence: &WorkerPollFence,
+    ) -> Result<Option<Value>> {
         let owner = super::text(body, "worker_id")?;
         let request = super::text(body, "poll_request_id")?;
-        let mut read = self.begin_read().await?;
+        let mut read = self.begin_read_on(connection).await?;
         if !self.worker_poll_fence_holds_in(&mut read, fence, owner).await? { return Ok(None); }
         let receipt = Self::query("SELECT p.*,t.status,t.attempt_count,t.lease_owner,t.lease_expires_at FROM dw_poll_receipts p JOIN workflow_tasks t ON t.id=p.task_id WHERE p.worker_id=$1 AND p.kind='activity' AND p.request_id=$2 AND p.namespace=$3")
             .bind(owner).bind(request).bind(self.namespace.as_ref()).fetch_optional(&mut *read).await?;

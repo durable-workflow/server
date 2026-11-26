@@ -20,8 +20,14 @@ pub const ENV: &str = "DW_NATIVE_DB_STATEMENT_CACHE_CAPACITY";
 pub const URL_PARAMETER: &str = "statement-cache-capacity";
 /// Capacity when neither `ENV` nor `URL_PARAMETER` is set.
 pub const DEFAULT: usize = 200;
-/// Connections in each native MySQL and PostgreSQL runtime pool.
+/// Connections a native node opens to its MySQL or PostgreSQL database: its
+/// request pool plus its maintenance pool (Server #1355).
 pub const POOL_CONNECTIONS: u32 = 4;
+/// The maintenance loop's own pool (timers, schedules, repair, retention and
+/// offer-window refresh), so it never borrows a request connection.
+pub const MAINTENANCE_CONNECTIONS: u32 = 1;
+/// The request pool: everything else, including held polls.
+pub const REQUEST_CONNECTIONS: u32 = POOL_CONNECTIONS - MAINTENANCE_CONNECTIONS;
 /// MySQL's default `max_prepared_stmt_count`.
 pub const MYSQL_DEFAULT_MAX_PREPARED_STMT_COUNT: usize = 16_382;
 /// Largest accepted capacity: one node's full pool stays within MySQL's

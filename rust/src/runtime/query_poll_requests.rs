@@ -182,9 +182,15 @@ where
     /// read without the transition lock. The claim confirms it under the lock
     /// with `poll_request_is_current`, which this mirrors.
     pub(super) async fn poll_request_superseded(&self, keys: &PollKeys) -> Result<bool> {
+        self.poll_request_superseded_on(&mut *self.pool.acquire().await?, keys).await
+    }
+
+    /// [`poll_request_superseded`](Self::poll_request_superseded) on a
+    /// connection the caller holds (a held query poll's probe; Server #1355).
+    pub(super) async fn poll_request_superseded_on(&self, connection: &mut DB::Connection, keys: &PollKeys) -> Result<bool> {
         let Some(row) = Self::query(DB::QUERY_CACHE_GET)
             .bind(&keys.current)
-            .fetch_optional(&self.pool)
+            .fetch_optional(connection)
             .await?
         else {
             return Ok(true);
@@ -539,15 +545,18 @@ where
         }
         let owner = text(body, "worker_id")?;
         for _ in 0..3 {
-            let current =
-                Self::query_worker_proof(&self.pool, self.namespace.as_ref(), owner, config).await?;
-            let fenced = match fence {
-                Some(fence) => {
-                    let mut reads = self.probe_connection().await?;
-                    let holds = self.worker_poll_fence_holds(reads.get(), fence, owner).await;
-                    reads.finish().await;
-                    !holds?
-                }
+            // The registration proof and fence share one budgeted probe
+            // connection (Server #1355).
+            let mut reads = self.probe_connection().await?;
+            let current = Self::query_worker_proof(reads.get(), self.namespace.as_ref(), owner, config).await;
+            let fenced = match (fence, &current) {
+                (Some(fence), Ok(_)) => Some(self.worker_poll_fence_holds(reads.get(), fence, owner).await),
+                _ => None,
+            };
+            reads.finish().await;
+            let current = current?;
+            let fenced = match fenced {
+                Some(holds) => !holds?,
                 None => false,
             };
             if current.as_deref() != Some(proof) || fenced {

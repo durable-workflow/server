@@ -243,6 +243,9 @@ pub(super) struct Store<DB: Backend> {
     /// How long a transition waits its turn on the transition queue
     /// ([`TRANSITION_QUEUE_DEADLINE`]; Server #1355).
     pub(super) transition_queue_deadline: Duration,
+    /// The maintenance loop's own pool ([`Store::for_maintenance`]); `None`
+    /// shares `pool` (tests and offline commands).
+    pub(super) maintenance_pool: Option<Pool<DB>>,
     // A per-store source-test clock for deterministic claim arithmetic. All
     // production claims continue to sample the existing canonical clock.
     #[cfg(test)]
@@ -424,6 +427,7 @@ where
             poll_capacity: Arc::default(),
             probe_slots,
             transition_queue_deadline: TRANSITION_QUEUE_DEADLINE,
+            maintenance_pool: None,
             #[cfg(test)]
             test_claim_at: None,
             #[cfg(test)]
@@ -461,6 +465,7 @@ where
             poll_capacity: self.poll_capacity.clone(),
             probe_slots: self.probe_slots.clone(),
             transition_queue_deadline: self.transition_queue_deadline,
+            maintenance_pool: self.maintenance_pool.clone(),
             #[cfg(test)]
             test_claim_at: self.test_claim_at,
             #[cfg(test)]
@@ -515,6 +520,35 @@ where
 
     pub(super) async fn close(&self) {
         self.pool.close().await;
+        if let Some(maintenance) = &self.maintenance_pool {
+            maintenance.close().await;
+        }
+    }
+
+    /// Give the maintenance loop its own connection (Server #1355): one
+    /// connection with the request pool's options, hooks and connect
+    /// options, opened when the loop first needs it. The node still opens
+    /// at most `statement_cache::POOL_CONNECTIONS` connections.
+    pub(super) fn with_maintenance_pool(mut self) -> Self {
+        self.maintenance_pool = Some(
+            self.pool.options().clone()
+                .max_connections(crate::statement_cache::MAINTENANCE_CONNECTIONS)
+                .min_connections(0)
+                .connect_lazy_with((*self.pool.connect_options()).clone()),
+        );
+        self
+    }
+
+    /// This store on the maintenance pool: timers, schedules, repair,
+    /// retention and offer-window refresh never borrow a request connection,
+    /// so during a database stall they cannot take the connection held polls
+    /// leave free for producers and registrations.
+    pub(super) fn for_maintenance(&self) -> Self {
+        let mut store = self.in_namespace(&self.namespace);
+        if let Some(maintenance) = &self.maintenance_pool {
+            store.pool = maintenance.clone();
+        }
+        store
     }
     /// Wait for this transition's turn on the transition queue (FIFO).
     ///
@@ -546,6 +580,36 @@ where
                 Transaction::new(inner, self.history_budget, Some(queued), Some(self.history_wakes.clone()))
             })
     }
+    /// A background transition (Server #1355): its turn on the transition
+    /// queue first, then a probe budget slot and a connection, so it never
+    /// holds the connection held polls leave free. The order matters: a
+    /// transition that held a budget slot while waiting for its turn could
+    /// leave the transition ahead without a slot. Callers begin the
+    /// transaction with [`begin_on`](Self::begin_on) and return the
+    /// connection with `ProbeConnection::finish` after it ends.
+    pub(super) async fn queue_budgeted_transition(
+        &self,
+    ) -> Result<(tokio::sync::OwnedMutexGuard<()>, super::probe_connections::ProbeConnection<DB>)> {
+        let queued = self.queue_transition().await?;
+        let connection = self.probe_connection().await?;
+        Ok((queued, connection))
+    }
+
+    /// The transaction of a transition on a connection the caller holds.
+    pub(super) async fn begin_on<'c>(
+        &self,
+        connection: &'c mut DB::Connection,
+        queued: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<Transaction<'c, DB>> {
+        let inner = DB::begin_on(connection).await?;
+        Ok(Transaction::new(inner, self.history_budget, Some(queued), Some(self.history_wakes.clone())))
+    }
+
+    /// [`begin_read`](Self::begin_read) on a connection the caller holds.
+    pub(super) async fn begin_read_on<'c>(&self, connection: &'c mut DB::Connection) -> Result<Transaction<'c, DB>> {
+        Ok(Transaction::new(DB::begin_read_on(connection).await?, self.history_budget, None, None))
+    }
+
     // Reads that change nothing use one consistent read-only snapshot instead
     // of the transition lock, so they neither wait for nor delay transitions.
     pub(super) async fn begin_read(&self) -> Result<Transaction<'static, DB>> {
@@ -2509,7 +2573,11 @@ where
         pages: super::history_pages::HistoryPages,
         default_wait: u64,
     ) -> Result<Value> {
-        self.refuse_draining_worker(text(&body, "worker_id")?, text(&body, "task_queue")?).await?;
+        // The poll's admission and replay reads share one budgeted probe
+        // connection, so a poll admitted during a stall never takes the
+        // connection held polls leave free (Server #1355).
+        let mut admission = self.probe_connection().await?;
+        self.refuse_draining_worker_on(admission.get(), text(&body, "worker_id")?, text(&body, "task_queue")?).await?;
         // Laravel's `nullable|integer|min:0|max:60` bounds a requested wait;
         // the configured default is not capped.
         let timeout = match body.get("timeout_seconds") {
@@ -2530,14 +2598,14 @@ where
         // `WorkerPollFence`: the poll belongs to the registration it is
         // admitted under. One that is not fresh is answered at once,
         // uncached, before any replay.
-        let fence = match self.admit_worker_poll(text(&body, "worker_id")?, text(&body, "task_queue")?).await? {
+        let fence = match self.admit_worker_poll_on(admission.get(), text(&body, "worker_id")?, text(&body, "task_queue")?).await? {
             super::worker_poll_fence::PollAdmission::Stale => return Ok(super::worker_poll_fence::stale_answer()),
             super::worker_poll_fence::PollAdmission::Fenced(fence) => Some(fence),
             super::worker_poll_fence::PollAdmission::Unregistered => None,
         };
         if kind == "activity" && body["poll_request_id"].is_string()
             && let Some(fence) = fence.as_ref()
-            && let Some(task) = self.replay_activity_poll_read_only(&body, fence).await?
+            && let Some(task) = self.replay_activity_poll_read_only_on(admission.get(), &body, fence).await?
         {
             return Ok(activity_server_time(kind, json!({"task":task,"poll_status":"leased","server_capabilities":capabilities()})));
         }
@@ -2548,28 +2616,27 @@ where
                 let worker_id = text(&body, "worker_id")?;
                 let queue = text(&body, "task_queue")?;
                 let registration = Self::query("SELECT task_queue FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
-                    .bind(worker_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+                    .bind(worker_id).bind(self.namespace.as_ref()).fetch_optional(admission.get()).await?
                     .ok_or_else(|| refuse(StatusCode::CONFLICT, "worker_not_registered"))?;
                 if DB::string(&registration, "task_queue")? != queue {
                     return Err(refuse(StatusCode::CONFLICT, "task_queue_mismatch"));
                 }
-                Some(self.workflow_poll_request(worker_id, queue, id, body.get("poll_request_id").and_then(Value::as_str), default_wait, &["workflow"]).await?)
+                Some(self.workflow_poll_request_on(admission.get(), worker_id, queue, id,
+                    body.get("poll_request_id").and_then(Value::as_str), default_wait, &["workflow"]).await?)
             }
             _ => None,
         };
         if let (Some(request), Some(fence)) = (poll_request.as_ref(), fence.as_ref())
-            && let Some(answer) = self.replay_workflow_poll_read_only(request, text(&body, "worker_id")?, text(&body, "task_queue")?, fence).await?
+            && let Some(answer) = self.replay_workflow_poll_read_only_on(admission.get(), request, text(&body, "worker_id")?, text(&body, "task_queue")?, fence).await?
         {
             return replayed_poll(answer, encoding);
         }
         let mut cross_kind = if timeout > 0 {
-            let mut reads = self.probe_connection().await?;
-            let snapshot = self.poll_wake_snapshot(reads.get(), &body, kind).await?;
-            reads.finish().await;
-            snapshot
+            self.poll_wake_snapshot(admission.get(), &body, kind).await?
         } else {
             None
         };
+        admission.finish().await;
         // Only the first probe claims under the lock unconditionally. Later
         // probes, on a same-node wake or a timed read that also observes
         // other server processes, claim only after a lock-free read finds
@@ -2838,7 +2905,27 @@ where
         poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
     ) -> Result<Option<Value>> {
-        let mut tx = self.begin().await?;
+        // A held poll's claim is a budgeted background transition (Server
+        // #1355): it never holds the connection held polls leave free.
+        let (queued, mut connection) = self.queue_budgeted_transition().await?;
+        let claimed = self.claim_on(connection.get(), queued, body, kind, protocol_version, page, poll_request, fence).await;
+        connection.finish().await;
+        claimed
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn claim_on(
+        &self,
+        connection: &mut DB::Connection,
+        queued: tokio::sync::OwnedMutexGuard<()>,
+        body: &Value,
+        kind: &str,
+        protocol_version: &str,
+        page: Option<i64>,
+        poll_request: Option<&super::workflow_poll_requests::WorkflowPollRequest>,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+    ) -> Result<Option<Value>> {
+        let mut tx = self.begin_on(connection, queued).await?;
         #[cfg(debug_assertions)]
         if let Some(id) = poll_pause_id(kind, body, poll_request) {
             super::poll_pauses::stop_at(id, super::poll_pauses::PollPoint::Claiming).await;
@@ -2865,9 +2952,28 @@ where
         request: &super::workflow_poll_requests::WorkflowPollRequest,
         fence: Option<&super::worker_poll_fence::WorkerPollFence>,
     ) -> Result<FirstProbe> {
+        // A budgeted background transition, as `claim` is (Server #1355).
+        let (queued, mut connection) = self.queue_budgeted_transition().await?;
+        let probed = self.replay_or_claim_on(connection.get(), queued, body, kind, protocol_version, page, request, fence).await;
+        connection.finish().await;
+        probed
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn replay_or_claim_on(
+        &self,
+        connection: &mut DB::Connection,
+        queued: tokio::sync::OwnedMutexGuard<()>,
+        body: &Value,
+        kind: &str,
+        protocol_version: &str,
+        page: Option<i64>,
+        request: &super::workflow_poll_requests::WorkflowPollRequest,
+        fence: Option<&super::worker_poll_fence::WorkerPollFence>,
+    ) -> Result<FirstProbe> {
         let worker_id = text(body, "worker_id")?;
         let queue = text(body, "task_queue")?;
-        let mut tx = self.begin().await?;
+        let mut tx = self.begin_on(connection, queued).await?;
         if let Some(answer) = self.replay_workflow_poll_in(&mut tx, request, worker_id, queue).await? {
             tx.commit().await?;
             return Ok(FirstProbe::Replayed(answer));

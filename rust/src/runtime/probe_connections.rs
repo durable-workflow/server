@@ -13,17 +13,18 @@
 //! awaits the connection's return to the pool before it claims or waits.
 //! Its slot comes from a node-wide budget of the pool size less one (at
 //! least one), held until that return finishes, so held-poll probes never
-//! occupy the last slot. That is the whole guarantee: other work still
-//! competes for that slot. During a stall longer than the acquisition
-//! deadline a registration can still be refused when it queues behind a
-//! transition stuck in the stall (a held poll's claim is a transition and
-//! outside the budget), when the free connection has been idle for a second
-//! or more and its pre-checkout ping runs inside SQLx's acquisition
-//! deadline, or when reads outside the budget hold the remaining slot (poll
-//! admission and replay reads, query-proof reads, ordinary requests and the
-//! maintenance ticker). A claim keeps its own connection outside the
-//! budget, acquired only after the probe connection is back, so the
-//! transition FIFO is never entered while holding a probe slot.
+//! occupy the last slot.
+//!
+//! Server #1355 brings the rest of a held poll's work under the same budget:
+//! its admission and replay reads, query readiness reads, and its claim and
+//! update-validation probe transactions. A budgeted transaction takes its
+//! turn on the transition queue first and its budget connection after
+//! (`Store::queue_budgeted_transition`), so a transaction holding a budget
+//! slot never waits for the queue. The maintenance loop has a connection of
+//! its own (`Store::for_maintenance`). Other work still competes for the last
+//! connection: ordinary requests, query-task claims and duplicate query polls'
+//! shared answers, recording an empty or stale poll answer, workflow lease
+//! recovery transactions and polls carried by a task completion.
 use super::Result;
 use sqlx::pool::PoolConnection;
 use std::sync::Arc;

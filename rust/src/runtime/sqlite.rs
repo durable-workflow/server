@@ -102,7 +102,7 @@ async fn open_once(database: &str) -> Result<SqlitePool> {
     preflight.close().await?;
     let initialized = preflight_result?;
     let pool = super::backend::test_idle_connections(SqlitePoolOptions::new())
-        .max_connections(4)
+        .max_connections(crate::statement_cache::REQUEST_CONNECTIONS)
         .acquire_timeout(Duration::from_secs(5))
         .connect_with(
             SqliteConnectOptions::new()
@@ -166,13 +166,16 @@ mod pool_tests {
             let directory = tempfile::tempdir().unwrap();
             let database = directory.path().join("pool.sqlite");
             let pool = open(database.to_str().unwrap()).await.unwrap();
+            // The request pool; the maintenance loop has a connection of its
+            // own (Server #1355).
+            let slots = crate::statement_cache::REQUEST_CONNECTIONS;
             let mut held = Vec::new();
-            for _ in 0..4 {
+            for _ in 0..slots {
                 held.push(pool.acquire().await.unwrap());
             }
             let cancelled = tokio::time::timeout(Duration::from_millis(20), pool.acquire()).await;
-            assert!(cancelled.is_err(), "a fifth borrow must stay within the four-slot limit");
-            assert_eq!(pool.size(), 4);
+            assert!(cancelled.is_err(), "one more borrow must stay within the request pool's limit");
+            assert_eq!(pool.size(), slots);
             for mut connection in held {
                 connection.return_to_pool().await;
             }

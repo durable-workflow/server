@@ -393,8 +393,19 @@ where
     /// `resolveRegisteredWorker`'s last check: a draining worker claims
     /// nothing until its build resumes.
     pub(super) async fn refuse_draining_worker(&self, worker_id: &str, task_queue: &str) -> Result<()> {
+        self.refuse_draining_worker_on(&mut *self.pool.acquire().await?, worker_id, task_queue).await
+    }
+
+    /// [`refuse_draining_worker`](Self::refuse_draining_worker) on a
+    /// connection the caller holds (a poll's admission; Server #1355).
+    pub(super) async fn refuse_draining_worker_on(
+        &self,
+        connection: &mut DB::Connection,
+        worker_id: &str,
+        task_queue: &str,
+    ) -> Result<()> {
         let Some(worker) = Self::query("SELECT task_queue,build_id,status FROM workflow_worker_registrations WHERE worker_id=$1 AND namespace=$2")
-            .bind(worker_id).bind(self.namespace.as_ref()).fetch_optional(&self.pool).await?
+            .bind(worker_id).bind(self.namespace.as_ref()).fetch_optional(connection).await?
         else {
             return Ok(());
         };

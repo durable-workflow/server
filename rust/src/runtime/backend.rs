@@ -281,6 +281,13 @@ pub(super) trait Backend: Database {
     fn document_row(row: &Self::Row, field: &str) -> Result<Value>;
     fn optional_document_row(row: &Self::Row, field: &str) -> Result<Option<Value>>;
     fn begin(pool: &Pool<Self>) -> impl Future<Output = Result<Transaction<'static, Self>>> + Send;
+    /// [`begin`](Self::begin) on a connection the caller already holds
+    /// (a budgeted background transition; Server #1355).
+    fn begin_on(connection: &mut Self::Connection) -> impl Future<Output = Result<Transaction<'_, Self>>> + Send;
+    /// A read-only snapshot (`READ_SNAPSHOT_BEGIN`) on a connection the caller
+    /// already holds (Server #1355). Each backend begins it itself, so generic
+    /// callers see only this trait's `Send` future.
+    fn begin_read_on(connection: &mut Self::Connection) -> impl Future<Output = Result<Transaction<'_, Self>>> + Send;
     fn history_ready(pool: &Pool<Self>) -> impl Future<Output = bool> + Send;
 }
 
@@ -467,6 +474,12 @@ DELETE FROM dw_poll_receipts WHERE (namespace,worker_id,kind,request_id) IN (
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
         Ok(pool.begin_with("BEGIN IMMEDIATE").await?)
     }
+    async fn begin_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, "BEGIN IMMEDIATE").await?)
+    }
+    async fn begin_read_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, Self::READ_SNAPSHOT_BEGIN).await?)
+    }
     async fn history_ready(pool: &Pool<Self>) -> bool {
         let markers: std::result::Result<Vec<(String, i64)>, _> =
             sqlx::query_as("SELECT engine,version FROM dw_server_schema")
@@ -588,6 +601,12 @@ impl Backend for Postgres {
         // across independent pools/processes. Held long polls wait without it
         // (Store::task_poll_ready). Throughput/idle cost remain unqualified.
         Ok(pool.begin_with("BEGIN; SELECT pg_advisory_xact_lock(4924501473315676163)").await?)
+    }
+    async fn begin_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, "BEGIN; SELECT pg_advisory_xact_lock(4924501473315676163)").await?)
+    }
+    async fn begin_read_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, Self::READ_SNAPSHOT_BEGIN).await?)
     }
     async fn history_ready(pool: &Pool<Self>) -> bool {
         let Ok(mut connection) = pool.acquire().await else {
@@ -867,12 +886,16 @@ impl Backend for MySql {
     }
     async fn begin(pool: &Pool<Self>) -> Result<Transaction<'static, Self>> {
         let mut tx = pool.begin().await?;
-        // InnoDB row locking releases on commit/rollback/process loss. This
-        // first slice serializes transitions on its single ownership row.
-        // MariaDB stays at 12 while MySQL moved to 13 (server#1016).
-        sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=IF(VERSION() LIKE '%MariaDB%',?,?) FOR UPDATE")
-            .bind(mysql::MARIADB_VERSION).bind(mysql::MYSQL_VERSION).fetch_one(&mut *tx).await?;
+        mysql_ownership_lock(&mut tx).await?;
         Ok(tx)
+    }
+    async fn begin_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        let mut tx = sqlx::Connection::begin(connection).await?;
+        mysql_ownership_lock(&mut tx).await?;
+        Ok(tx)
+    }
+    async fn begin_read_on(connection: &mut Self::Connection) -> Result<Transaction<'_, Self>> {
+        Ok(sqlx::Connection::begin_with(connection, Self::READ_SNAPSHOT_BEGIN).await?)
     }
     async fn history_ready(pool: &Pool<Self>) -> bool {
         let Ok(mut connection) = pool.acquire().await else {
@@ -1096,4 +1119,13 @@ mod timestamp_tests {
             assert!(sqlite_instant(value.into()).is_err(), "invalid {value}");
         }
     }
+}
+
+/// InnoDB row locking releases on commit/rollback/process loss. This first
+/// slice serializes transitions on its single ownership row. MariaDB stays at
+/// 12 while MySQL moved to 13 (server#1016).
+async fn mysql_ownership_lock(tx: &mut Transaction<'_, MySql>) -> Result<()> {
+    sqlx::query("SELECT engine FROM dw_server_schema WHERE engine='rust-development' AND version=IF(VERSION() LIKE '%MariaDB%',?,?) FOR UPDATE")
+        .bind(mysql::MARIADB_VERSION).bind(mysql::MYSQL_VERSION).fetch_one(&mut **tx).await?;
+    Ok(())
 }

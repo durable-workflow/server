@@ -867,7 +867,7 @@ impl PostgresStorage {
         result?;
 
         let pool = super::backend::test_idle_connections(PgPoolOptions::new())
-            .max_connections(crate::statement_cache::POOL_CONNECTIONS)
+            .max_connections(crate::statement_cache::REQUEST_CONNECTIONS)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(connect_options)
             .await?;
