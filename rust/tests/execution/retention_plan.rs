@@ -1,12 +1,36 @@
 //! Server #522: `POST /api/namespaces/{namespace}/retention-plan` previews a
 //! proposed retention policy against the current one, bound to the current
-//! policy's revision, and writes nothing.
+//! policy's revision, and writes nothing. `.../retention-plan/apply` applies
+//! the planned policy only while the plan still holds.
 use super::*;
 
 pub(super) const SCHEMA: &str = "durable-workflow.v2.retention-plan.v1";
+const APPLY_SCHEMA: &str = "durable-workflow.v2.retention-apply.v1";
 
 pub(super) fn plan_path(namespace: &str) -> String {
     format!("/api/namespaces/{namespace}/retention-plan")
+}
+
+fn apply_path(namespace: &str) -> String {
+    format!("/api/namespaces/{namespace}/retention-plan/apply")
+}
+
+/// The apply body for a plan of `proposal`, with its two revisions.
+fn apply_body(plan: &Value, proposal: Value, confirm: Option<bool>) -> Value {
+    let mut body = proposal;
+    body["policy_revision"] = plan["policy_revision"].clone();
+    body["plan_revision"] = plan["plan_revision"].clone();
+    if let Some(confirm) = confirm {
+        body["confirm_retroactive_pruning"] = json!(confirm);
+    }
+    body
+}
+
+/// The fingerprint without the namespace policy rows: what an apply must
+/// never move.
+async fn runs_fingerprint(database: &TestDatabase) -> (Vec<(String, i64)>, Vec<(String, String)>) {
+    let (counts, rows) = fingerprint(database).await;
+    (counts, rows.into_iter().filter(|(key, _)| key != "default").collect())
 }
 
 async fn completed_run(app: &Router, workflow: &str) -> String {
@@ -223,7 +247,118 @@ async fn a_plan_counts_holds_and_flags_an_incomplete_scan_without_writing() {
     database.remove().await;
 }
 
-// Planning a retention change needs the admin who could apply it.
+// The apply refuses an unconfirmed retroactive policy, a proposal other than
+// the planned one and a plan made stale by any namespace change, and applies
+// the planned policy without touching a run.
+#[tokio::test]
+async fn a_guarded_apply_applies_only_the_planned_policy() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let old = completed_run(&app, "apply-old").await;
+    let recent = completed_run(&app, "apply-recent").await;
+    let archived = completed_run(&app, "apply-archived").await;
+    let (status, body) = request(&app, "POST", "/api/workflows/apply-archived/archive", json!({"reason":"keep"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for (run, days) in [(&old, 40), (&recent, 10), (&archived, 10)] {
+        closed_days_ago(&database, run, days).await;
+    }
+    let untouched = runs_fingerprint(&database).await;
+    let before = fingerprint(&database).await;
+
+    // Shortening 30 days to 7 is retroactive: the plan says so, and the
+    // apply needs the confirmation.
+    let shorten = json!({"retention_days": 7});
+    let (status, plan) = request(&app, "POST", &plan_path("default"), shorten.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    assert_eq!(plan["retroactive"], true, "{plan}");
+    let plan_revision = plan["plan_revision"].as_str().unwrap().to_owned();
+    assert!(plan_revision.starts_with("sha256:") && plan_revision.len() == 71 && plan_revision != plan["policy_revision"], "{plan}");
+    for confirm in [None, Some(false)] {
+        let (status, body) = request(&app, "POST", &apply_path("default"), apply_body(&plan, shorten.clone(), confirm)).await;
+        assert_eq!((status, body["reason"].clone(), body["retroactive"].clone()),
+            (StatusCode::UNPROCESSABLE_ENTITY, json!("retention_pruning_confirmation_required"), json!(true)), "{body}");
+    }
+    // A proposal other than the planned one, under the same revisions.
+    let (status, body) = request(&app, "POST", &apply_path("default"), apply_body(&plan, json!({"retention_days": 8}), Some(true))).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("retention_plan_revision_mismatch")), "{body}");
+    let (status, body) = request(&app, "POST", &apply_path("default"), apply_body(&plan, json!({"retention_mode": "forever"}), Some(true))).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("retention_plan_revision_mismatch")), "{body}");
+    // An unknown revision is stale, and the refusal names the current one.
+    let mut stale = apply_body(&plan, shorten.clone(), Some(true));
+    stale["policy_revision"] = json!("sha256:0");
+    let (status, body) = request(&app, "POST", &apply_path("default"), stale).await;
+    assert_eq!((status, body["reason"].clone(), body["policy_revision"].clone()),
+        (StatusCode::CONFLICT, json!("retention_policy_revision_stale"), plan["policy_revision"].clone()), "{body}");
+    // Both revisions are required; the proposal follows the update's rules.
+    let (status, body) = request(&app, "POST", &apply_path("default"), shorten.clone()).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["errors"]["policy_revision"], json!(["The policy revision field is required."]));
+    assert_eq!(body["errors"]["plan_revision"], json!(["The plan revision field is required."]));
+    let (status, body) = request(&app, "POST", &apply_path("default"), apply_body(&plan, json!({"retention_days": 0}), Some(true))).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("invalid_namespace_definition")), "{body}");
+    let (status, body) = request(&app, "POST", &apply_path("missing"), apply_body(&plan, shorten.clone(), Some(true))).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::NOT_FOUND, json!("namespace_not_found")), "{body}");
+    // Every refusal left everything as it was.
+    assert_eq!(fingerprint(&database).await, before);
+
+    // A concurrent policy change through the unchanged namespace update,
+    // which still activates at once, makes the plan stale.
+    let (status, updated) = request(&app, "PUT", "/api/namespaces/default", json!({"retention_days": 14})).await;
+    assert_eq!((status, updated["retention_days"].clone()), (StatusCode::OK, json!(14)), "{updated}");
+    let (status, body) = request(&app, "POST", &apply_path("default"), apply_body(&plan, shorten.clone(), Some(true))).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("retention_policy_revision_stale")), "{body}");
+    assert_ne!(body["policy_revision"], plan["policy_revision"], "{body}");
+
+    // A fresh plan against 14 days applies with the confirmation.
+    let (_, plan) = request(&app, "POST", &plan_path("DEFAULT"), shorten.clone()).await;
+    let (status, applied) = request(&app, "POST", &apply_path("DEFAULT"), apply_body(&plan, shorten.clone(), Some(true))).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert_eq!([&applied["schema"], &applied["namespace"], &applied["retroactive"], &applied["confirmed_retroactive_pruning"]],
+        [&json!(APPLY_SCHEMA), &json!("default"), &json!(true), &json!(true)], "{applied}");
+    assert_eq!(applied["previous_policy_revision"], plan["policy_revision"]);
+    assert_eq!([&applied["previous_policy"]["retention_days"], &applied["policy"]["retention_days"]], [&json!(14), &json!(7)], "{applied}");
+    assert_eq!(applied["policy"]["updated_at"], applied["applied_at"]);
+    assert!(applied["scope"].as_str().unwrap().contains("not the set that will be deleted"), "{applied}");
+    let (_, described) = request(&app, "GET", "/api/namespaces/default", Value::Null).await;
+    assert_eq!([&described["retention_mode"], &described["retention_days"]], [&json!("bounded"), &json!(7)], "{described}");
+    // The new revision is the one a new plan is bound to; the old plan can
+    // not be applied twice.
+    let (_, replanned) = request(&app, "POST", &plan_path("default"), Value::Null).await;
+    assert_eq!(replanned["policy_revision"], applied["policy_revision"], "{replanned}");
+    let (status, body) = request(&app, "POST", &apply_path("default"), apply_body(&plan, shorten.clone(), Some(true))).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::CONFLICT, json!("retention_policy_revision_stale")), "{body}");
+
+    // Lengthening keeps more and needs no confirmation.
+    let lengthen = json!({"retention_days": 60});
+    let (_, plan) = request(&app, "POST", &plan_path("default"), lengthen.clone()).await;
+    assert_eq!(plan["retroactive"], false, "{plan}");
+    let (status, applied) = request(&app, "POST", &apply_path("default"), apply_body(&plan, lengthen, None)).await;
+    assert_eq!((status, applied["retroactive"].clone(), applied["confirmed_retroactive_pruning"].clone()),
+        (StatusCode::OK, json!(false), json!(false)), "{applied}");
+
+    // `forever`, then back to a bounded policy, which is retroactive again.
+    let (_, plan) = request(&app, "POST", &plan_path("default"), json!({"retention_mode": "forever"})).await;
+    let (status, applied) = request(&app, "POST", &apply_path("default"), apply_body(&plan, json!({"retention_mode": "forever"}), None)).await;
+    assert_eq!((status, applied["policy"]["retention_mode"].clone(), applied["policy"]["retention_days"].clone()),
+        (StatusCode::OK, json!("forever"), Value::Null), "{applied}");
+    let bounded = json!({"retention_mode": "bounded", "retention_days": 365});
+    let (_, plan) = request(&app, "POST", &plan_path("default"), bounded.clone()).await;
+    assert_eq!(plan["retroactive"], true, "{plan}");
+    let (status, body) = request(&app, "POST", &apply_path("default"), apply_body(&plan, bounded.clone(), None)).await;
+    assert_eq!((status, body["reason"].clone()), (StatusCode::UNPROCESSABLE_ENTITY, json!("retention_pruning_confirmation_required")), "{body}");
+    let (status, applied) = request(&app, "POST", &apply_path("default"), apply_body(&plan, bounded, Some(true))).await;
+    assert_eq!((status, applied["policy"]["retention_days"].clone()), (StatusCode::OK, json!(365)), "{applied}");
+
+    // Applying changed only the namespace's policy: no run was marked,
+    // archived, unarchived or pruned, and no row was added or removed.
+    assert_eq!(runs_fingerprint(&database).await, untouched);
+    runtime.close().await;
+    database.remove().await;
+}
+
+// Planning or applying a retention change needs an admin.
 #[tokio::test]
 async fn only_an_admin_plans_a_retention_change() {
     let database = TestDatabase::new().await;
@@ -235,6 +370,14 @@ async fn only_an_admin_plans_a_retention_change() {
     let app = router(runtime.clone());
     for (token, expected) in [("worker-token", StatusCode::FORBIDDEN), ("operator-token", StatusCode::FORBIDDEN), ("admin-token", StatusCode::OK)] {
         let (status, _, body) = admission::admission_http(&app, "POST", &plan_path("default"), false, Some(token), Some("2"),
+            Some("default"), json!({"retention_days": 7})).await;
+        assert_eq!(status, expected, "{token}: {body}");
+    }
+    // The apply route: an admin reaches validation, no one else gets past
+    // the role check.
+    for (token, expected) in [("worker-token", StatusCode::FORBIDDEN), ("operator-token", StatusCode::FORBIDDEN),
+        ("admin-token", StatusCode::UNPROCESSABLE_ENTITY)] {
+        let (status, _, body) = admission::admission_http(&app, "POST", &apply_path("default"), false, Some(token), Some("2"),
             Some("default"), json!({"retention_days": 7})).await;
         assert_eq!(status, expected, "{token}: {body}");
     }

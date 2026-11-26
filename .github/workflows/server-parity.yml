@@ -569,12 +569,19 @@ jobs:
           - label: mariadb-10.11
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
             # Both expanded originals exhausted the 512 MiB DB fixture ceiling.
-            memory: 1g
+            # Two of the runner's four CPUs and 2 GiB, as the MySQL labels
+            # have, give the server headroom against multi-second stalls that
+            # turn held polls into pool timeouts (server#1204). This reduces,
+            # but does not fix, that flake; the runtime fix is tracked
+            # separately.
+            memory: 2g
+            cpus: 2
             execution_shards: 2
           - label: mariadb-10.11
             part: native-tests-b
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
-            memory: 1g
+            memory: 2g
+            cpus: 2
             execution_shards: 2
     env:
       DW_PARITY_PART: ${{ matrix.part }}
@@ -582,6 +589,7 @@ jobs:
       RESOURCE_SCOPE: dw-mysql-parity-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ matrix.label }}
       MYSQL_IMAGE: ${{ matrix.image }}
       DB_MEMORY: ${{ matrix.memory }}
+      DB_CPUS: ${{ matrix.cpus || 1 }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       # A registry briefly answering "unknown blob" once failed every job at its
@@ -730,7 +738,7 @@ jobs:
           chmod 0777 parity-evidence
           docker network create "$RESOURCE_SCOPE"
           docker run -d --name "$RESOURCE_SCOPE-db" --network "$RESOURCE_SCOPE" --network-alias=parity-mysql \
-            --user="$(id -u):$(id -g)" --cpus=1 --memory="$DB_MEMORY" --memory-swap="$DB_MEMORY" \
+            --user="$(id -u):$(id -g)" --cpus="$DB_CPUS" --memory="$DB_MEMORY" --memory-swap="$DB_MEMORY" \
             -e MYSQL_ROOT_PASSWORD=parity-disposable-password -e MYSQL_ROOT_HOST=% -e MYSQL_DATABASE=php_ref \
             -v "$PWD/mysql-state:/var/lib/mysql" -v "$PWD/mysql-tls:/tls:ro" "$MYSQL_IMAGE" \
             --skip-log-bin --innodb-buffer-pool-size=128M --performance-schema=OFF \

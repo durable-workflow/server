@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: durable-workflow.v2.worker-protocol-api
-  version: "70"
+  version: "71"
   summary: Durable Workflow worker-plane HTTP+JSON API
   description: >
     Normative OpenAPI specification for the worker-plane HTTP+JSON API:
@@ -99,6 +99,8 @@ x-durable-workflow-activity-workflow-continuation:
   legacy_receipt: ordinary_stale_attempt_no_new_effects
   corrupt_receipt: invalid_continuation_receipt_error_no_new_effects
   default_enablement: none_worker_opt_in_only
+  supported_versions: [1, 2]
+  version_2_contract: docs/contracts/activity-workflow-continuation-v2.md
 x-durable-workflow-workflow-completion-poll-order:
   server_capability: workflow_task_completion_workflow_poll
   endpoint: /worker/workflow-tasks/{taskId}/complete
@@ -1925,6 +1927,31 @@ components:
               items: { enum: [schedule_activity, start_timer, complete_workflow, record_version_marker] }
             max_history_events: { type: integer, minimum: 1 }
             max_commands: { type: integer, minimum: 1 }
+            supported_versions:
+              type: array
+              description: The continuation versions served. A worker uses v2 only when this lists 2 and v2 is well formed.
+              items: { type: integer, minimum: 1 }
+            v2:
+              type: object
+              description: >
+                Version 2 (Server #1181). The worker speculates from its sticky
+                cache; one write transaction proves the prefix in O(1), records
+                the result, completes the resumed workflow task, carries the next
+                activity and returns the history tail. A malformed member disables
+                v2 for that worker, not v1.
+              required: [version, complete_endpoint, supported_commands, max_commands, requires_worker_capabilities, tail_max_events, tail_max_bytes]
+              properties:
+                version: { const: 2 }
+                complete_endpoint: { const: "/worker/activity-tasks/{taskId}/continuation/complete" }
+                supported_commands:
+                  type: array
+                  items: { enum: [schedule_activity, start_timer, complete_workflow, record_version_marker] }
+                max_commands: { type: integer, minimum: 1 }
+                requires_worker_capabilities:
+                  type: array
+                  items: { enum: [sticky_execution, sticky_history_suffix] }
+                tail_max_events: { type: integer, minimum: 1 }
+                tail_max_bytes: { type: integer, minimum: 1 }
         workflow_task_completion_workflow_poll:
           type: boolean
           description: Literal true supports workflow_poll on workflow-task completion. If activity_poll delivers a lease, workflow_poll is not attempted and its response member is omitted. Omission delivers no workflow lease and releases its reservation without assuming queue emptiness or disabling this capability. Both supplied carriers must name the completing owner.
@@ -2520,8 +2547,9 @@ components:
       description: >-
         The instant this run's replay starts from, for a replay-safe workflow
         clock at ordinary entry (.github#215). Workflow tasks, query tasks and
-        update-validation tasks of a run carry the same value. Optional: absent when the
-        server cannot prove it. started_at is not lease, dispatch or history
+        update-validation tasks of a run carry the same value. On workflow
+        tasks absent when unproved; query and update-validation tasks send
+        null instead. started_at is not lease, dispatch or history
         insertion time. An ordinary, continued or child run uses its own
         start; a redrive successor uses the replay anchor its WorkflowStarted
         recorded, only when the redrive command and link agree. A later lease
@@ -3601,6 +3629,18 @@ components:
         workflow_poll:
           $ref: "#/components/schemas/CarriedWorkflowPollRequest"
           description: Requires workflow_task_completion_workflow_poll. Both supplied carrier owners must match lease_owner. The activity carrier has priority and a delivered activity lease causes workflow result omission.
+        continuation_tail:
+          type: object
+          additionalProperties: false
+          required: [version]
+          description: >
+            Requires activity_workflow_continuation.v2. Valid only with a
+            sticky_cache claim that sets history_last_sequence, else 422
+            invalid_continuation_tail before any write. The answer then carries
+            continuation_tail, and a carried activity_poll claims only an
+            activity task this completion created.
+          properties:
+            version: { const: 2 }
         commands:
           type: array
           items:
@@ -3886,6 +3926,23 @@ components:
               $ref: "#/components/schemas/CarriedActivityPollResult"
             workflow_poll:
               $ref: "#/components/schemas/CarriedWorkflowPollResult"
+            continuation_tail:
+              $ref: "#/components/schemas/ContinuationTail"
+    ContinuationTail:
+      type: object
+      description: >
+        The history after the worker's cache boundary, read in the write
+        transaction after its last write and presented as a workflow poll's
+        history_events, in plain JSON. Over tail_max_events or tail_max_bytes,
+        or on an exact retry whose range is gone, the events are omitted and the
+        commit still stands.
+      required: [version, after_sequence]
+      properties:
+        version: { const: 2 }
+        after_sequence: { type: integer, minimum: 1 }
+        last_sequence: { type: integer, minimum: 1 }
+        history_events: { type: array, items: { type: object } }
+        omitted: { enum: [tail_event_budget_exceeded, tail_byte_budget_exceeded, tail_unavailable] }
     SearchAttributeTypeMap:
       type: object
       additionalProperties: { $ref: "#/components/schemas/SearchAttributeType" }
@@ -4035,23 +4092,42 @@ components:
         activity_attempt_id: { type: string, minLength: 1 }
         result: true
         workflow_poll: { $ref: "#/components/schemas/CarriedWorkflowPollRequest" }
+        activity_poll:
+          $ref: "#/components/schemas/CarriedActivityPollRequest"
+          description: Version 2 only. On acceptance the nested completion carries it, claiming only an activity task it created.
         continuation:
-          type: object
-          additionalProperties: false
-          required: [version, history_through_sequence, history_last_event_id, commands]
-          properties:
-            version: { const: 1 }
-            history_through_sequence: { type: integer, minimum: 1 }
-            history_last_event_id: { type: string, minLength: 1, maxLength: 64 }
-            commands:
-              type: array
-              minItems: 1
-              maxItems: 16
-              items:
-                type: object
-                required: [type]
-                properties:
-                  type: { enum: [schedule_activity, start_timer, complete_workflow, record_version_marker] }
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [version, history_through_sequence, history_last_event_id, commands]
+              properties:
+                version: { const: 1 }
+                history_through_sequence: { type: integer, minimum: 1 }
+                history_last_event_id: { type: string, minLength: 1, maxLength: 64 }
+                commands: { $ref: "#/components/schemas/ActivityContinuationCommands" }
+            - type: object
+              additionalProperties: false
+              description: >
+                Version 2 (activity_workflow_continuation.v2). sticky_cache uses the
+                ordinary sticky_cache rules and its history_last_sequence must equal
+                history_through_sequence. A malformed version-2 request is 422
+                invalid_continuation before any write.
+              required: [version, history_through_sequence, history_last_event_id, sticky_cache, commands]
+              properties:
+                version: { const: 2 }
+                history_through_sequence: { type: integer, minimum: 1 }
+                history_last_event_id: { type: string, minLength: 1, maxLength: 64 }
+                sticky_cache: { type: object }
+                commands: { $ref: "#/components/schemas/ActivityContinuationCommands" }
+    ActivityContinuationCommands:
+      type: array
+      minItems: 1
+      maxItems: 16
+      items:
+        type: object
+        required: [type]
+        properties:
+          type: { enum: [schedule_activity, start_timer, complete_workflow, record_version_marker] }
     ActivityTaskContinuationResult:
       allOf:
         - $ref: "#/components/schemas/ActivityTaskCompletionResult"
@@ -4062,12 +4138,18 @@ components:
               type: object
               required: [version, outcome]
               properties:
-                version: { const: 1 }
+                version: { enum: [1, 2] }
                 outcome: { enum: [accepted, declined] }
                 reason: { type: string }
                 workflow_task_id: { type: string }
                 workflow_task_attempt: { type: integer }
                 completion: { type: object }
+            continuation_tail:
+              $ref: "#/components/schemas/ContinuationTail"
+              description: Version 2 accepted answers only.
+            activity_poll:
+              $ref: "#/components/schemas/CarriedActivityPollResult"
+              description: Version 2 accepted answers only.
     TaskFailureRequest:
       type: object
       additionalProperties: true

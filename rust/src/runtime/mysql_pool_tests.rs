@@ -371,6 +371,338 @@ async fn qualification_dead_recent_connection_surfaces_write_error_and_idle_deat
     .expect("bounded real disconnect/recovery qualification");
 }
 
+/// Server #1204: a database stall must not let held polls take every pool
+/// slot. Four held activity polls (the pool size) wait at their wait points;
+/// the database then stops answering for six seconds while each poll's next
+/// probe is in flight, and a registration arrives during the stall. Held
+/// probes may take all but one slot, so the registration borrows the last
+/// one, waits out the stall and succeeds; it is never refused with the typed
+/// pool timeout (HTTP 503 `pool_timeout`) after five seconds.
+#[cfg(debug_assertions)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_held_polls_leave_registration_a_connection_during_a_stall() {
+    use super::super::poll_pauses::{PollPoint, pause_workflow_poll};
+    use serde_json::json;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let database = format!("dw_pool_{}", ulid::Ulid::new().to_string().to_lowercase());
+        let direct = MySqlConnectOptions::from_str(&std::env::var("DW_TEST_MYSQL_URL").unwrap())
+            .unwrap()
+            .database(&database);
+        let database_url = direct.to_url_lossy().to_string();
+        MySql::create_database(&database_url).await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let gate = Arc::new(ReplyGate::default());
+        let proxy = tokio::spawn(forward(
+            listener,
+            format!("{}:{}", direct.get_host(), direct.get_port()),
+            gate.clone(),
+        ));
+        let pool = MySqlStorage::open(direct.clone().host("127.0.0.1").port(port))
+            .await
+            .unwrap()
+            .into_pool();
+        assert_eq!(pool.options().get_max_connections(), 4);
+        let store = Arc::new(super::super::store::Store::new(pool.clone()));
+        let config = super::super::QueryTaskConfig::default();
+        let registration = |worker: &str| {
+            json!({"worker_id":worker,"task_queue":worker,"runtime":"php",
+                "supported_workflow_types":["stall"],"supported_activity_types":["act"]})
+        };
+        let mut releases = Vec::new();
+        let mut polls = Vec::new();
+        for n in 0..4 {
+            let worker = format!("stall-{n}");
+            store.register(registration(&worker), &config, Some("1.20")).await.unwrap();
+            let request = format!("{database}-{n}");
+            let pause = pause_workflow_poll(&request, PollPoint::Waiting);
+            let body = json!({"worker_id":worker,"task_queue":worker,"timeout_seconds":8,"poll_request_id":request});
+            let poller = store.clone();
+            polls.push(tokio::spawn(async move { poller.poll(body, "activity", "1.20").await }));
+            pause.reached.await.unwrap();
+            releases.push(pause.release);
+        }
+        // Every slot is open and was just used, so no checkout pings first.
+        let mut warmed = Vec::new();
+        for _ in 0..4 {
+            warmed.push(pool.acquire().await.unwrap());
+        }
+        for mut connection in warmed {
+            connection.return_to_pool().await;
+        }
+        assert_eq!((pool.size(), pool.num_idle()), (4, 4));
+
+        // The database stops answering while each poll's next probe runs.
+        gate.hold.store(true, Ordering::SeqCst);
+        let stalled = tokio::time::Instant::now();
+        for release in releases {
+            release.send(()).unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let resume = tokio::spawn({
+            let gate = gate.clone();
+            async move {
+                tokio::time::sleep_until(stalled + Duration::from_secs(6)).await;
+                gate.release();
+            }
+        });
+        let registered = store.register(registration("stall-0"), &config, Some("1.20")).await;
+        let waited = stalled.elapsed();
+        // Clean up before asserting, so a failure still releases the stall,
+        // ends the polls and drops the database.
+        resume.await.unwrap();
+        for poll in polls {
+            // A probe that found no slot within the deadline answers the
+            // typed pool refusal; the others answer normally.
+            let _ = poll.await.unwrap();
+        }
+        let returned = tokio::time::timeout(Duration::from_secs(5), async {
+            while pool.num_idle() != pool.size() as usize {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        store.close().await;
+        proxy.abort();
+        MySql::drop_database(&database_url).await.unwrap();
+        assert!(
+            registered.is_ok(),
+            "a registration during a stall must get a connection: {registered:?} after {waited:?}"
+        );
+        assert!(waited >= Duration::from_secs(6), "the registration waited out the stall");
+        returned.expect("every connection returns after the stall");
+    })
+    .await
+    .expect("bounded held-poll stall qualification");
+}
+
+/// COM_QUERY `ROLLBACK` commands the clients sent.
+fn rollbacks(writes: &std::sync::Mutex<Vec<Vec<u8>>>) -> usize {
+    let stream: Vec<u8> = writes.lock().unwrap().concat();
+    stream.windows(9).filter(|window| *window == b"\x03ROLLBACK").count()
+}
+
+/// Server #1204: the pool-return reset is a round trip that keeps the slot
+/// busy. A session known to be idle outside a transaction skips it; an open
+/// or uncertain session is still rolled back before reuse.
+#[tokio::test]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_pool_return_resets_only_sessions_not_known_idle() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let database = format!("dw_pool_{}", ulid::Ulid::new().to_string().to_lowercase());
+        let direct = MySqlConnectOptions::from_str(&std::env::var("DW_TEST_MYSQL_URL").unwrap())
+            .unwrap()
+            .database(&database);
+        let database_url = direct.to_url_lossy().to_string();
+        MySql::create_database(&database_url).await.unwrap();
+        let mut observer = MySqlConnection::connect_with(&direct).await.unwrap();
+        observer
+            .execute("CREATE TABLE reset_probe(id BIGINT PRIMARY KEY) ENGINE=InnoDB")
+            .await
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let proxy = tokio::spawn(record_client_chunks(
+            listener,
+            format!("{}:{}", direct.get_host(), direct.get_port()),
+            writes.clone(),
+        ));
+        let pool = runtime_pool_options()
+            .max_connections(1)
+            .connect_with(direct.clone().host("127.0.0.1").port(port).ssl_mode(
+                sqlx::mysql::MySqlSslMode::Disabled,
+            ))
+            .await
+            .unwrap();
+        let open_transactions = |id: i64| {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id=?",
+            )
+            .bind(id)
+        };
+        // InnoDB serves INNODB_TRX from a cache it refreshes only when the
+        // cache was last read more than 100 ms ago.
+        async fn no_open_transaction(observer: &mut MySqlConnection, id: i64) {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let open: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id=?",
+                    )
+                    .bind(id)
+                    .fetch_one(&mut *observer)
+                    .await
+                    .unwrap();
+                    if open == 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .expect("the session's transaction must end");
+        }
+
+        // Autocommit reads and an acknowledged commit return without a reset.
+        // `fetch_one` leaves the end of its reply unread; the return reads it.
+        let mut connection = pool.acquire().await.unwrap();
+        let id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        assert!(!connection.is_idle_outside_transaction(), "the end of the reply is unread");
+        connection.read_pending_replies().await.unwrap();
+        assert!(connection.is_idle_outside_transaction());
+        let _: i64 = sqlx::query_scalar("SELECT 1").fetch_one(&mut *connection).await.unwrap();
+        connection.return_to_pool().await;
+        assert_eq!(rollbacks(&writes), 0, "an idle autocommit session needs no reset");
+        let mut connection = pool.acquire().await.unwrap();
+        let mut transaction = connection.begin().await.unwrap();
+        sqlx::query("INSERT INTO reset_probe VALUES (1)")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        assert!(connection.is_idle_outside_transaction());
+        connection.return_to_pool().await;
+        assert_eq!(rollbacks(&writes), 0, "a committed session needs no reset");
+
+        // A transaction SQLx does not know about is still rolled back.
+        let mut connection = pool.acquire().await.unwrap();
+        connection.execute("BEGIN").await.unwrap();
+        connection
+            .execute("INSERT INTO reset_probe VALUES (2)")
+            .await
+            .unwrap();
+        assert!(!connection.is_idle_outside_transaction());
+        assert_eq!(open_transactions(id).fetch_one(&mut observer).await.unwrap(), 1);
+        connection.return_to_pool().await;
+        assert_eq!(rollbacks(&writes), 1, "an open session is reset before reuse");
+        no_open_transaction(&mut observer, id).await;
+        let mut connection = pool.acquire().await.unwrap();
+        let reused: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        assert_eq!(reused, id);
+        let kept: Vec<i64> = sqlx::query_scalar("SELECT id FROM reset_probe ORDER BY id")
+            .fetch_all(&mut *connection)
+            .await
+            .unwrap();
+        assert_eq!(kept, vec![1], "the reset rolled back only the open write");
+        assert!(connection.is_idle_outside_transaction());
+
+        // A dropped SQLx transaction leaves its rollback reply pending, so
+        // the state is not known and the reset drains it.
+        let mut transaction = connection.begin().await.unwrap();
+        sqlx::query("INSERT INTO reset_probe VALUES (3)")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        drop(transaction);
+        assert!(!connection.is_idle_outside_transaction());
+        let before = rollbacks(&writes);
+        connection.return_to_pool().await;
+        assert!(rollbacks(&writes) > before, "an uncertain session is reset");
+        no_open_transaction(&mut observer, id).await;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reset_probe")
+            .fetch_one(&mut observer)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // An error reply carries no server status. With autocommit off, a
+        // duplicate-key INSERT fails while InnoDB keeps its transaction and
+        // lock, so the session is not known to be idle and is reset.
+        let mut connection = pool.acquire().await.unwrap();
+        connection.execute("SET autocommit=0").await.unwrap();
+        assert!(connection.is_idle_outside_transaction());
+        let duplicate = connection.execute("INSERT INTO reset_probe VALUES (1)").await;
+        assert!(duplicate.is_err(), "the duplicate key is refused");
+        assert!(!connection.is_idle_outside_transaction(), "an error reply leaves the state unknown");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(open_transactions(id).fetch_one(&mut observer).await.unwrap(), 1);
+        let before = rollbacks(&writes);
+        connection.return_to_pool().await;
+        assert_eq!(rollbacks(&writes), before + 1, "a session after an error reply is reset");
+        no_open_transaction(&mut observer, id).await;
+        let mut connection = pool.acquire().await.unwrap();
+        connection.execute("SET autocommit=1").await.unwrap();
+        assert!(connection.is_idle_outside_transaction(), "a later reply records the status again");
+        drop(connection);
+        pool.close().await;
+        observer.close().await.unwrap();
+        proxy.abort();
+        MySql::drop_database(&database_url).await.unwrap();
+    })
+    .await
+    .expect("bounded real pool-return reset qualification");
+}
+
+/// Server #1204: a statement prepare cancelled before its reply was read
+/// leaves packets that the generic reply drain would misread as an OK
+/// packet with an arbitrary status. The pool-return hook refuses to drain
+/// it, so the session is discarded instead of being reused.
+#[tokio::test]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_pool_return_discards_a_cancelled_statement_prepare() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let direct = MySqlConnectOptions::from_str(&std::env::var("DW_TEST_MYSQL_URL").unwrap())
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let gate = Arc::new(ReplyGate::default());
+        let proxy = tokio::spawn(forward(
+            listener,
+            format!("{}:{}", direct.get_host(), direct.get_port()),
+            gate.clone(),
+        ));
+        let pool = runtime_pool_options()
+            .max_connections(1)
+            .connect_with(direct.host("127.0.0.1").port(port))
+            .await
+            .unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        let prior: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        gate.hold.store(true, Ordering::SeqCst);
+        let prepare = tokio::spawn(async move {
+            // A bound argument makes SQLx prepare the statement first.
+            let _: std::result::Result<i64, sqlx::Error> = sqlx::query_scalar("SELECT ? + 0 AS cancelled_prepare_probe")
+                .bind(1_i64)
+                .fetch_one(&mut *connection)
+                .await;
+        });
+        gate.blocked.notified().await;
+        prepare.abort();
+        assert!(prepare.await.unwrap_err().is_cancelled());
+        gate.release();
+        let mut replacement = tokio::time::timeout(Duration::from_secs(7), pool.acquire())
+            .await
+            .expect("the cancelled prepare's slot returns")
+            .unwrap();
+        let next: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+            .fetch_one(&mut *replacement)
+            .await
+            .unwrap();
+        assert_ne!(next, prior, "a session with a half-read prepare reply is discarded");
+        let probe: i64 = sqlx::query_scalar("SELECT ? + 0")
+            .bind(41_i64)
+            .fetch_one(&mut *replacement)
+            .await
+            .unwrap();
+        assert_eq!(probe, 41);
+        drop(replacement);
+        pool.close().await;
+        proxy.abort();
+    })
+    .await
+    .expect("bounded real cancelled-prepare qualification");
+}
+
 /// Forward clients to `upstream`, recording each TCP read chunk received from
 /// a client. TCP is a byte stream: a chunk boundary shows bytes that arrived
 /// separately, not a write call.

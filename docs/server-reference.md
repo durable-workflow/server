@@ -721,6 +721,7 @@ drops the connection mid-statement still surfaces as
 - `DELETE /api/namespaces/{name}` — Delete namespace and clean up its runtime state
 - `PUT /api/namespaces/{name}/external-storage` — Configure external payload storage policy
 - `POST /api/namespaces/{name}/retention-plan` — Preview a proposed retention policy without applying it (native Server)
+- `POST /api/namespaces/{name}/retention-plan/apply` — Apply a planned retention policy only while the plan still holds (native Server)
 
 #### Retention plan
 
@@ -748,6 +749,10 @@ The answer has schema `durable-workflow.v2.retention-plan.v1`. It reports:
   and days, the days in effect and the namespace's `updated_at`. Any policy
   change produces a new revision. Other namespace updates move `updated_at`
   too, so they also produce a new revision.
+- `plan_revision`, a SHA-256 over `policy_revision` and the proposed mode and
+  days. It binds the plan to both the current policy and this exact proposal.
+- `retroactive`: `true` when the proposal makes closed runs eligible that the
+  current policy keeps (fewer days, or a bounded policy replacing `forever`).
 - `changes`: closed, unarchived runs that become eligible for pruning
   (`newly_eligible`), stop being eligible (`no_longer_eligible`), stay
   eligible (`unchanged_eligible`) or stay retained (`unchanged_retained`).
@@ -769,10 +774,48 @@ moment only. Runs can close, age past the cutoff, be archived or gain and lose
 holds, and the policy can change before the next retention pass. It is not a
 fixed list of what a later prune will delete.
 
-A guarded apply that confirms the retrospective scope and refuses a stale
-`policy_revision` is planned next (Server #522), followed by the CLI and
-Waterline journey. Until then, applying a policy is still the immediate
-namespace update.
+#### Guarded apply
+
+To apply a planned policy, send the same proposal with the plan's
+`policy_revision` and `plan_revision` to
+`POST /api/namespaces/{name}/retention-plan/apply`. A retroactive proposal
+also needs `"confirm_retroactive_pruning": true`, because pruning is
+irreversible. Like the plan, the apply needs an admin.
+
+```bash
+curl -X POST $SERVER/api/namespaces/my-app/retention-plan/apply \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+  -d '{"retention_days":7,"policy_revision":"sha256:…","plan_revision":"sha256:…","confirm_retroactive_pruning":true}'
+```
+
+The checks and the update run in one write transaction, which every namespace
+update also takes, so no policy change can land in between. The apply refuses
+and changes nothing when:
+
+| Status and reason | Cause |
+| --- | --- |
+| `409 retention_policy_revision_stale` | The namespace changed after the plan. The answer carries the current `policy_revision`. Request a new plan. |
+| `409 retention_plan_revision_mismatch` | The policy sent is not the policy that was planned. Plan this policy first. |
+| `422 retention_pruning_confirmation_required` | The proposal is retroactive and `confirm_retroactive_pruning` is not `true`. |
+| `422` validation errors, `422 invalid_namespace_definition` | A revision is missing, or the proposal breaks the namespace update's rules. |
+
+An accepted apply answers with schema `durable-workflow.v2.retention-apply.v1`:
+`applied_at`, `retroactive`, `confirmed_retroactive_pruning`, the
+`previous_policy` with its `previous_policy_revision`, and the applied
+`policy` with its new `policy_revision`. Because the revision changes, the
+same plan cannot be applied twice.
+
+The apply changes only the namespace's policy. It marks, archives and prunes
+no run. The policy is active from `applied_at`. Each later retention pass
+prunes the closed, unarchived runs past the cutoff as it stands at that pass.
+That can include runs that closed or aged after the plan, and it skips runs
+archived or held at that time. The plan's counts were a point-in-time scan,
+not the set that will be deleted.
+
+`PUT /api/namespaces/{name}` is unchanged. It still activates a policy at once
+with no plan or confirmation, so existing clients keep working.
 
 When a namespace enables external payload storage, remote clients upload and
 fetch encoded bytes through `/api/external-payloads/v1` using their normal
@@ -1376,6 +1419,15 @@ whose replay history does not contain that identity.
 Native additionally advertises `condition_wait_idempotent_reopen` when opening
 an already-unresolved occurrence preserves its existing wait and deadline.
 See [idempotent condition-wait opens](contracts/condition-wait-occurrences.md).
+Native advertises `activity_workflow_continuation` for activity completions
+that also complete the run's resumed workflow task with worker-computed
+commands. Its top-level fields describe version 1 and keep `version: 1` for
+released SDKs; `supported_versions` lists `[1, 2]` and the `v2` member names
+the version-2 endpoint, commands, required worker capabilities
+(`sticky_execution` and `sticky_history_suffix`) and the history tail budgets
+(`tail_max_events`, `tail_max_bytes`). Continuations are opt-in per request and
+default-off in the SDKs. See
+[activity workflow continuation v2](contracts/activity-workflow-continuation-v2.md).
 
 Long-poll wake-ups use short-lived cache-backed signal keys plus periodic
 reprobes. Multi-node deployments therefore need a shared cache backend for
@@ -2347,7 +2399,16 @@ how many request workers are busy.
   request share. With a positive value, every poll probe takes one of
   `pool size - reserved` probe permits (at least one) and returns it before
   waiting, so polls never occupy the reserved connections. Unset or zero,
-  probes are not gated.
+  probes take no permit.
+- Whatever the setting, held-poll probe reads are always limited to the pool
+  size minus one connection (at least one). A held workflow or activity poll
+  runs each probe's lock-free reads on one connection from that node-wide
+  budget and returns it before it claims or waits; held query-task and
+  update-validation polls take their fence and cross-kind wake reads from the
+  same budget. Held-poll probes therefore never occupy the pool's last
+  connection. A claim is a transition and takes its connection outside the
+  budget
+  ([#1204](https://github.com/durable-workflow/server/issues/1204)).
 - The per-namespace variants, `DW_WORKER_LONG_POLL_MAX_CONCURRENT_PER_NAMESPACE`
   and `DW_QUERY_TASK_POLL_MAX_CONCURRENT_PER_NAMESPACE`, are still ignored by
   native.
@@ -2730,7 +2791,7 @@ every operator-facing variable the server honors.
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Writable local coordination and wait-lock directory, also required with Redis or database polling caches. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. Native honors it as a node-wide cap with the same `429 long_poll_capacity_exhausted` refusal; unset, native waits are unbounded (see [Native long-poll capacity](#native-long-poll-capacity)). |
-| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its database connections that long-poll probes leave free. Unset, native reserves none. |
+| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. Native has no request-worker pool; it reads this as the number of its database connections that long-poll probes leave free. Unset, native reserves none for it; held-poll probe reads still always leave one connection free. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
 | `DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS` | `5` | Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure. |

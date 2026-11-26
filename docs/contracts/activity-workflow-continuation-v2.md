@@ -1,9 +1,12 @@
 # Activity workflow continuation v2
 
-This is the proposed native contract for
-[Server #1181](https://github.com/durable-workflow/server/issues/1181). It is a
-design for review before Server or SDK work starts. No released Server
-implements it yet. Source references are to `rust/src/runtime/` on `main`.
+This is the native contract for
+[Server #1181](https://github.com/durable-workflow/server/issues/1181).
+
+**Status:** implemented in the native Server (next release), which advertises
+the `v2` member described below. Continuations stay default-off in every SDK
+until the [Qualification](#qualification) benchmark passes. Source references
+are to `rust/src/runtime/` on `main`.
 
 Version 1 (`activity_workflow_continuation` v1,
 [#1078](https://github.com/durable-workflow/server/issues/1078)) stays served
@@ -603,6 +606,39 @@ Until the benchmark passes, continuations stay default-off in sdk-php. The
 documentation keeps saying that enabling them costs throughput. The sdk-php
 consumer lands in the same release window as the Server implementation.
 Retiring v1 is a separate decision after v2 qualifies.
+
+## Resolved during implementation
+
+- **A boundary past the run's history.** A workflow task completion whose
+  `sticky_cache.history_last_sequence` is greater than the run's last sequence
+  has no tail to continue it. It is refused with `422 invalid_continuation_tail`
+  before anything commits.
+- **Routing.** Every continuation whose `version` is the integer `2` takes the
+  v2 parser, so a version-2 request without `sticky_cache`, or otherwise
+  malformed, gets `422 invalid_continuation`. `unsupported_continuation_version`
+  is kept for versions the Server does not implement and for non-integer
+  versions, as v1 answers them.
+- **The leased activity's tail.** Before it speculates on the activity an
+  answer leased, an SDK checks that the tail ends in that activity's
+  `ActivityStarted` (its `activity_attempt_id`). If it does not, for example
+  because the carried poll replayed an earlier lease, the SDK completes that
+  activity the ordinary way.
+- **Retry cost.** An exact retry answers `tail_unavailable` when retention
+  pruned the tail range, and a retried workflow task completion always does.
+  The SDK then completes the leased activity the ordinary way and its next
+  workflow task is a cold replay, which is correct but costs one full history
+  read.
+- **Transition-state reuse (#1079).** The v2 path charges the nested meter
+  from the events it remembered writing, takes the resumed task's claim without
+  presenting its history, and reuses the claim's fenced lease owner for the
+  nested lease check. Run status, cancellation and the registration row are
+  still read again: a stored row cannot carry this transaction's own writes,
+  and the fenced registration row is consumed by the claim. Test builds compare
+  the remembered sequence with an independent count at commit.
+- **Statement counts.** The accept path's statements do not depend on history
+  length and include no history page read. The run summary projection that
+  every transition's commit refreshes still pages through the run's history;
+  that cost is shared with ordinary completions and is outside this contract.
 
 ## Open questions
 

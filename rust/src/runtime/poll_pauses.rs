@@ -1,4 +1,6 @@
-//! A debug-build test seam for workflow polls that carry a request ID. A test
+//! A debug-build test seam for workflow polls that carry a request ID, and
+//! for activity polls that carry a `poll_request_id` at [`PollPoint::Waiting`]
+//! (Server #1204). A test
 //! registers a stop for one request ID at one point; the next poll with that
 //! ID to reach the point reports its arrival and waits there until the test
 //! lets it go. Regressions use it to commit a duplicate's work inside a window

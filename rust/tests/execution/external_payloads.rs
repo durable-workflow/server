@@ -23,6 +23,8 @@ mod namespace_delete;
 mod carried_polls;
 #[path = "external_payloads/policy_changes.rs"]
 mod policy_changes;
+#[path = "external_payloads/continuations_v2.rs"]
+mod continuations_v2;
 use axum::{body::Bytes, http::HeaderMap};
 use durable_workflow_server::runtime::ExternalPayloadConfig;
 use sha2::{Digest, Sha256};

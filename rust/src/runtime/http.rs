@@ -42,6 +42,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         // Server #522: a read-only preview of a proposed retention policy.
         .route("/api/namespaces/{namespace}/retention-plan", post(retention_plan))
+        .route("/api/namespaces/{namespace}/retention-plan/apply", post(apply_retention_plan))
         .route(
             "/api/namespaces/{namespace}/external-storage",
             axum::routing::put(super::external_transport::set_policy),
@@ -602,7 +603,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path == "/api/storage/test"
         // Updating or deleting a namespace, or its external storage, needs an admin.
         || path.starts_with("/api/namespaces/") && matches!(*request.method(), Method::PUT | Method::DELETE)
-        // Planning a retention change needs the admin who could apply it.
+        // Planning or applying a retention change needs an admin.
         || retention_plan_route(&path)
         // PHP's system routes are admin-only.
         || path.starts_with("/api/system/")
@@ -1136,9 +1137,21 @@ async fn retention_plan(
     Ok(Json(runtime.retention_plan(&namespace, request).await?))
 }
 
+/// `POST /api/namespaces/{namespace}/retention-plan/apply` (Server #522):
+/// applies a planned policy only while the plan still holds.
+async fn apply_retention_plan(
+    Extension(runtime): Extension<Runtime>,
+    Path(namespace): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    let request = super::retention_plan::apply_request(&body)?;
+    Ok(Json(runtime.apply_retention_plan(&namespace, request).await?))
+}
+
+/// The retention plan and its guarded apply.
 fn retention_plan_route(path: &str) -> bool {
     path.strip_prefix("/api/namespaces/")
-        .and_then(|rest| rest.strip_suffix("/retention-plan"))
+        .and_then(|rest| rest.strip_suffix("/retention-plan").or_else(|| rest.strip_suffix("/retention-plan/apply")))
         .is_some_and(|namespace| !namespace.is_empty() && !namespace.contains('/'))
 }
 /// PHP answers 207 while a committed provider deletion is still pending.
@@ -3009,6 +3022,21 @@ async fn complete_activity_continuation(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>> {
     let protocol = request_protocol(&headers)?;
+    // Server #1181: version 2 has its own request member and transaction.
+    if super::continuation_v2::requested(&body) {
+        let continuation = super::continuation_v2::parse(body.get("continuation")).map_err(worker_refusal)?;
+        if !body["workflow_poll"].is_object() {
+            return Err(worker_refusal(super::refuse(StatusCode::UNPROCESSABLE_ENTITY, "continuation_requires_workflow_poll")));
+        }
+        let owner = super::text(&body, "lease_owner").map_err(worker_refusal)?.to_owned();
+        completion_checks(&task_id, &headers, json!({"lease_owner": owner, "workflow_task_attempt": 1,
+            "commands": continuation.commands, "sticky_cache": continuation.sticky_cache}))?;
+        let attempt = body["activity_attempt_id"].clone();
+        return runtime.complete_activity_continuation_v2(&task_id, body, continuation,
+            Some(request.principal().clone()), protocol).await
+            .map_err(|error| continuation_refusal(error, &task_id, attempt))
+            .map(|body| Json(worker_response(body)));
+    }
     let continuation = super::continuation::parse(body.get("continuation").cloned()).map_err(worker_refusal)?;
     if !body["workflow_poll"].is_object() {
         return Err(worker_refusal(super::refuse(StatusCode::UNPROCESSABLE_ENTITY, "continuation_requires_workflow_poll")));
@@ -3019,25 +3047,28 @@ async fn complete_activity_continuation(
     let attempt = body["activity_attempt_id"].clone();
     runtime.complete_activity_continuation(&task_id, body, continuation,
         Some(request.principal().clone()), protocol).await
-        .map_err(|error| {
-            let error = completion_refusal(error, &task_id, "activity_attempt_id", attempt.clone(), "Activity task not found.");
-            match error {
-                super::RuntimeError::Protocol { status, mut response } => {
-                    // A refused nested workflow task never committed. Report
-                    // the caller's original activity authority, not a rolled-
-                    // back task identity that the worker could mistake for a lease.
-                    if let Some(fields) = response.as_object_mut() {
-                        fields.insert("task_id".into(), json!(task_id));
-                        fields.insert("activity_attempt_id".into(), attempt);
-                        fields.insert("recorded".into(), json!(false));
-                        fields.remove("workflow_task_attempt");
-                    }
-                    super::RuntimeError::Protocol { status, response }
-                }
-                other => other,
-            }
-        })
+        .map_err(|error| continuation_refusal(error, &task_id, attempt))
         .map(|body| Json(worker_response(body)))
+}
+
+/// A continuation's refusal, in the activity completion's shape.
+fn continuation_refusal(error: super::RuntimeError, task_id: &str, attempt: Value) -> super::RuntimeError {
+    let error = completion_refusal(error, task_id, "activity_attempt_id", attempt.clone(), "Activity task not found.");
+    match error {
+        super::RuntimeError::Protocol { status, mut response } => {
+            // A refused nested workflow task never committed. Report
+            // the caller's original activity authority, not a rolled-
+            // back task identity that the worker could mistake for a lease.
+            if let Some(fields) = response.as_object_mut() {
+                fields.insert("task_id".into(), json!(task_id));
+                fields.insert("activity_attempt_id".into(), attempt);
+                fields.insert("recorded".into(), json!(false));
+                fields.remove("workflow_task_attempt");
+            }
+            super::RuntimeError::Protocol { status, response }
+        }
+        other => other,
+    }
 }
 
 fn completion_refusal(

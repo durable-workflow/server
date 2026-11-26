@@ -29,6 +29,8 @@ impl RunTags {
 pub(super) struct PollSavepoint {
     summaries: BTreeMap<String, Option<ChildSummaryChange>>,
     workflow_poll_replayed: Option<String>,
+    history_sequences: BTreeMap<String, i64>,
+    remembered_events: Option<Vec<(String, serde_json::Value)>>,
 }
 
 #[derive(Clone)]
@@ -59,6 +61,8 @@ pub(super) struct ContinuationSavepoint {
     scope_history: Option<super::cancellation_scopes::HistoryCache>,
     local_writes: super::local_activities::Writes,
     claim_only: Option<ClaimTarget>,
+    history_sequences: BTreeMap<String, i64>,
+    remembered_events: Option<Vec<(String, serde_json::Value)>>,
 }
 
 pub(super) struct Transaction<'a, DB: Backend> {
@@ -74,6 +78,19 @@ pub(super) struct Transaction<'a, DB: Backend> {
     pub(super) local_writes: super::local_activities::Writes,
     /// A scoped claim can acquire only its selected task.
     pub(super) claim_only: Option<ClaimTarget>,
+    /// Server #1181: the scoped claim is a v2 continuation's resumed task,
+    /// completed in this transaction, so its claim presents no history.
+    pub(super) claim_without_history: bool,
+    /// Server #1181: each run's last history sequence this transaction
+    /// allocated. Every history write goes through the allocator.
+    pub(super) history_sequences: BTreeMap<String, i64>,
+    /// Server #1181: while set, every event `Store::record` writes, as
+    /// stored, so a v2 continuation's nested meter charges them without
+    /// reading them back.
+    pub(super) remembered_events: Option<Vec<(String, serde_json::Value)>>,
+    /// Server #1181: a lease owner whose registration this transaction's
+    /// carried claim fenced, under the same transition lock.
+    pub(super) fresh_lease_owner: Option<String>,
     history_wakes: Option<Arc<super::history_waits::HistoryWakes>>,
     // An implicit failure drops the database transaction before this guard.
     _queue_guard: Option<OwnedMutexGuard<()>>,
@@ -98,6 +115,10 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
             scope_history: None,
             local_writes: Default::default(),
             claim_only: None,
+            claim_without_history: false,
+            history_sequences: BTreeMap::new(),
+            remembered_events: None,
+            fresh_lease_owner: None,
             history_wakes,
             _queue_guard: queue_guard,
             #[cfg(test)]
@@ -113,6 +134,11 @@ impl<'a, DB: Backend> Transaction<'a, DB> {
         if let Ok(tags) = RunTags::from_row::<DB>(row) {
             self.run_tags.insert(run_id.to_owned(),tags);
         }
+    }
+
+    /// The allocator's newest sequence for `run_id` in this transaction.
+    pub(super) fn remember_history_sequence(&mut self, run_id: &str, sequence: i64) {
+        self.history_sequences.insert(run_id.to_owned(), sequence);
     }
 
     pub(super) fn summary_changed(&mut self, run_id: &str) {
@@ -189,7 +215,8 @@ where
         Ok(ContinuationSavepoint { run_tags: self.run_tags.clone(), summaries: self.summaries.clone(),
             workflow_poll_replayed: self.workflow_poll_replayed.clone(), history_budget: self.history_budget,
             meter: self.meter.clone(), scope_history: self.scope_history.clone(),
-            local_writes: self.local_writes.clone(), claim_only: self.claim_only.clone() })
+            local_writes: self.local_writes.clone(), claim_only: self.claim_only.clone(),
+            history_sequences: self.history_sequences.clone(), remembered_events: self.remembered_events.clone() })
     }
 
     pub(super) async fn rollback_continuation(&mut self, saved: ContinuationSavepoint) -> Result<()> {
@@ -202,6 +229,8 @@ where
         self.scope_history = saved.scope_history;
         self.local_writes = saved.local_writes;
         self.claim_only = saved.claim_only;
+        self.history_sequences = saved.history_sequences;
+        self.remembered_events = saved.remembered_events;
         self.release_continuation().await
     }
 
@@ -218,13 +247,18 @@ where
         // MySQL does not support savepoint commands in its prepared-statement
         // protocol. Send these fixed transaction-control literals directly.
         (&mut **self).execute("SAVEPOINT dw_poll_claim").await?;
-        Ok(PollSavepoint { summaries: self.summaries.clone(), workflow_poll_replayed: self.workflow_poll_replayed.clone() })
+        // A rolled-back claim's history writes leave neither the remembered
+        // sequence nor the remembered events behind (Server #1181).
+        Ok(PollSavepoint { summaries: self.summaries.clone(), workflow_poll_replayed: self.workflow_poll_replayed.clone(),
+            history_sequences: self.history_sequences.clone(), remembered_events: self.remembered_events.clone() })
     }
 
     pub(super) async fn rollback_poll_claim(&mut self, saved: PollSavepoint) -> Result<()> {
         (&mut **self).execute("ROLLBACK TO SAVEPOINT dw_poll_claim").await?;
         self.summaries = saved.summaries;
         self.workflow_poll_replayed = saved.workflow_poll_replayed;
+        self.history_sequences = saved.history_sequences;
+        self.remembered_events = saved.remembered_events;
         self.scope_history = None;
         self.local_writes = Default::default();
         self.run_tags.clear();

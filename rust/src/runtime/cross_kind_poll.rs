@@ -30,6 +30,7 @@ where
 {
     pub(super) async fn poll_wake_snapshot(
         &self,
+        connection: &mut DB::Connection,
         body: &Value,
         kind: &str,
     ) -> Result<Option<PollWakeSnapshot>> {
@@ -37,7 +38,7 @@ where
         let queue = text(body, "task_queue")?;
         let worker = Self::query("SELECT w.capabilities,w.namespace,w.task_queue,w.worker_id,i.token FROM workflow_worker_registrations w JOIN dw_worker_registration_incarnations i ON i.namespace=w.namespace AND i.worker_id=w.worker_id AND i.status='active' WHERE w.namespace=$1 AND w.worker_id=$2 AND w.task_queue=$3 AND w.status='active'")
             .bind(self.namespace.as_ref()).bind(text(body,"worker_id")?).bind(text(body,"task_queue")?)
-            .fetch_optional(&self.pool).await?;
+            .fetch_optional(&mut *connection).await?;
         let Some(worker) = worker else {
             return Ok(None);
         };
@@ -59,7 +60,7 @@ where
         // A workflow poll's hints are the queue's activity tasks. While the
         // queue's activity dispatch is paused (Server #577) none can be
         // claimed, so none wakes the poll.
-        let rows = if kind == "workflow" && Self::activity_dispatch_paused(&self.pool, self.namespace.as_ref(), queue).await? {
+        let rows = if kind == "workflow" && Self::activity_dispatch_paused(&mut *connection, self.namespace.as_ref(), queue).await? {
             Vec::new()
         } else {
             Self::query(DB::POLL_WAKE_TASKS_SQL)
@@ -68,7 +69,7 @@ where
                 .bind(kind)
                 .bind(DB::bind_time(at))
                 .bind(DB::bind_time(at))
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *connection)
                 .await?
         };
         let mut ready = Vec::new();
@@ -86,7 +87,7 @@ where
             // readiness hint still grants no claim or execution authority.
             // Read by key from the namespace's open set (Server #964).
             ready.extend(
-                self.ready_query_keys(text(body, "task_queue")?)
+                self.ready_query_keys(&mut *connection, text(body, "task_queue")?)
                     .await?
                     .into_iter()
                     .map(|key| format!("query:{key}")),
@@ -100,6 +101,7 @@ where
 
     pub(super) async fn poll_queue_changed(
         &self,
+        connection: &mut DB::Connection,
         body: &Value,
         kind: &str,
         previous: &mut Option<PollWakeSnapshot>,
@@ -107,7 +109,7 @@ where
         let Some(before) = previous else {
             return Ok(false);
         };
-        let Some(current) = self.poll_wake_snapshot(body, kind).await? else {
+        let Some(current) = self.poll_wake_snapshot(connection, body, kind).await? else {
             *previous = None;
             return Ok(false);
         };

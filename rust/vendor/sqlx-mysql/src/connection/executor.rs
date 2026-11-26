@@ -33,12 +33,24 @@ impl MySqlConnection {
         // https://dev.mysql.com/doc/internals/en/com-stmt-prepare.html
         // https://dev.mysql.com/doc/internals/en/com-stmt-prepare-response.html#packet-COM_STMT_PREPARE_OK
 
+        // Until its reply is fully read, a cancelled prepare leaves packets
+        // the generic reply drain would misread (Durable Workflow Server #1204).
+        self.inner.stream.prepare_in_flight = true;
         self.inner
             .stream
             .send_packet(Prepare { query: sql })
             .await?;
 
-        let ok: PrepareOk = self.inner.stream.recv().await?;
+        let ok: PrepareOk = match self.inner.stream.recv().await {
+            Ok(ok) => ok,
+            Err(error) => {
+                // An error reply is the whole reply to the prepare.
+                if matches!(error, Error::Database(_)) {
+                    self.inner.stream.prepare_in_flight = false;
+                }
+                return Err(error);
+            }
+        };
 
         // the parameter definitions are very unreliable so we skip over them
         // as we have little use
@@ -63,6 +75,7 @@ impl MySqlConnection {
             Default::default()
         };
 
+        self.inner.stream.prepare_in_flight = false;
         let id = ok.statement_id;
         let metadata = MySqlStatementMetadata {
             parameters: ok.params as usize,
@@ -126,6 +139,9 @@ impl MySqlConnection {
                         .await?;
 
                     if arguments.types.len() != metadata.parameters {
+                        // No execute is sent, so no reply will arrive for
+                        // the result registered above.
+                        self.inner.stream.waiting.pop_back();
                         return Err(
                             err_protocol!(
                                 "prepared statement expected {} parameters but {} parameters were provided",
@@ -150,6 +166,9 @@ impl MySqlConnection {
                         .await?;
 
                     if arguments.types.len() != metadata.parameters {
+                        // No execute is sent, so no reply will arrive for
+                        // the result registered above.
+                        self.inner.stream.waiting.pop_back();
                         return Err(
                             err_protocol!(
                                 "prepared statement expected {} parameters but {} parameters were provided",
@@ -188,7 +207,7 @@ impl MySqlConnection {
                     // this indicates either a successful query with no rows at all or a failed query
                     let ok = packet.ok()?;
 
-                    self.inner.status_flags = ok.status;
+                    self.inner.stream.record_status(ok.status);
 
                     let rows_affected = ok.affected_rows;
                     logger.increase_rows_affected(rows_affected);
@@ -234,7 +253,7 @@ impl MySqlConnection {
                             (ok.affected_rows, ok.last_insert_id, ok.status)
                         };
 
-                        self.inner.status_flags = status;
+                        self.inner.stream.record_status(status);
                         r#yield!(Either::Left(MySqlQueryResult {
                             rows_affected,
                             last_insert_id,
