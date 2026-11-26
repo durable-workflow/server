@@ -690,6 +690,7 @@ impl Runtime {
     delegate!(set_external_policy(name: &str, body: Value) -> Result<Value>);
     delegate!(update_namespace(name: &str, body: Value) -> Result<Value>);
     delegate!(retention_plan(name: &str, request: super::retention_plan::PlanRequest) -> Result<Value>);
+    delegate!(apply_retention_plan(name: &str, request: super::retention_plan::ApplyRequest) -> Result<Value>);
     delegate!(delete_namespace(name: &str) -> Result<Value>);
     delegate!(
         upload_external_local(
