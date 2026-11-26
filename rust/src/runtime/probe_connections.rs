@@ -93,31 +93,49 @@ store_methods! {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{QueryTaskConfig, describe_snapshot_tests::reader_pool, store::Store};
+    use super::super::{QueryTaskConfig, store::Store};
     use serde_json::json;
     use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::Duration};
 
-    /// Between two arrivals at its wait point, a held activity poll's probe
-    /// borrows exactly one connection for its fence and readiness reads, and
-    /// one more, in turn, for the cross-kind queue-changed read when the
-    /// worker opted into it (Server #1204). The reader pool has a single
-    /// connection, so a read that borrowed a second connection while the
-    /// probe held the first would time out instead.
+    /// Between two arrivals at its wait point, a held activity or workflow
+    /// poll's probe borrows exactly one connection for its fence and
+    /// readiness reads, one more, in turn, for the cross-kind queue-changed
+    /// read when the worker opted into it, and for a workflow poll one more
+    /// for the abandoned-lease recovery reads (Server #1204). Every one is
+    /// borrowed while the probe holds the budget's slot. The reader pool has
+    /// a single connection, so a read that borrowed a second connection while
+    /// the probe held the first would time out instead.
     #[cfg(debug_assertions)]
     #[tokio::test]
-    async fn sqlite_held_activity_probe_borrows_one_connection_at_a_time() {
+    async fn sqlite_held_poll_probe_borrows_one_budgeted_connection_at_a_time() {
         use super::super::poll_pauses::{PollPoint, pause_workflow_poll};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("probe.sqlite");
         let writer = Store::<sqlx::Sqlite>::new(super::super::sqlite::open(path.to_str().unwrap()).await.unwrap());
         let checkouts = Arc::new(AtomicUsize::new(0));
-        let pool = reader_pool(sqlx::sqlite::SqlitePoolOptions::new(), checkouts.clone())
-            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path)
-                .busy_timeout(Duration::from_secs(5))).await.unwrap();
-        let store = Store::new(pool);
-        for (worker, capabilities, expected) in [
-            ("probe-worker", json!([]), 1),
-            ("probe-wake-worker", json!(["cross_kind_poll_wake"]), 2),
+        let unbudgeted = Arc::new(AtomicUsize::new(0));
+        let budget = super::slots(1);
+        let options = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).min_connections(1)
+            .acquire_timeout(Duration::from_secs(2))
+            .before_acquire({
+                let (checkouts, unbudgeted, budget) = (checkouts.clone(), unbudgeted.clone(), budget.clone());
+                move |_, _| {
+                    checkouts.fetch_add(1, Ordering::SeqCst);
+                    if budget.available_permits() > 0 {
+                        unbudgeted.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Box::pin(async { Ok(true) })
+                }
+            });
+        let pool = options.connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path)
+            .busy_timeout(Duration::from_secs(5))).await.unwrap();
+        let mut store = Store::new(pool);
+        store.probe_slots = budget;
+        for (kind, worker, capabilities, expected) in [
+            ("activity", "probe-worker", json!([]), 1),
+            ("activity", "probe-wake-worker", json!(["cross_kind_poll_wake"]), 2),
+            ("workflow", "probe-workflow-worker", json!([]), 2),
+            ("workflow", "probe-workflow-wake-worker", json!(["cross_kind_poll_wake"]), 3),
         ] {
             writer.register(json!({"worker_id":worker,"task_queue":worker,"runtime":"php",
                 "supported_workflow_types":["probe"],"supported_activity_types":["act"],"capabilities":capabilities}),
@@ -125,18 +143,20 @@ mod tests {
             let request = format!("probe-request-{}", ulid::Ulid::new());
             let first = pause_workflow_poll(&request, PollPoint::Waiting);
             let body = json!({"worker_id":worker,"task_queue":worker,"timeout_seconds":2,"poll_request_id":request});
-            let (answer, probe) = tokio::join!(store.poll(body, "activity", "1.20"), async {
+            let (answer, (probe, outside)) = tokio::join!(store.poll(body, kind, "1.20"), async {
                 first.reached.await.unwrap();
                 checkouts.store(0, Ordering::SeqCst);
+                unbudgeted.store(0, Ordering::SeqCst);
                 let second = pause_workflow_poll(&request, PollPoint::Waiting);
                 first.release.send(()).unwrap();
                 second.reached.await.unwrap();
-                let probe = checkouts.load(Ordering::SeqCst);
+                let counts = (checkouts.load(Ordering::SeqCst), unbudgeted.load(Ordering::SeqCst));
                 second.release.send(()).unwrap();
-                probe
+                counts
             });
             assert_eq!(answer.unwrap()["poll_status"], "empty", "{worker}");
             assert_eq!(probe, expected, "{worker}: connections a held probe borrows, one at a time");
+            assert_eq!(outside, 0, "{worker}: connections a held probe borrows outside the budget");
         }
         store.close().await;
         writer.close().await;

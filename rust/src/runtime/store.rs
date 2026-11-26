@@ -5701,12 +5701,18 @@ where
     /// superseded and the task repaired (`expired_workflow_task_lease`), ready
     /// for the next claim. Whether anything was recovered.
     async fn recover_abandoned_workflow_leases(&self, queue: &str) -> Result<bool> {
-        // One read outside the transition lock: the queue's lease owners
-        // with their registrations; an owner without one joins nulls.
+        // The reads outside the transition lock share one budgeted probe
+        // connection, back in the pool before the first recovery
+        // transaction, so a held workflow poll's recovery check never
+        // occupies the last pool slot (Server #1204). An error drops it,
+        // which still frees its slot only once the return finishes.
+        let mut reads = self.probe_connection().await?;
+        // One read: the queue's lease owners with their registrations; an
+        // owner without one joins nulls.
         let owners = Self::query("SELECT DISTINCT t.lease_owner,w.status,w.last_heartbeat_at FROM workflow_tasks t LEFT JOIN workflow_worker_registrations w ON w.namespace=t.namespace AND w.worker_id=t.lease_owner WHERE t.namespace=$1 AND t.queue=$2 AND t.task_type='workflow' AND t.status='leased' AND t.lease_owner IS NOT NULL")
             .bind(self.namespace.as_ref())
             .bind(queue)
-            .fetch_all(&self.pool)
+            .fetch_all(reads.get())
             .await?;
         let mut stale = Vec::new();
         for row in &owners {
@@ -5716,6 +5722,7 @@ where
             }
         }
         if stale.is_empty() {
+            reads.finish().await;
             return Ok(false);
         }
         let limit = self.workflow_task_recovery_scan_limit.max(1);
@@ -5727,7 +5734,7 @@ where
                 .bind(queue)
                 .bind(owner.as_str())
                 .bind(limit)
-                .fetch_all(&self.pool)
+                .fetch_all(reads.get())
                 .await?;
             for row in rows {
                 if let Some(expires) = DB::optional_instant(&row, "lease_expires_at")?.filter(|expires| *expires > at) {
@@ -5735,6 +5742,7 @@ where
                 }
             }
         }
+        reads.finish().await;
         candidates.sort();
         candidates.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         let mut recovered = false;
