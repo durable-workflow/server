@@ -445,6 +445,16 @@ async fn an_exact_retry_rereads_the_tail_and_replays_only_a_live_lease() {
     // An expired carried lease is not replayed, and nothing claims again.
     database.execute(sqlx::AssertSqlSafe(format!("UPDATE workflow_tasks SET lease_expires_at='2000-01-01 00:00:00.000000' WHERE id='{}'",
         original["task_id"].as_str().unwrap()))).await;
+    // The runtime's scheduler settles an expired activity lease within a
+    // tick or two, writing its own history and failure rows. Let it finish
+    // before the snapshot, so the comparison sees only what the retry wrote.
+    let leased: &'static str = Box::leak(format!("SELECT COUNT(*) FROM workflow_tasks WHERE id='{}' AND status='leased'",
+        original["task_id"].as_str().unwrap()).into_boxed_str());
+    let settled_by = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while task_retry::rows(&database, leased).await > 0 {
+        assert!(tokio::time::Instant::now() < settled_by, "the scheduler settles the expired carried lease");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     let before = table_counts(&database).await;
     let (status, expired) = continue_v2(&app, &seeded, body.clone()).await;
     assert_eq!(status, StatusCode::OK, "{expired}");
