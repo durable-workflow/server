@@ -810,8 +810,12 @@ An accepted apply answers with schema `durable-workflow.v2.retention-apply.v1`:
 `previous_policy` with its `previous_policy_revision`, and the applied
 `policy` with its new `policy_revision`. A plan that changes the retention
 mode or days cannot be applied twice, because applying it changes the
-revision. A plan that proposes the current policy changes nothing, and
-applying it again rewrites the same policy.
+revision. A plan that proposes the current mode and days leaves the policy
+unchanged but still moves `updated_at`, which can make other outstanding
+plans for the namespace stale. Applying it again is accepted only if the
+stored `updated_at` did not change (on PostgreSQL, MySQL and MariaDB, the
+same stored second), and then rewrites the same policy; otherwise it is
+refused as stale.
 
 The apply changes only the namespace's policy. It marks, archives and prunes
 no run. The policy is active from `applied_at`. Each later retention pass
