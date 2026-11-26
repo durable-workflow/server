@@ -559,7 +559,7 @@ $extended = static function () use ($http, $codec, $suffix): void {
         'workflow_task_attempt' => $first['workflow_task_attempt'], 'sequence' => 1]);
     check('scoped', 'a cancellation scope opens', $status === 200 && ($opened['opened'] ?? null) === true, [$status, $opened]);
     [$status, $body] = rawComplete($http, $first, [['type' => 'start_timer', 'delay_seconds' => 3600]]);
-    check('scoped', 'a timer starts inside it', $status === 200, [$status, $body]);
+    check('scoped', 'the turn then waits on a timer', $status === 200, [$status, $body]);
     $history = waitFor($http, $wid, $run, 'WorkflowTimeoutCleanupStarted');
     $engine = payload($history, 'WorkflowTimeoutCleanupStarted')['workflow_command_id'] ?? null;
     $until = time() + 15;
@@ -572,7 +572,15 @@ $extended = static function () use ($http, $codec, $suffix): void {
     check('scoped', 'the open scope is requested once under the engine request', count($requests) === 1
         && is_string($engine) && ($scoped['root_context']['root_request_id'] ?? $scoped['root_request_id'] ?? null) === $engine,
         [$engine, $requests]);
-    check('scoped', 'the scope request carries no top-level cause', $scoped !== [] && !array_key_exists('cause', $scoped), $scoped);
+    $scopeId = events($history, 'CancellationScopeOpened')[0]['payload']['scope_id'] ?? null;
+    $lineage = $scoped['lineage'] ?? [];
+    $hop = is_array($lineage) && $lineage !== [] ? $lineage[array_key_last($lineage)] : [];
+    check('scoped', 'the request is a scoped context whose own hop is the opened scope, without a cause',
+        ($scoped['schema'] ?? null) === 'durable-workflow.scoped-cancellation-context/v1'
+        && is_string($scopeId) && is_array($hop) && ($hop['scope_id'] ?? null) === $scopeId
+        && !array_key_exists('cause', $hop) && !array_key_exists('cause', $scoped), [$scopeId, $scoped]);
+    check('scoped', 'the timeout cause is kept only on the root context (its scope origin)',
+        ($scoped['root_context']['cause'] ?? null) === 'timeout', $scoped['root_context'] ?? null);
     closed($http, $wid);
 
     // Redrive inheritance: an opted-in run that fails at an activity step before
@@ -580,8 +588,8 @@ $extended = static function () use ($http, $codec, $suffix): void {
     // execution clock, and its run work deadline comes from its own run clock.
     // (A timed-out run is final: redrive refuses it, in native and embedded.)
     if (getenv('TC_WORKER_SDK') !== 'php') {
-        check('redrive', 'skipped: needs PHP workers (tc.redrive)', true);
-        check('child-descendant', 'skipped: needs PHP workers (tc.parent, tc.child)', true);
+        fwrite(STDOUT, "SKIP redrive and child-descendant: they need PHP workers (tc.redrive, tc.parent, tc.child)\n");
+        file_put_contents(EVIDENCE.'/skipped.txt', "redrive\nchild-descendant\n");
     }
     if (getenv('TC_WORKER_SDK') === 'php') {
         $wid = $id('redrive');
