@@ -226,12 +226,13 @@ fn raw(bytes: &[u8], from: usize) -> Option<(Option<(usize, usize)>, usize)> {
     Some((Some((open + 1, end)), (end + closing.len()).min(bytes.len())))
 }
 
-/// The index after the item that starts at `from`. An item introduced by a
-/// keyword (`mod`, `fn`, `impl`, `struct`, `const`, `let`, ...) ends at its
-/// `;`, or at its body's closing brace for a body-carrying item; generic
-/// and argument commas never end it. Anything else (a field, a match arm,
-/// an expression) ends at a top-level `,` or `;`, or at an enclosing
-/// closing bracket.
+/// The index after the item that starts at `from`, judged by its first word:
+/// a body item (`mod`, `fn`, `impl`, `struct`, ...) ends at its body's
+/// closing brace or its `;`; a statement (`const`, `static`, `use`, `type`,
+/// `let`) ends only at its `;`, so generic, where-clause and `if`/`else`
+/// braces never end it early. Anything else (a block, an `if`, a field, a
+/// match arm) ends at its first closed block, a top-level `,` or `;`, or an
+/// enclosing closing bracket.
 fn item_end(bytes: &[u8], from: usize) -> usize {
     let mut cursor = from;
     // Skip further attributes and whitespace to find the item's first word.
@@ -259,17 +260,22 @@ fn item_end(bytes: &[u8], from: usize) -> usize {
             break;
         }
     }
-    let words: Vec<&[u8]> = bytes[cursor..(cursor + 64).min(bytes.len())]
+    // The item's kind comes from its first word after visibility and
+    // qualifiers: `pub(crate) async fn` is a function, `const X` a
+    // statement, `{`, `if`, `match` or `A => ..` an expression.
+    let words: Vec<&[u8]> = bytes[cursor..(cursor + 96).min(bytes.len())]
         .split(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'_'))
         .filter(|word| !word.is_empty())
-        .take(4)
         .collect();
-    let keyword = |word: &[u8]| {
-        matches!(word, b"mod" | b"fn" | b"impl" | b"struct" | b"enum" | b"trait" | b"union" | b"macro_rules")
-    };
-    let statement = |word: &[u8]| matches!(word, b"const" | b"static" | b"use" | b"type" | b"let" | b"extern");
-    let body_item = words.iter().take_while(|word| !statement(word)).any(|word| keyword(word));
-    let semicolon_item = !body_item && words.iter().any(|word| statement(word));
+    let starts_with_word = bytes.get(cursor).is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_');
+    let mut words = words.into_iter().skip_while(|word| {
+        starts_with_word && matches!(*word, b"pub" | b"crate" | b"super" | b"self" | b"in" | b"async" | b"unsafe" | b"default")
+    });
+    let (first, second) = if starts_with_word { (words.next().unwrap_or_default(), words.next().unwrap_or_default()) } else { (&b""[..], &b""[..]) };
+    let body_item = matches!(first, b"mod" | b"fn" | b"impl" | b"struct" | b"enum" | b"trait" | b"union" | b"macro_rules")
+        || matches!(first, b"const" | b"extern") && second == b"fn";
+    let semicolon_item = !body_item
+        && (matches!(first, b"const" | b"static" | b"use" | b"type" | b"let") || first == b"extern" && second == b"crate");
     let mut depth = 0usize;
     let mut index = cursor;
     while index < bytes.len() {
@@ -282,7 +288,9 @@ fn item_end(bytes: &[u8], from: usize) -> usize {
             b'}' | b')' | b']' if depth == 0 => return index,
             b'}' => {
                 depth -= 1;
-                if depth == 0 && body_item {
+                // A body item ends with its body; an expression (a block, an
+                // `if`, a match arm's block) with its first closed block.
+                if depth == 0 && !semicolon_item {
                     return index + 1;
                 }
             }
@@ -434,12 +442,30 @@ fn the_scanner_skips_test_items_and_classifies_literals() {
         const K: char = '\'';
         const L: &str = "TRUNCATE workflow_history_events";
         const M: &str = "SELECT id FROM workflow_runs WHERE id IN (SELECT workflow_run_id FROM workflow_history_events) FOR UPDATE";
+        fn production(gate: bool, kind: u8) -> &'static str {
+            #[cfg(test)]
+            {
+                let _ = "DELETE FROM workflow_history_events WHERE fixture";
+            }
+            let n = "DELETE FROM workflow_history_events WHERE after_block";
+            #[cfg(test)]
+            if let Some(x) = Some(1) { let _ = x; }
+            let o = "UPDATE workflow_history_events SET after_if=1";
+            match kind {
+                #[cfg(test)]
+                0 => { let _ = "TRUNCATE workflow_history_events"; }
+                _ => { let p = "DELETE FROM workflow_history_events WHERE after_arm"; }
+            }
+            #[cfg(test)]
+            pub(crate) async fn helper() { let _ = "DELETE FROM workflow_history_events WHERE helper"; }
+            "INSERT INTO workflow_history_events(id) VALUES ('after_helper')"
+        }
     "##;
     let kept = non_test(source);
-    for present in ["const A", "const C", "const F", "const L"] {
+    for present in ["const A", "const C", "const F", "const L", "after_block", "after_if", "after_arm", "after_helper"] {
         assert!(kept.contains(present), "{present}: {kept}");
     }
-    for absent in ["fixture", "raw()", "generic", "const B", "let c"] {
+    for absent in ["fixture", "raw()", "generic", "const B", "let c", "WHERE helper", "TRUNCATE workflow_history_events\"; }"] {
         assert!(!kept.contains(absent), "{absent}: {kept}");
     }
     let classified: Vec<(String, bool)> = literals(&kept)
@@ -453,9 +479,11 @@ fn the_scanner_skips_test_items_and_classifies_literals() {
         .collect();
     let writes_found = classified.iter().filter(|(_, write)| *write).count();
     let names_found: Vec<&str> = classified.iter().filter(|(_, write)| !*write).map(|(literal, _)| literal.as_str()).collect();
-    // A, E, G, H, I, J and L are writes. C's fragment and D's bare name are
-    // names that must be listed. F, and M with its row lock, are reads.
-    assert_eq!(writes_found, 7, "{classified:#?}");
+    // A, E, G, H, I, J and L are writes, and so are the four production
+    // literals after the stripped block, `if`, arm and helper. C's
+    // fragment and D's bare name are names that must be listed. F, and M
+    // with its row lock, are reads.
+    assert_eq!(writes_found, 11, "{classified:#?}");
     assert_eq!(names_found, ["workflow_history_events WHERE sequence>1", "workflow_history_events"], "{classified:#?}");
 }
 
