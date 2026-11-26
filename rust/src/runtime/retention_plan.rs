@@ -12,8 +12,16 @@
 //! It is a point-in-time scan, not an immutable deletion set. Between the
 //! plan and any prune, runs close and age past the cutoff, are archived, gain
 //! or lose holds, and the policy itself can change. `policy_revision` binds
-//! the plan to the exact current policy so a later guarded apply can refuse a
-//! stale plan.
+//! the plan to the exact current policy, and `plan_revision` to that policy
+//! and the exact proposal.
+//!
+//! `POST /api/namespaces/{namespace}/retention-plan/apply` is the guarded
+//! apply. It takes the proposal with both revisions, and in one write
+//! transaction refuses a stale policy revision, a proposal that differs from
+//! the planned one, and a retroactive proposal (one that makes closed runs
+//! eligible that the current policy keeps) without
+//! `confirm_retroactive_pruning`. `PUT /api/namespaces/{namespace}` keeps its
+//! immediate activation contract unchanged.
 //!
 //! Every count is bounded. A count that reaches its bound is reported with
 //! `count: null`, its `lower_bound` and `complete: false`, never as exact.
@@ -32,8 +40,11 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 pub(super) const SCHEMA: &str = "durable-workflow.v2.retention-plan.v1";
+pub(super) const APPLY_SCHEMA: &str = "durable-workflow.v2.retention-apply.v1";
 /// The first line of the material `policy_revision` digests.
 const REVISION_SCHEMA: &str = "durable-workflow.v2.retention-policy-revision.v1";
+/// The first line of the material `plan_revision` digests.
+const PLAN_REVISION_SCHEMA: &str = "durable-workflow.v2.retention-plan-revision.v1";
 const DEFAULT_SCAN_LIMIT: i64 = 1000;
 const MAX_SCAN_LIMIT: i64 = 10_000;
 const DEFAULT_HOLD_SCAN_LIMIT: i64 = 100;
@@ -41,6 +52,7 @@ const MAX_HOLD_SCAN_LIMIT: i64 = 1000;
 /// The most example runs one category lists.
 pub(super) const EXAMPLE_LIMIT: usize = 5;
 const SCOPE: &str = "A point-in-time scan of one read snapshot, not an immutable deletion set. Runs can close, age past the cutoff, be archived or gain and lose holds, and the policy can change, before any prune. Holds are checked again when a run is pruned.";
+const APPLY_SCOPE: &str = "The policy is active from applied_at. Each later retention pass prunes the closed, unarchived runs past the cutoff as it stands at that pass, which can include runs that closed or aged after the plan, and skips runs archived or held at that time. The plan's counts were a point-in-time scan, not the set that will be deleted.";
 
 /// Closed runs ordinary retention can prune: the `RETENTION_CANDIDATES`
 /// predicate without its cutoff.
@@ -169,6 +181,28 @@ pub(super) fn policy_revision(
     format!("sha256:{digest}")
 }
 
+/// `plan_revision`: a SHA-256 over the current policy's `policy_revision`
+/// and the proposed mode and days, as stored once applied. A guarded apply
+/// recomputes it from the policy it is asked to apply, so the policy applied
+/// is exactly the one planned, over exactly the policy planned against.
+pub(super) fn plan_revision(policy_revision: &str, mode: &str, days: Option<i64>) -> String {
+    let material = [
+        PLAN_REVISION_SCHEMA.to_owned(),
+        policy_revision.to_owned(),
+        mode.to_owned(),
+        days.map_or_else(|| "null".into(), |days| days.to_string()),
+    ]
+    .join("\n");
+    let digest: String = Sha256::digest(material.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("sha256:{digest}")
+}
+
+/// Whether the proposal makes closed runs eligible that the current policy
+/// keeps: a bounded policy replacing `forever`, or fewer days.
+fn retroactive(current: &Policy, proposed: &Policy) -> bool {
+    changes(current.cutoff, proposed.cutoff)[0] != Window::Empty
+}
+
 fn no_messages(_: &str, _: Rule) -> Option<&'static str> {
     None
 }
@@ -199,6 +233,46 @@ pub(super) fn plan_request(body: &Value) -> Result<PlanRequest> {
         scan_limit: limit("scan_limit", DEFAULT_SCAN_LIMIT),
         hold_scan_limit: limit("hold_scan_limit", DEFAULT_HOLD_SCAN_LIMIT),
     })
+}
+
+/// The guarded apply's request: the proposed policy, validated as the plan
+/// validates it, the two revisions the plan returned, and the confirmation a
+/// retroactive proposal needs.
+pub(crate) struct ApplyRequest {
+    retention_mode: Option<String>,
+    retention_days: Option<Option<i64>>,
+    policy_revision: String,
+    plan_revision: String,
+    confirm_retroactive_pruning: bool,
+}
+
+pub(super) fn apply_request(body: &Value) -> Result<ApplyRequest> {
+    let (mode, days) = requested_retention(body)?;
+    let normalized = super::start_request::normalized(body.clone());
+    let rules: &[(&str, &[Rule])] = &[
+        ("policy_revision", &[Rule::Required, Rule::String, Rule::Max(100)]),
+        ("plan_revision", &[Rule::Required, Rule::String, Rule::Max(100)]),
+        ("confirm_retroactive_pruning", &[Rule::Nullable, Rule::Boolean]),
+    ];
+    if let Some(error) = failure_messages(rule_errors(&normalized, rules, no_messages)) {
+        return Err(error);
+    }
+    let text = |field: &str| normalized[field].as_str().unwrap_or_default().to_owned();
+    let confirmed = &normalized["confirm_retroactive_pruning"];
+    Ok(ApplyRequest {
+        retention_mode: mode.map(str::to_owned),
+        retention_days: days,
+        policy_revision: text("policy_revision"),
+        plan_revision: text("plan_revision"),
+        confirm_retroactive_pruning: *confirmed == json!(true) || *confirmed == json!(1) || *confirmed == json!("1"),
+    })
+}
+
+fn apply_refusal(status: StatusCode, reason: &str, name: &str, mut extra: Value, message: &str) -> RuntimeError {
+    extra["reason"] = json!(reason);
+    extra["namespace"] = json!(name);
+    extra["message"] = json!(message);
+    RuntimeError::Protocol { status, response: extra }
 }
 
 /// The policy fields of a plan, without the namespace.
@@ -244,6 +318,78 @@ store_methods! {
         result
     }
 
+    /// `POST /api/namespaces/{namespace}/retention-plan/apply`: applies the
+    /// planned policy in one write transaction, which every namespace update
+    /// also takes, so no policy change can land between the checks and the
+    /// update.
+    pub(super) async fn apply_retention_plan(&self, name: &str, request: ApplyRequest) -> Result<Value> {
+        let name = name.to_ascii_lowercase();
+        let mut tx = self.begin().await?;
+        let row = Self::query("SELECT retention_mode,retention_days,updated_at FROM workflow_namespaces WHERE name=$1")
+            .bind(&name)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| RuntimeError::Protocol {
+                status: StatusCode::NOT_FOUND,
+                response: json!({"reason":"namespace_not_found","namespace":name,"message":format!("Namespace [{name}] not found.")}),
+            })?;
+        let stored_mode = DB::string(&row, "retention_mode")?;
+        let stored_days = DB::optional_number(&row, "retention_days")?;
+        let updated_at = DB::optional_instant(&row, "updated_at")?;
+        let (mode, days) = resolved_retention(
+            (request.retention_mode.as_deref(), request.retention_days),
+            stored_mode.clone(),
+            stored_days,
+        )?;
+        let at = now();
+        let current = Policy::new(Some(&stored_mode), stored_days, at);
+        let proposed = Policy::new(Some(&mode), days, at);
+        let revision = policy_revision(&name, Some(&stored_mode), stored_days, current.days, updated_at);
+        if revision != request.policy_revision {
+            return Err(apply_refusal(StatusCode::CONFLICT, "retention_policy_revision_stale", &name,
+                json!({"policy_revision": revision}),
+                "The namespace changed after the plan. Request a new plan and apply its revisions."));
+        }
+        if plan_revision(&revision, &mode, days) != request.plan_revision {
+            return Err(apply_refusal(StatusCode::CONFLICT, "retention_plan_revision_mismatch", &name, json!({}),
+                "The policy to apply is not the policy that was planned. Request a plan for this policy."));
+        }
+        let retroactive = retroactive(&current, &proposed);
+        if retroactive && !request.confirm_retroactive_pruning {
+            return Err(apply_refusal(StatusCode::UNPROCESSABLE_ENTITY, "retention_pruning_confirmation_required", &name,
+                json!({"retroactive": true}),
+                "This policy makes closed runs eligible for pruning that the current policy keeps, and pruning is irreversible. Set confirm_retroactive_pruning to true to apply it."));
+        }
+        Self::query("UPDATE workflow_namespaces SET retention_mode=$1,retention_days=NULLIF($2,0),updated_at=$3 WHERE name=$4")
+            .bind(&mode).bind(days.unwrap_or_default()).bind(DB::bind_time(at)).bind(&name)
+            .execute(&mut *tx).await?;
+        let applied = Self::query("SELECT retention_mode,retention_days,updated_at FROM workflow_namespaces WHERE name=$1")
+            .bind(&name)
+            .fetch_one(&mut *tx)
+            .await?;
+        let applied_mode = DB::string(&applied, "retention_mode")?;
+        let applied_days = DB::optional_number(&applied, "retention_days")?;
+        let applied_at = DB::optional_instant(&applied, "updated_at")?;
+        let new_revision = policy_revision(&name, Some(&applied_mode), applied_days, proposed.days, applied_at);
+        tx.commit().await?;
+        let mut previous_policy = policy_fields(&current);
+        previous_policy.insert("updated_at".into(), time(updated_at));
+        let mut policy = policy_fields(&proposed);
+        policy.insert("updated_at".into(), time(applied_at));
+        Ok(json!({
+            "schema": APPLY_SCHEMA,
+            "namespace": name,
+            "applied_at": time(applied_at),
+            "retroactive": retroactive,
+            "confirmed_retroactive_pruning": retroactive && request.confirm_retroactive_pruning,
+            "previous_policy_revision": revision,
+            "previous_policy": previous_policy,
+            "policy_revision": new_revision,
+            "policy": policy,
+            "scope": APPLY_SCOPE,
+        }))
+    }
+
     async fn plan_in_snapshot(&self, tx: &mut Transaction<'_, DB>, name: &str, request: &PlanRequest) -> Result<Value> {
         let row = Self::query("SELECT retention_mode,retention_days,updated_at FROM workflow_namespaces WHERE name=$1")
             .bind(name)
@@ -265,6 +411,7 @@ store_methods! {
         let current = Policy::new(Some(&stored_mode), stored_days, at);
         let proposed = Policy::new(Some(&mode), days, at);
         let revision = policy_revision(name, Some(&stored_mode), stored_days, current.days, updated_at);
+        let planned = plan_revision(&revision, &mode, days);
         let (limit, hold_limit) = (request.scan_limit, request.hold_scan_limit);
         let mut incomplete = Vec::new();
 
@@ -340,6 +487,8 @@ store_methods! {
             "read_only": true,
             "scope": SCOPE,
             "policy_revision": revision,
+            "plan_revision": planned,
+            "retroactive": retroactive(&current, &proposed),
             "current_policy": current_policy,
             "proposed_policy": policy_fields(&proposed),
             "scan_limit": limit,
@@ -479,6 +628,29 @@ mod tests {
             assert_eq!(placeholders(sql.between), [1, 2, 3, 4]);
         }
         assert_eq!(placeholders(NOT_TERMINAL_COUNT), [1, 2]);
+    }
+
+    #[test]
+    fn the_plan_revision_binds_the_current_revision_and_the_proposal() {
+        let base = plan_revision("sha256:a", "bounded", Some(7));
+        assert!(base.starts_with("sha256:") && base.len() == 71, "{base}");
+        assert_eq!(base, plan_revision("sha256:a", "bounded", Some(7)));
+        for other in [plan_revision("sha256:b", "bounded", Some(7)), plan_revision("sha256:a", "bounded", Some(8)),
+            plan_revision("sha256:a", "forever", None)] {
+            assert_ne!(base, other);
+        }
+    }
+
+    #[test]
+    fn only_a_policy_that_prunes_more_is_retroactive() {
+        let now = at("2026-11-25T10:00:00Z");
+        let policy = |mode: &str, days: Option<i64>| Policy::new(Some(mode), days, now);
+        assert!(retroactive(&policy("bounded", Some(30)), &policy("bounded", Some(7))));
+        assert!(retroactive(&policy("forever", None), &policy("bounded", Some(365))));
+        assert!(!retroactive(&policy("bounded", Some(7)), &policy("bounded", Some(30))));
+        assert!(!retroactive(&policy("bounded", Some(30)), &policy("bounded", Some(30))));
+        assert!(!retroactive(&policy("bounded", Some(30)), &policy("forever", None)));
+        assert!(!retroactive(&policy("forever", None), &policy("forever", None)));
     }
 
     #[test]

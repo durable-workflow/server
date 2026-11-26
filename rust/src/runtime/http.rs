@@ -42,6 +42,7 @@ pub fn router(runtime: Runtime) -> Router {
         )
         // Server #522: a read-only preview of a proposed retention policy.
         .route("/api/namespaces/{namespace}/retention-plan", post(retention_plan))
+        .route("/api/namespaces/{namespace}/retention-plan/apply", post(apply_retention_plan))
         .route(
             "/api/namespaces/{namespace}/external-storage",
             axum::routing::put(super::external_transport::set_policy),
@@ -602,7 +603,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
         || path == "/api/storage/test"
         // Updating or deleting a namespace, or its external storage, needs an admin.
         || path.starts_with("/api/namespaces/") && matches!(*request.method(), Method::PUT | Method::DELETE)
-        // Planning a retention change needs the admin who could apply it.
+        // Planning or applying a retention change needs an admin.
         || retention_plan_route(&path)
         // PHP's system routes are admin-only.
         || path.starts_with("/api/system/")
@@ -1136,9 +1137,21 @@ async fn retention_plan(
     Ok(Json(runtime.retention_plan(&namespace, request).await?))
 }
 
+/// `POST /api/namespaces/{namespace}/retention-plan/apply` (Server #522):
+/// applies a planned policy only while the plan still holds.
+async fn apply_retention_plan(
+    Extension(runtime): Extension<Runtime>,
+    Path(namespace): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>> {
+    let request = super::retention_plan::apply_request(&body)?;
+    Ok(Json(runtime.apply_retention_plan(&namespace, request).await?))
+}
+
+/// The retention plan and its guarded apply.
 fn retention_plan_route(path: &str) -> bool {
     path.strip_prefix("/api/namespaces/")
-        .and_then(|rest| rest.strip_suffix("/retention-plan"))
+        .and_then(|rest| rest.strip_suffix("/retention-plan").or_else(|| rest.strip_suffix("/retention-plan/apply")))
         .is_some_and(|namespace| !namespace.is_empty() && !namespace.contains('/'))
 }
 /// PHP answers 207 while a committed provider deletion is still pending.

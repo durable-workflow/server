@@ -721,6 +721,7 @@ drops the connection mid-statement still surfaces as
 - `DELETE /api/namespaces/{name}` — Delete namespace and clean up its runtime state
 - `PUT /api/namespaces/{name}/external-storage` — Configure external payload storage policy
 - `POST /api/namespaces/{name}/retention-plan` — Preview a proposed retention policy without applying it (native Server)
+- `POST /api/namespaces/{name}/retention-plan/apply` — Apply a planned retention policy only while the plan still holds (native Server)
 
 #### Retention plan
 
@@ -748,6 +749,10 @@ The answer has schema `durable-workflow.v2.retention-plan.v1`. It reports:
   and days, the days in effect and the namespace's `updated_at`. Any policy
   change produces a new revision. Other namespace updates move `updated_at`
   too, so they also produce a new revision.
+- `plan_revision`, a SHA-256 over `policy_revision` and the proposed mode and
+  days. It binds the plan to both the current policy and this exact proposal.
+- `retroactive`: `true` when the proposal makes closed runs eligible that the
+  current policy keeps (fewer days, or a bounded policy replacing `forever`).
 - `changes`: closed, unarchived runs that become eligible for pruning
   (`newly_eligible`), stop being eligible (`no_longer_eligible`), stay
   eligible (`unchanged_eligible`) or stay retained (`unchanged_retained`).
@@ -769,10 +774,48 @@ moment only. Runs can close, age past the cutoff, be archived or gain and lose
 holds, and the policy can change before the next retention pass. It is not a
 fixed list of what a later prune will delete.
 
-A guarded apply that confirms the retrospective scope and refuses a stale
-`policy_revision` is planned next (Server #522), followed by the CLI and
-Waterline journey. Until then, applying a policy is still the immediate
-namespace update.
+#### Guarded apply
+
+To apply a planned policy, send the same proposal with the plan's
+`policy_revision` and `plan_revision` to
+`POST /api/namespaces/{name}/retention-plan/apply`. A retroactive proposal
+also needs `"confirm_retroactive_pruning": true`, because pruning is
+irreversible. Like the plan, the apply needs an admin.
+
+```bash
+curl -X POST $SERVER/api/namespaces/my-app/retention-plan/apply \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+  -d '{"retention_days":7,"policy_revision":"sha256:…","plan_revision":"sha256:…","confirm_retroactive_pruning":true}'
+```
+
+The checks and the update run in one write transaction, which every namespace
+update also takes, so no policy change can land in between. The apply refuses
+and changes nothing when:
+
+| Status and reason | Cause |
+| --- | --- |
+| `409 retention_policy_revision_stale` | The namespace changed after the plan. The answer carries the current `policy_revision`. Request a new plan. |
+| `409 retention_plan_revision_mismatch` | The policy sent is not the policy that was planned. Plan this policy first. |
+| `422 retention_pruning_confirmation_required` | The proposal is retroactive and `confirm_retroactive_pruning` is not `true`. |
+| `422` validation errors, `422 invalid_namespace_definition` | A revision is missing, or the proposal breaks the namespace update's rules. |
+
+An accepted apply answers with schema `durable-workflow.v2.retention-apply.v1`:
+`applied_at`, `retroactive`, `confirmed_retroactive_pruning`, the
+`previous_policy` with its `previous_policy_revision`, and the applied
+`policy` with its new `policy_revision`. Because the revision changes, the
+same plan cannot be applied twice.
+
+The apply changes only the namespace's policy. It marks, archives and prunes
+no run. The policy is active from `applied_at`. Each later retention pass
+prunes the closed, unarchived runs past the cutoff as it stands at that pass.
+That can include runs that closed or aged after the plan, and it skips runs
+archived or held at that time. The plan's counts were a point-in-time scan,
+not the set that will be deleted.
+
+`PUT /api/namespaces/{name}` is unchanged. It still activates a policy at once
+with no plan or confirmation, so existing clients keep working.
 
 When a namespace enables external payload storage, remote clients upload and
 fetch encoded bytes through `/api/external-payloads/v1` using their normal
