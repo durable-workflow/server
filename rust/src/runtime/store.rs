@@ -2704,17 +2704,27 @@ where
                 _ => {
                     // The probe's lock-free reads share one connection, back
                     // in the pool before the probe claims (Server #1204).
+                    // A later probe that cannot get a read slot by the
+                    // poll's deadline answers as at its deadline (#1355).
                     let mut reads = None;
                     let current = match &fence {
                         Some(fence) => {
-                            let reads = reads.insert(self.probe_connection().await?);
+                            let Some(connection) = self.probe_reads(first_probe, deadline).await? else {
+                                return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await
+                                    .map(|answer| activity_server_time(kind, answer));
+                            };
+                            let reads = reads.insert(connection);
                             self.worker_poll_fence_holds(reads.get(), fence, worker_id).await?
                         }
                         None => true,
                     };
                     let ready = if current && !first_probe {
                         if reads.is_none() {
-                            reads = Some(self.probe_connection().await?);
+                            let Some(connection) = self.probe_connection_by(deadline).await? else {
+                                return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await
+                                    .map(|answer| activity_server_time(kind, answer));
+                            };
+                            reads = Some(connection);
                         }
                         let reads = reads.as_mut().expect("the probe connection");
                         self.task_poll_ready(reads.get(), &body, kind, poll_request.as_ref()).await?
@@ -2766,7 +2776,10 @@ where
                     .map(|answer| activity_server_time(kind, answer));
             }
             let changed = if cross_kind.is_some() {
-                let mut reads = self.probe_connection().await?;
+                let Some(mut reads) = self.probe_connection_by(deadline).await? else {
+                    return self.no_task_answer(&body, poll_request.as_ref(), "empty", encoding).await
+                        .map(|answer| activity_server_time(kind, answer));
+                };
                 let changed = self.poll_queue_changed(reads.get(), &body, kind, &mut cross_kind).await;
                 reads.finish().await;
                 changed?

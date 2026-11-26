@@ -1049,17 +1049,30 @@ where
         loop {
             let probe = self.poll_capacity.probe().await;
             let wake = self.wake.notified();
+            // A later probe that cannot get a read slot by the poll's
+            // deadline answers as at its deadline (Server #1355).
+            let first_probe = std::mem::take(&mut first);
             // `performPoll`: a registration replaced or silenced during the
             // wait ends the poll empty, leasing nothing.
             if let Some(fence) = fence {
-                let mut reads = self.probe_connection().await?;
+                let Some(mut reads) = self.probe_reads(first_probe, deadline).await? else {
+                    return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" }));
+                };
                 let holds = self.worker_poll_fence_holds(reads.get(), fence, text(body, "worker_id")?).await;
                 reads.finish().await;
                 if !holds? {
                     return Ok(poll_result(None, "empty"));
                 }
             }
-            if std::mem::take(&mut first) || self.query_poll_ready(body, config, proof, keys).await? {
+            let ready = if first_probe {
+                true
+            } else {
+                match self.query_poll_ready(body, config, proof, keys, deadline).await? {
+                    Some(ready) => ready,
+                    None => return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" })),
+                }
+            };
+            if ready {
                 match self.claim_query(body, config, proof, fence, keys).await? {
                     QueryClaim::Task(task) => return Ok(poll_result(Some(task), "leased")),
                     QueryClaim::StaleWorker => return Ok(poll_result(None, "empty")),
@@ -1077,7 +1090,9 @@ where
                 return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" }));
             }
             let changed = if cross_kind.is_some() {
-                let mut reads = self.probe_connection().await?;
+                let Some(mut reads) = self.probe_connection_by(deadline).await? else {
+                    return Ok(poll_result(None, if held { "workflow_task_leased" } else { "empty" }));
+                };
                 let changed = self.poll_queue_changed(reads.get(), body, "query", &mut cross_kind).await;
                 reads.finish().await;
                 changed?
@@ -1159,15 +1174,19 @@ where
         config: &QueryTaskConfig,
         proof: &str,
         keys: Option<&poll_requests::PollKeys>,
-    ) -> Result<bool> {
+        answer_by: tokio::time::Instant,
+    ) -> Result<Option<bool>> {
         #[cfg(debug_assertions)]
         super::poll_pauses::stop_at(text(body, "worker_id")?, super::poll_pauses::PollPoint::QueryReadiness).await;
         // The readiness reads share one budgeted probe connection, returned
-        // before the poll claims or waits (Server #1355).
-        let mut reads = self.probe_connection().await?;
+        // before the poll claims or waits; none is free by the poll's
+        // deadline is `None` (Server #1355).
+        let Some(mut reads) = self.probe_connection_by(answer_by).await? else {
+            return Ok(None);
+        };
         let ready = self.query_poll_ready_on(reads.get(), body, config, proof, keys).await;
         reads.finish().await;
-        ready
+        ready.map(Some)
     }
 
     async fn query_poll_ready_on(

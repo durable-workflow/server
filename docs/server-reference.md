@@ -2444,7 +2444,10 @@ how many request workers are busy.
   budget connection. A held poll's claim stops waiting for its turn two
   seconds after the poll's own deadline, so no lease is committed for an
   answer nobody reads, but never before the five-second acquisition
-  deadline. Other work stays outside the budget and competes for
+  deadline. After its first probe, a held poll waits for a read slot only
+  until its own deadline; if none is free by then it answers as at its
+  deadline (`empty`) instead of waiting for other polls' reads past it.
+  Other work stays outside the budget and competes for
   the last connection: ordinary requests, query-task claims and the shared
   answers of duplicate query polls, recording an empty or stale poll answer,
   workflow lease recovery transactions, and polls carried by a task

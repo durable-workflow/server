@@ -87,17 +87,51 @@ store_methods! {
         self.budgeted_connection(&self.probe_slots).await
     }
 
+    /// A held poll's later probe reads: as [`probe_connection`](Self::probe_connection),
+    /// but `None` once the poll's own deadline (`answer_by`) passes before a
+    /// read slot is free. The poll then answers as at its deadline instead of
+    /// waiting on other polls' reads past it (Server #1355). The first probe,
+    /// admission and every claim keep the pool's acquisition deadline.
+    pub(super) async fn probe_connection_by(&self, answer_by: tokio::time::Instant) -> Result<Option<ProbeConnection<DB>>> {
+        self.budgeted_connection_by(&self.probe_slots, Some(answer_by)).await
+    }
+
+    /// The first probe's reads with the acquisition deadline, later ones with
+    /// the poll's own ([`probe_connection_by`](Self::probe_connection_by)).
+    pub(super) async fn probe_reads(&self, first_probe: bool, answer_by: tokio::time::Instant) -> Result<Option<ProbeConnection<DB>>> {
+        if first_probe {
+            self.probe_connection().await.map(Some)
+        } else {
+            self.probe_connection_by(answer_by).await
+        }
+    }
+
     /// A slot of `budget` and then a pool connection, within one deadline.
     pub(super) async fn budgeted_connection(&self, budget: &Arc<tokio::sync::Semaphore>) -> Result<ProbeConnection<DB>> {
+        Ok(self.budgeted_connection_by(budget, None).await?.expect("no answer-by deadline"))
+    }
+
+    /// [`budgeted_connection`](Self::budgeted_connection), whose slot wait
+    /// also ends, with `None`, at `answer_by` when that comes first. A slot
+    /// already free is taken even after `answer_by`.
+    async fn budgeted_connection_by(
+        &self, budget: &Arc<tokio::sync::Semaphore>, answer_by: Option<tokio::time::Instant>,
+    ) -> Result<Option<ProbeConnection<DB>>> {
         let deadline = tokio::time::Instant::now() + self.pool.options().get_acquire_timeout();
-        let slot = tokio::time::timeout_at(deadline, budget.clone().acquire_owned())
-            .await
-            .map_err(|_| sqlx::Error::PoolTimedOut)?
-            .expect("the probe budget is never closed");
+        let slot = match answer_by.filter(|answer_by| *answer_by < deadline) {
+            Some(answer_by) => match tokio::time::timeout_at(answer_by, budget.clone().acquire_owned()).await {
+                Ok(slot) => slot,
+                Err(_) => return Ok(None),
+            },
+            None => tokio::time::timeout_at(deadline, budget.clone().acquire_owned())
+                .await
+                .map_err(|_| sqlx::Error::PoolTimedOut)?,
+        }
+        .expect("the probe budget is never closed");
         let connection = tokio::time::timeout_at(deadline, self.pool.acquire())
             .await
             .map_err(|_| sqlx::Error::PoolTimedOut)??;
-        Ok(ProbeConnection { connection: Some(connection), slot: Some(slot) })
+        Ok(Some(ProbeConnection { connection: Some(connection), slot: Some(slot) }))
     }
 }
 
@@ -269,6 +303,57 @@ mod tests {
         assert!(matches!(&leased, super::super::update_validation::Leased::Workflow(answer) if answer["poll_status"] == "leased"));
         assert_eq!(unbudgeted.load(Ordering::SeqCst), 0, "update validation borrows only budgeted connections");
 
+        store.close().await;
+        writer.close().await;
+    }
+
+    /// Server #1355: once a held poll has probed, its later probes' read
+    /// slot waits end at its own deadline. With another probe holding the
+    /// read slot, a poll answers empty at its deadline instead of waiting
+    /// for the slot past it (and failing with the typed pool timeout five
+    /// seconds later). Its first probe, claims and request replay are not
+    /// bounded this way.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn sqlite_a_later_probe_answers_at_the_deadline_while_another_probe_holds_the_read_slot() {
+        use super::super::poll_pauses::{PollPoint, pause_workflow_poll};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deadline.sqlite");
+        let writer = Store::<sqlx::Sqlite>::new(super::super::sqlite::open(path.to_str().unwrap()).await.unwrap());
+        let (store, _) = counted_store(&path).await;
+        let config = QueryTaskConfig::default();
+        for (kind, point) in [("activity", PollPoint::Waiting), ("workflow", PollPoint::Waiting), ("query", PollPoint::QueryReadiness)] {
+            let worker = format!("deadline-{kind}");
+            writer.register(json!({"worker_id":worker,"task_queue":worker,"runtime":"php",
+                "supported_workflow_types":["probe"],"supported_activity_types":["act"],
+                "capabilities": if kind == "query" { json!(["query_tasks"]) } else { json!([]) },
+                "workflow_command_contracts":{"probe":{"queries":["probe"],"query_contracts":[{"name":"probe","parameters":[]}]}}}),
+                &config, Some("1.20")).await.unwrap();
+            let request = format!("{worker}-{}", ulid::Ulid::new());
+            let pause = pause_workflow_poll(if kind == "query" { &worker } else { &request }, point);
+            let body = json!({"worker_id":worker,"task_queue":worker,"timeout_seconds":1,"poll_request_id":request});
+            let started = tokio::time::Instant::now();
+            let poll = async {
+                if kind == "query" {
+                    let mut body = body.clone();
+                    body.as_object_mut().unwrap().remove("poll_request_id");
+                    store.poll_query(body, &config).await
+                } else {
+                    store.poll(body.clone(), kind, "1.20").await
+                }
+            };
+            let (answer, held) = tokio::join!(poll, async {
+                pause.reached.await.unwrap();
+                let held = store.probe_slots.clone().acquire_owned().await.unwrap();
+                pause.release.send(()).unwrap();
+                held
+            });
+            let answered = started.elapsed();
+            drop(held);
+            assert_eq!(answer.unwrap()["poll_status"], "empty", "{kind}");
+            assert!(answered >= Duration::from_millis(900) && answered < Duration::from_millis(1500),
+                "{kind}: answered at its deadline, not after waiting for the read slot: {answered:?}");
+        }
         store.close().await;
         writer.close().await;
     }

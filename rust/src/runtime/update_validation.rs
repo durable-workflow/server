@@ -1133,6 +1133,19 @@ where
         super::store::replayed_poll(answer, encoding).map(Leased::Workflow)
     }
 
+    /// The answer of a poll that reached its deadline without a task: under
+    /// a request ID, a duplicate's lease committed meanwhile replays instead.
+    async fn empty_task_kinds_answer(
+        &self, request: Option<&WorkflowPollRequest>, worker_id: &str, task_queue: &str, encoding: Option<&'static str>,
+    ) -> Result<Leased> {
+        if let Some(request) = request
+            && let Some(lease) = self.remember_empty_workflow_poll(request, worker_id, task_queue, "empty").await?
+        {
+            return Self::replayed(lease, encoding);
+        }
+        Ok(Leased::Workflow(json!({"task":null,"poll_status":"empty","server_capabilities":super::store::capabilities()})))
+    }
+
     /// `WorkflowTaskPoller` with validation tasks requested. A request ID
     /// binds to the normalized kind set and replays its deliverable answer
     /// first. Each probe then runs `WorkflowTaskKindSelector` as one
@@ -1180,7 +1193,11 @@ where
             let current = match &fence {
                 _ if first_probe && request.is_some() => true,
                 Some(fence) => {
-                    let mut reads = self.probe_connection().await?;
+                    // A later probe that cannot get a read slot by the poll's
+                    // deadline answers as at its deadline (Server #1355).
+                    let Some(mut reads) = self.probe_reads(first_probe, deadline).await? else {
+                        return self.empty_task_kinds_answer(request.as_ref(), &worker_id, &task_queue, encoding).await;
+                    };
                     let holds = self.worker_poll_fence_holds(reads.get(), fence, &worker_id).await;
                     reads.finish().await;
                     holds?
@@ -1211,12 +1228,7 @@ where
                 None => {}
             }
             if tokio::time::Instant::now() >= deadline {
-                if let Some(request) = &request
-                    && let Some(lease) = self.remember_empty_workflow_poll(request, &worker_id, &task_queue, "empty").await?
-                {
-                    return Self::replayed(lease, encoding);
-                }
-                return Ok(Leased::Workflow(json!({"task":null,"poll_status":"empty","server_capabilities":super::store::capabilities()})));
+                return self.empty_task_kinds_answer(request.as_ref(), &worker_id, &task_queue, encoding).await;
             }
             // A workflow poll that also takes validation tasks waits in the
             // worker pool, as a workflow poll does.
