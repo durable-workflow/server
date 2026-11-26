@@ -343,8 +343,18 @@ $lateCheck = static function () use ($http, $state): void {
 
 $replaceStart = static function () use ($http, $codec, $suffix, $state): void {
     $id = "tc-v6-$suffix";
-    [$status, $body] = start($http, $codec, $id, 'tc.return', 'tc-replace', ['execution_timeout_seconds' => 80, 'timeout_cleanup_seconds' => 40]);
-    check('6', 'admitted', $status === 201, [$status, $body]);
+    // Vector 5 has just paused the Server for over a minute, so the doomed
+    // worker's heartbeats lapsed and it is still backing off. Admission needs
+    // a live cooperative worker on tc-replace; wait for it to come back
+    // instead of racing its next heartbeat. A rejected start creates nothing.
+    $deadline = microtime(true) + 45;
+    $attempts = 0;
+    do {
+        $attempts++;
+        [$status, $body] = start($http, $codec, $id, 'tc.return', 'tc-replace', ['execution_timeout_seconds' => 80, 'timeout_cleanup_seconds' => 40]);
+        $waiting = $status === 422 && ($body['reason'] ?? null) === 'timeout_cleanup_not_supported';
+    } while ($waiting && microtime(true) < $deadline && sleep(1) === 0);
+    check('6', 'admitted', $status === 201, [$status, $body, 'attempts' => $attempts]);
     $history = waitFor($http, $id, (string) $body['run_id'], 'WorkflowTimeoutCleanupStarted');
     file_put_contents($state('replace'), json_encode(['id' => $id, 'run' => $body['run_id'],
         'entered' => payload($history, 'WorkflowTimeoutCleanupStarted')]));
