@@ -543,12 +543,17 @@ async fn a_version_one_continuation_is_unchanged() {
     let app = router(runtime.clone());
     v2_worker(&app, registration("v2-v1")).await;
     let seeded = seed(&app, "v2-v1", "v2-v1", schedule()).await;
-    // A version-2 request without its cache claim keeps v1's refusal.
-    let mut body = v2_body(&seeded, timer(), "v2-v1");
-    body["continuation"].as_object_mut().unwrap().remove("sticky_cache");
-    let (status, refused) = continue_v2(&app, &seeded, body).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
-    assert_eq!(refused["reason"], "unsupported_continuation_version", "{refused}");
+    // A version-2 request without its cache claim is a malformed v2
+    // request; a version the Server does not implement keeps v1's refusal.
+    let mut claimless = v2_body(&seeded, timer(), "v2-v1");
+    claimless["continuation"].as_object_mut().unwrap().remove("sticky_cache");
+    let mut unknown = claimless.clone();
+    unknown["continuation"]["version"] = json!(3);
+    for (body, reason) in [(claimless, "invalid_continuation"), (unknown, "unsupported_continuation_version")] {
+        let (status, refused) = continue_v2(&app, &seeded, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        assert_eq!(refused["reason"], reason, "{refused}");
+    }
     let (status, history) = request(&app, "POST", &format!("/api/worker/activity-tasks/{}/continuation/history",
         seeded.activity["task_id"].as_str().unwrap()), json!({"lease_owner":"v2-v1","activity_attempt_id":seeded.activity["activity_attempt_id"]})).await;
     assert_eq!(status, StatusCode::OK, "{history}");

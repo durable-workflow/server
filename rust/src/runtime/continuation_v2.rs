@@ -33,13 +33,11 @@ pub(crate) struct Request {
     pub(super) commands: Vec<Value>,
 }
 
-/// Whether the continuation asks for version 2: the integer 2 beside the
-/// v2-only `sticky_cache` member. Any other version keeps v1's parser and
-/// its refusals.
+/// Whether the continuation asks for version 2: exactly the integer 2. Any
+/// other version keeps v1's parser and its refusals.
 pub(super) fn requested(body: &Value) -> bool {
-    let continuation = &body["continuation"];
-    continuation["version"].as_i64() == Some(VERSION) && !continuation["version"].is_f64()
-        && continuation.get("sticky_cache").is_some()
+    let version = &body["continuation"]["version"];
+    version.as_i64() == Some(VERSION) && !version.is_f64()
 }
 
 /// Malformed continuations are refused before anything is written.
@@ -384,14 +382,17 @@ mod tests {
     }
 
     #[test]
-    fn only_an_integer_two_with_a_cache_claim_selects_version_two() {
+    fn only_the_integer_two_selects_version_two() {
         assert!(requested(&json!({"continuation":request()})));
-        let mut v1 = request();
-        v1.as_object_mut().unwrap().remove("sticky_cache");
-        assert!(!requested(&json!({"continuation":v1})), "v1 keeps its own version refusal");
-        let mut float = request();
-        float["version"] = json!(2.0);
-        assert!(!requested(&json!({"continuation":float})));
+        let mut claimless = request();
+        claimless.as_object_mut().unwrap().remove("sticky_cache");
+        assert!(requested(&json!({"continuation":claimless.clone()})), "a malformed v2 request is still v2");
+        assert!(parse(Some(&claimless)).is_err());
+        for version in [json!(2.0), json!("2"), json!(1), json!(3), Value::Null] {
+            let mut other = request();
+            other["version"] = version.clone();
+            assert!(!requested(&json!({"continuation":other})), "{version} keeps v1's refusals");
+        }
         let parsed = parse(Some(&request())).unwrap();
         assert_eq!((parsed.through, parsed.last_event_id.as_str(), parsed.commands.len()), (6, "event-6", 1));
     }
