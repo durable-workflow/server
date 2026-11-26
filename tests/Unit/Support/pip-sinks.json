@@ -396,6 +396,19 @@
       ]
     },
     {
+      "path": "scripts/conformance/timeout-cleanup/run.sh",
+      "line": "&& /opt/venv/bin/python -I -m pip install --no-cache-dir --quiet \"$requirement\" \\\\",
+      "count": 1,
+      "confinement": "Runs in the Python worker image build only after scripts/ci/bootstrap-patched-pip.sh succeeded on the same venv interpreter (one RUN chained with &&). Runs as python -I, so a copied-in pip cannot shadow the client.",
+      "guards": [
+        {
+          "type": "bootstrap",
+          "line": "&& sh /src/bootstrap-patched-pip.sh /opt/venv/bin/python \\\\",
+          "distance": 1
+        }
+      ]
+    },
+    {
       "path": "scripts/conformance/worker-versioning-mixed.Dockerfile",
       "line": "&& pip install --no-cache-dir --report /opt/python/install-report.json \"durable-workflow==${PYTHON_SDK_VERSION}\"",
       "count": 1,

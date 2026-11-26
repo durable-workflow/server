@@ -82,8 +82,18 @@ case "$worker_sdk" in
       requirement="durable-workflow==$PYTHON_SDK_VERSION"
       worker_sdk_label="Python SDK $PYTHON_SDK_VERSION (PyPI)"
     fi
-    printf 'FROM %s\nCOPY . /src\nRUN pip install --no-cache-dir --quiet "%s" && pip show durable-workflow > /sdk-version.txt\n' \
-      "${PYTHON_IMAGE:-python:3.12-slim-bookworm}" "$requirement" | docker build -q -t "$prefix-python:local" -f - "$work/python" >/dev/null
+    # The venv's pip is the patched, root-checked one before anything is
+    # installed (GHSA-6q48-6c7w-9gw2; tests/Unit/Support/pip-sinks.json).
+    cp "$here/../../ci/bootstrap-patched-pip.sh" "$here/../../ci/blocked_roots.py" "$work/python/"
+    docker build -q -t "$prefix-python:local" -f - "$work/python" >/dev/null <<DOCKERFILE
+FROM ${PYTHON_IMAGE:-python:3.12-slim-bookworm}
+COPY . /src
+RUN python3 -m venv /opt/venv \\
+  && sh /src/bootstrap-patched-pip.sh /opt/venv/bin/python \\
+  && /opt/venv/bin/python -I -m pip install --no-cache-dir --quiet "$requirement" \\
+  && /opt/venv/bin/python -I -c 'import importlib.metadata as m; print("durable-workflow", m.version("durable-workflow"))' > /sdk-version.txt
+ENV PATH=/opt/venv/bin:\$PATH
+DOCKERFILE
     docker run --rm --name "$prefix-pip" "${limits[@]}" "$prefix-python:local" cat /sdk-version.txt > "$evidence/python-sdk.txt"
     worker_image="$prefix-python:local"
     worker_cmd=(python /harness/python/worker.py)
