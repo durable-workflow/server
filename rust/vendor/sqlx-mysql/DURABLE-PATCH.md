@@ -1,7 +1,7 @@
 # SQLx MySQL driver patches
 
 This directory contains the official `sqlx-mysql` 0.9.0 crate with two scoped
-driver corrections and one native tagging patch. Its published archive has
+driver corrections, one native tagging patch and one session-state report. Its published archive has
 SHA-256
 `90b8020fe17c5f2c245bfa2505d7ef59c5604839527c740266ad2214acebea27` and VCS
 commit `003b698e99e024f3621b8043a2426fde5b741171`.
@@ -58,7 +58,7 @@ chunks a proxy receives from the client:
   three to none.
 
 All upstream source is retained. The source-code changes are in
-`src/connection/mod.rs`, `src/connection/stream.rs`,
+`src/connection/mod.rs`, `src/connection/stream.rs`, `src/connection/tls.rs`,
 `src/connection/executor.rs`, `src/options/connect.rs` and `src/lib.rs`.
 The packaged license-reference files are replaced with the full MIT and
 Apache license texts from the same upstream commit. This file records the
@@ -87,11 +87,38 @@ checks the tagged error and its classification.
 exported prefix matches the server's and that untagged protocol failures stay
 non-transient.
 
+## A returned session reports whether it is known to be idle
+
+Native Server's pool `after_release` hook resets a returned session with
+`ROLLBACK`, and the connection keeps its pool slot until the hook returns.
+Resetting every return cost a round trip per checkout; during a database
+stall those round trips kept slots busy for the whole stall (Server #1204).
+
+`MySqlConnection::read_pending_replies` (`src/connection/mod.rs`) reads the
+replies of commands already sent, without sending anything, and records the
+server status they end with. A result stream dropped after its first row
+(`fetch_one`, `fetch_optional`) leaves the rest of its reply unread although
+the server sent it with the row. `MySqlStream::wait_until_ready`
+(`src/connection/stream.rs`) keeps the status of the last terminal packet it
+drains for this (`drained_status`; `src/connection/tls.rs` carries the field
+through the TLS upgrade). `ping` now records the status of its OK packet.
+`MySqlConnection::is_idle_outside_transaction` reports a session as known
+idle only when no reply is pending or unsent, SQLx has no open transaction
+and the last recorded server status has no transaction open. The hook skips
+the reset only then; every other state is still rolled back.
+
+`runtime::mysql::pool_tests::qualification_pool_return_resets_only_sessions_not_known_idle`
+counts the `ROLLBACK` commands a recording proxy receives: none after an
+autocommit read or an acknowledged commit, one for a plain-SQL transaction,
+which ends, and a reset for a dropped SQLx transaction.
+
 Remove this override only when a reviewed published driver provides
 equivalent hard-close behavior and statement-close batching (or
 `TCP_NODELAY`), passes the same database and TLS qualification, and lets a
 caller tell a protocol failure during connection setup from one on an
-established connection. Otherwise `transient_reason` must get that
+established connection, and lets a caller tell that a returned session is
+idle outside a transaction (or the server resets every returned session
+again). Otherwise `transient_reason` must get that
 distinction another way first. The server keeps its own copy of the prefix,
 so a release build would still compile without the tag, and garbled
 handshakes would silently become non-retryable again; only the tests

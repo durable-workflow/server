@@ -22,6 +22,8 @@ pub struct MySqlStream<S = Box<dyn Socket>> {
     // The write buffer holds only commands without a reply, queued to leave
     // with the next command.
     pub(crate) queued_unanswered: bool,
+    // The server status ending the last reply `wait_until_ready` read.
+    pub(crate) drained_status: Option<Status>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -60,6 +62,7 @@ impl<S: Socket> MySqlStream<S> {
             socket: BufferedSocket::new(socket),
             is_tls: false,
             queued_unanswered: false,
+            drained_status: None,
         }
     }
 
@@ -91,6 +94,7 @@ impl<S: Socket> MySqlStream<S> {
                     if eof.status.contains(Status::SERVER_MORE_RESULTS_EXISTS) {
                         *self.waiting.front_mut().unwrap() = Waiting::Result;
                     } else {
+                        self.drained_status = Some(eof.status);
                         self.waiting.pop_front();
                     };
                 }
@@ -103,6 +107,7 @@ impl<S: Socket> MySqlStream<S> {
                     let ok = packet.ok()?;
 
                     if !ok.status.contains(Status::SERVER_MORE_RESULTS_EXISTS) {
+                        self.drained_status = Some(ok.status);
                         self.waiting.pop_front();
                     }
                 } else {
@@ -247,6 +252,7 @@ impl<S: Socket> MySqlStream<S> {
             waiting: self.waiting,
             is_tls: self.is_tls,
             queued_unanswered: self.queued_unanswered,
+            drained_status: self.drained_status,
         }
     }
 }
