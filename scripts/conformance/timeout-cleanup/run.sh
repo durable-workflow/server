@@ -15,6 +15,7 @@
 # replaces the published package to try an unreleased SDK; such a run is not
 # installed evidence.
 #
+# TC_PHASES selects "vectors" (1-12), "extended" or both (the default).
 # EXPECT_ADVERTISED=true|false also checks the Server's timeout_cleanup
 # advertisement in /api/cluster/info. Containers, the network (unless NETWORK
 # names an existing one) and the PHP image this creates are removed on exit.
@@ -132,7 +133,7 @@ containers+=("$prefix-server")
 
 php() {
   docker run --rm --name "$prefix-driver-${2:-main}" "${limits[@]}" --user "$user" --network "$network" -e TC_TOKEN="$token" \
-    -e TC_RUN_SUFFIX="$suffix" -v "$work:/harness:ro" -v "$evidence:/evidence" "$php_image" php "/harness/$1" "${@:2}"
+    -e TC_RUN_SUFFIX="$suffix" -e TC_WORKER_SDK="$worker_sdk" -v "$work:/harness:ro" -v "$evidence:/evidence" "$php_image" php "/harness/$1" "${@:2}"
 }
 
 worker() {
@@ -174,6 +175,8 @@ if [[ -n "${EXPECT_ADVERTISED:-}" ]]; then
   fi
 fi
 
+phases=" ${TC_PHASES:-vectors extended} "
+if [[ "$phases" == *" vectors "* ]]; then
 php vectors.php main || failed=1
 
 # Vector 5: the Server is paused from before the work deadline until after
@@ -194,6 +197,14 @@ php vectors.php replace-start || failed=1
 timeout 60 docker wait "$prefix-doomed" > "$evidence/doomed-exit-code" || failed=1
 worker replacement -e TC_QUEUE=tc-replace
 php vectors.php replace-check || failed=1
+fi
+
+# The extended cases: task-boundary expiry, replay-blocking precedence,
+# malformed and unauthorized markers, redrive inheritance and (with PHP
+# workers) scoped descendants.
+if [[ "$phases" == *" extended "* ]]; then
+  php vectors.php extended || failed=1
+fi
 
 passed=$(jq -s '[.[] | select(.passed)] | length' "$evidence/results.jsonl")
 total=$(jq -s 'length' "$evidence/results.jsonl")
