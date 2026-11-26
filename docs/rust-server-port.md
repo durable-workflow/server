@@ -607,9 +607,12 @@ contract fixture before its correction.
   their own, and describe reports the cleanup state; both are registered
   native divergences. The bounded run observation and both run lists
   (`GET /api/workflows`, `GET /api/workflows/{workflow_id}/runs`) return
-  embedded's portable `timeout_cleanup`, omitted when nothing was recorded;
-  a list reads it for the whole page in one history query, so it needs no
-  schema change (workflow#863). Cluster info and worker responses advertise
+  embedded's portable `timeout_cleanup`, omitted when nothing was recorded.
+  A list reads it with no schema change (workflow#863): one query per page
+  selects the opted-in runs that can report cleanup (closed runs that may
+  carry an outcome, and open runs holding a cooperative request or
+  imported), and each of those reads one history event, the newest of the
+  observation's type. Cluster info and worker responses advertise
   `timeout_cleanup: {supported: true, version: 1}`, after the contract
   vectors 1 to 12 passed against published native with the published PHP
   SDK 3.31.0 worker (`scripts/conformance/timeout-cleanup/run.sh`)
