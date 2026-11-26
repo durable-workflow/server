@@ -569,10 +569,11 @@ jobs:
           - label: mariadb-10.11
             image: mirror.gcr.io/library/mariadb@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
             # Both expanded originals exhausted the 512 MiB DB fixture ceiling.
-            # At 1 CPU / 1 GiB, multi-second server stalls under the parallel
-            # native suites turned held polls into pool timeouts (server#1204);
-            # two of the runner's four CPUs and 2 GiB, as MySQL already has,
-            # remove that flake noise. The runtime fix is tracked separately.
+            # Two of the runner's four CPUs and 2 GiB, as the MySQL labels
+            # have, give the server headroom against multi-second stalls that
+            # turn held polls into pool timeouts (server#1204). This reduces,
+            # but does not fix, that flake; the runtime fix is tracked
+            # separately.
             memory: 2g
             cpus: 2
             execution_shards: 2
