@@ -167,6 +167,8 @@ mod schedule_storage;
 mod schedules;
 mod ready_age;
 #[cfg(test)]
+mod history_writer_inventory;
+#[cfg(test)]
 mod ready_age_tests;
 #[cfg(test)]
 mod poll_sweeps_tests;
