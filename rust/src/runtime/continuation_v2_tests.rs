@@ -68,8 +68,9 @@ store_methods! {
         // Shared maintenance outside the v2 path: every transition's commit
         // projects the run summary from its history in 16-event pages, a
         // wait-position pass moves waits that opened in the same millisecond,
-        // and a throttled sweep drops expired poll answers.
-        let shared = [DB::SUMMARY_HISTORY_SQL, DB::WAIT_POSITION_MOVES, DB::WORKFLOW_POLL_EXPIRED,
+        // and two sweeps throttled to one per interval drop expired poll
+        // answers and poll receipts, whenever a slow step crosses an interval.
+        let shared = [DB::SUMMARY_HISTORY_SQL, DB::WAIT_POSITION_MOVES, DB::WORKFLOW_POLL_EXPIRED, DB::POLL_RECEIPT_CLEANUP_SQL,
             "UPDATE workflow_run_waits SET position=$1 WHERE id=$2 AND workflow_run_id=$3"];
         let entries = |counts: &super::sql_counts::Counts| counts.entries().into_iter()
             .filter(|(sql, _)| !shared.contains(sql))
@@ -117,6 +118,23 @@ store_methods! {
         assert!(tx.remembered_events.is_none(), "and the remembered events");
         let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1").bind(run_id).fetch_one(&mut *tx).await.unwrap();
         assert_eq!(DB::number(&row, "last_history_sequence").unwrap(), start + 1, "matching the database");
+        // A rolled-back poll claim rewinds both the same way; a released one
+        // keeps its writes.
+        tx.remembered_events = Some(Vec::new());
+        let claim = tx.poll_savepoint().await.unwrap();
+        Self::append(&mut tx, run_id, "SideEffectRecorded", json!({"result":"claimed"}), None, None).await.unwrap();
+        assert_eq!(tx.history_sequences.get(run_id), Some(&(start + 2)));
+        tx.rollback_poll_claim(claim).await.unwrap();
+        assert_eq!(tx.history_sequences.get(run_id), Some(&(start + 1)), "the poll savepoint rewinds the sequence");
+        assert_eq!(tx.remembered_events.as_ref().map(Vec::len), Some(0), "and the remembered events");
+        let claim = tx.poll_savepoint().await.unwrap();
+        Self::append(&mut tx, run_id, "SideEffectRecorded", json!({"result":"kept"}), None, None).await.unwrap();
+        tx.release_poll_claim().await.unwrap();
+        drop(claim);
+        assert_eq!(tx.history_sequences.get(run_id), Some(&(start + 2)));
+        assert_eq!(tx.remembered_events.as_ref().map(Vec::len), Some(1));
+        let row = Self::query("SELECT last_history_sequence FROM workflow_runs WHERE id=$1").bind(run_id).fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(DB::number(&row, "last_history_sequence").unwrap(), start + 2, "matching the database");
         tx.rollback().await.unwrap();
     }
 }

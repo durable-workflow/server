@@ -29,6 +29,8 @@ impl RunTags {
 pub(super) struct PollSavepoint {
     summaries: BTreeMap<String, Option<ChildSummaryChange>>,
     workflow_poll_replayed: Option<String>,
+    history_sequences: BTreeMap<String, i64>,
+    remembered_events: Option<Vec<(String, serde_json::Value)>>,
 }
 
 #[derive(Clone)]
@@ -245,13 +247,18 @@ where
         // MySQL does not support savepoint commands in its prepared-statement
         // protocol. Send these fixed transaction-control literals directly.
         (&mut **self).execute("SAVEPOINT dw_poll_claim").await?;
-        Ok(PollSavepoint { summaries: self.summaries.clone(), workflow_poll_replayed: self.workflow_poll_replayed.clone() })
+        // A rolled-back claim's history writes leave neither the remembered
+        // sequence nor the remembered events behind (Server #1181).
+        Ok(PollSavepoint { summaries: self.summaries.clone(), workflow_poll_replayed: self.workflow_poll_replayed.clone(),
+            history_sequences: self.history_sequences.clone(), remembered_events: self.remembered_events.clone() })
     }
 
     pub(super) async fn rollback_poll_claim(&mut self, saved: PollSavepoint) -> Result<()> {
         (&mut **self).execute("ROLLBACK TO SAVEPOINT dw_poll_claim").await?;
         self.summaries = saved.summaries;
         self.workflow_poll_replayed = saved.workflow_poll_replayed;
+        self.history_sequences = saved.history_sequences;
+        self.remembered_events = saved.remembered_events;
         self.scope_history = None;
         self.local_writes = Default::default();
         self.run_tags.clear();
