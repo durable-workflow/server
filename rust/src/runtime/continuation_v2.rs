@@ -25,6 +25,15 @@ const DECLINES: [&str; 12] = ["external_payload", "cache_identity_mismatch", "ru
 /// The proof's reason, reported by `complete_activity_in`.
 pub(super) const DECLINE_FIELD: &str = "continuation_v2_decline";
 
+/// The `v2` member of the `activity_workflow_continuation` capability.
+pub(super) fn capability() -> Value {
+    use super::continuation_tail::{TAIL_MAX_BYTES, TAIL_MAX_EVENTS};
+    json!({"version": VERSION, "complete_endpoint": super::continuation::COMPLETE_ENDPOINT,
+        "supported_commands": COMMANDS, "max_commands": MAX_COMMANDS,
+        "requires_worker_capabilities": [super::sticky_execution::CAPABILITY, super::sticky_execution::SUFFIX_CAPABILITY],
+        "tail_max_events": TAIL_MAX_EVENTS, "tail_max_bytes": TAIL_MAX_BYTES})
+}
+
 /// A version-2 continuation request's own member.
 pub(crate) struct Request {
     pub(super) through: i64,
@@ -249,6 +258,14 @@ store_methods! {
         let raw_workflow_poll = fields.remove("workflow_poll");
         let raw_activity_poll = fields.remove("activity_poll");
         let workflow_poll = self.admit_workflow_carrier(raw_workflow_poll, &owner, polling).await?;
+        #[cfg(test)]
+        {
+            let gate = self.test_admission_gate.lock().expect("admission test gate").take();
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.resume.notified().await;
+            }
+        }
         let mut tx = self.begin().await?;
         let task = self.task_row(&mut tx, task_id).await?;
         if let Some(mut answer) = Self::continuation_v2_receipt(&task, &hash)? {
@@ -275,6 +292,8 @@ store_methods! {
             decision = declined("external_payload");
         } else {
             let saved = tx.continuation_savepoint().await?;
+            // The nested meter charges the result from memory (#1079).
+            tx.remembered_events = Some(Vec::new());
             answer = self.complete_activity_in(&mut tx, task_id, body, None, result.clone(), workflow_poll.clone(),
                 Some(super::continuation::Prefix::V2(&continuation))).await?;
             #[cfg(test)]
@@ -305,10 +324,15 @@ store_methods! {
                 let workflow_task = selected["task_id"].as_str().expect("selected task identity");
                 let mut completion = command_body;
                 completion["workflow_task_attempt"] = selected["workflow_task_attempt"].clone();
+                // The carried claim just fenced this owner's registration.
+                tx.fresh_lease_owner = Some(owner.clone());
                 let (held, mut completed) = self.complete_or_checkpoint_in(workflow_task, completion, transition_codec,
                     command_external, worker, polling, limits, None, None, Some(tx), Some(continuation.through)).await?;
                 tx = held.expect("nested completion retains its transition");
+                tx.fresh_lease_owner = None;
+                tx.remembered_events = None;
                 tx.release_continuation().await?;
+                Self::remembered_history_holds(&mut tx, &DB::string(&task, "workflow_run_id")?).await?;
                 let fields = completed.as_object_mut().expect("completion object");
                 let tail = fields.remove("continuation_tail").expect("a nested completion answers its tail");
                 let activity_poll = fields.remove("activity_poll");
@@ -348,6 +372,25 @@ store_methods! {
         super::carried_polls::refresh_activity_clock(&mut answer);
         self.wake.notify_waiters();
         Ok(answer)
+    }
+
+    /// The other half of control 2, in test builds: the sequence this
+    /// transaction remembers is the run's history as an independent read
+    /// counts it, so no writer bypassed the allocator after the proof.
+    async fn remembered_history_holds(tx: &mut super::transaction::Transaction<'_, DB>, run_id: &str) -> Result<()> {
+        if !cfg!(any(test, debug_assertions)) {
+            return Ok(());
+        }
+        let row = Self::query("SELECT r.last_history_sequence,r.import_source,(SELECT COUNT(*) FROM workflow_history_events WHERE workflow_run_id=r.id) AS event_count,(SELECT MAX(sequence) FROM workflow_history_events WHERE workflow_run_id=r.id) AS max_sequence FROM workflow_runs r WHERE r.id=$1")
+            .bind(run_id).fetch_one(&mut **tx).await?;
+        let remembered = tx.history_sequences.get(run_id).copied();
+        let (last, count, max) = (DB::number(&row, "last_history_sequence")?, DB::number(&row, "event_count")?,
+            DB::optional_number(&row, "max_sequence")?.unwrap_or(0));
+        let counted = if DB::optional_string(&row, "import_source")?.is_some() { max <= last } else { count == last && max == last };
+        if remembered != Some(last) || !counted {
+            return Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, "history_invariant_violated"));
+        }
+        Ok(())
     }
 
     /// A retry never claims, renews or creates a lease. It replays only the

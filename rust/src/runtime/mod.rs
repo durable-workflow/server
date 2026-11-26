@@ -193,6 +193,8 @@ mod sql_counts;
 mod poll_write_tests;
 #[cfg(test)]
 mod local_write_tests;
+#[cfg(test)]
+mod continuation_v2_tests;
 mod schema;
 pub mod schema_upgrade;
 mod search_attribute_upserts;

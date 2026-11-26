@@ -1419,6 +1419,15 @@ whose replay history does not contain that identity.
 Native additionally advertises `condition_wait_idempotent_reopen` when opening
 an already-unresolved occurrence preserves its existing wait and deadline.
 See [idempotent condition-wait opens](contracts/condition-wait-occurrences.md).
+Native advertises `activity_workflow_continuation` for activity completions
+that also complete the run's resumed workflow task with worker-computed
+commands. Its top-level fields describe version 1 and keep `version: 1` for
+released SDKs; `supported_versions` lists `[1, 2]` and the `v2` member names
+the version-2 endpoint, commands, required worker capabilities
+(`sticky_execution` and `sticky_history_suffix`) and the history tail budgets
+(`tail_max_events`, `tail_max_bytes`). Continuations are opt-in per request and
+default-off in the SDKs. See
+[activity workflow continuation v2](contracts/activity-workflow-continuation-v2.md).
 
 Long-poll wake-ups use short-lived cache-backed signal keys plus periodic
 reprobes. Multi-node deployments therefore need a shared cache backend for
