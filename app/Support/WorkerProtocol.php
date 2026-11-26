@@ -551,8 +551,8 @@ class WorkerProtocol
                 'lease_timeout_seconds' => max(1, (int) config('server.update_validation.lease_timeout', 5)),
                 'sdk_surfaces' => [
                     'sdk-python' => 'validator_capable',
-                    'sdk-php' => 'validators_not_exposed',
-                    'sdk-rust' => 'validators_not_exposed',
+                    'sdk-php' => 'validator_capable',
+                    'sdk-rust' => 'validator_capable',
                 ],
             ],
             'activity_retry_policy' => true,

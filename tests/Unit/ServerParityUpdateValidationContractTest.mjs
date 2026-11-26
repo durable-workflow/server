@@ -20,8 +20,11 @@ function nativeObservation() {
     const task = actual.update_validation[step].task;
     task.keys = [...task.keys, 'replay_clock'].sort();
   }
+  // Native lists every SDK surface as validator capable (PHP SDK 3.32.0, Rust SDK 4.25.0).
+  actual.update_validation.capability[1].sdk_surfaces = {...nativeSdkSurfaces};
   return actual;
 }
+const nativeSdkSurfaces = {'sdk-php': 'validator_capable', 'sdk-python': 'validator_capable', 'sdk-rust': 'validator_capable'};
 const projection = {scope: 'update_validation', steps: Object.keys(fixture.update_validation.expected).length};
 
 test('published PHP passes', () => {
@@ -81,6 +84,20 @@ test('native validation tasks carry replay_clock under their named divergence', 
   published.update_validation.dedicated_poll.task.keys = [...published.update_validation.dedicated_poll.task.keys,
     'replay_clock'].sort();
   assert.throws(() => checkUpdateValidation(fixture, published, workflowId), /dedicated_poll/);
+});
+
+test('native advertises PHP and Rust SDK validators under their named divergence', () => {
+  for (const surface of ['sdk-php', 'sdk-rust']) {
+    const actual = nativeObservation();
+    actual.update_validation.capability[1].sdk_surfaces[surface] = 'validators_not_exposed';
+    assert.throws(() => checkUpdateValidation(fixture, actual, workflowId, 'rust'), /capability/);
+  }
+  const missing = nativeObservation();
+  delete missing.update_validation.capability[1].sdk_surfaces['sdk-python'];
+  assert.throws(() => checkUpdateValidation(fixture, missing, workflowId, 'rust'), /capability/);
+  const published = observation();
+  published.update_validation.capability[1].sdk_surfaces = {...nativeSdkSurfaces};
+  assert.throws(() => checkUpdateValidation(fixture, published, workflowId), /capability/);
 });
 
 test('embedded explicitly declares update validation inapplicable', () => {
