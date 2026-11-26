@@ -387,8 +387,7 @@ async fn qualification_a_connection_whose_ping_went_unanswered_fails_within_its_
         let proxy = tokio::spawn(forward(listener, format!("{}:{}", direct.get_host(), direct.get_port()), gate.clone()));
         let pool = super::super::backend::test_idle_connections_within(
             sqlx::mysql::MySqlPoolOptions::new().max_connections(1).acquire_timeout(Duration::from_secs(5)),
-            super::super::backend::CHECKOUT_PING_BUDGET,
-            bound,
+            super::super::backend::ReplyBounds { unanswered_ping: bound, ..super::super::backend::ReplyBounds::RUNTIME },
         )
         .connect_with(direct.host("127.0.0.1").port(port))
         .await
@@ -425,4 +424,104 @@ async fn qualification_a_connection_whose_ping_went_unanswered_fails_within_its_
     .expect("bounded silent-peer qualification");
     assert!(super::super::backend::UNANSWERED_PING_REPLY_BOUND
         > super::super::store::TRANSITION_QUEUE_DEADLINE + Duration::from_secs(5));
+}
+
+/// Reply bounds short enough for a qualification (Server #1368).
+const SHORT_REPLIES: super::super::backend::ReplyBounds = super::super::backend::ReplyBounds {
+    statement: Duration::from_secs(3),
+    release: Duration::from_secs(3),
+    ..super::super::backend::ReplyBounds::RUNTIME
+};
+
+/// A one-connection runtime pool with `bounds`, behind a reply gate.
+async fn silent_peer_pool(bounds: super::super::backend::ReplyBounds) -> (sqlx::MySqlPool, Arc<ReplyGate>, JoinHandle<()>) {
+    let direct = MySqlConnectOptions::from_str(&std::env::var("DW_TEST_MYSQL_URL").unwrap()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate = Arc::new(ReplyGate::default());
+    let proxy = tokio::spawn(forward(listener, format!("{}:{}", direct.get_host(), direct.get_port()), gate.clone()));
+    let pool = super::runtime_pool_options_within(bounds).max_connections(1)
+        .connect_with(direct.host("127.0.0.1").port(port)).await.unwrap();
+    (pool, gate, proxy)
+}
+
+/// Lets every held reply through, then closes the pool and the proxy: run
+/// after the qualification's timed part, so a timeout still cleans up.
+async fn close_silent_peer_pool(pool: sqlx::MySqlPool, gate: Arc<ReplyGate>, proxy: JoinHandle<()>) {
+    gate.release();
+    let _ = tokio::time::timeout(Duration::from_secs(10), pool.close()).await;
+    proxy.abort();
+}
+
+async fn session_id(connection: &mut MySqlConnection) -> i64 {
+    sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)").fetch_one(connection).await.unwrap()
+}
+
+/// Server #1368, silent peer with a statement in flight: the database stops
+/// answering while a runtime pool connection waits for a statement's reply.
+/// The statement fails within the statement reply bound and the connection
+/// is discarded, instead of holding the request until the operating system
+/// gives up on the peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound() {
+    let (pool, gate, proxy) = silent_peer_pool(SHORT_REPLIES).await;
+    let qualified = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut connection = pool.acquire().await.unwrap();
+        let silent = session_id(&mut connection).await;
+        gate.hold.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        let outcome = sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&mut *connection).await;
+        let waited = started.elapsed();
+        assert!(matches!(&outcome, Err(sqlx::Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut),
+            "a silent peer fails the statement: {outcome:?}");
+        assert!(waited >= SHORT_REPLIES.statement - Duration::from_millis(100)
+            && waited < SHORT_REPLIES.statement + Duration::from_secs(2), "within the statement bound: {waited:?}");
+        let returned = Instant::now();
+        connection.return_to_pool().await;
+        assert!(returned.elapsed() < Duration::from_secs(1), "a connection out of step is discarded at once");
+        gate.release();
+        let mut replacement = tokio::time::timeout(Duration::from_secs(10), pool.acquire()).await
+            .expect("the silent connection's slot returns").unwrap();
+        assert_ne!(session_id(&mut replacement).await, silent, "the silent connection was discarded");
+    })
+    .await;
+    close_silent_peer_pool(pool, gate, proxy).await;
+    qualified.expect("bounded in-flight silent-peer qualification");
+    assert!(super::super::backend::STATEMENT_REPLY_BOUND
+        > super::super::store::TRANSITION_QUEUE_DEADLINE + Duration::from_secs(5));
+}
+
+/// Server #1368, silent peer during release: the database stops answering
+/// as a connection returns to the pool, so SQLx's release ping goes
+/// unanswered. The return (what `ProbeConnection::finish` awaits before it
+/// frees a budget slot) ends within the release reply bound and the
+/// connection is discarded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound() {
+    let (pool, gate, proxy) = silent_peer_pool(SHORT_REPLIES).await;
+    let qualified = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut connection = pool.acquire().await.unwrap();
+        let silent = session_id(&mut connection).await;
+        gate.hold.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        connection.return_to_pool().await;
+        let waited = started.elapsed();
+        assert!(waited >= SHORT_REPLIES.release - Duration::from_millis(100)
+            && waited < SHORT_REPLIES.release + Duration::from_secs(2), "within the release bound: {waited:?}");
+        gate.release();
+        let mut replacement = tokio::time::timeout(Duration::from_secs(10), pool.acquire()).await
+            .expect("the silent connection's slot returns").unwrap();
+        assert_ne!(session_id(&mut replacement).await, silent, "the silent connection was discarded");
+    })
+    .await;
+    close_silent_peer_pool(pool, gate, proxy).await;
+    qualified.expect("bounded release silent-peer qualification");
+    // A release on a silent peer holds a budget slot for at most the release
+    // bound: no longer than the acquisition deadline, and well within the
+    // transition queue deadline, so queued claims outlast it.
+    let acquire = super::runtime_pool_options().get_acquire_timeout();
+    assert!(super::super::backend::RELEASE_REPLY_BOUND <= acquire);
+    assert!(super::super::backend::RELEASE_REPLY_BOUND < super::super::store::TRANSITION_QUEUE_DEADLINE);
 }

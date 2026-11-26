@@ -45,6 +45,15 @@ pub struct PgStream {
     // has passed, every read fails at once, so the connection is discarded
     // when it returns to the pool even if the replies turn up.
     pub(crate) reply_deadline: Option<std::time::Instant>,
+
+    // While set, every read must receive its next message within this long,
+    // or it fails (Durable Workflow Server #1368): a statement in flight, or
+    // the pool's release ping, on a peer that went silent without a reset.
+    pub(crate) reply_timeout: Option<std::time::Duration>,
+
+    // A read ran past `reply_deadline` or `reply_timeout`: every later read
+    // fails at once, so the owner discards the connection.
+    pub(crate) reply_failed: bool,
 }
 
 impl PgStream {
@@ -62,6 +71,8 @@ impl PgStream {
             parameter_statuses: BTreeMap::default(),
             server_version_num: None,
             reply_deadline: None,
+            reply_timeout: None,
+            reply_failed: false,
         })
     }
 
@@ -85,17 +96,28 @@ impl PgStream {
     }
 
     pub(crate) async fn recv_unchecked(&mut self) -> Result<ReceivedMessage, Error> {
-        let Some(deadline) = self.reply_deadline else {
-            return self.read_unchecked().await;
-        };
-        // `read_unchecked` is cancel-safe: a timed-out read consumes nothing.
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
+        if self.reply_failed {
             return Err(unanswered_reply());
         }
-        let message = sqlx_core::rt::timeout(remaining, self.read_unchecked())
-            .await
-            .map_err(|_| unanswered_reply())??;
+        let now = std::time::Instant::now();
+        let deadline = match (self.reply_deadline, self.reply_timeout) {
+            (None, None) => return self.read_unchecked().await,
+            (Some(deadline), None) => deadline,
+            (None, Some(timeout)) => now + timeout,
+            (Some(deadline), Some(timeout)) => deadline.min(now + timeout),
+        };
+        // `read_unchecked` is cancel-safe: a timed-out read consumes nothing.
+        let remaining = deadline.saturating_duration_since(now);
+        let read = if remaining.is_zero() {
+            None
+        } else {
+            sqlx_core::rt::timeout(remaining, self.read_unchecked()).await.ok()
+        };
+        let Some(message) = read else {
+            self.reply_failed = true;
+            return Err(unanswered_reply());
+        };
+        let message = message?;
         self.reply_deadline = None;
         Ok(message)
     }
@@ -305,12 +327,12 @@ mod tests {
     }
 }
 
-/// No reply within the bound on a connection whose liveness ping went
-/// unanswered (Durable Workflow Server #1355). The session is not in step any
-/// more, so its owner discards it.
+/// No reply within a reply bound: after an unanswered liveness ping
+/// (Durable Workflow Server #1355), or on any read while `reply_timeout` is
+/// set (#1368). The session is not in step any more, so its owner discards it.
 fn unanswered_reply() -> Error {
     Error::Io(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        "the database sent no reply within the bound for a connection whose liveness ping went unanswered",
+        "the database sent no reply within the connection's reply bound",
     ))
 }

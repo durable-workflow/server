@@ -2511,19 +2511,29 @@ pub struct MySqlStorage {
 }
 
 fn runtime_pool_options() -> MySqlPoolOptions {
-    super::backend::test_idle_connections(MySqlPoolOptions::new())
+    runtime_pool_options_within(super::backend::ReplyBounds::RUNTIME)
+}
+
+/// [`runtime_pool_options`] with explicit reply bounds (tests shorten them).
+/// A new connection starts with the statement reply bound and a released
+/// one waits for the session reset and SQLx's release ping only up to the
+/// release bound, then is discarded (Server #1368).
+pub(super) fn runtime_pool_options_within(bounds: super::backend::ReplyBounds) -> MySqlPoolOptions {
+    super::backend::test_idle_connections_within(MySqlPoolOptions::new(), bounds)
         .max_connections(crate::statement_cache::REQUEST_CONNECTIONS)
         .acquire_timeout(Duration::from_secs(5))
-        .after_connect(|connection, _| {
+        .after_connect(move |connection, _| {
             Box::pin(async move {
+                connection.set_reply_timeout(Some(bounds.statement));
                 sqlx::query("SET lock_wait_timeout=5,innodb_lock_wait_timeout=5")
                     .execute(connection)
                     .await?;
                 Ok(())
             })
         })
-        .after_release(|connection, _| {
+        .after_release(move |connection, _| {
             Box::pin(async move {
+                connection.set_reply_timeout(Some(bounds.release));
                 // A cancelled BEGIN can leave a physical transaction open
                 // before SQLx increments its logical transaction depth. Drain
                 // pending replies, then reset the session before pool reuse
@@ -2901,10 +2911,12 @@ mod tests {
     async fn qualification_carried_activity_polls() {
         let db = Database::new().await;
         let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
-        store.qualify_carried_activity_polls().await;
-        store.qualify_carried_workflow_polls().await;
-        store.qualify_workflow_completion_carriers().await;
-        store.qualify_retained_workflow_poll_keys().await;
+        // Boxed: these qualifications' futures are large enough that, in a
+        // debug test thread's default stack, one more poll frame overflowed.
+        Box::pin(store.qualify_carried_activity_polls()).await;
+        Box::pin(store.qualify_carried_workflow_polls()).await;
+        Box::pin(store.qualify_workflow_completion_carriers()).await;
+        Box::pin(store.qualify_retained_workflow_poll_keys()).await;
         store.close().await;
         db.remove().await;
     }

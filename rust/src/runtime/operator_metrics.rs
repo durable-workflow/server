@@ -1525,6 +1525,9 @@ where
             return Ok(Skipped(reason));
         }
         let mut tx = self.begin().await?;
+        // A run's whole history and rows, with no row bound: on MySQL no reply
+        // bound cuts it off (Server #1368).
+        DB::lift_statement_reply_bound(&mut *tx);
         let run = Self::query("SELECT status,closed_at,workflow_instance_id FROM workflow_runs WHERE id=$1")
             .bind(run_id)
             .fetch_one(&mut *tx)

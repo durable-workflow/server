@@ -102,6 +102,16 @@ impl PgConnection {
         }
     }
 
+    /// Require every read to receive its next message within `timeout`, or
+    /// none with `None` (Durable Workflow Server #1368). A statement in flight
+    /// or a release ping on a peer that went silent without a reset then fails
+    /// with an I/O `TimedOut` error instead of waiting until the operating
+    /// system gives up on the peer, and every later read fails at once, so the
+    /// connection is discarded. It applies from the next read on.
+    pub fn set_reply_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.inner.stream.reply_timeout = timeout;
+    }
+
     // will return when the connection is ready for another query
     pub(crate) async fn wait_until_ready(&mut self) -> Result<(), Error> {
         if !self.inner.stream.write_buffer_mut().is_empty() {

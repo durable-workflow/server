@@ -236,6 +236,9 @@ store_methods! {
     pub(super) async fn delete_namespace(&self, name: &str) -> Result<Value> {
         let name = name.to_ascii_lowercase();
         let mut tx = self.begin().await?;
+        // Every row the namespace owns, in one transaction with no batch
+        // bound: on MySQL no reply bound cuts it off (Server #1368).
+        DB::lift_statement_reply_bound(&mut *tx);
         if Self::scalar("SELECT COUNT(*) FROM workflow_namespaces WHERE name=$1")
             .bind(&name)
             .fetch_one(&mut *tx)

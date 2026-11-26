@@ -94,6 +94,16 @@ impl MySqlConnection {
         }
     }
 
+    /// Require every read to receive its next packet within `timeout`, or
+    /// none with `None` (Durable Workflow Server #1368). A statement in flight
+    /// or a release ping on a peer that went silent without a reset then fails
+    /// with an I/O `TimedOut` error instead of waiting until the operating
+    /// system gives up on the peer, and every later read fails at once, so the
+    /// connection is discarded. It applies from the next read on.
+    pub fn set_reply_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        self.inner.stream.reply_timeout = timeout;
+    }
+
     /// Whether this session is known to be idle outside a transaction: no
     /// reply is pending or unsent, no statement prepare is half read, no
     /// SQLx transaction is open, and the last reply read carried a server
