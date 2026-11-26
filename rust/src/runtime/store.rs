@@ -5215,6 +5215,7 @@ where
             None => envelope(&body, "result")?,
         };
         let mut tx = self.begin().await?;
+        let prefix = prefix.map(|(through, last_event_id)| super::continuation::Prefix::V1(through, last_event_id));
         let mut response = self.complete_activity_in(&mut tx, task_id, body, external.as_ref(), result, workflow_poll, prefix).await?;
         tx.commit().await?;
         super::carried_polls::refresh_workflow_clock(&mut response);
@@ -5227,7 +5228,7 @@ where
     pub(super) async fn complete_activity_in(
         &self, tx: &mut Transaction<'_, DB>, task_id: &str, body: Value,
         external: Option<&super::external_resolution::PreparedExternal>, result: String,
-        workflow_poll: Option<super::carried_polls::WorkflowPoll>, prefix: Option<(i64, &str)>,
+        workflow_poll: Option<super::carried_polls::WorkflowPoll>, prefix: Option<super::continuation::Prefix<'_>>,
     ) -> Result<Value> {
         let attempt_id = text(&body, "activity_attempt_id")?;
         let task = self.task_row(tx, task_id).await?;
@@ -5296,9 +5297,15 @@ where
             return Err(refuse(StatusCode::CONFLICT, "stale_attempt"));
         }
         super::activity_deadlines::fence::<DB>(&activity)?;
+        let mut v2_decline = None;
         let prefix_holds = match prefix {
-            Some((through, last_event_id)) => Some(DB::optional_document_row(&activity, "parallel_group_path")?.is_none()
+            Some(super::continuation::Prefix::V1(through, last_event_id)) => Some(DB::optional_document_row(&activity, "parallel_group_path")?.is_none()
                 && Self::continuation_prefix_holds(tx, &run_id, through, last_event_id).await?),
+            Some(super::continuation::Prefix::V2(request)) => {
+                let decline = self.continuation_v2_decline(tx, &task, &run, &activity, request).await?;
+                v2_decline = Some(decline);
+                Some(decline.is_none())
+            }
             None => None,
         };
         if let Some(prepared) = &external {
@@ -5386,7 +5393,11 @@ where
         tx.claim_only = None;
         let mut response = json!({"task_id": task_id, "activity_attempt_id": attempt_id, "outcome": "completed", "recorded": true, "reason": null, "next_task_id": next_task_id});
         if let Some(poll) = carried.workflow_response(workflow_poll.as_ref())? { response["workflow_poll"] = poll; }
-        if let Some(holds) = prefix_holds { response["continuation_prefix_holds"] = json!(holds); }
+        if let Some(decline) = v2_decline {
+            response[super::continuation_v2::DECLINE_FIELD] = json!(decline);
+        } else if let Some(holds) = prefix_holds {
+            response["continuation_prefix_holds"] = json!(holds);
+        }
         Ok(response)
     }
     pub(crate) async fn fire_due_timers(&self) -> Result<()> {

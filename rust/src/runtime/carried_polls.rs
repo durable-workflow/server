@@ -76,6 +76,13 @@ pub(super) fn refresh_workflow_clock(response: &mut Value) {
     }
 }
 
+/// The activity counterpart of `refresh_workflow_clock`.
+pub(super) fn refresh_activity_clock(response: &mut Value) {
+    if let Some(answer) = response.get_mut("activity_poll").and_then(|poll| poll.get_mut("answer")) {
+        *answer = super::store::activity_server_time("activity", std::mem::take(answer));
+    }
+}
+
 // Request validation happens before claim_in. In particular, invalid_request
 // from inside a claim can describe corrupt stored data, so it is not soft.
 fn soft_refusal(error: &RuntimeError) -> bool {
@@ -234,6 +241,14 @@ store_methods! {
             }
         }
         Ok(None)
+    }
+
+    /// Recover only the original carrier's still-live lease, without a claim.
+    pub(super) async fn replay_carried_activity(&self, poll: &ActivityPoll) -> Result<Option<Value>> {
+        match self.replay_activity_poll_read_only(&poll.body, &poll.fence).await? {
+            Some(task) => Outcome::Leased(task).activity_response(),
+            None => Ok(None),
+        }
     }
 
     pub(super) async fn admit_workflow_carrier(
