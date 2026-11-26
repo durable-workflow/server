@@ -190,11 +190,19 @@ fn payload_blob(payload: &Value) -> Option<&str> {
     }
 }
 
-/// `externalStorageEnvelope`.
+/// `externalStorageEnvelope`. Native's envelope carries a validated runtime
+/// `external_payload` reference where PHP's carries `external_storage`
+/// (Server #1366). The manifest reads the bundle after stored references
+/// became envelopes, so it must recognise both shapes.
 fn external_envelope(payload: &Value) -> Option<Value> {
     match payload {
         Value::String(blob) if !blob.is_empty() => stored_envelope(blob),
         Value::Object(fields) if fields.get("external_storage").is_some_and(Value::is_object) => Some(payload.clone()),
+        Value::Object(fields)
+            if fields.get("external_payload").is_some_and(|reference| crate::external_payload::Reference::validate(reference).is_ok()) =>
+        {
+            Some(payload.clone())
+        }
         _ => None,
     }
 }
@@ -743,6 +751,35 @@ mod tests {
         let missing = manifest_entry("payloads.output.data".into(), Some("avro"), &Value::Null);
         assert_eq!((missing["available"].clone(), missing["diagnostic"].clone()), (json!(false), json!("payload_unavailable")));
         assert_eq!(manifest_entry("x".into(), None, &json!("{}"))["diagnostic"], "json_bytes_labeled_avro");
+    }
+
+    /// Server #1366: a native reference, stored or as the envelope the
+    /// bundle carries, is marked as the history-archives guide says, like a
+    /// PHP `external_storage` envelope. An invalid reference is not.
+    #[test]
+    fn manifest_marks_runtime_external_references() {
+        let reference = json!({"schema": crate::external_payload::REFERENCE_SCHEMA,
+            "reference_id": "ep_01JZ0000000000000000000000", "codec": "avro", "size_bytes": 12,
+            "sha256": "a".repeat(64)});
+        let stored = format!("{}{reference}", super::super::external_resolution::STORED_PREFIX);
+        let envelope = json!({"codec": "avro", "external_payload": reference});
+        assert_eq!(stored_envelope(&stored), Some(envelope.clone()));
+        let php = json!({"codec": "avro", "external_storage": {"uri": "s3://bucket/key"}});
+        for payload in [json!(stored), envelope.clone(), php] {
+            let entry = manifest_entry("payloads.arguments.data".into(), Some("avro"), &payload);
+            assert_eq!(
+                [&entry["available"], &entry["codec"], &entry["encoding"], &entry["diagnostic"]],
+                [&json!(true), &json!("avro"), &json!("external-storage-reference"), &json!("external_storage_reference")],
+                "{payload}"
+            );
+            assert!(entry["avro_framing"].is_null() && entry["writer_schema_fingerprint"].is_null(), "{entry}");
+        }
+        assert_eq!(payload_value(&envelope), envelope);
+        let mut invalid = envelope;
+        invalid["external_payload"]["sha256"] = json!("short");
+        let entry = manifest_entry("payloads.arguments.data".into(), Some("avro"), &invalid);
+        assert_eq!([&entry["available"], &entry["encoding"], &entry["diagnostic"]],
+            [&json!(false), &json!("base64-avro-single-object"), &json!("payload_unavailable")]);
     }
 
     #[test]
