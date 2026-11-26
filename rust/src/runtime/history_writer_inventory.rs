@@ -226,56 +226,115 @@ fn raw(bytes: &[u8], from: usize) -> Option<(Option<(usize, usize)>, usize)> {
     Some((Some((open + 1, end)), (end + closing.len()).min(bytes.len())))
 }
 
-/// The index after the item that starts at `from`, judged by its first word:
-/// a body item (`mod`, `fn`, `impl`, `struct`, ...) ends at its body's
-/// closing brace or its `;`; a statement (`const`, `static`, `use`, `type`,
-/// `let`) ends only at its `;`, so generic, where-clause and `if`/`else`
-/// braces never end it early. Anything else (a block, an `if`, a field, a
-/// match arm) ends at its first closed block, a top-level `,` or `;`, or an
-/// enclosing closing bracket.
+/// How a `#[cfg(test)]` item ends, judged by its first words.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    /// `mod`, `fn`, `impl`, `struct`, ... (also `const unsafe fn`,
+    /// `extern "C" fn` and extern blocks): ends at its body's closing brace
+    /// or its `;`.
+    Body,
+    /// `const X`, `static`, `use`, `type`, `let`, `extern crate`: ends only
+    /// at its `;`, so generic, where-clause and `if`/`else` braces never end
+    /// it early.
+    Statement,
+    /// Anything else (a block, `unsafe { .. }`, `async move { .. }`,
+    /// `const { .. }`, an `if`, a field, a match arm): ends at its first
+    /// closed block, a top-level `,` or `;`, or an enclosing closing bracket.
+    Expression,
+}
+
+fn ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The identifier or number that starts at `at`, or an empty slice.
+fn word_at(bytes: &[u8], at: usize) -> &[u8] {
+    let rest = bytes.get(at..).unwrap_or_default();
+    &rest[..rest.iter().take_while(|&&byte| ident_byte(byte)).count()]
+}
+
+fn skip_space(bytes: &[u8], mut at: usize) -> usize {
+    while at < bytes.len() && bytes[at].is_ascii_whitespace() {
+        at += 1;
+    }
+    at
+}
+
+/// The kind of the item whose first word starts at `from`, after
+/// visibility (`pub`, `pub(crate)`) and qualifiers (`async`, `unsafe`,
+/// `default`). A qualifier that opens a block (`unsafe {`, `async {`,
+/// `async move {`, `const {`) makes a block expression, not an item.
+fn item_kind(bytes: &[u8], from: usize) -> Kind {
+    let mut cursor = from;
+    loop {
+        let word = word_at(bytes, cursor);
+        let next = skip_space(bytes, cursor + word.len());
+        let opens_block = bytes.get(next) == Some(&b'{') || word_at(bytes, next) == b"move";
+        match word {
+            b"pub" => {
+                cursor = next;
+                if bytes.get(cursor) == Some(&b'(') {
+                    let close = bytes[cursor..].iter().position(|&byte| byte == b')').map_or(bytes.len(), |end| cursor + end);
+                    cursor = skip_space(bytes, close + 1);
+                }
+            }
+            b"async" | b"unsafe" | b"const" if opens_block => return Kind::Expression,
+            b"async" | b"unsafe" | b"default" => cursor = next,
+            // `const unsafe fn`, `const extern "C" fn`, `extern "C" fn`: a
+            // function when `fn` comes before the first `(`, `=`, `:` or
+            // `{`. Any other `extern` but `extern crate` is an extern block.
+            b"const" | b"extern" => {
+                let header = bytes[cursor..]
+                    .iter()
+                    .position(|byte| b"(=:{;".contains(byte))
+                    .map_or(bytes.len(), |end| cursor + end);
+                let function = bytes[cursor..header].split(|&byte| !ident_byte(byte)).any(|word| word == b"fn");
+                return if function || word == b"extern" && word_at(bytes, next) != b"crate" {
+                    Kind::Body
+                } else {
+                    Kind::Statement
+                };
+            }
+            b"mod" | b"fn" | b"impl" | b"struct" | b"enum" | b"trait" | b"union" | b"macro_rules" => return Kind::Body,
+            b"static" | b"use" | b"type" | b"let" => return Kind::Statement,
+            _ => return Kind::Expression,
+        }
+    }
+}
+
+/// The index after the `#[cfg(test)]` item that starts at `from` (see
+/// [`Kind`]).
 fn item_end(bytes: &[u8], from: usize) -> usize {
     let mut cursor = from;
     // Skip further attributes and whitespace to find the item's first word.
+    // Brackets inside an attribute's string or character literals do not
+    // count.
     loop {
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        if bytes[cursor..].starts_with(b"#[") {
-            let mut depth = 0usize;
-            while cursor < bytes.len() {
-                match bytes[cursor] {
-                    b'[' => depth += 1,
-                    b']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            cursor += 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-                cursor += 1;
-            }
-        } else {
+        cursor = skip_space(bytes, cursor);
+        if !bytes[cursor..].starts_with(b"#[") {
             break;
         }
+        let mut depth = 0usize;
+        while cursor < bytes.len() {
+            if let Some(after) = literal_end(bytes, cursor) {
+                cursor = after;
+                continue;
+            }
+            match bytes[cursor] {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        cursor += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            cursor += 1;
+        }
     }
-    // The item's kind comes from its first word after visibility and
-    // qualifiers: `pub(crate) async fn` is a function, `const X` a
-    // statement, `{`, `if`, `match` or `A => ..` an expression.
-    let words: Vec<&[u8]> = bytes[cursor..(cursor + 96).min(bytes.len())]
-        .split(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'_'))
-        .filter(|word| !word.is_empty())
-        .collect();
-    let starts_with_word = bytes.get(cursor).is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_');
-    let mut words = words.into_iter().skip_while(|word| {
-        starts_with_word && matches!(*word, b"pub" | b"crate" | b"super" | b"self" | b"in" | b"async" | b"unsafe" | b"default")
-    });
-    let (first, second) = if starts_with_word { (words.next().unwrap_or_default(), words.next().unwrap_or_default()) } else { (&b""[..], &b""[..]) };
-    let body_item = matches!(first, b"mod" | b"fn" | b"impl" | b"struct" | b"enum" | b"trait" | b"union" | b"macro_rules")
-        || matches!(first, b"const" | b"extern") && second == b"fn";
-    let semicolon_item = !body_item
-        && (matches!(first, b"const" | b"static" | b"use" | b"type" | b"let") || first == b"extern" && second == b"crate");
+    let kind = item_kind(bytes, cursor);
     let mut depth = 0usize;
     let mut index = cursor;
     while index < bytes.len() {
@@ -290,13 +349,13 @@ fn item_end(bytes: &[u8], from: usize) -> usize {
                 depth -= 1;
                 // A body item ends with its body; an expression (a block, an
                 // `if`, a match arm's block) with its first closed block.
-                if depth == 0 && !semicolon_item {
+                if depth == 0 && kind != Kind::Statement {
                     return index + 1;
                 }
             }
             b')' | b']' => depth -= 1,
             b';' if depth == 0 => return index + 1,
-            b',' if depth == 0 && !body_item && !semicolon_item => return index + 1,
+            b',' if depth == 0 && kind == Kind::Expression => return index + 1,
             _ => {}
         }
         index += 1;
@@ -305,7 +364,7 @@ fn item_end(bytes: &[u8], from: usize) -> usize {
 }
 
 fn ident(bytes: &[u8], index: usize) -> bool {
-    index > 0 && (bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_')
+    index > 0 && ident_byte(bytes[index - 1])
 }
 
 /// Every string literal's content in `source`.
@@ -457,15 +516,47 @@ fn the_scanner_skips_test_items_and_classifies_literals() {
                 _ => { let p = "DELETE FROM workflow_history_events WHERE after_arm"; }
             }
             #[cfg(test)]
+            unsafe { let _probe = 1; }
+            let q = "DELETE FROM workflow_history_events WHERE after_unsafe";
+            #[cfg(test)]
+            async { let _x = 1; }
+            let r = "DELETE FROM workflow_history_events WHERE after_async";
+            #[cfg(test)]
+            async move { let _y = 1; }
+            let s = "DELETE FROM workflow_history_events WHERE after_async_move";
+            #[cfg(test)]
+            const { assert!(MAX > 0) }
+            let t = "DELETE FROM workflow_history_events WHERE after_const_block";
+            #[cfg(test)]
+            const unsafe fn probe() -> u8 { 1 }
+            let u = "DELETE FROM workflow_history_events WHERE after_const_unsafe_fn";
+            #[cfg(test)]
+            const extern "C" fn probe_c() -> u8 { 1 }
+            let v = "DELETE FROM workflow_history_events WHERE after_const_extern_fn";
+            #[cfg(test)]
+            extern "C" fn probe_e() -> u8 { 1 }
+            let w = "DELETE FROM workflow_history_events WHERE after_extern_fn";
+            #[cfg(test)]
+            #[doc = "] {"]
+            fn bracket() { let _ = 1; }
+            let x = "DELETE FROM workflow_history_events WHERE after_bracket";
+            #[cfg(test)]
             pub(crate) async fn helper() { let _ = "DELETE FROM workflow_history_events WHERE helper"; }
             "INSERT INTO workflow_history_events(id) VALUES ('after_helper')"
         }
     "##;
     let kept = non_test(source);
-    for present in ["const A", "const C", "const F", "const L", "after_block", "after_if", "after_arm", "after_helper"] {
+    for present in [
+        "const A", "const C", "const F", "const L", "after_block", "after_if", "after_arm", "after_unsafe", "after_async",
+        "after_async_move", "after_const_block", "after_const_unsafe_fn", "after_const_extern_fn", "after_extern_fn",
+        "after_bracket", "after_helper",
+    ] {
         assert!(kept.contains(present), "{present}: {kept}");
     }
-    for absent in ["fixture", "raw()", "generic", "const B", "let c", "WHERE helper", "TRUNCATE workflow_history_events\"; }"] {
+    for absent in [
+        "fixture", "raw()", "generic", "const B", "let c", "WHERE helper", "TRUNCATE workflow_history_events\"; }", "_probe",
+        "_x", "_y", "MAX > 0", "fn probe", "doc =", "fn bracket",
+    ] {
         assert!(!kept.contains(absent), "{absent}: {kept}");
     }
     let classified: Vec<(String, bool)> = literals(&kept)
@@ -479,11 +570,12 @@ fn the_scanner_skips_test_items_and_classifies_literals() {
         .collect();
     let writes_found = classified.iter().filter(|(_, write)| *write).count();
     let names_found: Vec<&str> = classified.iter().filter(|(_, write)| !*write).map(|(literal, _)| literal.as_str()).collect();
-    // A, E, G, H, I, J and L are writes, and so are the four production
-    // literals after the stripped block, `if`, arm and helper. C's
+    // A, E, G, H, I, J and L are writes, and so are the twelve production
+    // literals after the stripped block, `if`, arm, qualified blocks and
+    // functions, bracketed attribute and helper. C's
     // fragment and D's bare name are names that must be listed. F, and M
     // with its row lock, are reads.
-    assert_eq!(writes_found, 11, "{classified:#?}");
+    assert_eq!(writes_found, 19, "{classified:#?}");
     assert_eq!(names_found, ["workflow_history_events WHERE sequence>1", "workflow_history_events"], "{classified:#?}");
 }
 
