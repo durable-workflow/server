@@ -31,7 +31,7 @@ mod transition_codec_tests;
 
 #[cfg(test)]
 #[path = "continuation_atomic_tests.rs"]
-mod continuation_atomic_tests;
+pub(super) mod continuation_atomic_tests;
 
 #[derive(Clone)]
 pub struct Runtime {
