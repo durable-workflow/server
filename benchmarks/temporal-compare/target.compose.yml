@@ -7,7 +7,9 @@
 #   native-pgsql  native Server on PostgreSQL 16
 # No container limits on the measured hosts: the plan is the limit. The
 # server port is published only on DW_RACE_TARGET_BIND, the target's private
-# address, and the host firewall admits it only from the driver. Databases
+# address in a VPC that holds only the target and the driver. Docker's
+# published ports bypass the host firewall, so the bind address is the
+# control. Databases
 # keep their default durability (fsync on commit) and are reached over TCP.
 # temporal_compare.py sets every image from images.lock.json and refuses any
 # other image or a weaker durability setting.

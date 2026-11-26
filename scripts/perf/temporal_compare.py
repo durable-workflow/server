@@ -993,8 +993,11 @@ def race_command(args: argparse.Namespace) -> int:
     if args.race not in RACES:
         raise SystemExit(f"--race must be one of {', '.join(RACES)}")
     result = temporal_race(args) if args.system == "temporal" else native_race(args)
-    print(json.dumps(result))
-    return 0 if result["ok"] else 1
+    print(json.dumps(result), flush=True)
+    sys.stderr.flush()
+    # A timed-out batch can leave the Temporal client's long polls open, and
+    # they would hold the interpreter at exit. The result is already written.
+    os._exit(0 if result["ok"] else 1)
 
 
 # ---------------------------------------------------------------------------

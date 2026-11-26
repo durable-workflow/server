@@ -83,15 +83,18 @@ The `Temporal Compare` workflow
 only on `workflow_dispatch` from `main`, in the `perf-soak` environment with
 `VULTR_PERF_API_KEY`. `scripts/perf/run-vultr-temporal-compare.sh` creates a
 VPC, a target VM (`vhp-2c-4gb-amd` by default, or `vhp-1c-2gb-amd`) and a
-`vhp-4c-8gb-amd` driver. The target admits SSH and the race ports only from
-the driver's private address. The driver builds the native Server from the
-requested commit and the worker images, then runs the race. The controller's
+`vhp-4c-8gb-amd` driver. The target's firewall admits SSH only from the
+runner and the driver. The race port is published only on the target's
+private address, in a VPC that holds only the two VMs. Docker's published
+ports bypass the host firewall, so the bind address is what limits them. The
+driver builds the native Server from the requested commit and the worker
+images, then runs the race. The controller's
 exit trap deletes both VMs and the VPC and verifies they are gone, by a 404
 for each and by listing instances under the run's unique label. A failed
 check fails the job.
 
 The controller refuses to start when the worst-case cost could exceed
-`max_spend_usd`. The worst case is the VM lifetime cap (150 minutes, billed
+`max_spend_usd`. The worst case is the VM lifetime cap (180 minutes, billed
 as 3 started hours) at the plans' published hourly prices. The race must end
 10 minutes before the cap, and the job's `timeout-minutes` is longer than the
 cap, so the trap still runs. If a runner dies before its trap runs, the next

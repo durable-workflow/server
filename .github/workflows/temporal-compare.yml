@@ -55,9 +55,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: perf-soak
     if: github.repository == 'durable-workflow/server' && github.ref == 'refs/heads/main'
-    # Longer than the controller's 150-minute VM lifetime cap, so its exit
+    # Longer than the controller's 180-minute VM lifetime cap, so its exit
     # trap deletes the VMs before Actions stops the job.
-    timeout-minutes: 180
+    timeout-minutes: 210
 
     steps:
       - name: Checkout server
@@ -85,7 +85,7 @@ jobs:
           DW_RACE_REPS: ${{ inputs.reps }}
           DW_RACE_WORKFLOWS: ${{ inputs.workflows }}
           DW_RACE_MAX_SPEND_USD: ${{ inputs.max_spend_usd }}
-          DW_RACE_MAX_VM_MINUTES: "150"
+          DW_RACE_MAX_VM_MINUTES: "180"
         run: scripts/perf/run-vultr-temporal-compare.sh race
 
       # If the race step was cancelled or timed out before its trap finished,

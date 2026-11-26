@@ -230,7 +230,7 @@ class ControllerTest(unittest.TestCase):
         result = self.run_controller()
         output = result.stdout + result.stderr
         self.assertEqual(0, result.returncode, output)
-        self.assertIn("worst case: VM lifetime cap 150 min -> 3 billed h -> $0.321 (limit $0.35)", output)
+        self.assertIn("worst case: VM lifetime cap 180 min -> 3 billed h -> $0.321 (limit $0.35)", output)
         self.assertIn("DRY-RUN Vultr API: POST /vpcs", output)
         self.assertEqual(2, output.count("DRY-RUN Vultr API: POST /instances "))
         self.assertIn('"plan":"vhp-2c-4gb-amd"', output)

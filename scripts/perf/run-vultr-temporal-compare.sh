@@ -27,7 +27,7 @@ TARGET_PLAN="${DW_RACE_TARGET_PLAN:-vhp-2c-4gb-amd}"
 DRIVER_PLAN="vhp-4c-8gb-amd"
 OS_ID="${VULTR_PERF_OS_ID:-2284}"
 DRY_RUN="${DW_RACE_DRY_RUN:-0}"
-MAX_VM_MINUTES="${DW_RACE_MAX_VM_MINUTES:-150}"
+MAX_VM_MINUTES="${DW_RACE_MAX_VM_MINUTES:-180}"
 MAX_SPEND_USD="${DW_RACE_MAX_SPEND_USD:-0.35}"
 RACES="${DW_RACE_RACES:-five-steps,five-local-steps}"
 BACKENDS="${DW_RACE_BACKENDS:-sqlite,mysql,pgsql}"
@@ -107,12 +107,12 @@ if [[ "$MODE" == race ]]; then
 
   # Expected minutes: provisioning and cloud-init (10), building the native
   # Server and the worker images on the driver (30), then per system 2
-  # minutes of start, warmup and teardown plus 0.75 minutes per rep of 200
+  # minutes of start, warmup and teardown plus 1.5 minutes per rep of 200
   # workflows. A race runs Temporal twice around the native backends.
   race_count=$(tr ',' '\n' <<<"$RACES" | wc -l)
   backend_count=$(tr ',' '\n' <<<"$BACKENDS" | wc -l)
   EXPECTED_MINUTES=$(awk -v r="$race_count" -v b="$backend_count" -v reps="$REPS" -v w="$WORKFLOWS" \
-    'BEGIN { m = 40 + r * (b + 2) * (2 + reps * 0.75 * w / 200); printf "%d", (m == int(m)) ? m : int(m) + 1 }')
+    'BEGIN { m = 40 + r * (b + 2) * (2 + reps * 1.5 * w / 200); printf "%d", (m == int(m)) ? m : int(m) + 1 }')
   if ((EXPECTED_MINUTES + TEARDOWN_MINUTES > MAX_VM_MINUTES)); then
     fail_input "Expected ${EXPECTED_MINUTES} minutes plus ${TEARDOWN_MINUTES} for teardown exceeds DW_RACE_MAX_VM_MINUTES=${MAX_VM_MINUTES}."
   fi
@@ -448,7 +448,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
 DRY-RUN remote steps (no SSH in a dry run):
   wait for SSH and cloud-init on target $TARGET_IP and driver $DRIVER_IP
   bring up the VPC interface (MAC $TARGET_MAC / $DRIVER_MAC) if cloud-init did not
-  target firewall: allow 22, 7233 and 8080 from the driver's private address $DRIVER_PRIVATE only
+  target firewall: allow SSH from the driver's private address $DRIVER_PRIVATE; race ports publish on $TARGET_PRIVATE only
   driver: check out harness $GITHUB_SHA and Server $SERVER_REF, then run with timeout $((DEADLINE - $(date -u +%s)))s:
     python3 scripts/perf/temporal_compare.py run --output ~/race-out --races $RACES --backends $BACKENDS \\
       --reps $REPS --workflows $WORKFLOWS --native-source ~/server-under-test \\
@@ -505,12 +505,13 @@ REMOTE
 ensure_private "$TARGET_IP" "$TARGET_PRIVATE" "$TARGET_MAC"
 ensure_private "$DRIVER_IP" "$DRIVER_PRIVATE" "$DRIVER_MAC"
 
-log "Admitting only the driver's private address to the target"
+# The driver reaches the target's Docker engine over SSH. The race ports
+# are published only on the target's private address; Docker's published
+# ports bypass ufw, so the VPC holding only these two VMs is the boundary.
+log "Admitting SSH from the driver's private address to the target"
 remote "$TARGET_IP" bash -s -- "$DRIVER_PRIVATE" <<'REMOTE'
 set -euo pipefail
-for port in 22 7233 8080; do
-  sudo ufw allow from "$1" to any port "$port" proto tcp >/dev/null
-done
+sudo ufw allow from "$1" to any port 22 proto tcp >/dev/null
 REMOTE
 
 log "Giving the driver SSH access to the target's Docker engine"
