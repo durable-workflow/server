@@ -6,7 +6,13 @@ use sha2::{Digest, Sha256};
 use sqlx::MySqlConnection;
 use std::sync::OnceLock;
 
-const ROUTINE_BODY: &str = include_str!("../../migrations/mysql/0021_child_summary_checkpoint_catalog.sql");
+/// The catalog function's body. Schema MySQL 23 / MariaDB 22 (Server #1339)
+/// reads this database's triggers by `EVENT_OBJECT_SCHEMA`, the column MariaDB
+/// looks up; filtering on `TRIGGER_SCHEMA` read every database's tables.
+const ROUTINE_BODY: &str = include_str!("../../migrations/mysql/0023_child_summary_catalog_lookup.sql");
+/// The body schemas MySQL 21-22 / MariaDB 20-21 installed. An upgrade replaces it.
+const PREDECESSOR_ROUTINE_BODY: &str = include_str!("../../migrations/mysql/0021_child_summary_checkpoint_catalog.sql");
+const DROP_ROUTINE: &str = "DROP FUNCTION dw_child_summary_catalog;\n";
 const VIEW_SQL: &str = "CREATE SQL SECURITY DEFINER VIEW dw_child_summary_catalog AS SELECT dw_child_summary_catalog() AS catalog;\n";
 const VIEW_DEFINITION: &str = "select `dw_child_summary_catalog`() AS `catalog`";
 
@@ -19,7 +25,10 @@ type View = (String, String, String, String, i64);
 #[derive(Clone, Copy, Default)]
 pub(super) struct CheckpointCode {
     pub(super) triggers: usize,
+    /// The catalog function with the current body.
     pub(super) routine: bool,
+    /// The catalog function with the schema MySQL 21-22 / MariaDB 20-21 body.
+    pub(super) predecessor_routine: bool,
     pub(super) view: bool,
 }
 
@@ -29,23 +38,41 @@ impl CheckpointCode {
     }
 
     pub(super) fn empty(self) -> bool {
-        !self.routine && !self.view && self.triggers == 0
+        !self.routine && !self.predecessor_routine && !self.view && self.triggers == 0
+    }
+
+    /// Every checkpoint object is installed and only the catalog function may
+    /// still need its current body: a schema MySQL 21-22 / MariaDB 20-21 database,
+    /// or one whose replacement stopped after dropping the predecessor.
+    pub(super) fn awaiting_routine(self) -> bool {
+        self.view && self.triggers == definitions().len()
     }
 
     pub(super) fn missing_ddl(self) -> Vec<String> {
-        let mut statements = Vec::new();
-        if !self.routine {
-            statements.push(format!(
-                "CREATE FUNCTION dw_child_summary_catalog() RETURNS LONGTEXT CHARACTER SET utf8mb4\nREADS SQL DATA SQL SECURITY DEFINER\n{};\n",
-                ROUTINE_BODY.trim_end()
-            ));
-        }
-        if !self.view {
-            statements.push(VIEW_SQL.to_owned());
-        }
-        statements.extend(definitions()[self.triggers..].iter().map(|trigger| trigger.statement()));
-        statements
+        missing_ddl(self, ROUTINE_BODY)
     }
+}
+
+fn routine_sql(body: &str) -> String {
+    format!(
+        "CREATE FUNCTION dw_child_summary_catalog() RETURNS LONGTEXT CHARACTER SET utf8mb4\nREADS SQL DATA SQL SECURITY DEFINER\n{};\n",
+        body.trim_end()
+    )
+}
+
+fn missing_ddl(code: CheckpointCode, body: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    if code.predecessor_routine {
+        statements.push(DROP_ROUTINE.to_owned());
+    }
+    if !code.routine {
+        statements.push(routine_sql(body));
+    }
+    if !code.view {
+        statements.push(VIEW_SQL.to_owned());
+    }
+    statements.extend(definitions()[code.triggers..].iter().map(|trigger| trigger.statement()));
+    statements
 }
 
 #[derive(Deserialize)]
@@ -117,10 +144,22 @@ pub(super) fn bootstrap_sql() -> &'static str {
     SQL.get_or_init(|| CheckpointCode::default().missing_ddl().concat())
 }
 
-fn matches_routine((kind, security, access, output, deterministic, hash, owner): &Routine) -> bool {
+/// The checkpoint code exactly as the schema MySQL 21-22 / MariaDB 20-21 bootstraps
+/// installed it, so those retained bootstraps keep their recorded checksums.
+pub(super) fn predecessor_bootstrap_sql() -> &'static str {
+    static SQL: OnceLock<String> = OnceLock::new();
+    SQL.get_or_init(|| missing_ddl(CheckpointCode::default(), PREDECESSOR_ROUTINE_BODY).concat())
+}
+
+/// Whether a routine row is the catalog function with `body`.
+fn routine_with((kind, security, access, output, deterministic, hash, owner): &Routine, body: &str) -> bool {
     kind == "FUNCTION" && security == "DEFINER" && access == "READS SQL DATA"
         && output == "longtext" && deterministic == "NO"
-        && *hash == digest(ROUTINE_BODY.trim_end()) && *owner == 1
+        && *hash == digest(body.trim_end()) && *owner == 1
+}
+
+fn matches_routine(routine: &Routine) -> bool {
+    routine_with(routine, ROUTINE_BODY)
 }
 
 fn matches_view((security, option, updatable, hash, owner): &View) -> bool {
@@ -173,14 +212,18 @@ pub(super) async fn direct(
     if events != 0 || !marked && (view_present || !routines.is_empty() || !triggers.is_empty()) {
         return Err(refuse(StatusCode::CONFLICT, "existing_database_requires_qualified_takeover"));
     }
-    let routine = match routines.as_slice() {
-        [] => false,
+    let (routine, predecessor_routine) = match routines.as_slice() {
+        [] => (false, false),
         [(name, kind, security, access, output, deterministic, hash, owner)] if name == VIEW => {
-            if !matches_routine(&(kind.clone(), security.clone(), access.clone(), output.clone(),
-                deterministic.clone(), hash.clone(), *owner)) {
+            let row = (kind.clone(), security.clone(), access.clone(), output.clone(),
+                deterministic.clone(), hash.clone(), *owner);
+            if matches_routine(&row) {
+                (true, false)
+            } else if routine_with(&row, PREDECESSOR_ROUTINE_BODY) {
+                (false, true)
+            } else {
                 return Err(mismatch());
             }
-            true
         }
         _ => return Err(mismatch()),
     };
@@ -191,14 +234,16 @@ pub(super) async fn direct(
              FROM information_schema.VIEWS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='dw_child_summary_catalog'")
             .bind(observer_definer)
             .fetch_optional(connection).await?;
-        if !routine || !view.as_ref().is_some_and(matches_view) {
+        // The view may outlive its function only while an upgrade replaces
+        // the predecessor body; completeness still requires the function.
+        if !view.as_ref().is_some_and(matches_view) {
             return Err(mismatch());
         }
     }
     if !matches_triggers(&triggers) || (!triggers.is_empty() && !view_present) {
         return Err(mismatch());
     }
-    Ok(CheckpointCode { triggers: triggers.len(), routine, view: view_present })
+    Ok(CheckpointCode { triggers: triggers.len(), routine, predecessor_routine, view: view_present })
 }
 
 /// MySQL hides trigger definitions from SELECT-only accounts. This fixed

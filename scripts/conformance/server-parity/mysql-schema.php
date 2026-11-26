@@ -75,7 +75,7 @@ function catalog(PDO $pdo, bool $native = false): array
         verifyMysqlChildCheckpointCode($pdo);
     } else {
         $storedCode['ROUTINES'] = 'ROUTINE_SCHEMA';
-        $storedCode['TRIGGERS'] = 'TRIGGER_SCHEMA';
+        $storedCode['TRIGGERS'] = 'EVENT_OBJECT_SCHEMA';
     }
     foreach ($storedCode as $table => $column) {
         if ((int) $pdo->query("SELECT COUNT(*) FROM information_schema.{$table} WHERE {$column}=DATABASE()")->fetchColumn() !== 0) {
