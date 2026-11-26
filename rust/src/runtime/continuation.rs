@@ -17,11 +17,16 @@ pub(super) const MAX_HISTORY_EVENTS: i64 = 256;
 pub(super) const MAX_COMMANDS: usize = 16;
 pub(super) const COMMANDS: [&str; 4] = ["schedule_activity", "start_timer", "complete_workflow", "record_version_marker"];
 
+pub(super) const COMPLETE_ENDPOINT: &str = "/worker/activity-tasks/{taskId}/continuation/complete";
+
+/// The v1 descriptor, unchanged for released SDKs that accept it only when
+/// `version` is exactly 1, with the versions served and the v2 member.
 pub(super) fn capability() -> Value {
     json!({"version": VERSION,
         "history_endpoint": "/worker/activity-tasks/{taskId}/continuation/history",
-        "complete_endpoint": "/worker/activity-tasks/{taskId}/continuation/complete",
-        "supported_commands": COMMANDS, "max_history_events": MAX_HISTORY_EVENTS, "max_commands": MAX_COMMANDS})
+        "complete_endpoint": COMPLETE_ENDPOINT,
+        "supported_commands": COMMANDS, "max_history_events": MAX_HISTORY_EVENTS, "max_commands": MAX_COMMANDS,
+        "supported_versions": [VERSION, super::continuation_v2::VERSION], "v2": super::continuation_v2::capability()})
 }
 
 /// A continuation request's own member, after the ordinary completion fields.

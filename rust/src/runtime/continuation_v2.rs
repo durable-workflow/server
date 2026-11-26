@@ -25,6 +25,15 @@ const DECLINES: [&str; 12] = ["external_payload", "cache_identity_mismatch", "ru
 /// The proof's reason, reported by `complete_activity_in`.
 pub(super) const DECLINE_FIELD: &str = "continuation_v2_decline";
 
+/// The `v2` member of the `activity_workflow_continuation` capability.
+pub(super) fn capability() -> Value {
+    use super::continuation_tail::{TAIL_MAX_BYTES, TAIL_MAX_EVENTS};
+    json!({"version": VERSION, "complete_endpoint": super::continuation::COMPLETE_ENDPOINT,
+        "supported_commands": COMMANDS, "max_commands": MAX_COMMANDS,
+        "requires_worker_capabilities": [super::sticky_execution::CAPABILITY, super::sticky_execution::SUFFIX_CAPABILITY],
+        "tail_max_events": TAIL_MAX_EVENTS, "tail_max_bytes": TAIL_MAX_BYTES})
+}
+
 /// A version-2 continuation request's own member.
 pub(crate) struct Request {
     pub(super) through: i64,

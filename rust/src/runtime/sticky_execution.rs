@@ -11,6 +11,8 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 
+/// The worker capability that opts in to sticky execution.
+pub(super) const CAPABILITY: &str = "sticky_execution";
 pub(super) const STICKY_HIT_EXPECTED: &str = "sticky_hit_expected";
 pub(super) const COLD_REPLAY: &str = "cold_replay";
 pub(super) const FORCED_COLD_REPLAY: &str = "forced_cold_replay";

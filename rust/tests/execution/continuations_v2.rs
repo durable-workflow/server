@@ -168,6 +168,16 @@ async fn an_accepted_continuation_returns_its_tail_and_the_next_one_continues_fr
     assert_eq!(keys, ["activity_attempt_id", "activity_poll", "continuation", "continuation_tail", "next_task_id", "outcome",
         "protocol_version", "reason", "recorded", "server_capabilities", "task_id"].into_iter().collect());
     assert_eq!(done["recorded"], true, "{done}");
+    // The v1 descriptor is unchanged for released SDKs; v2 is its own member.
+    let commands = json!(["schedule_activity", "start_timer", "complete_workflow", "record_version_marker"]);
+    assert_eq!(done["server_capabilities"]["activity_workflow_continuation"], json!({"version":1,
+        "history_endpoint":"/worker/activity-tasks/{taskId}/continuation/history",
+        "complete_endpoint":"/worker/activity-tasks/{taskId}/continuation/complete",
+        "supported_commands":commands,"max_history_events":256,"max_commands":16,"supported_versions":[1,2],
+        "v2":{"version":2,"complete_endpoint":"/worker/activity-tasks/{taskId}/continuation/complete",
+            "supported_commands":commands,"max_commands":16,
+            "requires_worker_capabilities":["sticky_execution","sticky_history_suffix"],
+            "tail_max_events":64,"tail_max_bytes":262144}}));
     let decision = &done["continuation"];
     assert_eq!(decision["version"], 2, "{done}");
     assert_eq!(decision["outcome"], "accepted", "{done}");
