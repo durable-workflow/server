@@ -172,6 +172,8 @@ resume_at=$(php vectors.php late-start | tail -n1)
 docker pause "$prefix-server" >/dev/null
 date +%s.%N > "$evidence/paused-at"
 while (( $(date +%s) < resume_at )); do sleep 1; done
+# The Server can run as soon as the unpause starts, before the CLI returns.
+date +%s.%N > "$evidence/unpausing-at"
 docker unpause "$prefix-server" >/dev/null
 date +%s.%N > "$evidence/unpaused-at"
 php vectors.php late-check || failed=1
