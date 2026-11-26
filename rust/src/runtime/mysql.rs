@@ -2963,6 +2963,24 @@ mod tests {
         }).await.expect("bounded MySQL transition queue qualification");
     }
 
+    // Server #1181 (#1079 controls) on this backend: remembered history
+    // follows every write and both savepoints rewind it, and a registration
+    // replaced after a v2 continuation's admission declines it.
+    #[tokio::test]
+    #[ignore = "requires the existing disposable mysql source suite"]
+    async fn qualification_continuation_v2_transition_state() {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let db = Database::new().await;
+            let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
+            store.qualify_remembered_history().await;
+            store.close().await;
+            let runtime = super::super::Runtime::open_mysql(db.options.clone(), "test-token".into()).await.unwrap();
+            super::super::execution::continuation_atomic_tests::qualify_registration_replaced_after_admission(&runtime).await;
+            runtime.close().await;
+            db.remove().await;
+        }).await.expect("bounded MySQL v2 transition-state qualification");
+    }
+
     #[tokio::test]
     #[ignore = "requires the existing disposable mysql source suite"]
     async fn qualification_commit_handoff_and_history_allocation() {

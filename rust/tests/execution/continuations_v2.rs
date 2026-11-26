@@ -607,23 +607,23 @@ async fn a_version_one_continuation_is_unchanged() {
 
 // The other half of control 2 (#1079): a writer that bypasses the allocator
 // after the proof, inside the transaction, breaks the sequence the
-// transaction remembers. The commit-time independent read catches it.
+// transaction remembers. The commit-time independent read catches it. The
+// trigger is on activity_attempts, which the result write updates after the
+// proof, because MySQL forbids a trigger that changes its own table.
 #[tokio::test]
 async fn a_writer_that_bypasses_the_allocator_after_the_proof_is_caught() {
     let database = TestDatabase::new().await;
-    // MySQL triggers cannot change the table that fired them.
-    if matches!(&database, TestDatabase::MySql { .. }) {
-        return;
-    }
     let runtime = database.open().await.unwrap();
     let app = router(runtime.clone());
     v2_worker(&app, registration("v2-late-bypass")).await;
     let seeded = seed(&app, "v2-late-bypass", "v2-late-bypass", schedule()).await;
+    let delete = "DELETE FROM workflow_history_events WHERE workflow_run_id=NEW.workflow_run_id AND sequence=1";
     match &database {
-        TestDatabase::Sqlite(_) => database.execute("CREATE TRIGGER continuation_bypass AFTER INSERT ON workflow_history_events WHEN NEW.event_type='ActivityCompleted' BEGIN DELETE FROM workflow_history_events WHERE workflow_run_id=NEW.workflow_run_id AND sequence=1; END").await,
-        _ => {
-            database.execute("CREATE FUNCTION continuation_bypass_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type='ActivityCompleted' THEN DELETE FROM workflow_history_events WHERE workflow_run_id=NEW.workflow_run_id AND sequence=1; END IF; RETURN NEW; END $$").await;
-            database.execute("CREATE TRIGGER continuation_bypass AFTER INSERT ON workflow_history_events FOR EACH ROW EXECUTE FUNCTION continuation_bypass_fn()").await;
+        TestDatabase::Sqlite(_) => database.execute(sqlx::AssertSqlSafe(format!("CREATE TRIGGER continuation_bypass AFTER UPDATE ON activity_attempts WHEN OLD.status='running' AND NEW.status='completed' BEGIN {delete}; END"))).await,
+        TestDatabase::MySql { .. } => database.execute(sqlx::AssertSqlSafe(format!("CREATE TRIGGER continuation_bypass AFTER UPDATE ON activity_attempts FOR EACH ROW BEGIN IF OLD.status='running' AND NEW.status='completed' THEN {delete}; END IF; END"))).await,
+        TestDatabase::Postgres { .. } => {
+            database.execute(sqlx::AssertSqlSafe(format!("CREATE FUNCTION continuation_bypass_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.status='running' AND NEW.status='completed' THEN {delete}; END IF; RETURN NEW; END $$"))).await;
+            database.execute("CREATE TRIGGER continuation_bypass AFTER UPDATE ON activity_attempts FOR EACH ROW EXECUTE FUNCTION continuation_bypass_fn()").await;
         }
     }
     let events = history(&app, &seeded).await;
