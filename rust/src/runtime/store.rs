@@ -4531,6 +4531,8 @@ where
         // commands, and guards both before validating streams.
         Self::cancellation_scope_admission(&mut tx, &task, &body, commands, protocol).await?;
         self.guard_worker_session_commands(&mut tx, &task, task_id, &body, protocol, commands).await?;
+        // .github#232: explicit group failure policies, before anything changes.
+        self.guard_parallel_group_policies(&mut tx, &task, commands).await?;
         // `MessageStreamService::validateCompletion`, before anything changes.
         let streams = super::message_streams::Completion::of(&body);
         let stream_instance = Self::query("SELECT workflow_instance_id FROM workflow_runs WHERE id=$1")

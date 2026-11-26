@@ -71,6 +71,8 @@ mod command_context;
 mod signal_claims;
 #[path = "execution/parallel_cancellation.rs"]
 mod parallel_cancellation;
+#[path = "execution/parallel_group_policies.rs"]
+mod parallel_group_policies;
 #[path = "execution/runtime_credentials.rs"]
 mod runtime_credentials;
 #[path = "execution/selected_run_signals.rs"]
