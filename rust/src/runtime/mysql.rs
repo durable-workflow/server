@@ -2911,10 +2911,12 @@ mod tests {
     async fn qualification_carried_activity_polls() {
         let db = Database::new().await;
         let store = super::super::store::Store::new(MySqlStorage::open(db.options.clone()).await.unwrap().into_pool());
-        store.qualify_carried_activity_polls().await;
-        store.qualify_carried_workflow_polls().await;
-        store.qualify_workflow_completion_carriers().await;
-        store.qualify_retained_workflow_poll_keys().await;
+        // Boxed: these qualifications' futures are large enough that, in a
+        // debug test thread's default stack, one more poll frame overflowed.
+        Box::pin(store.qualify_carried_activity_polls()).await;
+        Box::pin(store.qualify_carried_workflow_polls()).await;
+        Box::pin(store.qualify_workflow_completion_carriers()).await;
+        Box::pin(store.qualify_retained_workflow_poll_keys()).await;
         store.close().await;
         db.remove().await;
     }

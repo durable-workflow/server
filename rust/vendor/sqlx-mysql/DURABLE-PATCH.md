@@ -197,9 +197,11 @@ set, each packet read must complete within it; the unanswered-ping
 runs past either sets `reply_failed`, and every later read on the connection
 fails at once with the same I/O `TimedOut` error, so the pool discards the
 connection even if the replies turn up later. With neither set, reads are
-unchanged. Native Server sets 45 seconds for statements and for the session
-reset and release ping, and lifts it for the namespace delete and per-run
-retention prune, which have no row bound.
+unchanged. Native Server sets 45 seconds for statements and 5 seconds for the
+session reset and release ping, and lifts it for the namespace delete and
+per-run retention prune, which have no row bound. Writes are not bounded: a
+send larger than the socket buffer can still wait on a peer that stopped
+reading.
 
 `runtime::mysql::stall_tests::qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound`
 and `qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound`

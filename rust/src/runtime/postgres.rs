@@ -1255,9 +1255,10 @@ mod tests {
         ..super::super::backend::ReplyBounds::RUNTIME
     };
 
+    type SilentPeer = (PgPool, std::sync::Arc<super::super::test_reply_gate::ReplyGate>, tokio::task::JoinHandle<()>);
+
     /// A one-connection runtime pool with `bounds`, behind a reply gate.
-    async fn silent_peer_pool(db: &Database, bounds: super::super::backend::ReplyBounds)
-        -> (PgPool, std::sync::Arc<super::super::test_reply_gate::ReplyGate>, tokio::task::JoinHandle<()>) {
+    async fn silent_peer_pool(db: &Database, bounds: super::super::backend::ReplyBounds) -> SilentPeer {
         use super::super::test_reply_gate::{ReplyGate, forward};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1266,6 +1267,16 @@ mod tests {
         let pool = super::runtime_pool_options_within(bounds).max_connections(1)
             .connect_with(db.options.clone().host("127.0.0.1").port(port)).await.unwrap();
         (pool, gate, proxy)
+    }
+
+    /// Lets every held reply through, closes the pool and the proxy and
+    /// drops the database: run after the qualification's timed part, so a
+    /// timeout still cleans up.
+    async fn close_silent_peer_pool((pool, gate, proxy): SilentPeer, db: Database) {
+        gate.release();
+        let _ = tokio::time::timeout(Duration::from_secs(10), pool.close()).await;
+        proxy.abort();
+        db.remove().await;
     }
 
     async fn backend_pid(connection: &mut PgConnection) -> i32 {
@@ -1280,9 +1291,10 @@ mod tests {
     #[ignore = "requires disposable PostgreSQL; run qualification_ explicitly"]
     async fn qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound() {
         use std::sync::atomic::Ordering;
-        tokio::time::timeout(Duration::from_secs(30), async {
-            let db = Database::new().await;
-            let (pool, gate, proxy) = silent_peer_pool(&db, SHORT_REPLIES).await;
+        let db = Database::new().await;
+        let peer = silent_peer_pool(&db, SHORT_REPLIES).await;
+        let (pool, gate) = (&peer.0, &peer.1);
+        let qualified = tokio::time::timeout(Duration::from_secs(30), async {
             let mut connection = pool.acquire().await.unwrap();
             let silent = backend_pid(&mut connection).await;
             gate.hold.store(true, Ordering::SeqCst);
@@ -1300,13 +1312,10 @@ mod tests {
             let mut replacement = tokio::time::timeout(Duration::from_secs(10), pool.acquire()).await
                 .expect("the silent connection's slot returns").unwrap();
             assert_ne!(backend_pid(&mut replacement).await, silent, "the silent connection was discarded");
-            drop(replacement);
-            pool.close().await;
-            proxy.abort();
-            db.remove().await;
         })
-        .await
-        .expect("bounded in-flight silent-peer qualification");
+        .await;
+        close_silent_peer_pool(peer, db).await;
+        qualified.expect("bounded in-flight silent-peer qualification");
     }
 
     /// Server #1368, silent peer during release: SQLx's release ping goes
@@ -1317,9 +1326,10 @@ mod tests {
     #[ignore = "requires disposable PostgreSQL; run qualification_ explicitly"]
     async fn qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound() {
         use std::sync::atomic::Ordering;
-        tokio::time::timeout(Duration::from_secs(30), async {
-            let db = Database::new().await;
-            let (pool, gate, proxy) = silent_peer_pool(&db, SHORT_REPLIES).await;
+        let db = Database::new().await;
+        let peer = silent_peer_pool(&db, SHORT_REPLIES).await;
+        let (pool, gate) = (&peer.0, &peer.1);
+        let qualified = tokio::time::timeout(Duration::from_secs(30), async {
             let mut connection = pool.acquire().await.unwrap();
             let silent = backend_pid(&mut connection).await;
             gate.hold.store(true, Ordering::SeqCst);
@@ -1332,13 +1342,10 @@ mod tests {
             let mut replacement = tokio::time::timeout(Duration::from_secs(10), pool.acquire()).await
                 .expect("the silent connection's slot returns").unwrap();
             assert_ne!(backend_pid(&mut replacement).await, silent, "the silent connection was discarded");
-            drop(replacement);
-            pool.close().await;
-            proxy.abort();
-            db.remove().await;
         })
-        .await
-        .expect("bounded release silent-peer qualification");
+        .await;
+        close_silent_peer_pool(peer, db).await;
+        qualified.expect("bounded release silent-peer qualification");
     }
 
     fn refused(result: Result<PostgresStorage>, expected: &str) {

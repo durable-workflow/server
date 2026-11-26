@@ -89,10 +89,12 @@ pub(super) const UNANSWERED_PING_REPLY_BOUND: std::time::Duration = std::time::D
 ///   (`statement_timeout`, which includes `lock_timeout`), first-start
 ///   migrations included, so a healthy server always replies within 30 s.
 /// - MySQL and MariaDB refuse lock waits after 5 s (`lock_wait_timeout`,
-///   `innodb_lock_wait_timeout`), and runtime batches are bounded. The
-///   statements without a server-side or batch bound (namespace delete,
-///   per-run retention pruning and operator aggregates) run with
-///   [`Backend::LONG_STATEMENT_REPLY_TIMEOUT`] instead.
+///   `innodb_lock_wait_timeout`), and runtime batches are bounded. The two
+///   transactions without a row bound, the namespace delete and the per-run
+///   retention prune, lift the bound on MySQL
+///   ([`Backend::lift_statement_reply_bound`]). Other MySQL statements, such
+///   as operator aggregates over very large namespaces, keep it, as
+///   PostgreSQL's `statement_timeout` already bounds them at 30 s.
 /// - Like [`UNANSWERED_PING_REPLY_BOUND`] it is above the transition queue
 ///   deadline (30 s) plus the acquisition deadline (5 s), so a statement
 ///   waiting out a stall that short is never cut off by it.
@@ -101,8 +103,13 @@ pub(super) const STATEMENT_REPLY_BOUND: std::time::Duration = std::time::Duratio
 /// How long a connection returning to the pool may wait for each reply: the
 /// MySQL session reset and SQLx's release ping (Server #1368). A silent peer
 /// otherwise kept the connection's pool slot, and a held poll's budget slot
-/// with it, until the operating system gave up on the peer.
-pub(super) const RELEASE_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(45);
+/// with it, until the operating system gave up on the peer. A healthy
+/// release is one round trip, and cutting one short only costs a reconnect,
+/// so it matches the pool's acquisition deadline (5 s, as MySQL's session
+/// reset already does): well below the transition queue deadline (30 s), so
+/// a slot held by a release on a silent peer frees before queued claims give
+/// up.
+pub(super) const RELEASE_REPLY_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The reply bounds of a runtime pool's connections (tests shorten them).
 #[derive(Clone, Copy, Debug)]

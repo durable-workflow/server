@@ -2474,12 +2474,18 @@ how many request workers are busy.
 - Every statement on a MySQL, MariaDB or PostgreSQL runtime connection (the
   request pool and the maintenance connection) must receive each reply
   within 45 seconds, and a connection returning to the pool must receive
-  each reply of its session reset and release ping within 45 seconds.
-  Otherwise the statement or the release fails with `503
-  storage_unavailable` (`database_io`) and the connection is discarded, so a
-  silent database holds a request, a budget slot or a pool slot for at most
-  about 45 seconds instead of until the operating system gives up on the
-  peer ([#1368](https://github.com/durable-workflow/server/issues/1368)).
+  each reply of its session reset and release ping within 5 seconds (the
+  acquisition deadline; MySQL's session reset already has the same
+  deadline). Otherwise the statement fails with `503 storage_unavailable`
+  (`database_io`), or the release ends, and the connection is discarded, so
+  a silent database is noticed on each reply instead of when the operating
+  system gives up on the peer
+  ([#1368](https://github.com/durable-workflow/server/issues/1368)). A
+  release that holds a held poll's budget slot frees it within about 5
+  seconds of reset plus 5 seconds of release ping, well within the 30-second
+  transition queue deadline. Writes are not bounded this way: a request
+  larger than the socket's send buffer can still wait on a peer that stopped
+  reading until the operating system gives up on it.
   A healthy server always replies sooner: PostgreSQL ends every statement
   on these connections after 30 seconds (`statement_timeout`, first-start
   migrations included), and MySQL and MariaDB refuse lock waits after 5

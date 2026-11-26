@@ -106,8 +106,10 @@ each message read must complete within it; the unanswered-ping
 runs past either sets `reply_failed`, and every later read fails at once with
 the same I/O `TimedOut` error, so the pool discards the connection. The read
 stays cancel-safe. With neither set, reads are unchanged. Native Server sets
-45 seconds for statements and for the release ping; `statement_timeout`
-(30 s) ends every statement on these connections sooner on a healthy server.
+45 seconds for statements, which `statement_timeout` (30 s) ends sooner on a
+healthy server, and 5 seconds for the release ping. Writes are not bounded:
+a send larger than the socket buffer can still wait on a peer that stopped
+reading.
 
 `runtime::postgres::tests::qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound`
 and `qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound`
