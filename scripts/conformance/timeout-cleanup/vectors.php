@@ -326,22 +326,35 @@ $lateStart = static function () use ($http, $codec, $suffix, $state): void {
 
 $lateCheck = static function () use ($http, $state): void {
     $late = json_decode(file_get_contents($state('late')), true);
+    // The Server can run from the moment the unpause starts; unpaused-at is
+    // only written once the docker CLI returns, which can be seconds later.
+    $resuming = (float) trim((string) file_get_contents(EVIDENCE.'/unpausing-at'));
     $resumed = (float) trim((string) file_get_contents(EVIDENCE.'/unpaused-at'));
     $paused = (float) trim((string) file_get_contents(EVIDENCE.'/paused-at'));
     $work = at($late['started']['timeout_cleanup']['work_deadlines']['execution']);
     check('5', 'harness paused the Server before the work deadline', $paused < $work, ['paused' => $paused, 'work' => $work]);
     $final = closed($http, $late['id']);
     [, $started] = timedOut($http, '5', $late['id'], $final, 'completed', 'execution');
-    check('5', 'detected late (after the Server resumed, past the work deadline)', at($started['detected_at']) >= $resumed - 1
-        && at($started['detected_at']) > $work + 3, ['detected_at' => $started['detected_at'], 'work' => $work, 'resumed' => $resumed]);
+    check('5', 'detected late (after the Server resumed, past the work deadline)', at($started['detected_at']) >= $resuming - 1
+        && at($started['detected_at']) > $work + 3, ['detected_at' => $started['detected_at'], 'work' => $work, 'resuming' => $resuming, 'resumed' => $resumed]);
     check('5', 'work deadline and cleanup deadline come from admission, not detection',
         at($started['work_deadline_at']) === $work && same($started['cleanup_deadline_at'], $late['started']['execution_deadline_at']), $started);
 };
 
 $replaceStart = static function () use ($http, $codec, $suffix, $state): void {
     $id = "tc-v6-$suffix";
-    [$status, $body] = start($http, $codec, $id, 'tc.return', 'tc-replace', ['execution_timeout_seconds' => 80, 'timeout_cleanup_seconds' => 40]);
-    check('6', 'admitted', $status === 201, [$status, $body]);
+    // Vector 5 has just paused the Server for over a minute, so the doomed
+    // worker's heartbeats lapsed and it is still backing off. Admission needs
+    // a live cooperative worker on tc-replace; wait for it to come back
+    // instead of racing its next heartbeat. A rejected start creates nothing.
+    $deadline = microtime(true) + 45;
+    $attempts = 0;
+    do {
+        $attempts++;
+        [$status, $body] = start($http, $codec, $id, 'tc.return', 'tc-replace', ['execution_timeout_seconds' => 80, 'timeout_cleanup_seconds' => 40]);
+        $waiting = $status === 422 && ($body['reason'] ?? null) === 'timeout_cleanup_not_supported';
+    } while ($waiting && microtime(true) < $deadline && sleep(1) === 0);
+    check('6', 'admitted', $status === 201, [$status, $body, 'attempts' => $attempts]);
     $history = waitFor($http, $id, (string) $body['run_id'], 'WorkflowTimeoutCleanupStarted');
     file_put_contents($state('replace'), json_encode(['id' => $id, 'run' => $body['run_id'],
         'entered' => payload($history, 'WorkflowTimeoutCleanupStarted')]));
