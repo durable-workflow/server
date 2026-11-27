@@ -525,3 +525,52 @@ async fn qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound() 
     assert!(super::super::backend::RELEASE_REPLY_BOUND <= acquire);
     assert!(super::super::backend::RELEASE_REPLY_BOUND < super::super::store::TRANSITION_QUEUE_DEADLINE);
 }
+
+/// Server #1385, non-reading peer during a large write: the proxy stops reading
+/// from the client, and a payload larger than the loopback socket buffers
+/// stalls in `flush`. The send fails within the statement bound with `TimedOut`
+/// and the connection is discarded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires disposable MySQL/MariaDB; run qualification_ explicitly"]
+async fn qualification_a_large_write_to_a_non_reading_peer_fails_within_its_bound() {
+    let (pool, gate, proxy) = silent_peer_pool(SHORT_REPLIES).await;
+    let qualified = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut connection = pool.acquire().await.unwrap();
+        let silent = session_id(&mut connection).await;
+        // Prepare the statement before stalling so the stalled send goes
+        // straight into flushing the large parameter.
+        let warm: i64 = sqlx::query_scalar("SELECT OCTET_LENGTH(?)")
+            .bind(vec![b'x'; 1])
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        assert_eq!(warm, 1);
+        gate.hold_upstream.store(true, Ordering::SeqCst);
+        let payload = vec![b'x'; 24 * 1024 * 1024];
+        let started = Instant::now();
+        let outcome = sqlx::query_scalar::<_, i64>("SELECT OCTET_LENGTH(?)")
+            .bind(payload)
+            .fetch_one(&mut *connection)
+            .await;
+        let waited = started.elapsed();
+        assert!(
+            matches!(&outcome, Err(sqlx::Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut && error.to_string().contains("did not accept a write")),
+            "a non-reading peer fails the write flush: {outcome:?}"
+        );
+        assert!(
+            waited >= SHORT_REPLIES.statement - Duration::from_millis(100)
+                && waited < SHORT_REPLIES.statement + Duration::from_secs(2),
+            "within the statement bound: {waited:?}"
+        );
+        let returned = Instant::now();
+        connection.return_to_pool().await;
+        assert!(returned.elapsed() < Duration::from_secs(1), "a connection out of step is discarded at once");
+        gate.release();
+        let mut replacement = tokio::time::timeout(Duration::from_secs(10), pool.acquire()).await
+            .expect("the stalled connection's slot returns").unwrap();
+        assert_ne!(session_id(&mut replacement).await, silent, "the stalled connection was discarded");
+    })
+    .await;
+    close_silent_peer_pool(pool, gate, proxy).await;
+    qualified.expect("bounded large-write qualification");
+}

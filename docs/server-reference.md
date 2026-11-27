@@ -2486,9 +2486,11 @@ how many request workers are busy.
   ([#1368](https://github.com/durable-workflow/server/issues/1368)). A
   release that holds a held poll's budget slot frees it within about 5
   seconds of reset plus 5 seconds of release ping, well within the 30-second
-  transition queue deadline. Writes are not bounded this way: a request
-  larger than the socket's send buffer can still wait on a peer that stopped
-  reading until the operating system gives up on it.
+  transition queue deadline. Socket flushes for statement writes and release
+  commands share the same bound (45 seconds for statements, 5 seconds for
+  release), so a large send to a peer that has stopped reading also fails
+  within the bound and discards the connection
+  ([#1385](https://github.com/durable-workflow/server/issues/1385)).
   A healthy server always replies sooner: PostgreSQL ends every statement
   on these connections after 30 seconds (`statement_timeout`, first-start
   migrations included), and MySQL and MariaDB refuse lock waits after 5

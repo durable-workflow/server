@@ -107,12 +107,15 @@ runs past either sets `reply_failed`, and every later read fails at once with
 the same I/O `TimedOut` error, so the pool discards the connection. The read
 stays cancel-safe. With neither set, reads are unchanged. Native Server sets
 45 seconds for statements, which `statement_timeout` (30 s) ends sooner on a
-healthy server, and 5 seconds for the release ping. Writes are not bounded:
-a send larger than the socket buffer can still wait on a peer that stopped
-reading.
+healthy server, and 5 seconds for the release ping. Socket flushes
+(`PgStream::flush`, used by `send` and every executor/connection flush) share
+the same bound (`reply_deadline` / `reply_timeout`) so a large write to a peer
+that stopped reading also times out, sets `reply_failed`, and causes the pool
+to discard the connection (Server #1385).
 
-`runtime::postgres::tests::qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound`
-and `qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound`
+`runtime::postgres::tests::qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound`,
+`qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound`, and
+`qualification_a_large_write_to_a_non_reading_peer_fails_within_its_bound`
 hold every reply and require the statement, and the return to the pool, to
 end within a shortened bound and the connection to be replaced. Remove this
 change only when a reviewed published driver lets a caller bound each read,

@@ -96,10 +96,65 @@ impl<S: Socket> MySqlStream<S> {
     /// path before the next command leaves queued closes to share its write.
     pub(crate) async fn flush_queued(&mut self) -> Result<(), Error> {
         if !self.socket.write_buffer().is_empty() {
-            self.socket.flush().await?;
+            self.flush().await?;
         }
         self.queued_unanswered = false;
         Ok(())
+    }
+
+    /// Flush buffered writes to the database, bounded by `reply_deadline` and
+    /// `reply_timeout` when set (Durable Workflow Server #1385). A flush that
+    /// stalls on a non-reading peer sets `reply_failed` so the connection is
+    /// discarded.
+    pub(crate) async fn flush(&mut self) -> Result<(), Error> {
+        if self.reply_failed {
+            return Err(unanswered_reply());
+        }
+        let now = std::time::Instant::now();
+        let deadline = match (self.reply_deadline, self.reply_timeout) {
+            (None, None) => return Ok(self.socket.flush().await?),
+            (Some(deadline), None) => deadline,
+            (None, Some(timeout)) => now + timeout,
+            (Some(deadline), Some(timeout)) => deadline.min(now + timeout),
+        };
+        let remaining = deadline.saturating_duration_since(now);
+        let flushed = if remaining.is_zero() {
+            None
+        } else {
+            sqlx_core::rt::timeout(remaining, self.socket.flush()).await.ok()
+        };
+        let Some(result) = flushed else {
+            self.reply_failed = true;
+            return Err(write_timed_out());
+        };
+        Ok(result?)
+    }
+
+    /// Shut down the socket, failing immediately if a prior read or write
+    /// already timed out and otherwise honoring the same bound (Durable
+    /// Workflow Server #1385).
+    pub(crate) async fn shutdown(&mut self) -> Result<(), Error> {
+        if self.reply_failed {
+            return Err(unanswered_reply());
+        }
+        let now = std::time::Instant::now();
+        let deadline = match (self.reply_deadline, self.reply_timeout) {
+            (None, None) => return Ok(self.socket.shutdown().await?),
+            (Some(deadline), None) => deadline,
+            (None, Some(timeout)) => now + timeout,
+            (Some(deadline), Some(timeout)) => deadline.min(now + timeout),
+        };
+        let remaining = deadline.saturating_duration_since(now);
+        let closed = if remaining.is_zero() {
+            None
+        } else {
+            sqlx_core::rt::timeout(remaining, self.socket.shutdown()).await.ok()
+        };
+        let Some(result) = closed else {
+            self.reply_failed = true;
+            return Err(write_timed_out());
+        };
+        Ok(result?)
     }
 
     pub(crate) fn record_status(&mut self, status: Status) {
@@ -111,7 +166,7 @@ impl<S: Socket> MySqlStream<S> {
         // Queued commands without a reply wait for the next command; nothing
         // pending needs them to be sent first.
         if !self.socket.write_buffer().is_empty() && !self.queued_unanswered {
-            self.socket.flush().await?;
+            self.flush().await?;
         }
 
         while !self.waiting.is_empty() {
@@ -343,5 +398,15 @@ pub(crate) fn unanswered_reply() -> Error {
     Error::Io(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
         "the database sent no reply within the connection's reply bound",
+    ))
+}
+
+/// A write flush stalled past the connection's bound on a peer that stopped
+/// reading (Durable Workflow Server #1385). The session is out of step and
+/// discarded.
+fn write_timed_out() -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "the database did not accept a write within the connection's bound",
     ))
 }
