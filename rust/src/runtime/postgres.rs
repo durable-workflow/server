@@ -1348,6 +1348,56 @@ mod tests {
         qualified.expect("bounded release silent-peer qualification");
     }
 
+    /// Server #1385, non-reading peer during a large write: the proxy stops
+    /// reading from the client, and a payload larger than the loopback socket
+    /// buffers stalls in `flush`. The send fails within the statement bound
+    /// with `TimedOut` and the connection is discarded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires disposable PostgreSQL; run qualification_ explicitly"]
+    async fn qualification_a_large_write_to_a_non_reading_peer_fails_within_its_bound() {
+        use std::sync::atomic::Ordering;
+        let db = Database::new().await;
+        let peer = silent_peer_pool(&db, SHORT_REPLIES).await;
+        let (pool, gate) = (&peer.0, &peer.1);
+        let qualified = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut connection = pool.acquire().await.unwrap();
+            let silent = backend_pid(&mut connection).await;
+            let warm: i32 = sqlx::query_scalar("SELECT octet_length($1)")
+                .bind(vec![b'x'; 1])
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+            assert_eq!(warm, 1);
+            gate.hold_upstream.store(true, Ordering::SeqCst);
+            let payload = vec![b'x'; 24 * 1024 * 1024];
+            let started = tokio::time::Instant::now();
+            let outcome = sqlx::query_scalar::<_, i32>("SELECT octet_length($1)")
+                .bind(payload)
+                .fetch_one(&mut *connection)
+                .await;
+            let waited = started.elapsed();
+            assert!(
+                matches!(&outcome, Err(sqlx::Error::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut && error.to_string().contains("did not accept a write")),
+                "a non-reading peer fails the write flush: {outcome:?}"
+            );
+            assert!(
+                waited >= SHORT_REPLIES.statement - Duration::from_millis(100)
+                    && waited < SHORT_REPLIES.statement + Duration::from_secs(2),
+                "within the statement bound: {waited:?}"
+            );
+            let returned = tokio::time::Instant::now();
+            connection.return_to_pool().await;
+            assert!(returned.elapsed() < Duration::from_secs(1), "a connection out of step is discarded at once");
+            gate.release();
+            let mut replacement = tokio::time::timeout(Duration::from_secs(10), pool.acquire()).await
+                .expect("the stalled connection's slot returns").unwrap();
+            assert_ne!(backend_pid(&mut replacement).await, silent, "the stalled connection was discarded");
+        })
+        .await;
+        close_silent_peer_pool(peer, db).await;
+        qualified.expect("bounded large-write qualification");
+    }
+
     fn refused(result: Result<PostgresStorage>, expected: &str) {
         match result {
             Err(super::super::RuntimeError::Refused { reason, .. }) => assert_eq!(reason, expected),

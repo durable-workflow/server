@@ -199,12 +199,15 @@ fails at once with the same I/O `TimedOut` error, so the pool discards the
 connection even if the replies turn up later. With neither set, reads are
 unchanged. Native Server sets 45 seconds for statements and 5 seconds for the
 session reset and release ping, and lifts it for the namespace delete and
-per-run retention prune, which have no row bound. Writes are not bounded: a
-send larger than the socket buffer can still wait on a peer that stopped
-reading.
+per-run retention prune, which have no row bound. Socket flushes
+(`MySqlStream::flush`, also used by `flush_queued`, `wait_until_ready`, and
+`send_packet`) share the same bound (`reply_deadline` / `reply_timeout`) so a
+large write to a peer that stopped reading also times out, sets `reply_failed`,
+and causes the pool to discard the connection (Server #1385).
 
-`runtime::mysql::stall_tests::qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound`
-and `qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound`
+`runtime::mysql::stall_tests::qualification_a_statement_in_flight_on_a_silent_peer_fails_within_its_reply_bound`,
+`qualification_a_release_on_a_silent_peer_ends_within_its_reply_bound`, and
+`qualification_a_large_write_to_a_non_reading_peer_fails_within_its_bound`
 hold every reply and require the statement, and the return to the pool, to
 end within a shortened bound and the connection to be replaced. Remove this
 change only when a reviewed published driver lets a caller bound each read,

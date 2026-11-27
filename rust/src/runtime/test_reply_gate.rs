@@ -11,6 +11,7 @@ use tokio::{
 #[derive(Default)]
 pub(crate) struct ReplyGate {
     pub(crate) hold: AtomicBool,
+    pub(crate) hold_upstream: AtomicBool,
     pub(crate) blocked: Notify,
     released: Notify,
 }
@@ -18,6 +19,7 @@ pub(crate) struct ReplyGate {
 impl ReplyGate {
     pub(crate) fn release(&self) {
         self.hold.store(false, Ordering::SeqCst);
+        self.hold_upstream.store(false, Ordering::SeqCst);
         self.released.notify_waiters();
     }
 }
@@ -50,7 +52,22 @@ pub(crate) async fn forward(listener: TcpListener, upstream: String, gate: Arc<R
                 client_write.shutdown().await
             };
             let upstream = async {
-                tokio::io::copy(&mut client_read, &mut server_write).await?;
+                let mut bytes = [0; 65536];
+                loop {
+                    while gate.hold_upstream.load(Ordering::SeqCst) {
+                        let release = gate.released.notified();
+                        gate.blocked.notify_one();
+                        if !gate.hold_upstream.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        release.await;
+                    }
+                    let count = client_read.read(&mut bytes).await?;
+                    if count == 0 {
+                        break;
+                    }
+                    server_write.write_all(&bytes[..count]).await?;
+                }
                 server_write.shutdown().await
             };
             let _: (std::io::Result<()>, std::io::Result<()>) = tokio::join!(downstream, upstream);
