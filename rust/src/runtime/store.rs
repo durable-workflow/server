@@ -5767,15 +5767,26 @@ where
                 .bind(&task_id)
                 .execute(&mut *tx)
                 .await?;
-            Self::selection_resume(
-                &mut tx,
-                &run_id,
-                &DB::string(&timer, "queue")?,
-                resume,
-                &metadata,
-                !evaluates_receipt_prefix,
-            )
-            .await?;
+            if evaluates_receipt_prefix {
+                Self::selection_resume_now(
+                    &mut tx,
+                    &run_id,
+                    &DB::string(&timer, "queue")?,
+                    resume,
+                    &metadata,
+                )
+                .await?;
+            } else {
+                Self::selection_resume(
+                    &mut tx,
+                    &run_id,
+                    &DB::string(&timer, "queue")?,
+                    resume,
+                    &metadata,
+                    true,
+                )
+                .await?;
+            }
         }
         tx.commit().await?;
         self.wake.notify_waiters();
