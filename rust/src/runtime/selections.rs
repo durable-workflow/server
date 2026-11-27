@@ -630,12 +630,38 @@ where
         metadata: &Value,
         successful: bool,
     ) -> Result<Option<String>> {
+        if metadata.get("parallel_group_id").is_some()
+            && (successful || super::all_groups::settles(metadata))
+            && !is_selection(metadata)
+            && !Self::all_groups_closed(tx, run_id, metadata).await?
+        {
+            return Ok(None);
+        }
+        Self::coalesce_group_resume(tx, run_id, queue, payload, metadata).await
+    }
+
+    /// Wakes a parallel group immediately so the worker can evaluate an
+    /// ordered-input boundary (such as a fired receipt-ordered condition
+    /// timeout), bypassing the group closure barrier even for `settle` groups,
+    /// while still coalescing into an existing ready workflow task.
+    pub(super) async fn selection_resume_now(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        payload: Value,
+        metadata: &Value,
+    ) -> Result<Option<String>> {
+        Self::coalesce_group_resume(tx, run_id, queue, payload, metadata).await
+    }
+
+    async fn coalesce_group_resume(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        queue: &str,
+        payload: Value,
+        metadata: &Value,
+    ) -> Result<Option<String>> {
         if metadata.get("parallel_group_id").is_some() {
-            if (successful || super::all_groups::settles(metadata))
-                && !is_selection(metadata) && !Self::all_groups_closed(tx, run_id, metadata).await?
-            {
-                return Ok(None);
-            }
             // A leased worker may be replaying an older history snapshot.
             // Coalesce only a ready wakeup, otherwise preserve a later task
             // even if the active lease subsequently acknowledges waiting.

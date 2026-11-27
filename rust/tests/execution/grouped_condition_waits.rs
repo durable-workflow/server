@@ -248,3 +248,84 @@ async fn a_group_signal_settles_the_approved_member_without_leaving_its_timer_op
     runtime.close().await;
     database.remove().await;
 }
+
+#[tokio::test]
+async fn a_receipt_ordered_condition_group_wakes_when_its_timeout_timers_fire() {
+    for policy in [None, Some("propagate"), Some("settle")] {
+        let database = TestDatabase::new().await;
+        let runtime = database.open().await.unwrap().with_ordered_condition_wait_authoring(true);
+        let app = router(runtime.clone());
+        let mut reg = json!({
+            "worker_id":"grouped-ordered",
+            "runtime":"php",
+            "task_queue":"test",
+            "supported_workflow_types":["echo"],
+            "capabilities":["grouped_condition_wait_replay", "condition_wait_input_order"]
+        });
+        if policy.is_some() {
+            reg["capabilities"].as_array_mut().unwrap().push(json!("parallel_group_policies"));
+            reg["capability_manifest"] = json!({
+                "local_activities":{"supported":false,"minimum_protocol_version":"1.18"},
+                "worker_sessions":{"supported":false,"minimum_protocol_version":"1.18"},
+                "sticky_execution":{"supported":false,"minimum_protocol_version":"1.18"},
+                "parallel_group_policies":{"supported":true,"version":1,"policies":["propagate","settle"]}
+            });
+        }
+        let (status, body) = request_protocol(&app, "POST", "/api/worker/register", reg, "1.20").await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let started = start(&app, &format!("grouped-ordered-{}", policy.unwrap_or("legacy"))).await;
+        let task = poll(&app, "grouped-ordered", "workflow").await;
+        let make_entry = |index: i64| {
+            let mut entry = group("parallel-calls:1:2", "condition", 1, 2, index);
+            if let Some(p) = policy {
+                entry["parallel_group_policy"] = json!(p);
+            }
+            entry
+        };
+        let first = member(json!({
+            "type":"open_condition_wait",
+            "condition_key":"a",
+            "condition_wait_occurrence_id":"php:condition-wait:0",
+            "deadline_policy":"occurrence",
+            "condition_wait_timeout_budget_seconds":1,
+            "timeout_seconds":1,
+            "condition_wait_input_order":"durable_receipt_order"
+        }), make_entry(0));
+        let second = member(json!({
+            "type":"open_condition_wait",
+            "condition_key":"b",
+            "condition_wait_occurrence_id":"php:condition-wait:1",
+            "deadline_policy":"occurrence",
+            "condition_wait_timeout_budget_seconds":3,
+            "timeout_seconds":3,
+            "condition_wait_input_order":"durable_receipt_order"
+        }), make_entry(1));
+        let (status, body) = finish_task(&app, &task, json!([first, second])).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let fired = |history: &Value| events(history, "TimerFired").len();
+        // First timeout fires while the sibling is still pending: the workflow must wake so the worker can resolve it.
+        let history_after_first = wait_for(&app, &started, |history| fired(history) == 1).await;
+        let opens = events(&history_after_first, "ConditionWaitOpened");
+        let first_wake = poll(&app, "grouped-ordered", "workflow").await;
+        assert!(first_wake["task_id"].is_string(), "policy={policy:?}: expected wake after first receipt-ordered timeout; resumed={first_wake}");
+        let (status, body) = finish_task(&app, &first_wake, json!([
+            {"type":"resolve_condition_wait","condition_wait_id":opens[0]["payload"]["condition_wait_id"],"satisfied":false}
+        ])).await;
+        assert_eq!(status, StatusCode::OK, "policy={policy:?}: {body}");
+
+        // Second timeout fires: the workflow wakes again, resolves it, and completes.
+        wait_for(&app, &started, |history| fired(history) == 2).await;
+        let second_wake = poll(&app, "grouped-ordered", "workflow").await;
+        assert!(second_wake["task_id"].is_string(), "policy={policy:?}: expected wake after second receipt-ordered timeout; resumed={second_wake}");
+        let (status, body) = finish_task(&app, &second_wake, json!([
+            {"type":"resolve_condition_wait","condition_wait_id":opens[1]["payload"]["condition_wait_id"],"satisfied":false},
+            {"type":"complete_workflow","result":envelope(Payload::String("timed-out".into()))}
+        ])).await;
+        assert_eq!(status, StatusCode::OK, "policy={policy:?}: {body}");
+        let final_history = run_history(&app, &started["workflow_id"], &started["run_id"]).await;
+        assert_eq!(events(&final_history, "ConditionWaitTimedOut").len(), 2, "policy={policy:?}: {final_history}");
+        runtime.close().await;
+        database.remove().await;
+    }
+}
