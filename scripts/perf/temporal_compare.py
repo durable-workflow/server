@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,6 +80,7 @@ DEFAULT_NATIVE_POLL_INTERVAL_MS = 50
 DEFAULT_DRIFT_THRESHOLD = 0.10
 DEFAULT_IDLE_CPU_THRESHOLD = 0.10
 DEFAULT_IDLE_WAIT_SECONDS = 75
+IDLE_CLEANUP_SECONDS = 3
 DIGEST_REF = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
 FROM_LINE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(?P<ref>\S+)(?:\s+AS\s+(?P<alias>\S+))?\s*$", re.IGNORECASE)
 HARNESS_DOCKERFILES = (
@@ -502,10 +504,18 @@ def preflight(docker: DockerHost, image: str, name: str, seconds: int, deadline:
         "head -n1 /proc/stat; sleep {s}; head -n1 /proc/stat; cat /proc/loadavg; "
         "grep -m1 'model name' /proc/cpuinfo || true"
     ).format(s=seconds)
-    result = docker.run("run", "--rm", "--init", "--name", name, "--network", "none", "--pull", "never",
-                        "--cpus", "0.25", "--memory", "64m", "--pids-limit", "16",
-                        "--entrypoint", "sh", image, "-c", script,
-                        timeout=max(0.001, deadline - time.monotonic()))
+    try:
+        result = docker.run("run", "--rm", "--init", "--name", name, "--network", "none", "--pull", "never",
+                            "--cpus", "0.25", "--memory", "64m", "--pids-limit", "16",
+                            "--entrypoint", "sh", image, "-c", script,
+                            timeout=max(0.001, deadline - time.monotonic() - IDLE_CLEANUP_SECONDS))
+    except subprocess.TimeoutExpired:
+        # The Docker CLI can time out while the short-lived sampler still exits on the engine.
+        try:
+            docker.run("rm", "-f", name, check=False, timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        raise
     lines = result.stdout.splitlines()
     busy = None
     steal = None
@@ -538,12 +548,14 @@ def wait_for_idle_hosts(probes: list[tuple[DockerHost, str, str]], args: argpars
     deadline = time.monotonic() + args.idle_wait_seconds
     errors = ["the idle wait expired before both hosts could be sampled"]
     attempt = 0
-    sample_names = {name for _, _, name in probes}
+    run_id = uuid4().hex[:12]
     with ThreadPoolExecutor(max_workers=len(probes)) as pool:
-        while time.monotonic() + args.idle_seconds < deadline:
+        while time.monotonic() + args.idle_seconds + IDLE_CLEANUP_SECONDS < deadline:
             attempt += 1
+            named_probes = [(host, image, f"{name}-{run_id}-{attempt}") for host, image, name in probes]
+            sample_names = {name for _, _, name in named_probes}
             samples = [pool.submit(preflight, host, image, name, args.idle_seconds, deadline, sample_names)
-                       for host, image, name in probes]
+                       for host, image, name in named_probes]
             errors = []
             for (host, _, _), sample in zip(probes, samples):
                 try:
@@ -624,7 +636,8 @@ def run_command(args: argparse.Namespace) -> int:
     step_ms = bounded_int(str(args.step_ms), "step-ms", 0, 1000)
     warmup = bounded_int(str(args.warmup_workflows), "warmup-workflows", 0, 2000)
     args.idle_seconds = bounded_int(str(args.idle_seconds), "idle-seconds", 1, 30)
-    args.idle_wait_seconds = bounded_int(str(args.idle_wait_seconds), "idle-wait-seconds", args.idle_seconds + 1, 180)
+    args.idle_wait_seconds = bounded_int(str(args.idle_wait_seconds), "idle-wait-seconds",
+                                         args.idle_seconds + IDLE_CLEANUP_SECONDS + 1, 180)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.project_prefix):
         raise SystemExit("--project-prefix must be lowercase letters, digits and dashes")
     if bool(args.native_image) == bool(args.native_source):

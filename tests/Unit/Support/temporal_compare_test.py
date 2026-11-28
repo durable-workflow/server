@@ -183,6 +183,15 @@ class IdlePreflightTest(unittest.TestCase):
         self.assertIn("target host runs 1 other containers", tc.busy_host_errors(check, 0.1))
         self.assertIn("never", host.run.call_args_list[0].args)
 
+    def test_a_timed_out_sampler_gets_a_scoped_cleanup_within_the_deadline(self):
+        host = Mock(role="target")
+        host.run.side_effect = [subprocess.TimeoutExpired(["docker", "run"], 17), Mock()]
+        with patch.object(tc.time, "monotonic", side_effect=[0, 17]):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                tc.preflight(host, "locked-image", "race-idle-target", 5, 20, {"race-idle-target"})
+        self.assertEqual(("rm", "-f", "race-idle-target"), host.run.call_args_list[1].args)
+        self.assertEqual({"check": False, "timeout": 3}, host.run.call_args_list[1].kwargs)
+
 
 class HeadlineTest(unittest.TestCase):
     def slots(self, temporal=(10.0, 10.2), sqlite=8.0, mysql=11.0, pgsql=9.0):
