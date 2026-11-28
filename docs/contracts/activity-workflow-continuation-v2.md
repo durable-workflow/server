@@ -584,7 +584,8 @@ MySQL and PostgreSQL.
 ### Benchmark
 
 Use the #1078 harness and shapes, with published Server images and a published
-sdk-php that has the v2 consumer.
+sdk-php that has the v2 consumer. The [tracked continuation benchmark](../../benchmarks/server-port/continuation-v2/README.md)
+reproduces the recorded shapes and measures the following criteria.
 
 - 200 workflows started back to back, 6 workers, `bench.five_steps` (5
   sequential activities, each sleeping 20 ms and echoing 1 KiB).
