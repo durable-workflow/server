@@ -664,9 +664,12 @@ HTTP signals that use it are refused with `422 request_id_reserved`. See the
 - `GET /metrics` — Native only (Server #534). Prometheus text exposition of the requested namespace's task queue backlog, admission, retry pressure, schedule state and run and activity series, for Prometheus, KEDA and HPA adapters. See [Prometheus scrape and autoscaling](#prometheus-scrape-and-autoscaling).
 
 `POST /api/system/repair/pass` accepts optional `connection`, `queue`,
-`run_ids`, and `instance_id` filters. Set `respect_throttle=true` when a
-dedicated matching-role loop should skip a pass rather than duplicate work
-already covered by another matching-role process holding the repair throttle.
+`run_ids`, and `instance_id` filters. Set `respect_throttle=true` to
+skip a pass during the configured interval after the preceding pass.
+Native Server shares this interval across scopes within the same process.
+Set `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` to a non-negative number
+of seconds (default 5). Use 0 to disable the interval, or leave
+`respect_throttle` off to bypass it for a request.
 
 The native completion transport correction for [#1136](https://github.com/durable-workflow/server/issues/1136)
 adds `limits.max_workflow_task_completion_bytes` to cluster discovery. It is the
@@ -2984,7 +2987,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_TASK_DISPATCH_MODE` | `queue` | Package-level workflow-task dispatch mode. Usually overridden by the server via `DW_TASK_DISPATCH_MODE`. |
 | `DW_V2_MATCHING_ROLE_QUEUE_WAKE` | `true` | Whether queue workers run the in-worker matching-role wake on every Looping event. In the supplied Compose stacks, `false` also skips the scheduler's unscoped repair pass. Set it to `false` only when a dedicated `php artisan workflow:v2:repair-pass --loop` daemon owns the sweep. |
 | `DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS` | `3` | Seconds before an orphaned workflow task is redispatched. |
-| `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` | `5` | Minimum seconds between successive task-repair passes. |
+| `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` | `5` | Minimum seconds between throttled task-repair passes. Native Server shares the interval across scopes in the same process. Set 0 to disable it. |
 | `DW_V2_TASK_REPAIR_SCAN_LIMIT` | `25` | Maximum tasks considered per task-repair pass. |
 | `DW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS` | `60` | Ceiling on task-repair failure backoff in seconds. |
 | `DW_V2_MULTI_NODE` | `false` | Declare multi-node deployment so cache backends are validated for cross-node coordination. |

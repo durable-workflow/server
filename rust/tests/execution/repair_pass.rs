@@ -22,6 +22,47 @@ fn counts(report: &Value, fields: &[&str]) -> Vec<Value> {
     fields.iter().map(|field| report[*field].clone()).collect()
 }
 
+#[test]
+fn applied_repair_pass_interval_can_be_disabled_and_is_shared_across_scopes() {
+    for seconds in ["0", "60"] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "repair_pass::repair_pass_interval_child"])
+            .env("DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS", seconds)
+            .env("WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS", "5")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{seconds}s\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "environment is set by the parent test"]
+async fn repair_pass_interval_child() {
+    use super::namespaces::{create, scoped};
+
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    create(&app, "other").await;
+    let interval_enabled = std::env::var("DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS").unwrap() != "0";
+    for (namespace, queue, respect_throttle, expected) in [
+        ("default", "old", true, false),
+        ("other", "new", true, interval_enabled),
+        ("other", "new", false, false),
+        ("default", "old", true, interval_enabled),
+    ] {
+        let (status, body) = scoped(
+            &app, namespace, "POST", PASS, json!({"queue":queue,"respect_throttle":respect_throttle}),
+        ).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["throttled"], expected, "{body}");
+    }
+}
+
 // Published PHP's repair pass redispatches overdue ready tasks, returns tasks
 // whose lease expired, and creates a lost workflow task. Its filters and loop
 // throttle shape what one pass selects.

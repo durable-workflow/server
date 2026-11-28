@@ -26,8 +26,7 @@ fn configured_history_retention_is_persisted_and_used_for_pruning() {
         .unwrap();
     assert!(
         output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-        "{}
-{}",
+        "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
