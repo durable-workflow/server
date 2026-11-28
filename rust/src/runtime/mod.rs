@@ -259,6 +259,7 @@ pub use http::router;
 
 /// The worker protocol version native implements and advertises.
 pub const WORKER_PROTOCOL_VERSION: &str = "1.20";
+const DEFAULT_WORKER_PROTOCOL_MAXIMUM_MINOR: u8 = 20;
 pub use query_authority::QueryTaskConfig;
 
 use axum::{

@@ -666,7 +666,7 @@ async fn guard(State(runtime): State<Runtime>, mut request: Request, next: Next)
     let maximum_worker_minor = if continuation_request {
         super::continuations::TARGET_BUILD_PROTOCOL_MINOR
     } else {
-        20
+        super::DEFAULT_WORKER_PROTOCOL_MAXIMUM_MINOR
     };
     let compatible = if worker {
         requested.is_some_and(|v| {
@@ -1374,7 +1374,9 @@ async fn cluster(
         "namespace": namespace, "limits": limits,
         "supported_sdk_versions": super::cluster_info::supported_sdk_versions(),
         "client_compatibility": client_compatibility,
-        "control_plane": {"version": "2", "request_contract": request_contract}, "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities()},
+        "control_plane": {"version": "2", "request_contract": request_contract},
+        "worker_protocol": {"version": super::WORKER_PROTOCOL_VERSION, "server_capabilities": capabilities(),
+            "negotiation": super::cluster_info::worker_protocol_negotiation()},
         "auth_composition_contract": auth_composition,
         "principal_attribution_contract": principal_attribution,
         "service_catalog_read_contract": service_catalog,
