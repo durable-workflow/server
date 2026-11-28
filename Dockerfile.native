@@ -40,8 +40,8 @@ RUN PATH=/opt/cargo-auditable/bin:$PATH cargo auditable build --release --locked
 # CVE-2026-109518 (apt 2.6.2), which the release scan found fixable in the
 # previous pin (server#802).
 FROM mirror.gcr.io/library/debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
-# Patch CVE-2025-6020 (HIGH) from bookworm-security until a rebuilt
-# bookworm-slim base image includes libpam 1.5.2-6+deb12u3.
+# Patch CVE-2025-6020 and CVE-2026-124851 (HIGH) from bookworm-security until
+# a rebuilt bookworm-slim base image includes these fixes.
 RUN printf 'Acquire::Retries "0";\n' > /etc/apt/apt.conf.d/99-no-retries \
     && DEBIAN_FRONTEND=noninteractive apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -49,6 +49,7 @@ RUN printf 'Acquire::Retries "0";\n' > /etc/apt/apt.conf.d/99-no-retries \
         libpam-modules=1.5.2-6+deb12u3 \
         libpam-runtime=1.5.2-6+deb12u3 \
         libpam0g=1.5.2-6+deb12u3 \
+        libzstd1=1.5.4+dfsg2-5+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /durable-workflow-server /usr/local/bin/durable-workflow-server
 # The PHP image's paths, so a taken-over installation keeps its volumes:
