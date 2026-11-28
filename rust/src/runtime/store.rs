@@ -1994,12 +1994,14 @@ where
         };
         let mut started = DB::document_row(&started, "payload")?;
         let mut durable = super::run_observation::command_contract(Some(&started))["source"] == "durable_history";
-        // An ordered condition can be the first task of a run started before
-        // its worker registered. Its accepted completion already binds the
-        // worker's command declaration for the run. Use that same declaration
-        // to distinguish a handled signal from an input without a handler.
+        // A continuation starts without a captured contract. The successor's
+        // first accepted task completion binds its own worker declaration,
+        // including when it changes type or queue. Use it for signal delivery
+        // just as an ordered condition uses the bound declaration on a run
+        // started before its worker registered.
         if !durable
-            && Self::query(DB::ORDERED_CONDITION_HISTORY).bind(run_id).fetch_optional(&mut **tx).await?.is_some()
+            && (started["continued_from_run_id"].is_string()
+                || Self::query(DB::ORDERED_CONDITION_HISTORY).bind(run_id).fetch_optional(&mut **tx).await?.is_some())
         {
             let bound = Self::bound_contract(&mut **tx, run_id).await?;
             started = super::update_contracts::effective(&started, bound.as_ref());
