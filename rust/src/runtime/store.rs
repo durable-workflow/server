@@ -2678,19 +2678,22 @@ where
         let mut pace = super::poll_readiness::ReadPace::new();
         let worker_id = text(&body, "worker_id")?;
         let mut wait_slot = None;
+        let check_storage_admission = || -> Result<()> {
+            let pressure = self.storage_admission.snapshot();
+            if pressure.accepts_new_work() {
+                return Ok(());
+            }
+            let mut response = super::storage_admission::refusal(&pressure, super::storage_admission::Admission::Poll,
+                body.get("poll_request_id").and_then(Value::as_str));
+            response.as_object_mut().expect("refusal object").remove("request_admitted");
+            Err(super::RuntimeError::Protocol { status: StatusCode::SERVICE_UNAVAILABLE, response })
+        };
         loop {
             // Each probe's database work takes a probe permit, so polls
             // leave the reserved connections free (Server #982).
             let probe = self.poll_capacity.probe().await;
-            // A waiting poll rechecks storage admission before each probe
-            // and claims nothing under pressure (Server #951).
-            let pressure = self.storage_admission.snapshot();
-            if !pressure.accepts_new_work() {
-                let mut response = super::storage_admission::refusal(&pressure, super::storage_admission::Admission::Poll,
-                    body.get("poll_request_id").and_then(Value::as_str));
-                response.as_object_mut().expect("refusal object").remove("request_admitted");
-                return Err(super::RuntimeError::Protocol { status: StatusCode::SERVICE_UNAVAILABLE, response });
-            }
+            // Refuse new work before probing under storage pressure (Server #951).
+            check_storage_admission()?;
             // Register the notification before probing.
             let wake = self.wake.notified();
             let first_probe = std::mem::take(&mut first);
@@ -2733,6 +2736,11 @@ where
                     };
                     if let Some(reads) = reads {
                         reads.finish().await;
+                        if current && !first_probe {
+                            // This wait can span the rest of the poll. Read fresh
+                            // admission before claiming or recovering a lease.
+                            check_storage_admission()?;
+                        }
                     }
                     let claimed = if !current {
                         Err(super::worker_poll_fence::stale_claim())
