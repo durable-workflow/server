@@ -71,3 +71,85 @@ async fn continue_as_new_delivers_declared_signals_first_and_carries_pending_upd
     assert_eq!(delivery["run_id"], next, "{delivery}");
     assert_eq!(delivery["workflow_command_id"], update["command_id"], "{delivery}");
 }
+
+async fn poll_signal_successor(app: &Router) -> Value {
+    let (status, body) = request(app, "POST", "/api/worker/workflow-tasks/poll",
+        json!({"worker_id":"signal-successor","task_queue":"successor","timeout_seconds":0})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["task"].clone()
+}
+
+async fn signal_continued_run(app: &Router, run: &Value, name: &str) -> Value {
+    let (status, body) = request(app, "POST",
+        &format!("/api/workflows/carry-signal/runs/{}/signal/{name}", run.as_str().unwrap()),
+        json!({"input":envelope(Payload::Array(vec![]))})).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    body
+}
+
+async fn acknowledge_continued_signal(app: &Router, run: &Value, receipt: &Value) {
+    let delivery = poll_signal_successor(app).await;
+    assert_eq!(delivery["run_id"], *run, "{delivery}");
+    assert_eq!(delivery["workflow_command_id"], receipt["command_id"], "{delivery}");
+    let (status, body) = request(app, "POST",
+        &format!("/api/worker/workflow-tasks/{}/fail", delivery["task_id"].as_str().unwrap()),
+        json!({"lease_owner":delivery["lease_owner"],"workflow_task_attempt":delivery["workflow_task_attempt"],
+            "failure":{"type":"WorkflowTaskWaitingForHistory","message":"the original timer is still pending"}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(poll_signal_successor(app).await.is_null());
+}
+
+#[tokio::test]
+async fn continued_run_delivers_only_its_bound_declared_signals_while_waiting_on_a_timer() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    update_worker(&app, "signal-predecessor").await;
+    let started = start(&app, "carry-signal").await;
+    let task = poll(&app, "signal-predecessor", "workflow").await;
+    let (status, body) = finish_task(&app, &task,
+        json!([{"type":"continue_as_new","workflow_type":"successor-type","queue":"successor"}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = request(&app, "POST", "/api/worker/register", json!({
+        "worker_id":"signal-successor","task_queue":"successor","runtime":"python",
+        "supported_workflow_types":["successor-type"],"supported_activity_types":[],
+        "workflow_command_contracts":{"successor-type":{"signals":["wake"]}}})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let first = poll_signal_successor(&app).await;
+    let run = &first["run_id"];
+    assert!(run.is_string() && *run != started["run_id"], "{first}");
+    let early = signal_continued_run(&app, run, "wake").await;
+    let before = run_history(&app, &started["workflow_id"], run).await;
+    assert_eq!(event(&before,"WorkflowStarted")["payload"]["continued_from_run_id"], started["run_id"]);
+    assert_eq!(kinds(&before), ["WorkflowStarted", "SignalReceived"], "{before}");
+    let (status, body) = finish_task(&app, &first, json!([{"type":"start_timer","delay_seconds":600}])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    acknowledge_continued_signal(&app, run, &early).await;
+
+    // The old type declared `finish`. Its declaration must not authorize a
+    // standalone delivery on the successor, even after that run has bound.
+    let undeclared = signal_continued_run(&app, run, "finish").await;
+    assert!(poll_signal_successor(&app).await.is_null());
+    let late = signal_continued_run(&app, run, "wake").await;
+    acknowledge_continued_signal(&app, run, &late).await;
+
+    let history = run_history(&app, &started["workflow_id"], run).await;
+    let history_events = history.as_array().unwrap();
+    let applied = history_events.iter().filter(|event| event["event_type"] == "SignalApplied")
+        .map(|event| (&event["payload"]["workflow_command_id"], &event["payload"]["signal_id"]))
+        .collect::<Vec<_>>();
+    assert_eq!(applied.len(), 2, "{history}");
+    for ((command, signal), receipt) in applied.into_iter().zip([&early, &late]) {
+        assert_eq!(*command, receipt["command_id"], "{history}");
+        assert!(history_events.iter().any(|event| event["event_type"] == "SignalReceived"
+            && event["payload"]["signal_id"] == *signal), "{history}");
+    }
+    assert!(history_events.iter().any(|event| event["event_type"] == "SignalReceived"
+        && event["payload"]["workflow_command_id"] == undeclared["command_id"]), "{history}");
+    let kinds = kinds(&history);
+    assert_eq!(kinds.iter().filter(|kind| *kind == "TimerScheduled").count(), 1, "{history}");
+    assert!(!kinds.iter().any(|kind| matches!(kind.as_str(), "TimerFired" | "TimerCancelled" | "ConditionWaitOpened" | "SignalWaitOpened")), "{history}");
+    runtime.close().await;
+    database.remove().await;
+}
