@@ -256,6 +256,10 @@ pub(super) trait Backend: Database {
     // caller recomputes the exact deadline before entering cleanup.
     const TIMEOUT_CLEANUP_DUE: &str = "SELECT r.id FROM workflow_runs r JOIN workflow_history_events e ON e.workflow_run_id=r.id AND e.event_type='WorkflowStarted' WHERE r.status IN ('pending','running','waiting') AND r.cancellation_request_command_id IS NULL AND (r.execution_deadline_at IS NOT NULL OR r.run_deadline_at IS NOT NULL) AND ((e.payload->'timeout_cleanup'->'work_deadlines'->>'execution')<=$1 OR (e.payload->'timeout_cleanup'->'work_deadlines'->>'run')<=$2) ORDER BY r.id LIMIT 50";
     const OBSERVATION_ATTRIBUTES: &str = "SELECT \"key\" AS attribute_key,type,value_string,value_keyword,value_int,value_float,CASE WHEN value_bool IS NULL THEN NULL WHEN value_bool THEN 1 ELSE 0 END AS value_bool,value_datetime,value_keyword_list FROM workflow_search_attributes WHERE workflow_run_id=$1 AND workflow_instance_id=$2 AND \"key\" IN ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ORDER BY \"key\" LIMIT 20";
+    const ACTIVITY_HEARTBEAT_CHECKPOINT_SQL: &str = "SELECT payload FROM workflow_history_events \
+        WHERE workflow_run_id=$1 AND event_type='ActivityHeartbeatRecorded' \
+        AND json_typeof(payload->'activity_execution_id')='string' AND payload->>'activity_execution_id'=$2 \
+        AND payload #>> '{progress,details}' IS NOT NULL ORDER BY sequence DESC LIMIT 1";
     const ACTIVITY_RESULT_EVENT_SQL: &str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (payload->>'activity_execution_id'=$2 OR payload->'activity'->>'id'=$3) ORDER BY sequence DESC LIMIT 1";
     const EXTERNAL_PAYLOAD_BYTES: &str = "SELECT CAST(COALESCE(SUM(size_bytes),0) AS BIGINT) FROM runtime_external_payloads WHERE namespace=$1";
     const VISIBILITY_PAGE: &str = super::visibility::VISIBILITY_PAGE;
@@ -482,6 +486,11 @@ SELECT id,ordinal FROM ordinals WHERE position IS NOT ordinal ORDER BY ordinal L
 "#;
     const OBSERVATION_FAILURE_EVENT: &str = "SELECT id,sequence,event_type,recorded_at FROM workflow_history_events WHERE workflow_run_id=$1 AND json_extract(payload,'$.failure_id') COLLATE BINARY=$2 AND event_type IN ('ActivityFailed','ActivityTimedOut','ChildRunFailed','ChildRunCancelled','ChildRunTerminated','WorkflowFailed','WorkflowTimedOut','WorkflowCancelled','WorkflowTerminated','UpdateCompleted') ORDER BY sequence DESC LIMIT 1";
     const TIMEOUT_CLEANUP_DUE: &str = "SELECT r.id FROM workflow_runs r JOIN workflow_history_events e ON e.workflow_run_id=r.id AND e.event_type='WorkflowStarted' WHERE r.status IN ('pending','running','waiting') AND r.cancellation_request_command_id IS NULL AND (r.execution_deadline_at IS NOT NULL OR r.run_deadline_at IS NOT NULL) AND (json_extract(e.payload,'$.timeout_cleanup.work_deadlines.execution')<=$1 OR json_extract(e.payload,'$.timeout_cleanup.work_deadlines.run')<=$2) ORDER BY r.id LIMIT 50";
+    const ACTIVITY_HEARTBEAT_CHECKPOINT_SQL: &str = "SELECT payload FROM workflow_history_events \
+        WHERE workflow_run_id=$1 AND event_type='ActivityHeartbeatRecorded' \
+        AND json_type(payload,'$.activity_execution_id')='text' \
+        AND json_extract(payload,'$.activity_execution_id') COLLATE BINARY=$2 \
+        AND json_type(payload,'$.progress.details')<>'null' ORDER BY sequence DESC LIMIT 1";
     const ACTIVITY_RESULT_EVENT_SQL: &str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (json_extract(payload,'$.activity_execution_id') COLLATE BINARY=$2 OR json_extract(payload,'$.activity.id') COLLATE BINARY=$3) ORDER BY sequence DESC LIMIT 1";
     const QUERY_CACHE_SCAN: &str = "SELECT \"key\",value,expiration FROM dw_query_cache WHERE \"key\" LIKE 'dw-native-query:%' AND json_extract(value,'$.namespace')=$1 ORDER BY \"key\" LIMIT 65";
     const SESSION_RUNNING_ATTEMPTS: &str = "SELECT COUNT(*) FROM activity_attempts p JOIN activity_executions e ON e.id=p.activity_execution_id JOIN workflow_tasks t ON t.id=p.workflow_task_id WHERE t.namespace=$1 AND p.status='running' AND p.lease_expires_at>$2 AND p.lease_owner=$3 AND json_extract(e.activity_options,'$.worker_session.session_id')=$4 AND p.workflow_task_id<>$5";
@@ -848,6 +857,12 @@ impl Backend for MySql {
     fn optional_float(row: &Self::Row, field: &str) -> Result<Option<f64>> {
         Ok(row.try_get(field)?)
     }
+    const ACTIVITY_HEARTBEAT_CHECKPOINT_SQL: &str = "SELECT payload FROM workflow_history_events \
+        FORCE INDEX (workflow_history_events_workflow_run_id_sequence_unique) \
+        WHERE workflow_run_id=$1 AND event_type='ActivityHeartbeatRecorded' \
+        AND JSON_TYPE(JSON_EXTRACT(payload,'$.activity_execution_id'))='STRING' \
+        AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id')) AS BINARY)=CAST($2 AS BINARY) \
+        AND JSON_TYPE(JSON_EXTRACT(payload,'$.progress.details'))<>'NULL' ORDER BY sequence DESC LIMIT 1";
     const ACTIVITY_RESULT_EVENT_SQL: &str = "SELECT sequence,event_type,payload FROM workflow_history_events WHERE CAST(workflow_run_id AS BINARY)=CAST(? AS BINARY) AND event_type IN ('ActivityScheduled','ActivityStarted','ActivityHeartbeatRecorded','ActivityRetryScheduled','ActivityCompleted','ActivityFailed','ActivityTimedOut','ActivityCancelled') AND (CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity_execution_id')) AS BINARY)=CAST(? AS BINARY) OR CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.activity.id')) AS BINARY)=CAST(? AS BINARY)) ORDER BY sequence DESC LIMIT 1";
     const QUERY_CACHE_SCAN: &str = "SELECT `key`,value,expiration FROM dw_query_cache WHERE `key` LIKE 'dw-native-query:%' AND BINARY JSON_UNQUOTE(JSON_EXTRACT(value,'$.namespace'))=BINARY ? ORDER BY `key` LIMIT 65";
     const EXTERNAL_PAYLOAD_BYTES: &str = "SELECT CAST(COALESCE(SUM(size_bytes),0) AS SIGNED) FROM runtime_external_payloads WHERE namespace=$1";

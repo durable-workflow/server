@@ -6157,25 +6157,30 @@ where
         Self::create_task_dispatched(tx, run_id, queue, kind, payload, true).await
     }
 
-    /// A new ready task. As PHP in poll mode, a task it dispatches is stamped
-    /// dispatched when created; one it leaves to pollers is not.
-    /// The latest heartbeat details an earlier attempt of `activity_id`
-    /// recorded, and when, from the run's newest heartbeat events. Nulls
-    /// when none of them recorded details.
-    async fn last_heartbeat(tx: &mut Transaction<'_, DB>, run_id: &str, activity_id: &str) -> Result<(Value, Value)> {
-        let rows = Self::query("SELECT payload FROM workflow_history_events WHERE workflow_run_id=$1 AND event_type='ActivityHeartbeatRecorded' ORDER BY sequence DESC LIMIT $2")
-            .bind(run_id).bind(HEARTBEAT_RESUME_SCAN).fetch_all(&mut **tx).await?;
-        for row in rows {
-            let payload = DB::document_row(&row, "payload")?;
-            if payload["activity_execution_id"].as_str() == Some(activity_id)
-                && !payload["progress"]["details"].is_null()
-            {
-                return Ok((payload["progress"]["details"].clone(), payload["heartbeat_at"].clone()));
-            }
-        }
-        Ok((Value::Null, Value::Null))
+    /// Read the latest checkpoint on the logical activity across its previous
+    /// attempts. A liveness-only heartbeat does not replace checkpoint details.
+    async fn last_heartbeat(
+        tx: &mut Transaction<'_, DB>,
+        run_id: &str,
+        activity_id: &str,
+    ) -> Result<(Value, Value)> {
+        let event = Self::query(DB::ACTIVITY_HEARTBEAT_CHECKPOINT_SQL)
+            .bind(run_id)
+            .bind(activity_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+        let Some(event) = event else {
+            return Ok((Value::Null, Value::Null));
+        };
+        let payload = DB::document_row(&event, "payload")?;
+        Ok((
+            payload["progress"]["details"].clone(),
+            payload["heartbeat_at"].clone(),
+        ))
     }
 
+    /// A new ready task. As PHP in poll mode, a task it dispatches is stamped
+    /// dispatched when created; one it leaves to pollers is not.
     pub(super) async fn create_task_dispatched(
         tx: &mut Transaction<'_, DB>,
         run_id: &str,
@@ -7174,8 +7179,6 @@ pub(super) fn replayed_poll(mut replay: Value, encoding: Option<&'static str>) -
 /// The worker capability and server capability for resuming an activity
 /// attempt from the execution's last heartbeat details (Server #1139).
 pub(super) const HEARTBEAT_RESUME: &str = "activity_heartbeat_resume";
-/// How many of the run's newest heartbeat events a retry claim reads.
-const HEARTBEAT_RESUME_SCAN: i64 = 1000;
 
 pub(crate) fn capabilities() -> Value {
     static TEMPLATE: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
