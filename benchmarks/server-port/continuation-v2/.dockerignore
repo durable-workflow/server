@@ -1,0 +1,5 @@
+**
+!Dockerfile
+!composer.json
+!composer.lock
+!benchmark.php
