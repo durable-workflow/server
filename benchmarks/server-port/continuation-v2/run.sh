@@ -66,7 +66,7 @@ jq -n --arg mode "$mode" --arg server_image "$server_image" --arg mysql_image "$
     --argjson logical_cpus "$(getconf _NPROCESSORS_ONLN)" --arg kernel "$(uname -r)" \
     --arg docker "$(docker version --format '{{.Server.Version}}')" --arg started_at "$(date -u +%FT%TZ)" \
     --argjson installed "$installed" --arg tooling "$tool_versions" \
-    '{$mode,$server_image,$mysql_image,$worker_image_id,$composer_lock_sha256,$source_sha256,$platform,$cpu_model, \
+    '{$mode,$server_image,$mysql_image,$worker_image_id,$composer_lock_sha256,$source_sha256,$platform,$cpu_model,
       $logical_cpus,$kernel,$docker,$started_at,$installed,$tooling}' \
     > "$output/run.json"
 
