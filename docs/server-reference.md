@@ -723,6 +723,13 @@ drops the connection mid-statement still surfaces as
 - `POST /api/namespaces/{name}/retention-plan` — Preview a proposed retention policy without applying it (native Server)
 - `POST /api/namespaces/{name}/retention-plan/apply` — Apply a planned retention policy only while the plan still holds (native Server)
 
+The native Server uses `DW_HISTORY_RETENTION_DAYS` (1–365 days, default 30)
+to seed the initial `default` namespace and when you create a bounded
+namespace without a retention period. The stored policy governs each
+namespace. Inspect it with `GET /api/namespaces/{name}`. To correct a policy
+seeded before this behavior or change it after creation, preview and apply a
+retention plan as described below.
+
 #### Retention plan
 
 `PUT /api/namespaces/{name}` activates a new retention policy at once, and the

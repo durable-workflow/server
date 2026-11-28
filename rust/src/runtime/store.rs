@@ -213,6 +213,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
     pub(super) history_budget: super::history_budget::Config,
+    pub(super) default_history_retention_days: i64,
     pub(super) ordered_condition_wait_authoring: bool,
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
@@ -412,6 +413,7 @@ where
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
+            default_history_retention_days: crate::config_audit::DEFAULT_HISTORY_RETENTION_DAYS,
             ordered_condition_wait_authoring: matches!(
                 std::env::var("DW_ORDERED_CONDITION_WAIT_AUTHORING").as_deref(),
                 Ok("1" | "true")
@@ -458,6 +460,7 @@ where
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
+            default_history_retention_days: self.default_history_retention_days,
             ordered_condition_wait_authoring: self.ordered_condition_wait_authoring,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
             workflow_task_lost_lease_attention_threshold: self.workflow_task_lost_lease_attention_threshold,

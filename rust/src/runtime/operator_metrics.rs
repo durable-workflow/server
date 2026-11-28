@@ -1271,7 +1271,7 @@ where
             Some(row) => (DB::optional_string(row, "retention_mode")?, DB::optional_number(row, "retention_days")?),
             None => (None, None),
         };
-        Ok(retention::Policy::new(mode.as_deref(), days, now()))
+        Ok(retention::Policy::new(mode.as_deref(), days, now(), self.default_history_retention_days))
     }
 
     /// `expiredRunIds`: closed, unarchived completed or failed runs past the

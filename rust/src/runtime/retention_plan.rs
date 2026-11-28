@@ -337,7 +337,7 @@ store_methods! {
         let name = name.to_ascii_lowercase();
         let mut tx = self.begin().await?;
         let Comparison { mode, days, updated_at, at, current, proposed, revision } =
-            Self::compare(&mut tx, &name, request.retention_mode.as_deref(), request.retention_days).await?;
+            self.compare(&mut tx, &name, request.retention_mode.as_deref(), request.retention_days).await?;
         if revision != request.policy_revision {
             return Err(apply_refusal(StatusCode::CONFLICT, "retention_policy_revision_stale", &name,
                 json!({"policy_revision": revision}),
@@ -386,6 +386,7 @@ store_methods! {
     /// The namespace's current policy and the proposal over it, as the plan
     /// and the apply both compare them, with the current `policy_revision`.
     async fn compare(
+        &self,
         tx: &mut Transaction<'_, DB>,
         name: &str,
         requested_mode: Option<&str>,
@@ -404,15 +405,15 @@ store_methods! {
         let updated_at = DB::optional_instant(&row, "updated_at")?;
         let (mode, days) = resolved_retention((requested_mode, requested_days), stored_mode.clone(), stored_days)?;
         let at = now();
-        let current = Policy::new(Some(&stored_mode), stored_days, at);
-        let proposed = Policy::new(Some(&mode), days, at);
+        let current = Policy::new(Some(&stored_mode), stored_days, at, self.default_history_retention_days);
+        let proposed = Policy::new(Some(&mode), days, at, self.default_history_retention_days);
         let revision = policy_revision(name, Some(&stored_mode), stored_days, current.days, updated_at);
         Ok(Comparison { mode, days, updated_at, at, current, proposed, revision })
     }
 
     async fn plan_in_snapshot(&self, tx: &mut Transaction<'_, DB>, name: &str, request: &PlanRequest) -> Result<Value> {
         let Comparison { mode, days, updated_at, at, current, proposed, revision } =
-            Self::compare(tx, name, request.retention_mode.as_deref(), request.retention_days).await?;
+            self.compare(tx, name, request.retention_mode.as_deref(), request.retention_days).await?;
         let planned = plan_revision(&revision, &mode, days);
         let (limit, hold_limit) = (request.scan_limit, request.hold_scan_limit);
         let mut incomplete = Vec::new();
@@ -646,7 +647,7 @@ mod tests {
     #[test]
     fn only_a_policy_that_prunes_more_is_retroactive() {
         let now = at("2026-11-25T10:00:00Z");
-        let policy = |mode: &str, days: Option<i64>| Policy::new(Some(mode), days, now);
+        let policy = |mode: &str, days: Option<i64>| Policy::new(Some(mode), days, now, 30);
         assert!(retroactive(&policy("bounded", Some(30)), &policy("bounded", Some(7))));
         assert!(retroactive(&policy("forever", None), &policy("bounded", Some(365))));
         assert!(!retroactive(&policy("bounded", Some(7)), &policy("bounded", Some(30))));

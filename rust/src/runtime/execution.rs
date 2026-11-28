@@ -420,6 +420,13 @@ impl Runtime {
             .map_err(|error| refuse(StatusCode::SERVICE_UNAVAILABLE, error.reason()))
     }
 
+    fn configured_history_retention_days() -> Result<i64> {
+        crate::config_audit::history_retention_days(|name| {
+            std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
+        })
+        .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_history_retention_configuration"))
+    }
+
     pub async fn open(database: &str, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
         let offer_keys = Self::configured_offer_keys()?;
@@ -430,9 +437,11 @@ impl Runtime {
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
+        let default_history_retention_days = Self::configured_history_retention_days()?;
         let mut store = Store::new(sqlite::open(database).await?).with_maintenance_pool();
         store.memo_size_limit = limit;
         store.search_attribute_limit = search_attribute_limit;
+        store.default_history_retention_days = default_history_retention_days;
         store.history_budget = history_budget;
         store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
@@ -459,9 +468,11 @@ impl Runtime {
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
+        let default_history_retention_days = Self::configured_history_retention_days()?;
         let mut store = Store::new(PostgresStorage::open(options).await?.into_pool()).with_maintenance_pool();
         store.memo_size_limit = limit;
         store.search_attribute_limit = search_attribute_limit;
+        store.default_history_retention_days = default_history_retention_days;
         store.history_budget = history_budget;
         store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
@@ -488,9 +499,11 @@ impl Runtime {
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
+        let default_history_retention_days = Self::configured_history_retention_days()?;
         let mut store = Store::new(MySqlStorage::open(options).await?.into_pool()).with_maintenance_pool();
         store.memo_size_limit = limit;
         store.search_attribute_limit = search_attribute_limit;
+        store.default_history_retention_days = default_history_retention_days;
         store.history_budget = history_budget;
         store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
         store.activity_task_lease_seconds = queries.activity_task_lease_seconds;

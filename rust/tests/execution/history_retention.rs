@@ -15,6 +15,82 @@ fn messages(body: &Value, field: &str) -> Value {
     body["errors"][field].clone()
 }
 
+#[test]
+fn configured_history_retention_is_persisted_and_used_for_pruning() {
+    // Give this fixture its own immutable process configuration.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "history_retention::configured_retention_child"])
+        .env("DW_HISTORY_RETENTION_DAYS", "90")
+        .env("WORKFLOW_HISTORY_RETENTION_DAYS", "30")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "{}
+{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+#[ignore = "environment is set by the parent test"]
+async fn configured_retention_child() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    for (body, expected) in [
+        (json!({"name":"inherited"}), json!(90)),
+        (json!({"name":"explicit","retention_days":14}), json!(14)),
+        (json!({"name":"forever","retention_mode":"forever"}), Value::Null),
+    ] {
+        let (status, created) = request(&app, "POST", "/api/namespaces", body.clone()).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert_eq!(created["retention_days"], expected, "{created}");
+        let name = body["name"].as_str().unwrap();
+        let (status, stored) = request(&app, "GET", &format!("/api/namespaces/{name}"), Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{stored}");
+        assert_eq!(stored["retention_days"], expected, "{stored}");
+    }
+
+    let (status, initial) = request(&app, "GET", "/api/namespaces/default", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{initial}");
+    assert_eq!(initial["retention_days"], 90, "{initial}");
+    register(&app, "worker", json!(["echo"]), json!([])).await;
+    let kept = completed_run(&app, "configured-kept").await;
+    let expired = completed_run(&app, "configured-expired").await;
+    for (run, age) in [(&kept, 45), (&expired, 100)] {
+        let closed_at = (chrono::Utc::now() - chrono::Duration::days(age))
+            .format("%Y-%m-%d %H:%M:%S%.6f");
+        for table in ["workflow_runs", "workflow_run_summaries"] {
+            database.execute(sqlx::AssertSqlSafe(format!(
+                "UPDATE {table} SET closed_at='{closed_at}' WHERE id='{run}'"
+            ))).await;
+        }
+    }
+    let (status, retention) = request(&app, "GET", STATUS, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{retention}");
+    assert_eq!(retention["retention_days"], 90, "{retention}");
+    assert_eq!(retention["expired_run_ids"], json!([expired]), "{retention}");
+    let (status, pruned) = request(&app, "POST", PASS, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{pruned}");
+    assert_eq!(pruned["pruned"], 1, "{pruned}");
+    assert_eq!(pruned["results"][0]["run_id"], expired, "{pruned}");
+
+    let (status, updated) = request(
+        &app, "PUT", "/api/namespaces/default", json!({"retention_days":78}),
+    ).await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    runtime.close().await;
+    drop(app);
+    let reopened = database.open().await.unwrap();
+    let app = router(reopened.clone());
+    let (status, stored) = request(&app, "GET", "/api/namespaces/default", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{stored}");
+    assert_eq!(stored["retention_days"], 78, "{stored}");
+    reopened.close().await;
+}
+
 // Published PHP keeps closed runs for the namespace's retention days, then
 // prunes their details: one run per heartbeat, or a batch on request.
 #[tokio::test]

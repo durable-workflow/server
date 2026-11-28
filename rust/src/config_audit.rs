@@ -210,6 +210,22 @@ where
     }
 }
 
+pub const DEFAULT_HISTORY_RETENTION_DAYS: i64 = 30;
+
+pub fn history_retention_days<F>(lookup: F) -> Result<i64, &'static str>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    const INVALID: &str = "DW_HISTORY_RETENTION_DAYS must be an integer between 1 and 365 days.";
+    match effective(lookup, "DW_HISTORY_RETENTION_DAYS", Some("WORKFLOW_HISTORY_RETENTION_DAYS")) {
+        None => Ok(DEFAULT_HISTORY_RETENTION_DAYS),
+        Some(PhpValue::Str(value)) => value.trim().parse::<i64>().ok()
+            .filter(|days| (1..=365).contains(days))
+            .ok_or(INVALID),
+        Some(_) => Err(INVALID),
+    }
+}
+
 /// The longest update completion wait, whether a caller asks for it or the
 /// operator configures the default (Server #775,
 /// `ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX`).
@@ -469,6 +485,9 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
         }
     }
     if let Err(message) = activity_task_lease_seconds(lookup) {
+        report.refusals.push(message.into());
+    }
+    if let Err(message) = history_retention_days(lookup) {
         report.refusals.push(message.into());
     }
     for (name, legacy) in HONORED_JSON_OBJECTS {
@@ -745,6 +764,27 @@ mod tests {
 
     fn refusals(values: &[(&str, &str)]) -> Vec<String> {
         audit(&environment(values)).refusals
+    }
+
+    #[test]
+    fn history_retention_default_obeys_setting_precedence_and_bounds() {
+        const PRIMARY: &str = "DW_HISTORY_RETENTION_DAYS";
+        const LEGACY: &str = "WORKFLOW_HISTORY_RETENTION_DAYS";
+        let cases: &[(&[(&str, &str)], i64)] = &[
+            (&[], 30),
+            (&[(LEGACY, "365")], 365),
+            (&[(PRIMARY, "(null)"), (LEGACY, "90")], 90),
+            (&[(PRIMARY, "1"), (LEGACY, "90")], 1),
+        ];
+        for (entries, expected) in cases {
+            let environment = environment(entries);
+            assert_eq!(history_retention_days(|key| environment.get(key).cloned()), Ok(*expected));
+            assert!(audit(&environment).refusals.is_empty());
+        }
+        for invalid in ["0", "366", "-1", "false", "90 days", ""] {
+            let messages = refusals(&[(PRIMARY, invalid), (LEGACY, "90")]);
+            assert_eq!(messages, ["DW_HISTORY_RETENTION_DAYS must be an integer between 1 and 365 days."]);
+        }
     }
 
     /// `(name, legacy, default)` for every `vars` entry, in contract order.
