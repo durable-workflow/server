@@ -358,6 +358,13 @@ category emits a warning and does not block.
   `Workflow\V2\Support\PlatformConformanceSuite`. Third-party harnesses
   that target this server can read the suite manifest live without
   vendoring the static mirror.
+- Native publishes worker negotiation under `worker_protocol.negotiation`.
+  The default list describes worker request headers for registration, polling
+  and ordinary worker operations. `workflow_task_report_maximum_version`
+  describes the higher header version accepted on workflow task completion
+  and failure reports. Workers negotiate the continuation capability separately
+  at registration. A future-version refusal probe must exceed both advertised
+  limits.
 - Activity runtime contract: `GET /api/cluster/info` re-exports
   `activity_runtime_contract`, schema
   `durable-workflow.v2.activity-runtime.contract`. It names the required

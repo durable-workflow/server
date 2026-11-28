@@ -133,6 +133,28 @@ test('authority derivation refuses missing or contradictory manifests before sce
   );
 });
 
+test('Native worker negotiation selects the first future version outside task reports', () => {
+  const info = clusterInfo({ controlPlane: '2', workerProtocol: '1.20', portableWorkerAffinityMinimum: '1.18' });
+  info.worker_protocol.negotiation = {
+    ...info.surface_stability_contract.surface_families.worker_protocol.negotiation,
+    workflow_task_report_maximum_version: '1.21',
+  };
+  delete info.surface_stability_contract;
+
+  const authority = deriveProtocolAuthority(info);
+  assert.equal(authority.worker_protocol.workflow_task_report_maximum_version, '1.21');
+  const pairings = pairingClassesForAuthority(authority);
+  assert.equal(pairings.compatible.workerProtocolVersion, '1.20');
+  assert.equal(pairings.backward_skew.workerProtocolVersion, '1.19');
+  assert.equal(pairings.forward_skew.workerProtocolVersion, '1.22');
+  assert.equal(pairings.outside_window.workerProtocolVersion, '2.0');
+
+  for (const invalid of [null, '1.20', '2.1', '1.9007199254740992', 'malformed']) {
+    info.worker_protocol.negotiation.workflow_task_report_maximum_version = invalid;
+    assert.throws(() => deriveProtocolAuthority(info), /invalid workflow task report protocol maximum/);
+  }
+});
+
 test('raw worker-task fixture registration carries the exact-current portable capability manifest', () => {
   const protocolAuthority = deriveProtocolAuthority(clusterInfo());
   const payload = rawWorkerTaskFixtureRegistrationPayload({

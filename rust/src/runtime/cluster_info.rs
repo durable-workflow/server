@@ -205,6 +205,19 @@ pub(super) fn client_compatibility(auth_composition: &Value, request_contract: &
     })
 }
 
+/// Default worker header admission and the negotiated workflow task report exception.
+pub(super) fn worker_protocol_negotiation() -> Value {
+    let accepted = (0..=super::DEFAULT_WORKER_PROTOCOL_MAXIMUM_MINOR)
+        .map(|minor| format!("1.{minor}"))
+        .collect::<Vec<_>>();
+    json!({
+        "default_advertised_version": super::WORKER_PROTOCOL_VERSION,
+        "request_header_rule": "same_major_and_minor_less_than_or_equal_to_advertised",
+        "accepted_request_versions_by_default": accepted,
+        "workflow_task_report_maximum_version": super::continuations::TARGET_BUILD_PROTOCOL_VERSION,
+    })
+}
+
 /// Members published PHP's cluster info carries that native leaves out, each
 /// with the reason.
 pub(super) fn unqualified() -> Value {

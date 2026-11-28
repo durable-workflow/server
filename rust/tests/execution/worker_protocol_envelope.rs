@@ -98,3 +98,44 @@ async fn a_namespace_storage_failure_carries_the_envelope() {
     assert!(body["server_capabilities"].is_object(), "{body}");
     database.remove().await;
 }
+
+#[tokio::test]
+async fn worker_negotiation_discovery_matches_registration_and_task_reports() {
+    let database = TestDatabase::new().await;
+    let runtime = database.open().await.unwrap();
+    let app = router(runtime.clone());
+    let (status, info) = request(&app, "GET", "/api/cluster/info", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let protocol = &info["worker_protocol"];
+    let negotiation = &protocol["negotiation"];
+    assert_eq!(negotiation["default_advertised_version"], protocol["version"]);
+    assert_eq!(negotiation["request_header_rule"], "same_major_and_minor_less_than_or_equal_to_advertised");
+    let accepted = negotiation["accepted_request_versions_by_default"].as_array().unwrap();
+    assert_eq!(accepted, &(0..=20).map(|minor| json!(format!("1.{minor}"))).collect::<Vec<_>>());
+    assert_eq!(accepted.last().unwrap(), &protocol["version"]);
+    let report_maximum = negotiation["workflow_task_report_maximum_version"].as_str().unwrap();
+    assert_eq!(report_maximum, "1.21");
+
+    for version in accepted {
+        let version = version.as_str().unwrap();
+        let (status, body) = request_protocol(&app, "POST", "/api/worker/register",
+            json!({"worker_id":format!("negotiation-{version}"),"task_queue":"test","runtime":"rust"}), version).await;
+        assert_eq!(status, StatusCode::CREATED, "{version}: {body}");
+    }
+    let (status, body) = request_protocol(&app, "POST", "/api/worker/register",
+        json!({"worker_id":"negotiation-report-version","task_queue":"test","runtime":"rust"}), report_maximum).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "unsupported_protocol_version");
+
+    for operation in ["complete", "fail"] {
+        let path = format!("/api/worker/workflow-tasks/unknown-task/{operation}");
+        let (status, body) = request_protocol(&app, "POST", &path, json!({}), report_maximum).await;
+        assert!(status.is_client_error(), "{operation}: {status} {body}");
+        assert_ne!(body["reason"], "unsupported_protocol_version", "{operation}: {body}");
+        let (status, body) = request_protocol(&app, "POST", &path, json!({}), "1.22").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["reason"], "unsupported_protocol_version");
+    }
+    runtime.close().await;
+    database.remove().await;
+}

@@ -209,17 +209,21 @@ export function deriveProtocolAuthority(clusterInfo) {
     'worker protocol',
   );
 
-  const negotiation = clusterInfo
+  const directNegotiation = clusterInfo?.worker_protocol?.negotiation;
+  const negotiation = directNegotiation ?? clusterInfo
     ?.surface_stability_contract
     ?.surface_families
     ?.worker_protocol
     ?.negotiation;
+  const negotiationPath = directNegotiation == null
+    ? 'surface_stability_contract.surface_families.worker_protocol.negotiation'
+    : 'worker_protocol.negotiation';
   if (!negotiation || typeof negotiation !== 'object' || Array.isArray(negotiation)) {
     throw new Error('published Server cluster manifest omitted worker protocol negotiation authority');
   }
   const advertisedWorkerProtocolVersion = requiredManifestVersion(
     negotiation.default_advertised_version,
-    'surface_stability_contract.surface_families.worker_protocol.negotiation.default_advertised_version',
+    `${negotiationPath}.default_advertised_version`,
     /^\d+\.\d+$/,
   );
   assertMatchingManifestVersion(
@@ -234,7 +238,7 @@ export function deriveProtocolAuthority(clusterInfo) {
   const acceptedWorkerProtocolVersions = Array.isArray(negotiation.accepted_request_versions_by_default)
     ? negotiation.accepted_request_versions_by_default.map((version, index) => requiredManifestVersion(
       version,
-      `surface_stability_contract.surface_families.worker_protocol.negotiation.accepted_request_versions_by_default.${index}`,
+      `${negotiationPath}.accepted_request_versions_by_default.${index}`,
       /^\d+\.\d+$/,
     ))
     : [];
@@ -251,6 +255,16 @@ export function deriveProtocolAuthority(clusterInfo) {
   }
   if (!acceptedWorkerProtocolVersions.includes(workerProtocolVersion)) {
     throw new Error('published Server cluster manifest worker protocol negotiation omits its advertised version');
+  }
+
+  const reportMaximumVersion = negotiation.workflow_task_report_maximum_version;
+  if (reportMaximumVersion !== undefined) {
+    const maximum = parseProtocolVersion(reportMaximumVersion);
+    if (typeof reportMaximumVersion !== 'string' || maximum === null
+      || maximum.major !== currentWorkerProtocol.major || maximum.minor <= currentWorkerProtocol.minor
+      || !Number.isSafeInteger(maximum.minor + 1)) {
+      throw new Error('published Server cluster manifest advertised an invalid workflow task report protocol maximum');
+    }
   }
 
   const portableWorkerAffinityMinimum = requiredManifestVersion(
@@ -293,6 +307,7 @@ export function deriveProtocolAuthority(clusterInfo) {
       header: workerProtocolHeader,
       request_rule: 'same_major_and_minor_less_than_or_equal_to_advertised',
       accepted_versions: acceptedWorkerProtocolVersions,
+      ...(reportMaximumVersion === undefined ? {} : { workflow_task_report_maximum_version: reportMaximumVersion }),
       portable_worker_affinity: {
         minimum_protocol_version: portableWorkerAffinityMinimum,
         capabilities: portableWorkerAffinityCapabilities,
@@ -357,7 +372,9 @@ export function pairingClassesForAuthority(protocolAuthority) {
 
   const futureControlPlaneVersion = String(controlPlane + 1);
   const unsupportedControlPlaneMajor = String(controlPlane + 2);
-  const futureWorkerProtocolVersion = `${workerProtocol.major}.${workerProtocol.minor + 1}`;
+  const reportMaximum = parseProtocolVersion(protocolAuthority.worker_protocol.workflow_task_report_maximum_version);
+  const highestWorkerMinor = reportMaximum?.minor ?? workerProtocol.minor;
+  const futureWorkerProtocolVersion = `${workerProtocol.major}.${highestWorkerMinor + 1}`;
   const unsupportedWorkerProtocolMajor = `${workerProtocol.major + 1}.0`;
   const currentWorkerProtocolVersion = protocolAuthority.worker_protocol.version;
   const currentControlPlaneVersion = protocolAuthority.control_plane.version;
