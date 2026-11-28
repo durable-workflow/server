@@ -176,15 +176,6 @@ pub(super) struct StreamPlan {
     pub(super) checkpointed: Vec<(i64, i64)>,
 }
 
-/// `server.history.retention_days`.
-fn default_days() -> i64 {
-    ["DW_HISTORY_RETENTION_DAYS", "WORKFLOW_HISTORY_RETENTION_DAYS"]
-        .iter()
-        .find_map(|name| std::env::var(name).ok())
-        .and_then(|days| days.trim().parse().ok())
-        .unwrap_or(30)
-}
-
 /// `HistoryRetentionEnforcer::retentionPolicy`.
 pub(super) struct Policy {
     pub(super) forever: bool,
@@ -193,9 +184,9 @@ pub(super) struct Policy {
 }
 
 impl Policy {
-    pub(super) fn new(mode: Option<&str>, days: Option<i64>, now: DateTime<Utc>) -> Self {
+    pub(super) fn new(mode: Option<&str>, days: Option<i64>, now: DateTime<Utc>, default_days: i64) -> Self {
         let forever = mode == Some("forever");
-        let days = (!forever).then(|| days.unwrap_or_else(default_days));
+        let days = (!forever).then(|| days.unwrap_or(default_days));
         Self { forever, days, cutoff: days.map(|days| now - Duration::days(days)) }
     }
 
@@ -369,9 +360,9 @@ mod tests {
     #[test]
     fn policies_follow_php() {
         let now = DateTime::parse_from_rfc3339("2026-10-21T12:00:00Z").unwrap().with_timezone(&Utc);
-        let bounded = Policy::new(Some("bounded"), Some(7), now);
+        let bounded = Policy::new(Some("bounded"), Some(7), now, 30);
         assert_eq!(bounded.fields("default")["cutoff"], "2026-10-14T12:00:00+00:00");
-        let forever = Policy::new(Some("forever"), Some(7), now);
+        let forever = Policy::new(Some("forever"), Some(7), now, 30);
         assert_eq!((forever.days, forever.cutoff), (None, None));
         assert_eq!(forever.fields("default")["retention_mode"], "forever");
         assert_eq!(limit(Some(500)), 100);

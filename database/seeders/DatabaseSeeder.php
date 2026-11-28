@@ -14,7 +14,7 @@ class DatabaseSeeder extends Seeder
             [
                 'description' => 'Default namespace',
                 'retention_mode' => WorkflowNamespace::RETENTION_MODE_BOUNDED,
-                'retention_days' => 30,
+                'retention_days' => (int) config('server.history.retention_days', 30),
                 'status' => 'active',
             ]
         );

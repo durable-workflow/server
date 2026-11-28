@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceExternalPayloadStorage;
+use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -23,6 +24,25 @@ class NamespaceControllerTest extends TestCase
 
         $this->withHeaders([
             'X-Durable-Workflow-Control-Plane-Version' => ControlPlaneProtocol::VERSION,
+        ]);
+    }
+
+    public function test_default_namespace_seed_uses_configured_retention_without_replacing_policy(): void
+    {
+        config(['server.history.retention_days' => 90]);
+        $this->seed(DatabaseSeeder::class);
+
+        $this->assertDatabaseHas('workflow_namespaces', [
+            'name' => 'default',
+            'retention_days' => 90,
+        ]);
+
+        config(['server.history.retention_days' => 120]);
+        $this->seed(DatabaseSeeder::class);
+
+        $this->assertDatabaseHas('workflow_namespaces', [
+            'name' => 'default',
+            'retention_days' => 90,
         ]);
     }
 

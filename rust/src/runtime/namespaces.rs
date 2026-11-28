@@ -83,8 +83,10 @@ where
             .await?
             == 0
         {
-            Self::insert_namespace(&mut tx, "default", Some("Default namespace"), "bounded", 30)
-                .await?;
+            Self::insert_namespace(
+                &mut tx, "default", Some("Default namespace"), "bounded", self.default_history_retention_days,
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -196,7 +198,7 @@ where
                 if mode == Some("forever") {
                     Some(0)
                 } else {
-                    Some(30)
+                    Some(self.default_history_retention_days)
                 }
             }
             Some(Value::Null) if mode == Some("forever") => Some(0),

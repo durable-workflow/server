@@ -210,6 +210,36 @@ where
     }
 }
 
+pub const DEFAULT_HISTORY_RETENTION_DAYS: i64 = 30;
+
+pub fn history_retention_days<F>(lookup: F) -> Result<i64, &'static str>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    const INVALID: &str = "DW_HISTORY_RETENTION_DAYS must be an integer between 1 and 365 days.";
+    match effective(lookup, "DW_HISTORY_RETENTION_DAYS", Some("WORKFLOW_HISTORY_RETENTION_DAYS")) {
+        None => Ok(DEFAULT_HISTORY_RETENTION_DAYS),
+        Some(PhpValue::Str(value)) => value.trim().parse::<i64>().ok()
+            .filter(|days| (1..=365).contains(days))
+            .ok_or(INVALID),
+        Some(_) => Err(INVALID),
+    }
+}
+
+pub const DEFAULT_REPAIR_LOOP_THROTTLE_SECONDS: u64 = 5;
+
+pub fn repair_loop_throttle_seconds<F>(lookup: F) -> Result<u64, &'static str>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    const INVALID: &str = "DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS must be a non-negative integer in seconds.";
+    match effective(lookup, "DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS", Some("WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS")) {
+        None => Ok(DEFAULT_REPAIR_LOOP_THROTTLE_SECONDS),
+        Some(PhpValue::Str(value)) => value.trim().parse().map_err(|_| INVALID),
+        Some(_) => Err(INVALID),
+    }
+}
+
 /// The longest update completion wait, whether a caller asks for it or the
 /// operator configures the default (Server #775,
 /// `ControlPlaneRequestContract::UPDATE_WAIT_TIMEOUT_SECONDS_MAX`).
@@ -471,6 +501,12 @@ pub fn audit(environment: &BTreeMap<String, String>) -> Report {
     if let Err(message) = activity_task_lease_seconds(lookup) {
         report.refusals.push(message.into());
     }
+    if let Err(message) = history_retention_days(lookup) {
+        report.refusals.push(message.into());
+    }
+    if let Err(message) = repair_loop_throttle_seconds(lookup) {
+        report.refusals.push(message.into());
+    }
     for (name, legacy) in HONORED_JSON_OBJECTS {
         if let Err(message) = json_object(lookup, name, Some(legacy)) {
             report.refusals.push(message);
@@ -706,7 +742,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting { name: "DW_V2_SUPPORTED_COMPATIBILITIES", legacy: Some("WORKFLOW_V2_SUPPORTED_COMPATIBILITIES"), disposition: Refused(Empty, COMPATIBILITY) },
     Setting { name: "DW_V2_TASK_DISPATCH_MODE", legacy: None, disposition: Ignored },
     Setting { name: "DW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS", legacy: Some("WORKFLOW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS"), disposition: Refused(Int(60), REPAIR) },
-    Setting { name: "DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS", legacy: Some("WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS"), disposition: Ignored },
+    Setting { name: "DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS", legacy: Some("WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS"), disposition: Honored },
     Setting { name: "DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS", legacy: Some("WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS"), disposition: Refused(Int(3), REPAIR) },
     Setting { name: "DW_V2_TASK_REPAIR_SCAN_LIMIT", legacy: Some("WORKFLOW_V2_TASK_REPAIR_SCAN_LIMIT"), disposition: Refused(Int(25), REPAIR) },
     Setting { name: "DW_V2_TENANCY_ENVIRONMENT", legacy: Some("WORKFLOW_V2_TENANCY_ENVIRONMENT"), disposition: Ignored },
@@ -745,6 +781,48 @@ mod tests {
 
     fn refusals(values: &[(&str, &str)]) -> Vec<String> {
         audit(&environment(values)).refusals
+    }
+
+    #[test]
+    fn history_retention_default_obeys_setting_precedence_and_bounds() {
+        const PRIMARY: &str = "DW_HISTORY_RETENTION_DAYS";
+        const LEGACY: &str = "WORKFLOW_HISTORY_RETENTION_DAYS";
+        let cases: &[(&[(&str, &str)], i64)] = &[
+            (&[], 30),
+            (&[(LEGACY, "365")], 365),
+            (&[(PRIMARY, "(null)"), (LEGACY, "90")], 90),
+            (&[(PRIMARY, "1"), (LEGACY, "90")], 1),
+        ];
+        for (entries, expected) in cases {
+            let environment = environment(entries);
+            assert_eq!(history_retention_days(|key| environment.get(key).cloned()), Ok(*expected));
+            assert!(audit(&environment).refusals.is_empty());
+        }
+        for invalid in ["0", "366", "-1", "false", "90 days", ""] {
+            let messages = refusals(&[(PRIMARY, invalid), (LEGACY, "90")]);
+            assert_eq!(messages, ["DW_HISTORY_RETENTION_DAYS must be an integer between 1 and 365 days."]);
+        }
+    }
+
+    #[test]
+    fn repair_loop_throttle_obeys_setting_precedence_and_rejects_invalid_values() {
+        const PRIMARY: &str = "DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS";
+        const LEGACY: &str = "WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS";
+        let cases: &[(&[(&str, &str)], u64)] = &[
+            (&[], 5),
+            (&[(LEGACY, "60")], 60),
+            (&[(PRIMARY, "(null)"), (LEGACY, "60")], 60),
+            (&[(PRIMARY, "0"), (LEGACY, "60")], 0),
+        ];
+        for (entries, expected) in cases {
+            let environment = environment(entries);
+            assert_eq!(repair_loop_throttle_seconds(|key| environment.get(key).cloned()), Ok(*expected));
+            assert!(audit(&environment).refusals.is_empty());
+        }
+        for invalid in ["-1", "false", "0.1", "5 seconds", ""] {
+            let messages = refusals(&[(PRIMARY, invalid), (LEGACY, "60")]);
+            assert_eq!(messages, ["DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS must be a non-negative integer in seconds."]);
+        }
     }
 
     /// `(name, legacy, default)` for every `vars` entry, in contract order.

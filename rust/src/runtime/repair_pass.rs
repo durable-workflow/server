@@ -32,8 +32,6 @@ use std::time::Instant;
 
 /// `TaskRepairPolicy::scanLimit()`.
 const SCAN_LIMIT: usize = 25;
-/// `TaskRepairPolicy::loopThrottleSeconds()`.
-const LOOP_THROTTLE_SECONDS: u64 = 5;
 
 /// The pass's request, after PHP's validation and trimming.
 #[derive(Default)]
@@ -487,7 +485,7 @@ store_methods! {
     pub(crate) async fn repair_pass(&self, request: &PassRequest) -> Result<Value> {
         {
             let mut last = self.repair_pass_at.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let recent = last.is_some_and(|at| at.elapsed().as_secs() < LOOP_THROTTLE_SECONDS);
+            let recent = last.is_some_and(|at| at.elapsed().as_secs() < self.repair_loop_throttle_seconds);
             if request.respect_throttle && recent {
                 return Ok(Value::Object(empty_report(request, true)));
             }

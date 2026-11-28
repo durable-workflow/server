@@ -15,6 +15,12 @@ use tokio::{
     task::JoinHandle,
 };
 
+enum DatabaseOptions<'a> {
+    Sqlite(&'a str),
+    Postgres(PgConnectOptions),
+    MySql(MySqlConnectOptions),
+}
+
 enum Storage {
     Sqlite(Store<Sqlite>),
     Postgres(Store<Postgres>),
@@ -420,65 +426,33 @@ impl Runtime {
             .map_err(|error| refuse(StatusCode::SERVICE_UNAVAILABLE, error.reason()))
     }
 
+    fn configured_history_retention_days() -> Result<i64> {
+        crate::config_audit::history_retention_days(|name| {
+            std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
+        })
+        .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_history_retention_configuration"))
+    }
+
+    fn configured_repair_loop_throttle_seconds() -> Result<u64> {
+        crate::config_audit::repair_loop_throttle_seconds(|name| {
+            std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
+        })
+        .map_err(|_| refuse(StatusCode::UNPROCESSABLE_ENTITY, "invalid_repair_loop_throttle_configuration"))
+    }
+
     pub async fn open(database: &str, token: String) -> Result<Self> {
-        Self::validate_token(&token)?;
-        let offer_keys = Self::configured_offer_keys()?;
-        let external = super::ExternalPayloadConfig::from_env()?;
-        let queries = super::QueryTaskConfig::from_env()?;
-        let poll_sweeps = super::poll_sweeps::Config::from_env()?;
-        let limit = super::memo_limits::configured_limit()?;
-        let structural = super::StructuralLimits::from_env()?;
-        let history_budget = super::history_budget::Config::from_env()?;
-        let search_attribute_limit = super::search_attributes::configured_limit()?;
-        let mut store = Store::new(sqlite::open(database).await?).with_maintenance_pool();
-        store.memo_size_limit = limit;
-        store.search_attribute_limit = search_attribute_limit;
-        store.history_budget = history_budget;
-        store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
-        store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
-        store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
-        store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        store.worker_registration_retention_seconds = queries.worker_registration_retention_seconds;
-        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
-        store.poll_sweep_config = poll_sweeps;
-        store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
-        store.poll_capacity = Arc::new(super::poll_capacity::PollCapacity::new(
-            super::poll_capacity::Settings::from_env(),
-            store.pool.options().get_max_connections(),
-        ));
-        Self::from_storage(Storage::Sqlite(store), token, external, queries, structural, offer_keys).await
+        Self::open_database(DatabaseOptions::Sqlite(database), token).await
     }
 
     pub async fn open_postgres(options: PgConnectOptions, token: String) -> Result<Self> {
-        Self::validate_token(&token)?;
-        let offer_keys = Self::configured_offer_keys()?;
-        let external = super::ExternalPayloadConfig::from_env()?;
-        let queries = super::QueryTaskConfig::from_env()?;
-        let poll_sweeps = super::poll_sweeps::Config::from_env()?;
-        let limit = super::memo_limits::configured_limit()?;
-        let structural = super::StructuralLimits::from_env()?;
-        let history_budget = super::history_budget::Config::from_env()?;
-        let search_attribute_limit = super::search_attributes::configured_limit()?;
-        let mut store = Store::new(PostgresStorage::open(options).await?.into_pool()).with_maintenance_pool();
-        store.memo_size_limit = limit;
-        store.search_attribute_limit = search_attribute_limit;
-        store.history_budget = history_budget;
-        store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
-        store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
-        store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
-        store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        store.worker_registration_retention_seconds = queries.worker_registration_retention_seconds;
-        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
-        store.poll_sweep_config = poll_sweeps;
-        store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
-        store.poll_capacity = Arc::new(super::poll_capacity::PollCapacity::new(
-            super::poll_capacity::Settings::from_env(),
-            store.pool.options().get_max_connections(),
-        ));
-        Self::from_storage(Storage::Postgres(store), token, external, queries, structural, offer_keys).await
+        Self::open_database(DatabaseOptions::Postgres(options), token).await
     }
 
     pub async fn open_mysql(options: MySqlConnectOptions, token: String) -> Result<Self> {
+        Self::open_database(DatabaseOptions::MySql(options), token).await
+    }
+
+    async fn open_database(database: DatabaseOptions<'_>, token: String) -> Result<Self> {
         Self::validate_token(&token)?;
         let offer_keys = Self::configured_offer_keys()?;
         let external = super::ExternalPayloadConfig::from_env()?;
@@ -488,23 +462,43 @@ impl Runtime {
         let structural = super::StructuralLimits::from_env()?;
         let history_budget = super::history_budget::Config::from_env()?;
         let search_attribute_limit = super::search_attributes::configured_limit()?;
-        let mut store = Store::new(MySqlStorage::open(options).await?.into_pool()).with_maintenance_pool();
-        store.memo_size_limit = limit;
-        store.search_attribute_limit = search_attribute_limit;
-        store.history_budget = history_budget;
-        store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
-        store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
-        store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
-        store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
-        store.worker_registration_retention_seconds = queries.worker_registration_retention_seconds;
-        store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
-        store.poll_sweep_config = poll_sweeps;
-        store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
-        store.poll_capacity = Arc::new(super::poll_capacity::PollCapacity::new(
-            super::poll_capacity::Settings::from_env(),
-            store.pool.options().get_max_connections(),
-        ));
-        Self::from_storage(Storage::MySql(store), token, external, queries, structural, offer_keys).await
+        let default_history_retention_days = Self::configured_history_retention_days()?;
+        let repair_loop_throttle_seconds = Self::configured_repair_loop_throttle_seconds()?;
+
+        macro_rules! configure_store {
+            ($pool:expr) => {{
+                let mut store = Store::new($pool).with_maintenance_pool();
+                store.memo_size_limit = limit;
+                store.search_attribute_limit = search_attribute_limit;
+                store.default_history_retention_days = default_history_retention_days;
+                store.repair_loop_throttle_seconds = repair_loop_throttle_seconds;
+                store.history_budget = history_budget;
+                store.workflow_task_lease_seconds = queries.workflow_task_lease_seconds;
+                store.activity_task_lease_seconds = queries.activity_task_lease_seconds;
+                store.update_wait_seconds = queries.update_wait_completion_timeout_seconds;
+                store.worker_stale_after_seconds = queries.worker_stale_after_seconds;
+                store.worker_registration_retention_seconds = queries.worker_registration_retention_seconds;
+                store.workflow_task_recovery_scan_limit = queries.workflow_task_recovery_scan_limit;
+                store.poll_sweep_config = poll_sweeps;
+                store.storage_admission = Arc::new(super::storage_admission::StorageAdmission::new(super::storage_admission::Settings::from_env()));
+                store.poll_capacity = Arc::new(super::poll_capacity::PollCapacity::new(
+                    super::poll_capacity::Settings::from_env(),
+                    store.pool.options().get_max_connections(),
+                ));
+                store
+            }};
+        }
+
+        let storage = match database {
+            DatabaseOptions::Sqlite(path) => Storage::Sqlite(configure_store!(sqlite::open(path).await?)),
+            DatabaseOptions::Postgres(options) => {
+                Storage::Postgres(configure_store!(PostgresStorage::open(options).await?.into_pool()))
+            }
+            DatabaseOptions::MySql(options) => {
+                Storage::MySql(configure_store!(MySqlStorage::open(options).await?.into_pool()))
+            }
+        };
+        Self::from_storage(storage, token, external, queries, structural, offer_keys).await
     }
 
     async fn from_storage(

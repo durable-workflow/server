@@ -213,6 +213,7 @@ pub(super) struct Store<DB: Backend> {
     pub(super) memo_codec: Arc<Semaphore>,
     pub(super) memo_size_limit: Option<usize>,
     pub(super) history_budget: super::history_budget::Config,
+    pub(super) default_history_retention_days: i64,
     pub(super) ordered_condition_wait_authoring: bool,
     /// How long a claimed workflow task stays leased (DW_WORKFLOW_TASK_TIMEOUT).
     pub(super) workflow_task_lease_seconds: i64,
@@ -235,6 +236,7 @@ pub(super) struct Store<DB: Backend> {
     /// When this server last ran a task repair pass, shared by its namespaces
     /// as PHP shares its loop throttle key.
     pub(super) repair_pass_at: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    pub(super) repair_loop_throttle_seconds: u64,
     pub(super) poll_sweep_config: super::poll_sweeps::Config,
     pub(super) poll_sweeps: Arc<super::poll_sweeps::Sweeps>,
     /// The storage pressure observation (Server #951), shared by every
@@ -412,6 +414,7 @@ where
             memo_codec: Arc::new(Semaphore::new(1)),
             memo_size_limit: Some(262_144),
             history_budget: super::history_budget::Config::default(),
+            default_history_retention_days: crate::config_audit::DEFAULT_HISTORY_RETENTION_DAYS,
             ordered_condition_wait_authoring: matches!(
                 std::env::var("DW_ORDERED_CONDITION_WAIT_AUTHORING").as_deref(),
                 Ok("1" | "true")
@@ -430,6 +433,7 @@ where
             workflow_task_recovery_scan_limit: 5,
             repair_codec: Arc::new(Semaphore::new(1)),
             repair_pass_at: Arc::default(),
+            repair_loop_throttle_seconds: crate::config_audit::DEFAULT_REPAIR_LOOP_THROTTLE_SECONDS,
             poll_sweep_config: super::poll_sweeps::Config::default(),
             poll_sweeps: Arc::default(),
             storage_admission: Arc::default(),
@@ -458,6 +462,7 @@ where
             memo_codec: self.memo_codec.clone(),
             memo_size_limit: self.memo_size_limit,
             history_budget: self.history_budget,
+            default_history_retention_days: self.default_history_retention_days,
             ordered_condition_wait_authoring: self.ordered_condition_wait_authoring,
             workflow_task_lease_seconds: self.workflow_task_lease_seconds,
             workflow_task_lost_lease_attention_threshold: self.workflow_task_lost_lease_attention_threshold,
@@ -469,6 +474,7 @@ where
             workflow_task_recovery_scan_limit: self.workflow_task_recovery_scan_limit,
             repair_codec: self.repair_codec.clone(),
             repair_pass_at: self.repair_pass_at.clone(),
+            repair_loop_throttle_seconds: self.repair_loop_throttle_seconds,
             poll_sweep_config: self.poll_sweep_config,
             poll_sweeps: self.poll_sweeps.clone(),
             storage_admission: self.storage_admission.clone(),

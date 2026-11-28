@@ -1067,13 +1067,15 @@ fn workflow_route(rest: &str) -> Option<Allowed> {
         | [_, "runs", _, "history", "export"]
         | [_, "runs", _, "streams"]
         | [_, "runs", _, "streams", _]
+        | [_, "message-streams"]
+        | [_, "message-streams", _]
         | [_, "nexus-operations"]
         | [_, "runs", _, "nexus-operations"]
         // A retained update's receipt, read in the request's namespace.
         | [_, "updates", _] => Some(READ),
         // A run's durable streams are rows in the request's namespace.
         [_, "runs", _, "streams", _, "items"] => Some(READ_WRITE),
-        [_, "runs", _, "streams", _, "close"] => Some(WRITE),
+        [_, "runs", _, "streams", _, "close"] | [_, "message-streams", _, "messages"] => Some(WRITE),
         [_, "signal" | "signal-with-start" | "query" | "update", _]
         | [_, "runs", _, "signal" | "query" | "update", _]
         | [_, "repair" | "request-cancellation"]
