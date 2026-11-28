@@ -264,6 +264,32 @@
       ]
     },
     {
+      "path": "benchmarks/server-port/continuation-v2/Dockerfile",
+      "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+      "count": 1,
+      "confinement": "Pinned Composer 2.10.3 image; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-reference",
+          "line": null,
+          "distance": null
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/server-port/continuation-v2/Dockerfile",
+      "line": "RUN composer install --no-dev --no-plugins --no-scripts --no-interaction --prefer-dist --no-progress",
+      "count": 1,
+      "confinement": "Runs in the pinned Composer 2.10.3 build stage; PinnedComposerImageTest checks its CA store.",
+      "guards": [
+        {
+          "type": "pinned-stage",
+          "line": "FROM composer:2.10.3@sha256:da624c2c705d54e2f5a9bb77a5dc6c7d091711433ebefd7035672e84c2010fee",
+          "distance": 5
+        }
+      ]
+    },
+    {
       "path": "benchmarks/server-port/small-host/README.md",
       "line": "bash scripts/ci/run-composer.sh --rm -v \"$DW_PORT_SDK_ROOT:/app\" -w /app -- \\",
       "count": 1,
