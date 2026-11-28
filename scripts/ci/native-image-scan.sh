@@ -26,7 +26,7 @@ esac
 # The scanner container's name derives from RESOURCE_SCOPE, so the job's
 # cleanup step can remove it.
 scope_identity="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-native-scan}"
-if test -z "${RESOURCE_SCOPE:-}"; then
+if [[ -z "${RESOURCE_SCOPE:-}" ]]; then
   RESOURCE_SCOPE="dw-native-$scope_identity-$(date -u +%Y%m%d%H%M%S)-$$"
 fi
 

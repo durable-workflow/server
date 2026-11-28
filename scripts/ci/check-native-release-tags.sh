@@ -20,7 +20,7 @@ release_triggers=$(awk '
   on && /^[^ #]/ { on = 0 }
   on && /^  [a-z_]+:/ { sub(/^  /, ""); sub(/:.*/, ""); print }
 ' .github/workflows/release.yml)
-test "$release_triggers" = workflow_dispatch \
+[[ "$release_triggers" = workflow_dispatch ]] \
   || fail "the retired release.yml must have only workflow_dispatch, not: $(echo $release_triggers)."
 grep -qx '    if: false' <(sed -n '/^  publish:$/,/^  [a-z-]*:$/p' .github/workflows/release.yml) \
   || fail "the retired release.yml publish job must be if: false."
@@ -104,7 +104,7 @@ rolling() { # known tags, release tag [, alias state [, exact digest]] -> moved 
     bash scripts/ci/native-release-rolling-tags.sh >/dev/null 2>&1 || { echo FAILED; return; }
   sed -n 's/^rolling_tags=//p' "$scratch/out"
 }
-want() { test "$2" = "$3" || fail "$1: expected rolling tags '$3', got '$2'."; }
+want() { [[ "$2" = "$3" ]] || fail "$1: expected rolling tags '$3', got '$2'."; }
 want "first final" "$(rolling $'2.11.8\nnative-3.0.0-rc.2' native-3.0.0)" "3.0 3 latest"
 # Plain tags from major 3 are native; plain tags below 3 stay PHP releases.
 want "first plain final" "$(rolling $'2.11.8\nnative-3.0.0\nnative-3.0.1' 3.0.2)" "3.0 3 latest"
@@ -390,7 +390,7 @@ gh_release() { # release tag, latest state [, VAR=value ...] -> the Latest choic
   grep -q -- '--verify-tag --title ' "$scratch/gh_calls" || { echo FAILED; return; }
   tr '\n' ' ' < "$scratch/gh_calls" | grep -oE -- '--prerelease|--latest(=false)?( |$)' | tr -d ' ' | paste -sd' ' -
 }
-want_release() { test "$2" = "$3" || fail "$1: expected GitHub Release '$3', got '$2'."; }
+want_release() { [[ "$2" = "$3" ]] || fail "$1: expected GitHub Release '$3', got '$2'."; }
 ours=$'ghcr.io/example/native '"$index"$'\nexample/native '"$index"
 theirs=$'ghcr.io/example/native '"$newer_index"$'\nexample/native '"$newer_index"
 # Latest follows the live alias.
@@ -622,7 +622,7 @@ rm -f "$scratch/git" "$scratch/git-count"
 # The GitHub Release job holds it too, so Latest is decided with no alias
 # moving underneath it.
 for workflow in .github/workflows/release.yml .github/workflows/native-alias-promotion.yml .github/workflows/native-github-release.yml; do
-  test "$(grep -c '^      group: durable-workflow-server-rolling-aliases$' "$workflow")" = 1 \
+  [[ "$(grep -c '^      group: durable-workflow-server-rolling-aliases$' "$workflow")" = 1 ]] \
     || fail "$workflow must hold the durable-workflow-server-rolling-aliases lock in one job."
 done
 # Every native-release.yml job that can publish runs in the tag-restricted
@@ -642,7 +642,7 @@ github_release=.github/workflows/native-github-release.yml
 [[ "$(grep -c '^  [a-z0-9-]*:$' <(sed -n '/^jobs:/,$p' "$github_release"))" = 1 ]] || fail "$github_release must have one job."
 grep -q "^    if: github.ref == 'refs/heads/main'$" "$github_release" || fail "$github_release must run only from main."
 grep -q '^    environment: github-release$' "$github_release" || fail "$github_release must run in the github-release Environment."
-grep -q '^  workflow_dispatch:$' "$github_release" && test "$(sed -n '/^on:/,/^permissions:/p' "$github_release" | grep -c '^  [a-z_]*:$')" = 1 \
+grep -q '^  workflow_dispatch:$' "$github_release" && [[ "$(sed -n '/^on:/,/^permissions:/p' "$github_release" | grep -c '^  [a-z_]*:$')" = 1 ]] \
   || fail "$github_release must be triggered only by workflow_dispatch."
 [[ "$(grep -c '      contents: write' "$github_release")" = 1 ]] || fail "$github_release must hold contents: write once."
 [[ "$(grep -c '^ *contents: write$' .github/workflows/native-release.yml)" = 0 ]] || fail "native-release.yml must not hold contents: write."
@@ -728,7 +728,7 @@ selected() { # event, compose file [, VAR=value ...] -> the selected image, "def
     bash "$select" >/dev/null 2>&1 || { echo FAILED; return; }
   sed -n 's/^DW_SERVER_IMAGE=//p' "$dispatch_scratch/github_env" | grep . || echo default
 }
-want_image() { test "$2" = "$3" || fail "$1: expected '$3', got '$2'."; }
+want_image() { [[ "$2" = "$3" ]] || fail "$1: expected '$3', got '$2'."; }
 want_image "published default" "$(selected pull_request "$(compose_for 3.0.2)")" default
 want_image "unpublished default on a pull request" "$(selected pull_request "$(compose_for 3.0.3)" HUB_STATUS=404)" "durableworkflow/server:latest"
 want_image "unpublished default on dispatch" "$(selected workflow_dispatch "$(compose_for 3.0.3)" HUB_STATUS=404)" FAILED
@@ -763,7 +763,7 @@ build-arm64=$tag_gate
 publish=$tag_gate
 scan-amd64=$tag_gate
 scan-arm64=$tag_gate"
-test "$job_conditions" = "$expected_conditions" \
+[[ "$job_conditions" = "$expected_conditions" ]] \
   || fail "native-release.yml job conditions changed; expected:
 $expected_conditions
 got:

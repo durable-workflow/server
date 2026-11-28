@@ -56,8 +56,8 @@ index=""
 for image in "${registries[@]}"; do
   raw=$(docker buildx imagetools inspect --raw "$image:$image_tag")
   digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$image_tag")
-  if test -z "$index"; then index=$digest; fi
-  test "$digest" = "$index" || fail "$image:$image_tag is $digest, not $index."
+  if [[ -z "$index" ]]; then index=$digest; fi
+  [[ "$digest" = "$index" ]] || fail "$image:$image_tag is $digest, not $index."
   jq -e --arg amd64 "${digests[0]}" --arg arm64 "${digests[1]}" '
     [.manifests[] | {digest, platform: "\(.platform.os)/\(.platform.architecture)"}] | sort_by(.platform)
     == [{digest: $amd64, platform: "linux/amd64"}, {digest: $arm64, platform: "linux/arm64"}]' <<<"$raw" >/dev/null \

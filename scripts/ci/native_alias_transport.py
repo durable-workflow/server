@@ -143,8 +143,10 @@ class GitHubRegistryProvider:
         if not separator:
             headers, separator, body = response.partition(b"\n\n")
         require(bool(separator), "release_http_response")
-        status = re.fullmatch(rb"HTTP/[0-9.]+ (200|404)(?: [^\r\n]*)?", headers.splitlines()[0])
-        require(status is not None and b"content-type: application/json" in headers.lower(), "release_http_status")
+        status_line = headers.partition(b"\n")[0].removesuffix(b"\r")
+        status = re.fullmatch(rb"HTTP/[0-9.]+ (200|404)(?: [^\r\n]*)?", status_line)
+        if status is None or b"content-type: application/json" not in headers.lower():
+            raise Refusal("release_http_status")
         value = strict_json(body, JSON_LIMIT)
         if status[1] == b"404":
             require(type(value) is dict and value.get("message") == "Not Found", "release_absence_unknown")

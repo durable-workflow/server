@@ -62,7 +62,7 @@ test('the cache key follows the toolchains, the runner and every tracked adapter
   // Every pinned Rust image among the inputs is named, as are the runner
   // and a digest of every input's name and content.
   assert.match(helper, /grep -ho 'library\/rust@sha256:\[0-9a-f\]\\\{64\\\}' -- "\$\{inputs\[@\]\}"/);
-  assert.match(helper, /test "\$\{#toolchains\[@\]\}" -ge 1/);
+  assert.match(helper, /\[\[ "\$\{#toolchains\[@\]\}" -ge 1 \]\]/);
   assert.match(helper, /digest=\$\(sha256sum -- "\$\{inputs\[@\]\}" \| sha256sum \| cut -c1-64\)/);
   assert.ok(helper.includes('key="sdk-adapter-cargo-v2-$RUNNER_OS-$RUNNER_ARCH-rust-$rust-inputs-$digest"'));
   // The five build scripts are the job's adapter build steps.

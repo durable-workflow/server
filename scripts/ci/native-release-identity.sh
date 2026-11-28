@@ -27,11 +27,11 @@ expected() {
 
 case "${1:-}" in
   expect)
-    test "$#" = 2 || fail "usage: $0 expect <label>"
+    [[ "$#" = 2 ]] || fail "usage: $0 expect <label>"
     expected "$2"
     ;;
   check)
-    test "$#" = 3 || fail "usage: $0 check <label> <reported version>"
+    [[ "$#" = 3 ]] || fail "usage: $0 check <label> <reported version>"
     want=$(expected "$2")
     if [[ -n "$want" && "$3" != "$want" ]]; then
       fail "the image is labelled $2 but its server reports version '$3'."
