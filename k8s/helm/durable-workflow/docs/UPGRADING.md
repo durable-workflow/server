@@ -69,6 +69,19 @@ chart MINOR bump and an entry below.
 
 ## Per-version migration notes
 
+### Chart 5.8.0 / Server 3.31.2 (native)
+
+Chart 5.8.0 selects [native Server 3.31.2](../../../../docs/releases/3.31.2.md),
+including the Debian PAM and Zstandard security fixes. It keeps the Server
+3.30.0 database schema and worker protocol 1.20. Upgrade from chart 5.7.x with
+the usual Helm rollout and keep `native.schemaUpgrade.enabled` off. If you
+are upgrading from Server 3.29.0 or earlier, follow the stopped-node schema
+upgrade below with the 3.31.2 image as your target.
+
+Finish the rollout and upgrade the workers on the task queue before starting
+workflows that use explicit parallel group policies. Activity workflow continuation
+v2 remains opt-in pending its published performance qualification.
+
 ### Chart 5.7.0 / Server 3.30.0 (native)
 
 **Every backend needs an explicit native schema upgrade from 3.29.0.** Chart
