@@ -29,19 +29,19 @@ mapfile -t inputs < <(git ls-files -- \
 
 # Never a partial key: all five adapter crates and build scripts must be
 # inputs. A sixth adapter must join the list above.
-test "$(printf '%s\n' "${inputs[@]}" | grep -c '/rust/Cargo\.lock$')" -eq 5
-test "$(printf '%s\n' "${inputs[@]}" | grep -c -- '-adapters\.sh$')" -eq 5
+[[ "$(printf '%s\n' "${inputs[@]}" | grep -c '/rust/Cargo\.lock$')" -eq 5 ]]
+[[ "$(printf '%s\n' "${inputs[@]}" | grep -c -- '-adapters\.sh$')" -eq 5 ]]
 
 # The key names every pinned Rust image the inputs build with: the build
 # scripts pin one and the query-authority profile another. The input digest
 # below covers them too; naming them keeps a toolchain change readable.
 mapfile -t toolchains < <(grep -ho 'library/rust@sha256:[0-9a-f]\{64\}' -- "${inputs[@]}" | sed 's/.*@sha256://' | LC_ALL=C sort -u)
-test "${#toolchains[@]}" -ge 1
+[[ "${#toolchains[@]}" -ge 1 ]]
 rust=$(IFS=-; printf '%s' "${toolchains[*]}")
 
 digest=$(sha256sum -- "${inputs[@]}" | sha256sum | cut -c1-64)
 key="sdk-adapter-cargo-v2-$RUNNER_OS-$RUNNER_ARCH-rust-$rust-inputs-$digest"
-if test -n "${GITHUB_OUTPUT:-}"; then
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   printf 'key=%s\n' "$key" >> "$GITHUB_OUTPUT"
 fi
 printf '%s\n' "$key"

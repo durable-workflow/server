@@ -14,7 +14,7 @@
 set -euo pipefail
 # A failure inside $(serve ...) must stop the run too.
 shopt -s inherit_errexit
-test "$#" = 3 || { echo "usage: $0 <image> <platform> <receipt>" >&2; exit 2; }
+[[ "$#" = 3 ]] || { echo "usage: $0 <image> <platform> <receipt>" >&2; exit 2; }
 image=$1
 platform=$2
 receipt=$3
@@ -28,7 +28,7 @@ mysql=mirror.gcr.io/library/mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99
 # workflow sets it per run, attempt and job and removes them again in an
 # always step. A local run gets its own scope.
 scope_identity="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-native-smoke}"
-if test -z "${RESOURCE_SCOPE:-}"; then
+if [[ -z "${RESOURCE_SCOPE:-}" ]]; then
   RESOURCE_SCOPE="dw-native-$scope_identity-$(date -u +%Y%m%d%H%M%S)-$$"
 fi
 export RESOURCE_SCOPE
@@ -63,7 +63,7 @@ optin=()
 if [[ -z "$release_version" ]]; then
   status=0
   refusal=$(docker run --rm --platform "$platform" -e DW_AUTH_TOKEN=$token "$image" 2>&1) || status=$?
-  test "$status" != 0
+  [[ "$status" != 0 ]]
   grep -q 'requires DW_RUST_EXPERIMENTAL=1' <<<"$refusal"
   optin=(-e DW_RUST_EXPERIMENTAL=1)
 else
@@ -73,9 +73,9 @@ else
     status=0
     refusal=$(docker run --rm --platform "$platform" -v "$state:/app/database" -e DW_AUTH_TOKEN=$token \
       -e "$name=none" -e DB_DATABASE=/app/database/no-auth.sqlite "$image" 2>&1) || status=$?
-    test "$status" != 0
+    [[ "$status" != 0 ]]
     grep -q 'refused in a release build' <<<"$refusal"
-    test ! -e "$state/no-auth.sqlite"
+    [[ ! -e "$state/no-auth.sqlite" ]]
   done
 fi
 
@@ -124,7 +124,7 @@ serve() {
   docker stop --time 20 "$RESOURCE_SCOPE-native-$backend" >/dev/null
   local exit_code
   exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$RESOURCE_SCOPE-native-$backend")
-  test "$exit_code" = 0
+  [[ "$exit_code" = 0 ]]
   jq -cn --arg backend "$backend" --argjson info "$info" --argjson seconds "$(( $(date +%s) - started ))" \
     '{backend:$backend, ready:true, cluster_info_keys:($info|keys|length), version:$info.version,
       sigterm_exit:0, stop_seconds:$seconds}'
@@ -150,10 +150,10 @@ results+=("$(serve mysql -e DB_CONNECTION=mysql -e DB_HOST="$RESOURCE_SCOPE-mysq
 status=0
 missing=$(docker run --rm --platform "$platform" -v "$state:/app/database" "${optin[@]}" \
   -e DB_CONNECTION=sqlite -e DB_DATABASE=/app/database/missing.sqlite "$image" upgrade-inspect 2>&1) || status=$?
-test "$status" != 0
+[[ "$status" != 0 ]]
 grep -qx 'upgrade_inspection_unavailable' <<<"$missing"
-test ! -e "$state/missing.sqlite"
-test -e "$state/database.sqlite"
+[[ ! -e "$state/missing.sqlite" ]]
+[[ -e "$state/database.sqlite" ]]
 
 digest=$(docker image inspect --format '{{.Id}}' "$image")
 printf '%s\n' "${results[@]}" | jq -s --arg image "$image" --arg platform "$platform" --arg id "$digest" \

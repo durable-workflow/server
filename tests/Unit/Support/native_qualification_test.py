@@ -957,7 +957,7 @@ class TransportTests(unittest.TestCase):
                                        ("200 OK", {"id": 42, "tag_name": "3.2.0"}, True)):
             commands = ReadCommands(("HTTP/2.0 " + status + "\r\nContent-Type: application/json\r\n\r\n" + json.dumps(body)).encode())
             self.assertIs(T.GitHubRegistryProvider(commands).release_exists("3.2.0"), expected)
-        for response in (b"unauthorized", b"HTTP/2.0 503 Error\r\n\r\n{}",
+        for response in (b"unauthorized", b"\r\n\r\n{}", b"HTTP/2.0 503 Error\r\n\r\n{}",
                          b"HTTP/2.0 404 Not Found\r\nContent-Type: application/json\r\n\r\n{}"):
             provider = T.GitHubRegistryProvider(ReadCommands(response))
             with self.subTest(response=response), self.assertRaises(E.Refusal):

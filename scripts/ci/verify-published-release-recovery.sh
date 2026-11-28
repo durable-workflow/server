@@ -170,7 +170,7 @@ if ! source_detail="$(scripts/ci/verify-release-tag-source.sh 2>&1)"; then
     fail "source_tag_moved" "$source_detail"
 fi
 
-if [ -n "${GITHUB_OUTPUT:-}" ]; then
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf 'image_digest=%s\n' "$image_digest" >> "$GITHUB_OUTPUT"
 fi
 write_evidence "pass" "" ""

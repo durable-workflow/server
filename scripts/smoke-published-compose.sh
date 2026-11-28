@@ -111,10 +111,10 @@ echo "  endpoint: $ENDPOINT_MODE"
 # token, and publishes the API on loopback only. The PHP 2.x file
 # (docker-compose.php.yml) keeps its own defaults.
 NATIVE_PUBLISHED=false
-if [ "$(basename "$COMPOSE_FILE")" = "docker-compose.published.yml" ]; then
+if [[ "$(basename "$COMPOSE_FILE")" = "docker-compose.published.yml" ]]; then
   NATIVE_PUBLISHED=true
 fi
-if [ "$NATIVE_PUBLISHED" = true ] && env -u DW_AUTH_TOKEN docker compose -p "$PROJECT" -f "$COMPOSE_FILE" config -q >/dev/null 2>&1; then
+if [[ "$NATIVE_PUBLISHED" = true ]] && env -u DW_AUTH_TOKEN docker compose -p "$PROJECT" -f "$COMPOSE_FILE" config -q >/dev/null 2>&1; then
   echo "Compose rendered without DW_AUTH_TOKEN; it must refuse an unset token" >&2
   exit 1
 fi
@@ -129,7 +129,7 @@ python3 "$ROOT_DIR/scripts/ci/native_qualification.py" observe-image --kind comp
 if [ "$ENDPOINT_MODE" = "host" ]; then
   published="$(compose port server 8080)"
   # The default host binding is loopback only.
-  if [ "$NATIVE_PUBLISHED" = true ] && [ -z "${SERVER_BIND_ADDRESS:-}" ] && [ "${published%%:*}" != "127.0.0.1" ]; then
+  if [[ "$NATIVE_PUBLISHED" = true ]] && [[ -z "${SERVER_BIND_ADDRESS:-}" ]] && [[ "${published%%:*}" != "127.0.0.1" ]]; then
     echo "server port is published on ${published}, not loopback" >&2
     exit 1
   fi
@@ -186,9 +186,9 @@ except (ValueError, OSError, AttributeError):
     raise SystemExit("Published Compose response assertions failed") from None
 OBSERVATIONS
 
-if [ "$PROFILE" = "production" ]; then
+if [[ "$PROFILE" = "production" ]]; then
   status="$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer dev-token" "${BASE_URL}/api/cluster/info")"
-  if [ "$status" != "401" ]; then
+  if [[ "$status" != "401" ]]; then
     echo "production profile accepted dev-token (HTTP $status)" >&2
     exit 1
   fi

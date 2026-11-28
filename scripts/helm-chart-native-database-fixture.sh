@@ -46,7 +46,7 @@ if ! run_schema_command schema-bootstrap >"${work_dir}/bootstrap.out" 2>"${work_
     exit 1
   fi
   run_schema_command schema-checkpoint-ddl >"${work_dir}/checkpoint.sql"
-  test -s "${work_dir}/checkpoint.sql"
+  [[ -s "${work_dir}/checkpoint.sql" ]]
   mysql_admin <"${work_dir}/checkpoint.sql"
   run_schema_command schema-bootstrap
   echo "PASS native checkpoint DDL applied by the database administrator and verified by the scoped account"

@@ -19,7 +19,7 @@
 set -euo pipefail
 fail() { printf 'native-release-sbom: %s\n' "$1" >&2; exit 2; }
 
-test "$#" = 4 || fail "usage: $0 IMAGE@sha256:DIGEST PLATFORM VERSION OUT_DIR"
+[[ "$#" = 4 ]] || fail "usage: $0 IMAGE@sha256:DIGEST PLATFORM VERSION OUT_DIR"
 image=$1 platform=$2 version=$3 out=$4
 if [[ ${NATIVE_SBOM_LOCAL_IMAGE:-} == true ]]; then
   [[ $image =~ ^dw-native-[a-z0-9-]+:smoke$ ]] || fail "a local image must be a dw-native-...:smoke tag, not $image."
@@ -50,7 +50,7 @@ scanner=docker.io/anchore/syft@$scanner_child
 
 # The scanner container's name derives from RESOURCE_SCOPE, so the job's
 # cleanup step can remove it.
-if test -z "${RESOURCE_SCOPE:-}"; then
+if [[ -z "${RESOURCE_SCOPE:-}" ]]; then
   RESOURCE_SCOPE="dw-native-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-sbom}-$$"
 fi
 

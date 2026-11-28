@@ -314,7 +314,7 @@ for _ in $(seq 1 45); do
   [[ -z "${scheduler_job}" ]] || break
   sleep 2
 done
-test -n "${scheduler_job}"
+[[ -n "${scheduler_job}" ]]
 
 curl -fsS -X POST "http://127.0.0.1:${port}/api/worker/register" \
   -H "Authorization: Bearer kind-worker-token" \
