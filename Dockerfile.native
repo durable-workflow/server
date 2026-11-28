@@ -45,10 +45,10 @@ FROM mirror.gcr.io/library/debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f7
 RUN printf 'Acquire::Retries "0";\n' > /etc/apt/apt.conf.d/99-no-retries \
     && DEBIAN_FRONTEND=noninteractive apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        libpam0g=1.5.2-6+deb12u3 \
-        libpam-runtime=1.5.2-6+deb12u3 \
         libpam-modules=1.5.2-6+deb12u3 \
         libpam-modules-bin=1.5.2-6+deb12u3 \
+        libpam-runtime=1.5.2-6+deb12u3 \
+        libpam0g=1.5.2-6+deb12u3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /durable-workflow-server /usr/local/bin/durable-workflow-server
 # The PHP image's paths, so a taken-over installation keeps its volumes:
