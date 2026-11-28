@@ -60,6 +60,64 @@ fn types(history: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn message_stream_routes_admit_their_own_namespace_and_refuse_foreign_workflows() {
+    use super::namespaces::{create, scoped, start_scoped};
+
+    let database = TestDatabase::new().await;
+    let app = router(database.open().await.unwrap());
+    let mut run_ids = Vec::new();
+    for (namespace, workflow) in [("alpha", "alpha-stream"), ("beta", "beta-stream")] {
+        create(&app, namespace).await;
+        let (status, body) = scoped(&app, namespace, "POST", "/api/worker/register", stream_worker()).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let run = start_scoped(&app, namespace, workflow).await;
+        run_ids.push(run["run_id"].clone());
+        let (status, response) = scoped(
+            &app, namespace, "POST", "/api/worker/workflow-tasks/poll",
+            json!({"worker_id":"streams","task_queue":"test","timeout_seconds":0}),
+        ).await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        let task = &response["task"];
+        let path = format!("/api/worker/workflow-tasks/{}/complete", task["task_id"].as_str().unwrap());
+        let mut body = completion(task, receive(0));
+        body["message_stream_waits"] = json!([{"stream_name":"orders","after_position":0}]);
+        let (status, finished) = scoped(&app, namespace, "POST", &path, body).await;
+        assert_eq!(status, StatusCode::OK, "{finished}");
+    }
+
+    for (index, (namespace, workflow)) in [("alpha", "alpha-stream"), ("beta", "beta-stream")].into_iter().enumerate() {
+        let list = format!("/api/workflows/{workflow}/message-streams");
+        let detail = format!("{list}/orders");
+        let append = format!("{detail}/messages");
+        let other = if namespace == "alpha" { "beta" } else { "alpha" };
+        for (method, path, body) in [
+            ("GET", list.as_str(), Value::Null),
+            ("GET", detail.as_str(), Value::Null),
+            ("POST", append.as_str(), json!({"message_id":"foreign","input":[-1]})),
+        ] {
+            let (status, foreign) = scoped(&app, other, method, path, body).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{foreign}");
+            assert_eq!(foreign["reason"], "instance_not_found", "{foreign}");
+        }
+        let (status, appended) = scoped(
+            &app, namespace, "POST", &append, json!({"message_id":"first","input":[index]}),
+        ).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{appended}");
+        assert_eq!(appended["position"], 1, "{appended}");
+        assert_eq!(appended["run_id"], run_ids[index], "{appended}");
+        let (status, listed) = scoped(&app, namespace, "GET", &list, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{listed}");
+        assert_eq!(listed["count"], 1, "{listed}");
+        assert_eq!(listed["streams"][0]["last_position"], 1, "{listed}");
+        let (status, shown) = scoped(&app, namespace, "GET", &detail, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{shown}");
+        assert_eq!(shown["stream"], listed["streams"][0], "{shown}");
+        let (status, refused) = scoped(&app, namespace, "GET", &append, Value::Null).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{refused}");
+    }
+}
+
+#[tokio::test]
 async fn appended_messages_reach_the_run_and_follow_it_when_it_continues() {
     let database = TestDatabase::new().await;
     let app = router(database.open().await.unwrap());
