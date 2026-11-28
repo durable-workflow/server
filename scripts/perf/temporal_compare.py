@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +79,8 @@ DEFAULT_NATIVE_POLL_INTERVAL_MS = 50
 # two weeks of runs.
 DEFAULT_DRIFT_THRESHOLD = 0.10
 DEFAULT_IDLE_CPU_THRESHOLD = 0.10
+DEFAULT_IDLE_WAIT_SECONDS = 75
+IDLE_CLEANUP_SECONDS = 3
 DIGEST_REF = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
 FROM_LINE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(?P<ref>\S+)(?:\s+AS\s+(?P<alias>\S+))?\s*$", re.IGNORECASE)
 HARNESS_DOCKERFILES = (
@@ -494,14 +497,25 @@ class Compose:
         return [line for line in result.stdout.splitlines() if line.strip()]
 
 
-def preflight(docker: DockerHost, image: str, name: str, seconds: int, own_projects: tuple[str, ...]) -> dict[str, Any]:
+def preflight(docker: DockerHost, image: str, name: str, seconds: int, deadline: float,
+              sample_names: set[str]) -> dict[str, Any]:
     """CPU use over an idle window, CPU model and other running containers."""
     script = (
         "head -n1 /proc/stat; sleep {s}; head -n1 /proc/stat; cat /proc/loadavg; "
         "grep -m1 'model name' /proc/cpuinfo || true"
     ).format(s=seconds)
-    result = docker.run("run", "--rm", "--init", "--name", name, "--network", "none", "--entrypoint", "sh", image, "-c", script,
-                        timeout=seconds + 120)
+    try:
+        result = docker.run("run", "--rm", "--init", "--name", name, "--network", "none", "--pull", "never",
+                            "--cpus", "0.25", "--memory", "64m", "--pids-limit", "16",
+                            "--entrypoint", "sh", image, "-c", script,
+                            timeout=max(0.001, deadline - time.monotonic() - IDLE_CLEANUP_SECONDS))
+    except subprocess.TimeoutExpired:
+        # The Docker CLI can time out while the short-lived sampler still exits on the engine.
+        try:
+            docker.run("rm", "-f", name, check=False, timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        raise
     lines = result.stdout.splitlines()
     busy = None
     steal = None
@@ -514,8 +528,9 @@ def preflight(docker: DockerHost, image: str, name: str, seconds: int, own_proje
         if total > 0:
             busy = round((total - idle) / total, 4)
             steal = round(delta[7] / total, 4)
-    containers = docker.run("ps", "--format", "{{.Names}}").stdout.split()
-    others = [c for c in containers if c != name and not c.startswith(own_projects)]
+    containers = docker.run("ps", "--format", "{{.Names}}", timeout=max(0.001, deadline - time.monotonic())).stdout.split()
+    # A previous slot's remaining containers are active work too.
+    others = [container for container in containers if container not in sample_names]
     return {
         "role": docker.role,
         "measured_at": utc_now(),
@@ -526,6 +541,43 @@ def preflight(docker: DockerHost, image: str, name: str, seconds: int, own_proje
         "cpu_model": lines[3].split(":", 1)[1].strip() if len(lines) > 3 and ":" in lines[3] else None,
         "running_containers": len(others),
     }
+
+
+def wait_for_idle_hosts(probes: list[tuple[DockerHost, str, str]], args: argparse.Namespace,
+                        slot: str, provenance: dict[str, Any]) -> None:
+    deadline = time.monotonic() + args.idle_wait_seconds
+    errors = ["the idle wait expired before both hosts could be sampled"]
+    attempt = 0
+    run_id = uuid4().hex[:12]
+    with ThreadPoolExecutor(max_workers=len(probes)) as pool:
+        while time.monotonic() + args.idle_seconds + IDLE_CLEANUP_SECONDS < deadline:
+            attempt += 1
+            named_probes = [(host, image, f"{name}-{run_id}-{attempt}") for host, image, name in probes]
+            sample_names = {name for _, _, name in named_probes}
+            samples = [pool.submit(preflight, host, image, name, args.idle_seconds, deadline, sample_names)
+                       for host, image, name in named_probes]
+            errors = []
+            for (host, _, _), sample in zip(probes, samples):
+                try:
+                    check = sample.result()
+                except subprocess.TimeoutExpired:
+                    check = {"role": host.role, "measured_at": utc_now(), "error": "idle sample timed out"}
+                provenance["preflight"].append({"slot": slot, "attempt": attempt, **check})
+                if check.get("cpu_model"):
+                    provenance["hosts"][host.role].setdefault("cpu_model", check["cpu_model"])
+                errors.extend(busy_host_errors(check, args.idle_cpu_threshold))
+            if not errors:
+                return
+            if args.allow_busy_hosts:
+                log("idle check not enforced: " + "; ".join(errors))
+                return
+    raise RuntimeError(f"hosts did not become idle in {args.idle_wait_seconds}s: " + "; ".join(errors))
+
+
+def warm_image(docker: DockerHost, image: str, name: str) -> None:
+    docker.run("run", "--rm", "--init", "--name", name, "--network", "none", "--pull", "never",
+               "--cpus", "0.5", "--memory", "128m", "--pids-limit", "32",
+               "--entrypoint", "sh", image, "-c", "true", timeout=60)
 
 
 def host_facts(docker: DockerHost) -> dict[str, Any]:
@@ -583,6 +635,9 @@ def run_command(args: argparse.Namespace) -> int:
     workers = bounded_int(str(args.workers), "workers", 1, 32)
     step_ms = bounded_int(str(args.step_ms), "step-ms", 0, 1000)
     warmup = bounded_int(str(args.warmup_workflows), "warmup-workflows", 0, 2000)
+    args.idle_seconds = bounded_int(str(args.idle_seconds), "idle-seconds", 1, 30)
+    args.idle_wait_seconds = bounded_int(str(args.idle_wait_seconds), "idle-wait-seconds",
+                                         args.idle_seconds + IDLE_CLEANUP_SECONDS + 1, 180)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.project_prefix):
         raise SystemExit("--project-prefix must be lowercase letters, digits and dashes")
     if bool(args.native_image) == bool(args.native_source):
@@ -617,6 +672,8 @@ def run_command(args: argparse.Namespace) -> int:
         "native_poll_interval_ms": args.native_poll_interval_ms,
         "drift_threshold": args.drift_threshold,
         "idle_cpu_threshold": args.idle_cpu_threshold,
+        "idle_seconds": args.idle_seconds,
+        "idle_wait_seconds": args.idle_wait_seconds,
         "idle_preflight_enforced": not args.allow_busy_hosts,
         "local_stand_in": stand_in,
         "target_plan": args.target_plan,
@@ -661,6 +718,12 @@ def run_command(args: argparse.Namespace) -> int:
         provenance["roadrunner_version"] = driver.run(
             "run", "--rm", "--init", "--name", f"{prefix}-rr-version", "--network", "none", "--entrypoint", "rr", built["rr-worker"], "--version",
         ).stdout.strip()
+        # Warm all image roots after the builds and pulls, before measuring either host.
+        for name in ("mysql", "postgres", "native"):
+            image = built["native"] if name == "native" else images[name]["ref"]
+            warm_image(target, image, f"{prefix}-warm-{name}")
+        for name in ("sdk-php-worker", "loadgen"):
+            warm_image(driver, built[name], f"{prefix}-warm-{name}")
         provenance["preflight"] = []
         compose_env = {
             "DW_RACE_TEMPORAL_IMAGE": images["temporal"]["ref"],
@@ -764,21 +827,10 @@ def run_slot(record: dict[str, Any], args: argparse.Namespace, config: dict[str,
     if target_compose.volumes():
         raise RuntimeError(f"target project {target_project} already has volumes; every system needs a fresh database")
 
-    own = (args.project_prefix,)
-    checks = [
-        preflight(target, images["temporal"]["ref"], f"{prefix}-idle-t{slot}-{race}", args.idle_seconds, own),
-        preflight(driver, compose_env["DW_RACE_LOADGEN_IMAGE"], f"{prefix}-idle-d{slot}-{race}", args.idle_seconds, own),
-    ]
-    for check in checks:
-        check["slot"] = label
-        provenance["preflight"].append(check)
-        if check.get("cpu_model"):
-            provenance["hosts"][check["role"]].setdefault("cpu_model", check["cpu_model"])
-    busy = [error for check in checks for error in busy_host_errors(check, args.idle_cpu_threshold)]
-    if busy:
-        if not args.allow_busy_hosts:
-            raise RuntimeError("; ".join(busy))
-        log("idle check not enforced: " + "; ".join(busy))
+    wait_for_idle_hosts([
+        (target, images["temporal"]["ref"], f"{prefix}-idle-t{slot}-{race}"),
+        (driver, compose_env["DW_RACE_LOADGEN_IMAGE"], f"{prefix}-idle-d{slot}-{race}"),
+    ], args, label, provenance)
 
     try:
         log(f"{label}: starting the target")
@@ -1050,6 +1102,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--drift-threshold", type=float, default=DEFAULT_DRIFT_THRESHOLD)
     run.add_argument("--idle-cpu-threshold", type=float, default=DEFAULT_IDLE_CPU_THRESHOLD)
     run.add_argument("--idle-seconds", type=int, default=5)
+    run.add_argument("--idle-wait-seconds", type=int, default=DEFAULT_IDLE_WAIT_SECONDS, help="maximum idle wait per system slot")
     run.add_argument("--allow-busy-hosts", action="store_true", help="record but do not enforce the idle check (local stand-in only)")
     run.add_argument("--local-stand-in", action="store_true", help="apply the local-*.compose.yml container limits; never publishable")
     run.add_argument("--target-docker-host", default=None, help="DOCKER_HOST for the target, e.g. ssh://perf@10.0.0.2")
