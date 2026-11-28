@@ -415,6 +415,72 @@ mod tests {
         writer.close().await;
     }
 
+    #[cfg(all(debug_assertions, unix))]
+    #[tokio::test]
+    async fn sqlite_a_later_probe_rechecks_storage_after_waiting_for_its_connection() {
+        use super::super::poll_pauses::{PollPoint, pause_workflow_poll};
+        use super::super::storage_admission::Settings;
+        use crate::codec::{Value as Payload, ValueCodec};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("storage-wait.sqlite");
+        let observation = dir.path().join("pressure.json");
+        let publish = |state: &str| {
+            let staged = observation.with_extension("tmp");
+            let body = json!({"schema":"durable-workflow.storage-pressure.v1","source":"probe-test",
+                "observed_at":chrono::Utc::now().timestamp(),"state":state,"usage":{}});
+            std::fs::write(&staged, body.to_string()).unwrap();
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::fs::rename(&staged, &observation).unwrap();
+        };
+        publish("normal");
+
+        let writer = Store::<sqlx::Sqlite>::new(super::super::sqlite::open(path.to_str().unwrap()).await.unwrap());
+        let (store, _) = counted_store(&path).await;
+        store.storage_admission.set(Settings { file: Some(observation.to_str().unwrap().into()),
+            source: Some("probe-test".into()), max_age_seconds: 60 });
+        writer.register(json!({"worker_id":"pressure-wait","task_queue":"pressure-wait","runtime":"php",
+            "supported_workflow_types":["probe"],"supported_activity_types":[]}), &QueryTaskConfig::default(), Some("1.20")).await.unwrap();
+
+        let request = format!("pressure-wait-{}", ulid::Ulid::new());
+        let waiting = pause_workflow_poll(&request, PollPoint::Waiting);
+        let body = json!({"worker_id":"pressure-wait","task_queue":"pressure-wait","timeout_seconds":6,"poll_request_id":request});
+        let blob = ValueCodec::new().unwrap().encode(&Payload::Array(vec![])).unwrap();
+        let (answer, ()) = tokio::join!(store.poll(body.clone(), "workflow", "1.20"), async {
+            waiting.reached.await.unwrap();
+            let held = store.pool.acquire().await.unwrap();
+            waiting.release.send(()).unwrap();
+            // Taking the semaphore happens after the early storage snapshot.
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while store.probe_slots.available_permits() != 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }).await.expect("the later probe is waiting for the connection");
+            writer.start(json!({"workflow_id":"pressure-wait-run","workflow_type":"probe","task_queue":"pressure-wait",
+                "input":{"codec":"avro","blob":blob}}), Default::default(), None, None).await.unwrap();
+            publish("draining");
+            drop(held);
+        });
+        let Err(super::super::RuntimeError::Protocol { status, response }) = answer else {
+            panic!("the later probe must refuse work under fresh storage pressure: {answer:?}");
+        };
+        assert_eq!(status.as_u16(), 503);
+        assert_eq!(response["reason"], "storage_pressure");
+        assert_eq!(response["storage_state"], "draining");
+        assert_eq!(response["claim_admitted"], false);
+        assert_eq!(response["retry_same_poll_request_id"], true);
+        assert_eq!(response["poll_request_id"], request);
+        assert!(response.get("request_admitted").is_none());
+
+        publish("normal");
+        let retry = store.poll(body, "workflow", "1.20").await.unwrap();
+        assert_eq!(retry["poll_status"], "leased", "{retry}");
+        assert_eq!(retry["task"]["workflow_id"], "pressure-wait-run", "{retry}");
+        store.close().await;
+        writer.close().await;
+    }
+
     #[test]
     fn the_read_budget_leaves_two_slots_and_never_reaches_zero() {
         for (connections, budget) in [(0, 1), (1, 1), (2, 1), (3, 1), (4, 2), (10, 8)] {
