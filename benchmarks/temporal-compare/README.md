@@ -63,8 +63,12 @@ set the noise band.
   and the driver reaches the target over the private network.
 - Every system starts on fresh volumes. The harness refuses a project that
   already has volumes and checks that teardown removed them.
-- An idle preflight runs before each system on both hosts. It refuses a host
-  that used more than 10% CPU over 5 seconds, or that runs other containers.
+- The harness prepares the images before the first idle check. Before each
+  system it samples both hosts in parallel over five seconds. A slot starts
+  only when both use at most 10% CPU and neither is running other
+  containers. Busy hosts are sampled again for up to 75 seconds per slot,
+  inside the controller's existing run deadline. A slot that stays busy is
+  refused. Every sample and attempt is retained in `summary.json`.
 
 ## Outputs
 

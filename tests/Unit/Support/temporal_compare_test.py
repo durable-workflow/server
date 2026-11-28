@@ -7,6 +7,7 @@ The controller tests run the script in dry-run mode, which makes no Vultr call.
 
 from __future__ import annotations
 
+from argparse import Namespace
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import sys
 import re
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts" / "perf"))
@@ -133,6 +135,53 @@ class DurabilityTest(unittest.TestCase):
         errors = tc.busy_host_errors({"role": "target", "cpu_busy_fraction": 0.4, "running_containers": 2}, 0.1)
         self.assertEqual(2, len(errors))
         self.assertTrue(tc.busy_host_errors({"role": "driver", "cpu_busy_fraction": None}, 0.1))
+
+
+class IdlePreflightTest(unittest.TestCase):
+    def setUp(self):
+        self.probes = [(tc.DockerHost(role, None), "locked-image", f"race-idle-{role}")
+                       for role in ("target", "driver")]
+        self.config = Namespace(idle_seconds=5, idle_wait_seconds=20, idle_cpu_threshold=0.1, allow_busy_hosts=False)
+        self.provenance = {"hosts": {"target": {}, "driver": {}}, "preflight": []}
+
+    def test_both_hosts_must_pass_the_same_attempt(self):
+        loads = {"target": iter([0.2, 0.01, 0.03]), "driver": iter([0.03, 0.4, 0.02])}
+
+        def measure(host, *_):
+            return {"role": host.role, "cpu_busy_fraction": next(loads[host.role]), "cpu_model": "fixture CPU"}
+
+        with patch.object(tc, "preflight", side_effect=measure), patch.object(tc.time, "monotonic", side_effect=[0, 0, 5, 10]):
+            tc.wait_for_idle_hosts(self.probes, self.config, "batch-0-native", self.provenance)
+
+        attempts = self.provenance["preflight"]
+        self.assertEqual([1, 1, 2, 2, 3, 3], [sample["attempt"] for sample in attempts])
+        self.assertEqual(["target", "driver"] * 3, [sample["role"] for sample in attempts])
+        self.assertTrue(all(sample["slot"] == "batch-0-native" for sample in attempts))
+        self.assertEqual({"cpu_model": "fixture CPU"}, self.provenance["hosts"]["target"])
+
+    def test_expired_wait_refuses_a_busy_or_unmeasurable_pair(self):
+        def measure(host, *_):
+            if host.role == "driver":
+                raise subprocess.TimeoutExpired(["docker", "run"], 5)
+            return {"role": host.role, "cpu_busy_fraction": 0.3}
+
+        with patch.object(tc, "preflight", side_effect=measure), patch.object(tc.time, "monotonic", side_effect=[0, 0, 18]):
+            with self.assertRaisesRegex(RuntimeError, "did not become idle in 20s.*driver host idle check did not measure CPU"):
+                tc.wait_for_idle_hosts(self.probes, self.config, "batch-0-native", self.provenance)
+        self.assertEqual("idle sample timed out", self.provenance["preflight"][1]["error"])
+
+    def test_a_previous_slots_container_still_counts_as_busy(self):
+        host = Mock(role="target")
+        host.run.side_effect = [
+            Mock(stdout="cpu 10 0 10 80 0 0 0 0\ncpu 11 0 10 89 0 0 0 0\n0.00 0.00\nmodel name: test\n"),
+            Mock(stdout="race-idle-driver\nrace-previous-server\n"),
+        ]
+        with patch.object(tc.time, "monotonic", return_value=0):
+            check = tc.preflight(host, "locked-image", "race-idle-target", 5, 20, {"race-idle-target", "race-idle-driver"})
+        self.assertEqual(0.1, check["cpu_busy_fraction"])
+        self.assertEqual(1, check["running_containers"])
+        self.assertIn("target host runs 1 other containers", tc.busy_host_errors(check, 0.1))
+        self.assertIn("never", host.run.call_args_list[0].args)
 
 
 class HeadlineTest(unittest.TestCase):
