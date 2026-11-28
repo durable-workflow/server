@@ -42,7 +42,8 @@ RUN PATH=/opt/cargo-auditable/bin:$PATH cargo auditable build --release --locked
 FROM mirror.gcr.io/library/debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 # Patch CVE-2025-6020 (HIGH) from bookworm-security until a rebuilt
 # bookworm-slim base image includes libpam 1.5.2-6+deb12u3.
-RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+RUN printf 'Acquire::Retries "0";\n' > /etc/apt/apt.conf.d/99-no-retries \
+    && DEBIAN_FRONTEND=noninteractive apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         libpam0g=1.5.2-6+deb12u3 \
         libpam-runtime=1.5.2-6+deb12u3 \
